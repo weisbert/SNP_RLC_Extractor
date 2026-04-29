@@ -80,15 +80,21 @@ Each Calculate prints a single aligned table. Columns:
               M4: 1<->2 V:[3] G:[4]          -- Mode 4 with VDD
               M5: <first 28 chars of DSL>    -- Mode 5 (custom)
    R/L/C/Q numeric values
-   Sign    flag column. Empty in the common case. Possible flags:
-              cap   -- L<0 / Q<0 / Im(Z)<0; the network is capacitive
-                       at this frequency. For an inductor: past SRF.
-                       Use the C column (which is positive) instead.
+   Sign    flag column. Always indicates the sign of Im(Z); may also
+           carry a non-passive warning. Possible flags:
+              ind   -- Im(Z)>0; the network is inductive at this
+                       frequency. L>0 and Q>0; C is the negative
+                       cap-equivalent and should be ignored.
+              cap   -- Im(Z)<0; the network is capacitive at this
+                       frequency. C>0 and Q<0; L is the negative
+                       ind-equivalent and should be ignored. For an
+                       inductor, this means the data point is past SRF.
               R<0   -- Re(Z) is negative, i.e. the extracted network
                        is non-passive at this frequency. Almost always
                        a numerical artifact (rank-deficient Schur
                        reduction at lossless points) or a port-config
                        error (e.g. forgetting to ground a return path).
+                       Appended to the cap/ind flag, e.g. "cap,R<0".
 
 Units modes (selectable from the dropdown above the results pane)
 -----------------------------------------------------------------

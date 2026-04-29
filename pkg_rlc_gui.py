@@ -282,10 +282,13 @@ def _fmt_aligned(value: float, exp: int, sig: int = 4) -> str:
 
 
 def _sign_flag(res) -> str:
-    """Compact flag string: 'cap', 'ind', 'R<0', combinations, or ''."""
+    """Compact flag: always 'cap' or 'ind' (per Im(Z) sign), plus 'R<0' if non-passive."""
     flags = []
-    if math.isfinite(res.L_henry) and res.L_henry < 0:
-        flags.append("cap")
+    if math.isfinite(res.L_henry):
+        if res.L_henry < 0:
+            flags.append("cap")
+        elif res.L_henry > 0:
+            flags.append("ind")
     if math.isfinite(res.R_ohm) and res.R_ohm < 0:
         flags.append("R<0")
     return ",".join(flags)
@@ -357,11 +360,8 @@ def _format_results_table(rows, units_mode: str) -> str:
     parts.append("Sign")
     lines.append("".join(parts))
 
-    saw_flag = False
     for tc, fl, res in rows:
         flag = _sign_flag(res)
-        if flag:
-            saw_flag = True
         if units_mode == "aligned":
             r_str = _fmt_aligned(res.R_ohm, r_exp)
             l_str = _fmt_aligned(res.L_henry, l_exp)
@@ -387,11 +387,11 @@ def _format_results_table(rows, units_mode: str) -> str:
         row_parts.append(flag)
         lines.append("".join(row_parts))
 
-    if saw_flag:
-        lines.append(
-            "  legend: cap = Im(Z)<0 (past SRF if inductor) | "
-            "R<0 = non-passive at this freq"
-        )
+    lines.append(
+        "  legend: ind = Im(Z)>0 (inductive) | "
+        "cap = Im(Z)<0 (capacitive; past SRF for an inductor) | "
+        "R<0 = non-passive"
+    )
     return "\n".join(lines)
 
 
