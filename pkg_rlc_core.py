@@ -673,14 +673,17 @@ class RLCResult:
     freq_hz: float
     Z: complex
     R_ohm: float
-    L_henry: float       # NaN if Im(Z) <= 0
-    C_farad: float       # NaN if Im(Z) >= 0
-    Q: float             # NaN if Re(Z) <= 0
+    L_henry: float       # signed: Im(Z)/omega; negative past SRF (capacitive)
+    C_farad: float       # signed: -1/(omega*Im(Z)); negative below SRF (inductive)
+    Q: float             # signed: Im(Z)/Re(Z); negative when capacitive
 
 
 def extract_rlc_at_freq(freqs: np.ndarray, Z: np.ndarray, target_freq_hz: float) -> RLCResult:
     """
     Pick the data point closest to target_freq_hz and report R, L, C, Q.
+
+    L, C, Q are signed (Cadence convention). The caller is responsible for
+    interpreting the sign — see RLCResult docstring.
     """
     if len(freqs) == 0:
         raise ValueError("Empty frequency array")
@@ -690,9 +693,9 @@ def extract_rlc_at_freq(freqs: np.ndarray, Z: np.ndarray, target_freq_hz: float)
     r = z.real
     im = z.imag
     omega = 2.0 * math.pi * f
-    L = im / omega if im > 0 else float("nan")
-    C = -1.0 / (omega * im) if im < 0 else float("nan")
-    Q = abs(im) / r if r > 0 else float("nan")
+    L = im / omega if omega != 0.0 else float("nan")
+    C = -1.0 / (omega * im) if (omega != 0.0 and im != 0.0) else float("nan")
+    Q = im / r if r != 0.0 else float("nan")
     return RLCResult(freq_hz=f, Z=z, R_ohm=r, L_henry=L, C_farad=C, Q=Q)
 
 
@@ -845,3 +848,54 @@ def eval_capacitor_model(fit: CapacitorFit, freqs: np.ndarray) -> np.ndarray:
     if not math.isnan(fit.C_farad) and fit.C_farad != 0:
         Z = Z + 1.0 / (1j * omega * fit.C_farad)
     return Z
+
+
+# ============================================================================
+# Display helpers
+# ============================================================================
+
+# (exponent, prefix) pairs covering 1e-15 .. 1e12. Note 'u' is used in place of
+# 'µ' because Tk Text in some Windows fonts mis-renders the multibyte char and
+# breaks column alignment.
+_SI_PREFIXES = [
+    (-15, "f"), (-12, "p"), (-9, "n"), (-6, "u"), (-3, "m"),
+    (0, ""), (3, "k"), (6, "M"), (9, "G"), (12, "T"),
+]
+
+
+def format_si(value: float, unit: str = "", sig: int = 3) -> str:
+    """
+    Format a number with an SI prefix and `sig` significant digits.
+
+    Examples:
+        format_si(0.000345, "H")   -> "345 uH"     (because 3.45e-4 H = 345 uH)
+        format_si(345e-12, "H")    -> "345 pH"
+        format_si(-1.234e-9, "H")  -> "-1.23 nH"
+        format_si(0.0, "Ω")        -> "0.00 Ω"
+        format_si(float('nan'))    -> "nan"
+        format_si(float('inf'))    -> "inf"
+
+    The chosen prefix is the largest one whose scaled value has |x| >= 1
+    (with 'f' as the floor). Sig-fig rounding is applied to the scaled
+    value, so the textual length is bounded.
+    """
+    if not math.isfinite(value):
+        return "nan" if math.isnan(value) else ("inf" if value > 0 else "-inf")
+    if value == 0.0:
+        return f"{0.0:.{sig - 1}f}" + (f" {unit}" if unit else "")
+
+    abs_v = abs(value)
+    log10 = math.log10(abs_v)
+    # Pick the largest prefix exponent <= log10, clamped to the table range.
+    chosen = _SI_PREFIXES[0]
+    for exp, pfx in _SI_PREFIXES:
+        if log10 >= exp:
+            chosen = (exp, pfx)
+        else:
+            break
+    exp, pfx = chosen
+    scaled = value / (10 ** exp)
+    # `sig` significant digits via %g, then strip a trailing '.' if any.
+    text = f"{scaled:.{sig}g}"
+    suffix = pfx + unit
+    return f"{text} {suffix}" if suffix else text

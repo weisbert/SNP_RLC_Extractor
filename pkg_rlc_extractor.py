@@ -179,9 +179,9 @@ def _run_cli(args: argparse.Namespace) -> int:
                 f = ts.freqs[k]
                 r = z.real
                 im = z.imag
-                L = im / omega[k] * 1e9 if im > 0 else float("nan")
-                C = (-1.0 / (omega[k] * im) * 1e12) if im < 0 else float("nan")
-                Q = abs(im) / r if r > 0 else float("nan")
+                L = im / omega[k] * 1e9 if omega[k] != 0.0 else float("nan")
+                C = (-1.0 / (omega[k] * im) * 1e12) if (omega[k] != 0.0 and im != 0.0) else float("nan")
+                Q = im / r if r != 0.0 else float("nan")
                 w.writerow([f"{f/1e9:.6g}",
                             f"{r:.6e}", f"{im:.6e}", f"{abs(z):.6e}",
                             f"{r*1000:.6e}", f"{L:.6e}",

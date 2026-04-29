@@ -141,13 +141,16 @@ From the Y-parameter perspective:
 
 ### RLC Extraction from Z(f)
 
-At each frequency point:
+At each frequency point (signed convention, matches Cadence):
 ```
 R(f) = Re(Z(f))
-L(f) = Im(Z(f)) / (2π*f)           # valid when Im(Z) > 0 (inductive)
-C(f) = -1 / (2π*f * Im(Z(f)))      # valid when Im(Z) < 0 (capacitive)
-Q(f) = |Im(Z(f))| / Re(Z(f))       # quality factor
+L(f) = Im(Z(f)) / (2π*f)           # <0 when capacitive at f
+C(f) = -1 / (2π*f * Im(Z(f)))      # <0 when inductive at f
+Q(f) = Im(Z(f)) / Re(Z(f))         # signed quality factor
 ```
+Past SRF, an inductor's Im(Z) flips negative and L/Q go negative while C
+becomes positive (parasitic-capacitance regime). The GUI prints a short
+note in the results pane when L, C, or R is reported as negative.
 
 User selects a specific frequency (e.g., 0.1 GHz) for single-value extraction.
 

@@ -58,9 +58,50 @@ Single-frequency RLC formulas
 -----------------------------
 At each frequency point f (omega = 2*pi*f):
    R(f) = Re(Z(f))
-   L(f) = Im(Z(f)) / omega           (valid only when Im(Z) > 0)
-   C(f) = -1 / (omega * Im(Z(f)))    (valid only when Im(Z) < 0)
-   Q(f) = |Im(Z(f))| / Re(Z(f))      (quality factor)
+   L(f) = Im(Z(f)) / omega           (signed; <0 means capacitive at f)
+   C(f) = -1 / (omega * Im(Z(f)))    (signed; <0 means inductive at f)
+   Q(f) = Im(Z(f)) / Re(Z(f))        (signed; matches Cadence convention)
+
+Sign convention: values are reported with their physical sign, not absolute
+value. For an inductor past SRF, Im(Z) flips negative -> L and Q go negative
+and C becomes positive (the parasitic capacitance dominates).
+
+Reading the results table
+-------------------------
+Each Calculate prints a single aligned table. Columns:
+   ID      trace id (in brackets), matches the Traces list
+   Label   user-given trace label (truncated)
+   File    only shown when traces span >1 file (alias F1, F2, ...)
+   Ports   compact port-config descriptor:
+              M1: S:[1] G:[2,3]              -- Mode 1 (port-to-GND)
+              M2: 1<->2 G:[]                 -- Mode 2 (port-to-port)
+              M2: 1<->{2,3} G:[4]            -- multi-port terminal
+              M3: 1<->2 G:[] S:[3-4]         -- Mode 3 with shorts
+              M4: 1<->2 V:[3] G:[4]          -- Mode 4 with VDD
+              M5: <first 28 chars of DSL>    -- Mode 5 (custom)
+   R/L/C/Q numeric values
+   Sign    flag column. Empty in the common case. Possible flags:
+              cap   -- L<0 / Q<0 / Im(Z)<0; the network is capacitive
+                       at this frequency. For an inductor: past SRF.
+                       Use the C column (which is positive) instead.
+              R<0   -- Re(Z) is negative, i.e. the extracted network
+                       is non-passive at this frequency. Almost always
+                       a numerical artifact (rank-deficient Schur
+                       reduction at lossless points) or a port-config
+                       error (e.g. forgetting to ground a return path).
+
+Units modes (selectable from the dropdown above the results pane)
+-----------------------------------------------------------------
+   smart    -- each cell picks its own SI prefix and prints 3
+               significant digits, e.g. "345 pH", "12.3 mOhm".
+               Best when traces span very different magnitudes.
+   aligned  -- one SI prefix per column (largest |value| in the column
+               sets it). Header carries the unit, e.g. "L[pH]".
+               Best for comparing variants of the same DUT where
+               values share an order of magnitude.
+
+Switching the units mode re-renders the most recent Calculate's table
+without recomputing -- the existing log entries are preserved above.
 
 Broadband fit models
 --------------------

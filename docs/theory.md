@@ -241,12 +241,12 @@ At a chosen frequency `f` with `omega = 2*pi*f` and `Z(f) = R + j*X`:
 
 ```
 R(f) = Re(Z(f))
-L(f) = Im(Z(f)) / omega          for Im(Z) > 0  (inductive)
-C(f) = -1 / (omega * Im(Z(f)))   for Im(Z) < 0  (capacitive)
-Q(f) = |Im(Z(f))| / Re(Z(f))     for Re(Z)  > 0
+L(f) = Im(Z(f)) / omega          (signed; <0 when capacitive at f)
+C(f) = -1 / (omega * Im(Z(f)))   (signed; <0 when inductive at f)
+Q(f) = Im(Z(f)) / Re(Z(f))       (signed; matches Cadence)
 ```
 
-The values are reported as `NaN` outside their valid sign region. Q is the standard "stored / dissipated" energy ratio for a series-equivalent RLC at `f`.
+Values are reported with their physical sign rather than masked outside a "valid" region — this matches Cadence and lets the curve through SRF stay continuous on plots. Past SRF (`Im(Z) < 0` for an inductor) `L` and `Q` go negative while `C` becomes positive (the parasitic capacitance dominates). Q here is the reactance-to-resistance ratio of a series-equivalent at `f`; its sign reflects whether the network is net-inductive (`Q > 0`) or net-capacitive (`Q < 0`) at that frequency.
 
 ---
 

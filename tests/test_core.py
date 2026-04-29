@@ -27,6 +27,7 @@ from pkg_rlc_core import (  # noqa: E402
     build_terminations_mode3, build_terminations_mode4,
     TerminationSet, Signal, Ground, Open, Vdd, LumpedToGnd,
     y_capacitor,
+    format_si,
     DEFAULT_Z0,
 )
 
@@ -329,6 +330,32 @@ class TestSchurSingularityFallback(unittest.TestCase):
         except (ValueError, np.linalg.LinAlgError):
             # Clear error is also acceptable.
             pass
+
+
+class TestFormatSI(unittest.TestCase):
+    def test_picosecond_range(self):
+        self.assertEqual(format_si(345e-12, "H"), "345 pH")
+
+    def test_microvolts(self):
+        # 0.000345 H = 345 uH
+        self.assertEqual(format_si(0.000345, "H"), "345 uH")
+
+    def test_negative(self):
+        self.assertEqual(format_si(-1.234e-9, "H"), "-1.23 nH")
+
+    def test_unitless_no_trailing_space(self):
+        self.assertEqual(format_si(2.5e3), "2.5 k")
+
+    def test_zero(self):
+        self.assertEqual(format_si(0.0, "Ω"), "0.00 Ω")
+
+    def test_nan_inf(self):
+        self.assertEqual(format_si(float("nan"), "H"), "nan")
+        self.assertEqual(format_si(float("inf"), "H"), "inf")
+        self.assertEqual(format_si(float("-inf"), "H"), "-inf")
+
+    def test_below_femto_clamps(self):
+        self.assertEqual(format_si(1e-18, "F"), "0.001 fF")
 
 
 if __name__ == "__main__":

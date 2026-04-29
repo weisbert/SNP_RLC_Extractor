@@ -71,13 +71,9 @@ def trace_y_values(freqs: np.ndarray, Z: np.ndarray, plot_type: str) -> np.ndarr
         if plot_type == "R(mOhm)":
             return Z.real * 1000.0
         if plot_type == "L(nH)":
-            y = Z.imag / omega * 1e9
-            y = np.where(Z.imag > 0, y, np.nan)
-            return y
+            return Z.imag / omega * 1e9
         if plot_type == "C(pF)":
-            y = -1.0 / (omega * Z.imag) * 1e12
-            y = np.where(Z.imag < 0, y, np.nan)
-            return y
+            return -1.0 / (omega * Z.imag) * 1e12
         if plot_type == "|Z|(Ohm)":
             return np.abs(Z)
         if plot_type == "Re(Z)":
@@ -85,9 +81,7 @@ def trace_y_values(freqs: np.ndarray, Z: np.ndarray, plot_type: str) -> np.ndarr
         if plot_type == "Im(Z)":
             return Z.imag
         if plot_type == "Q":
-            y = np.abs(Z.imag) / Z.real
-            y = np.where(Z.real > 0, y, np.nan)
-            return y
+            return Z.imag / Z.real
     raise ValueError(f"Unknown plot type: {plot_type}")
 
 

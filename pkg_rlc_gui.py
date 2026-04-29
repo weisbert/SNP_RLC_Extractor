@@ -49,6 +49,7 @@ from pkg_rlc_core import (
     parse_touchstone,
     s_to_y,
     y_series_rlc,
+    format_si,
 )
 from pkg_rlc_plot import COLORS, LINESTYLES, PlotPanel, Trace as PlotTrace
 from pkg_rlc_help import HelpWindow
@@ -193,6 +194,205 @@ class TraceConfig:
     def info_str(self) -> str:
         return (f"[{self.id}] {self.label}  |  "
                 f"{self.file_label}  {self.MODE_NAMES.get(self.mode, '?')}")
+
+    def port_descriptor(self) -> str:
+        """Compact one-line port-config descriptor for the results table."""
+        return _port_descriptor(self)
+
+
+def _fmt_port_terminal(spec: str) -> str:
+    """Render a port terminal spec: '1' -> '1', '2,3' -> '{2,3}', '' -> '?'."""
+    try:
+        ports = parse_port_range(spec)
+    except Exception:
+        return spec.strip() or "?"
+    if not ports:
+        return "?"
+    if len(ports) == 1:
+        return str(ports[0])
+    return "{" + ",".join(str(p) for p in ports) + "}"
+
+
+def _fmt_port_set(spec: str) -> str:
+    """Render a port-set spec (gnd/vdd): always bracketed. '' -> '[]'."""
+    try:
+        ports = parse_port_range(spec)
+    except Exception:
+        return f"[{spec.strip()}]"
+    return "[" + ",".join(str(p) for p in ports) + "]"
+
+
+def _fmt_short_pairs(spec: str) -> str:
+    """Render short-pair groups: '1-2,3-4-5' -> '[1-2,3-4-5]'."""
+    s = (spec or "").strip()
+    return f"[{s}]"
+
+
+def _port_descriptor(tc: "TraceConfig") -> str:
+    if tc.mode == 1:
+        return f"M1: S:{_fmt_port_set(tc.port_a)} G:{_fmt_port_set(tc.gnd_ports)}"
+    if tc.mode == 2:
+        return (f"M2: {_fmt_port_terminal(tc.port_a)}↔{_fmt_port_terminal(tc.port_b)} "
+                f"G:{_fmt_port_set(tc.gnd_ports)}")
+    if tc.mode == 3:
+        return (f"M3: {_fmt_port_terminal(tc.port_a)}↔{_fmt_port_terminal(tc.port_b)} "
+                f"G:{_fmt_port_set(tc.gnd_ports)} S:{_fmt_short_pairs(tc.short_pairs)}")
+    if tc.mode == 4:
+        return (f"M4: {_fmt_port_terminal(tc.port_a)}↔{_fmt_port_terminal(tc.port_b)} "
+                f"V:{_fmt_port_set(tc.vdd_ports)} G:{_fmt_port_set(tc.gnd_ports)}")
+    if tc.mode == 5:
+        text = (tc.custom_text or "").strip().replace("\n", " ")
+        if len(text) > 28:
+            text = text[:25] + "..."
+        return f"M5: {text}" if text else "M5: (empty)"
+    return f"M?: mode={tc.mode}"
+
+
+# Header units (kept aligned with format_si base unit). Tk Text uses a
+# monospace font, so rendering 'Ω' is fine.
+_TABLE_BASE_UNITS = {"R": "Ω", "L": "H", "C": "F", "Q": ""}
+
+# Aligned mode: pick the column unit by the largest absolute value seen.
+_ALIGNED_PREFIXES = [
+    (-15, "f"), (-12, "p"), (-9, "n"), (-6, "u"), (-3, "m"),
+    (0, ""), (3, "k"), (6, "M"), (9, "G"),
+]
+
+
+def _aligned_prefix_for(values):
+    """Pick the SI prefix exponent best suited for the largest |v| in `values`."""
+    finite = [abs(v) for v in values if math.isfinite(v) and v != 0.0]
+    if not finite:
+        return 0, ""
+    largest = max(finite)
+    log10 = math.log10(largest)
+    chosen = (-15, "f")
+    for exp, pfx in _ALIGNED_PREFIXES:
+        if log10 >= exp:
+            chosen = (exp, pfx)
+        else:
+            break
+    return chosen
+
+
+def _fmt_aligned(value: float, exp: int, sig: int = 4) -> str:
+    if not math.isfinite(value):
+        return "nan"
+    return f"{value / (10 ** exp):.{sig}g}"
+
+
+def _sign_flag(res) -> str:
+    """Compact flag string: 'cap', 'ind', 'R<0', combinations, or ''."""
+    flags = []
+    if math.isfinite(res.L_henry) and res.L_henry < 0:
+        flags.append("cap")
+    if math.isfinite(res.R_ohm) and res.R_ohm < 0:
+        flags.append("R<0")
+    return ",".join(flags)
+
+
+def _format_results_table(rows, units_mode: str) -> str:
+    """
+    rows: list of (tc, file_label, res). Returns a multi-line aligned table.
+    units_mode in {'smart', 'aligned'}.
+    """
+    if not rows:
+        return ""
+
+    file_labels_in_order = []
+    seen = set()
+    for _, fl, _ in rows:
+        if fl not in seen:
+            seen.add(fl)
+            file_labels_in_order.append(fl)
+    multi_file = len(file_labels_in_order) > 1
+    file_alias = {fl: f"F{i + 1}" for i, fl in enumerate(file_labels_in_order)}
+
+    # Truncation widths
+    LABEL_W = 18
+    PORT_W = 24
+    FILE_W = 4
+    NUM_W = 10  # per numeric cell (smart mode); aligned mode tighter
+
+    def _trunc(s: str, w: int) -> str:
+        if len(s) <= w:
+            return s
+        return s[: w - 1] + "…"
+
+    lines = []
+    if multi_file:
+        lines.append("  " + "  ".join(
+            f"{file_alias[fl]}={fl}" for fl in file_labels_in_order
+        ))
+    else:
+        lines.append(f"  file: {file_labels_in_order[0]}")
+
+    # Header
+    if units_mode == "aligned":
+        # Pick per-column prefix from the data
+        Rs = [tc_res[2].R_ohm for tc_res in rows]
+        Ls = [tc_res[2].L_henry for tc_res in rows]
+        Cs = [tc_res[2].C_farad for tc_res in rows]
+        Qs = [tc_res[2].Q for tc_res in rows]
+        r_exp, r_pfx = _aligned_prefix_for(Rs)
+        l_exp, l_pfx = _aligned_prefix_for(Ls)
+        c_exp, c_pfx = _aligned_prefix_for(Cs)
+        col_R = f"R[{r_pfx}Ω]"
+        col_L = f"L[{l_pfx}H]"
+        col_C = f"C[{c_pfx}F]"
+        col_Q = "Q"
+        NUM_W = 9
+    else:
+        col_R, col_L, col_C, col_Q = "R", "L", "C", "Q"
+        NUM_W = 10
+
+    parts = ["ID  ", f"{'Label':<{LABEL_W}}  "]
+    if multi_file:
+        parts.append(f"{'File':<{FILE_W}}  ")
+    parts.append(f"{'Ports':<{PORT_W}}  ")
+    parts.append(f"{col_R:>{NUM_W}}  ")
+    parts.append(f"{col_L:>{NUM_W}}  ")
+    parts.append(f"{col_C:>{NUM_W}}  ")
+    parts.append(f"{col_Q:>{NUM_W}}  ")
+    parts.append("Sign")
+    lines.append("".join(parts))
+
+    saw_flag = False
+    for tc, fl, res in rows:
+        flag = _sign_flag(res)
+        if flag:
+            saw_flag = True
+        if units_mode == "aligned":
+            r_str = _fmt_aligned(res.R_ohm, r_exp)
+            l_str = _fmt_aligned(res.L_henry, l_exp)
+            c_str = _fmt_aligned(res.C_farad, c_exp)
+            q_str = "nan" if not math.isfinite(res.Q) else f"{res.Q:.4g}"
+        else:
+            r_str = format_si(res.R_ohm, "Ω")
+            l_str = format_si(res.L_henry, "H")
+            c_str = format_si(res.C_farad, "F")
+            q_str = "nan" if not math.isfinite(res.Q) else f"{res.Q:.3g}"
+
+        row_parts = [
+            f"[{tc.id:>2}] ",
+            f"{_trunc(tc.label, LABEL_W):<{LABEL_W}}  ",
+        ]
+        if multi_file:
+            row_parts.append(f"{file_alias[fl]:<{FILE_W}}  ")
+        row_parts.append(f"{_trunc(tc.port_descriptor(), PORT_W):<{PORT_W}}  ")
+        row_parts.append(f"{r_str:>{NUM_W}}  ")
+        row_parts.append(f"{l_str:>{NUM_W}}  ")
+        row_parts.append(f"{c_str:>{NUM_W}}  ")
+        row_parts.append(f"{q_str:>{NUM_W}}  ")
+        row_parts.append(flag)
+        lines.append("".join(row_parts))
+
+    if saw_flag:
+        lines.append(
+            "  legend: cap = Im(Z)<0 (past SRF if inductor) | "
+            "R<0 = non-passive at this freq"
+        )
+    return "\n".join(lines)
 
 
 # ============================================================================
@@ -582,11 +782,23 @@ class App(tk.Tk):
         parent.add(results_frame, weight=0)
         parent.add(plot_frame, weight=1)
 
-        ttk.Label(results_frame, text="Results", anchor="w"
-                  ).pack(side=tk.TOP, fill=tk.X)
+        header = ttk.Frame(results_frame)
+        header.pack(side=tk.TOP, fill=tk.X)
+        ttk.Label(header, text="Results", anchor="w").pack(side=tk.LEFT)
+        ttk.Label(header, text="Units:").pack(side=tk.LEFT, padx=(12, 2))
+        self.units_mode_var = tk.StringVar(value="smart")
+        units_combo = ttk.Combobox(
+            header, textvariable=self.units_mode_var,
+            values=["smart", "aligned"], state="readonly", width=8,
+        )
+        units_combo.pack(side=tk.LEFT)
+        units_combo.bind("<<ComboboxSelected>>",
+                         lambda _e: self._on_units_mode_changed())
         self.results_text = ScrolledText(results_frame, height=10, wrap=tk.NONE,
                                          font=("Consolas", 9))
         self.results_text.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        # Tag for highlighting non-empty Sign flags. Configured once.
+        self.results_text.tag_configure("flag", foreground="#b04000")
 
         self.plot = PlotPanel(plot_frame, on_marker_changed=self._on_marker_drag)
         self.plot.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
@@ -827,6 +1039,10 @@ class App(tk.Tk):
         plot_traces: list[PlotTrace] = []
         self._append_result("\n=== Calculate @ {:.4g} GHz ==="
                             .format(f_rlc_hz / 1e9))
+
+        # First pass: compute Z and per-freq RLC; collect rows + fit_lines.
+        result_rows: list[tuple] = []   # (tc, file_label, res)
+        fit_lines: list[str] = []       # post-table fit summaries
         for tc in self.traces:
             fe = self._file_by_label(tc.file_label)
             if fe is None:
@@ -840,17 +1056,11 @@ class App(tk.Tk):
                 self._append_result(traceback.format_exc())
                 continue
             for w in warns:
-                self._append_result(f"    {w}")
+                self._append_result(f"    [{tc.id}] {w}")
             tc.Z = Z
             res = extract_rlc_at_freq(fe.ts.freqs, Z, f_rlc_hz)
             tc.rlc = res
-            line = (f"  [{tc.id}] {tc.label} ({fe.label}, {tc.MODE_NAMES[tc.mode]}) "
-                    f"@ {res.freq_hz/1e9:.4g} GHz: "
-                    f"R={res.R_ohm*1000:.4g} mΩ  "
-                    f"L={res.L_henry*1e9:.4g} nH  "
-                    f"C={res.C_farad*1e12:.4g} pF  "
-                    f"Q={res.Q:.4g}")
-            self._append_result(line)
+            result_rows.append((tc, fe.label, res))
 
             fit_freqs = None
             fit_Z = None
@@ -869,22 +1079,26 @@ class App(tk.Tk):
                                             & (fe.ts.freqs <= fmax_hz)]
                     if which == "inductor":
                         fit_Z = eval_inductor_model(fit, fit_freqs)
-                        self._append_result(
-                            f"      fit[{which}]: L={fit.L_henry*1e9:.4g} nH, "
-                            f"R_dc={fit.R_dc_ohm:.4g}Ω, "
+                        fit_lines.append(
+                            f"  fit[{tc.id} {which}]: "
+                            f"L={format_si(fit.L_henry, 'H')}, "
+                            f"R_dc={format_si(fit.R_dc_ohm, 'Ω')}, "
                             f"R_ac={fit.R_ac_ohm_per_sqrtHz:.3g}Ω/√Hz, "
                             f"Q@center={fit.Q_at_center:.3g}, "
-                            f"RMSE={fit.rmse_ohm:.3g}Ω")
+                            f"RMSE={format_si(fit.rmse_ohm, 'Ω')}")
                     else:
                         fit_Z = eval_capacitor_model(fit, fit_freqs)
-                        self._append_result(
-                            f"      fit[{which}]: C={fit.C_farad*1e12:.4g} pF, "
-                            f"R_esr={fit.R_esr_ohm:.4g}Ω, "
-                            f"L_esl={fit.L_esl_henry*1e9:.4g} nH, "
-                            f"SRF={fit.SRF_hz/1e9 if not math.isnan(fit.SRF_hz) else float('nan'):.4g} GHz, "
-                            f"RMSE={fit.rmse_ohm:.3g}Ω")
+                        srf_str = ("nan" if math.isnan(fit.SRF_hz)
+                                   else format_si(fit.SRF_hz, 'Hz'))
+                        fit_lines.append(
+                            f"  fit[{tc.id} {which}]: "
+                            f"C={format_si(fit.C_farad, 'F')}, "
+                            f"R_esr={format_si(fit.R_esr_ohm, 'Ω')}, "
+                            f"L_esl={format_si(fit.L_esl_henry, 'H')}, "
+                            f"SRF={srf_str}, "
+                            f"RMSE={format_si(fit.rmse_ohm, 'Ω')}")
                 except Exception as e:
-                    self._append_result(f"      fit ERROR: {e}")
+                    fit_lines.append(f"  fit[{tc.id}] ERROR: {e}")
 
             plot_traces.append(PlotTrace(
                 label=tc.label,
@@ -896,8 +1110,28 @@ class App(tk.Tk):
                 fit_Z=fit_Z,
             ))
 
+        # Second pass: render the table and fit lines.
+        self._last_result_rows = result_rows
+        self._last_fit_lines = fit_lines
+        if result_rows:
+            self._append_result(
+                _format_results_table(result_rows, self.units_mode_var.get()))
+            for fl in fit_lines:
+                self._append_result(fl)
+
         self.plot.set_traces(plot_traces)
         self.plot.set_marker_freq(f_rlc_hz)
+
+    def _on_units_mode_changed(self) -> None:
+        rows = getattr(self, "_last_result_rows", None)
+        if not rows:
+            return
+        self._append_result(
+            f"\n--- re-rendered with units={self.units_mode_var.get()} ---")
+        self._append_result(
+            _format_results_table(rows, self.units_mode_var.get()))
+        for fl in getattr(self, "_last_fit_lines", []):
+            self._append_result(fl)
 
     def _build_termination(self, tc: TraceConfig) -> TerminationSet:
         a = parse_port_range(tc.port_a)
@@ -953,9 +1187,9 @@ class App(tk.Tk):
                         f = fe.ts.freqs[k]
                         r = z.real
                         im = z.imag
-                        L = im / omega[k] * 1e9 if im > 0 else float("nan")
-                        C = (-1.0 / (omega[k] * im) * 1e12) if im < 0 else float("nan")
-                        Q = abs(im) / r if r > 0 else float("nan")
+                        L = im / omega[k] * 1e9 if omega[k] != 0.0 else float("nan")
+                        C = (-1.0 / (omega[k] * im) * 1e12) if (omega[k] != 0.0 and im != 0.0) else float("nan")
+                        Q = im / r if r != 0.0 else float("nan")
                         w.writerow([f"{f/1e9:.6g}",
                                     f"{r:.6e}", f"{im:.6e}", f"{abs(z):.6e}",
                                     f"{r*1000:.6e}", f"{L:.6e}",
