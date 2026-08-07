@@ -24,9 +24,9 @@ from __future__ import annotations
 import csv
 import math
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -135,6 +135,12 @@ class TraceConfig:
     vdd_ports: str = ""      # retired; kept so mode-4 configs still migrate
     custom_text: str = ""
     # --- Mode 6 (+/- measurement ports / coupling) ---
+    # `mports` is the live storage: one MeasPortRow per measurement port, port
+    # specs kept as typed so '5:1:8' stays a range.  The mp1_*/mp2_*/mp_more
+    # fields below are RETIRED -- Mode 6 used to offer two hard-coded ports and
+    # a free-text box for the third onward -- and are kept only so an older
+    # config still loads (see migrate_legacy_mports).
+    mports: list = field(default_factory=list)   # list[MeasPortRow]
     mp1_name: str = ""
     mp1_plus: str = ""
     mp1_minus: str = ""
@@ -181,6 +187,43 @@ class TraceConfig:
         self.gnd_ports = _union_port_specs(self.gnd_ports, self.vdd_ports)
         self.vdd_ports = ""
         self.mode = 2
+        return True
+
+    def migrate_legacy_mports(self) -> bool:
+        """
+        Fold the retired mp1_*/mp2_*/mp_more fields into the `mports` table.
+
+        The old Mode 6 editor had two hard-coded measurement ports plus a
+        free-text box for the third onward; the table replaces all three.  The
+        'name = +ports / -ports' lines are split textually rather than through
+        parse_mport_spec, so port RANGES survive as ranges ('5:1:8' stays one
+        cell) and a malformed old line migrates instead of raising during load.
+        It will fail later, at Calculate, with a message that names it.
+
+        Returns True when a migration actually happened.
+        """
+        if self.mports:
+            return False
+        rows: list = []
+        for name, plus, minus in ((self.mp1_name, self.mp1_plus, self.mp1_minus),
+                                  (self.mp2_name, self.mp2_plus, self.mp2_minus)):
+            if (plus or "").strip() or (minus or "").strip():
+                rows.append(MeasPortRow(name=(name or "").strip(),
+                                        plus=(plus or "").strip(),
+                                        minus=(minus or "").strip()))
+        for line in _mport_more_lines(self.mp_more):
+            name, sep, rest = line.partition("=")
+            if not sep:
+                name, rest = "", line
+            plus, _slash, minus = rest.partition("/")
+            rows.append(MeasPortRow(name=name.strip(), plus=plus.strip(),
+                                    minus=minus.strip()))
+        if not rows:
+            return False
+        self.mports = rows
+        self.mp1_name = self.mp1_plus = self.mp1_minus = ""
+        self.mp2_name = self.mp2_plus = self.mp2_minus = ""
+        self.mp_more = ""
         return True
 
 
@@ -267,15 +310,12 @@ def _port_descriptor(tc: "TraceConfig") -> str:
         return (f"M4→M2: {_fmt_port_terminal(tc.port_a)}↔{_fmt_port_terminal(tc.port_b)} "
                 f"G:{_fmt_port_set(_union_port_specs(tc.gnd_ports, tc.vdd_ports))}")
     if tc.mode == 6:
-        parts = []
-        if (tc.mp1_plus or "").strip():
-            parts.append(_fmt_mport(tc.mp1_name, tc.mp1_plus, tc.mp1_minus))
-        if (tc.mp2_plus or "").strip():
-            parts.append(_fmt_mport(tc.mp2_name, tc.mp2_plus, tc.mp2_minus))
-        extra = len(_mport_more_lines(tc.mp_more))
-        if extra:
-            parts.append(f"+{extra}")
-        body = " ".join(parts) if parts else "(empty)"
+        tc.migrate_legacy_mports()
+        parts = [_fmt_mport(r.name, r.plus, r.minus) for r in tc.mports
+                 if r.plus.strip() or r.minus.strip()]
+        body = " ".join(parts[:3]) if parts else "(empty)"
+        if len(parts) > 3:
+            body += f" +{len(parts) - 3}"
         return f"M6: {body} G:{_fmt_port_set(tc.gnd_ports)}"
     if tc.mode == 5:
         text = (tc.custom_text or "").strip().replace("\n", " ")
@@ -289,34 +329,49 @@ def _port_descriptor(tc: "TraceConfig") -> str:
 # Mode 6 helpers (+/- measurement ports, coupling)
 # ============================================================================
 
+def _duplicate_trace_config(src: "TraceConfig", new_id: int) -> "TraceConfig":
+    """
+    Copy a trace for the Duplicate button, dropping last run's results.
+
+    `mports` is a LIST of dataclasses, so it is copied element-wise.  A plain
+    `TraceConfig(**src.__dict__)` hands both traces the same list object, and
+    editing the copy's measurement ports then silently edits the original's --
+    a bug with no visible symptom until two curves quietly agree.
+    """
+    return TraceConfig(**{**src.__dict__,
+                          "id": new_id,
+                          "label": src.label + "_copy",
+                          "mports": [replace(r) for r in src.mports],
+                          "Z": None, "rlc": None, "fit": None, "fit_kind": "",
+                          "Zmat": None, "mport_names": None,
+                          "coupling": None})
+
+
 def _collect_mports(tc: "TraceConfig") -> list[tuple[str, list[int], list[int]]]:
     """
-    Editor fields -> the (name, plus_1based, minus_1based) triples that
-    build_terminations_coupling expects.  Ports stay 1-based here; the core
-    builder is the 1-based/0-based boundary.
+    Measurement-port table -> the (name, plus_1based, minus_1based) triples
+    that build_terminations_coupling expects.  Ports stay 1-based here; the
+    core builder is the 1-based/0-based boundary.
     """
+    tc.migrate_legacy_mports()
     out: list[tuple[str, list[int], list[int]]] = []
-    for idx, (name, plus, minus) in enumerate(
-            ((tc.mp1_name, tc.mp1_plus, tc.mp1_minus),
-             (tc.mp2_name, tc.mp2_plus, tc.mp2_minus)), start=1):
-        plus = (plus or "").strip()
-        minus = (minus or "").strip()
+    for idx, row in enumerate(tc.mports, start=1):
+        plus = row.plus.strip()
+        minus = row.minus.strip()
         if not plus:
             if minus:
+                label = f"'{row.name.strip()}'" if row.name.strip() else f"row {idx}"
                 raise ValueError(
-                    f"Port {idx} has a '-' side but no '+' side; the red probe "
-                    "must touch at least one port.")
+                    f"Measurement port {label} has a '-' side but no '+' side; "
+                    "the red probe must touch at least one port.")
             continue
-        out.append(((name or "").strip(),
+        out.append((row.name.strip(),
                     parse_port_range(plus), parse_port_range(minus)))
-
-    for line in _mport_more_lines(tc.mp_more):
-        out.append(parse_mport_spec(line))
 
     if not out:
         raise ValueError(
-            "No measurement ports defined: fill in Port 1 (+) "
-            "(or add lines under 'More ports').")
+            "No measurement ports defined: add a row to the measurement-port "
+            "table and fill in its '+' side.")
     return out
 
 
@@ -828,6 +883,209 @@ class PlaceholderText(tk.Text):
                 self._show_if_empty()
 
 
+# ============================================================================
+# RowTable -- scrollable table of editable rows with a '+' button
+# ============================================================================
+#
+# The replacement for the free-text boxes in Mode 5 and Mode 6.  Deliberately
+# built from a Canvas plus a grid of real widgets rather than ttk.Treeview:
+# Treeview has no cell editors, so it means floating Entry/Combobox widgets
+# over cells and hand-managing placement, tab order and scroll offset, and the
+# overlays misalign under Win11 DPI scaling.  A grid of real widgets is less
+# code and behaves correctly.
+
+
+@dataclass(frozen=True)
+class ColumnSpec:
+    """One column of a RowTable.  `key` is the row dataclass's field name."""
+    key: str
+    title: str
+    width: int                      # in characters
+    kind: str = "entry"             # "entry" | "combo" | "static"
+    values: tuple = ()              # choices, for kind="combo"
+    placeholder: str = ""
+    readonly_combo: bool = False    # combo that rejects typed-in values
+
+
+class RowTable(ttk.Frame):
+    """
+    A '+ Add' button over a scrollable grid of editable rows.
+
+    get_rows() / set_rows() speak lists of the dataclass `row_factory` makes,
+    so the caller never touches a widget.  Blank trailing rows are kept in the
+    UI (somewhere to type) but dropped by get_rows() via the row's own
+    is_blank(), which is what lets the table start with an empty row without
+    that empty row meaning anything.
+    """
+
+    def __init__(self, master, columns: Sequence[ColumnSpec], row_factory,
+                 on_change=None, min_rows: int = 1, max_visible: int = 6,
+                 add_text: str = "+ Add", **kwargs):
+        super().__init__(master, **kwargs)
+        self._columns = list(columns)
+        self._row_factory = row_factory
+        self._on_change = on_change
+        self._min_rows = max(0, int(min_rows))
+        self._max_visible = max(1, int(max_visible))
+        self._rows: list[dict] = []      # per row: {key: tk.StringVar} + widgets
+
+        # --- header + add button (outside the scroll area) ---
+        head = ttk.Frame(self)
+        head.pack(side=tk.TOP, fill=tk.X)
+        for col in self._columns:
+            ttk.Label(head, text=col.title, width=col.width,
+                      anchor="w", font=("TkDefaultFont", 8)
+                      ).pack(side=tk.LEFT, padx=1)
+        ttk.Button(head, text=add_text, width=8, command=self.add_row
+                   ).pack(side=tk.RIGHT, padx=1)
+
+        # --- scrollable body ---
+        body = ttk.Frame(self)
+        body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self._canvas = tk.Canvas(body, highlightthickness=0, height=1)
+        self._vsb = ttk.Scrollbar(body, orient="vertical",
+                                  command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=self._vsb.set)
+        self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._inner = ttk.Frame(self._canvas)
+        self._window = self._canvas.create_window((0, 0), window=self._inner,
+                                                  anchor="nw")
+
+        # Both bindings are needed: the inner frame drives the scrollregion,
+        # the canvas drives the inner frame's width (without it the columns
+        # do not stretch).
+        self._inner.bind("<Configure>", self._on_inner_configure)
+        self._canvas.bind("<Configure>", self._on_canvas_configure)
+        # Wheel is bound on enter/leave, NOT bind_all -- bind_all would make
+        # this table and the Matplotlib canvas fight over every scroll event.
+        self._canvas.bind("<Enter>", self._bind_wheel)
+        self._canvas.bind("<Leave>", self._unbind_wheel)
+
+        for _ in range(self._min_rows):
+            self.add_row(notify=False)
+
+    # ------------------------------------------------------------------ scroll
+
+    def _on_inner_configure(self, _event=None) -> None:
+        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+        self._resize_to_content()
+
+    def _on_canvas_configure(self, event) -> None:
+        self._canvas.itemconfigure(self._window, width=event.width)
+
+    def _resize_to_content(self) -> None:
+        """Grow with the rows up to max_visible, then show the scrollbar."""
+        n = max(1, len(self._rows))
+        row_h = max(1, self._inner.winfo_reqheight() // max(1, len(self._rows) or 1))
+        visible = min(n, self._max_visible)
+        self._canvas.configure(height=row_h * visible)
+        if n > self._max_visible:
+            self._vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        else:
+            self._vsb.pack_forget()
+
+    def _bind_wheel(self, _event=None) -> None:
+        self._canvas.bind_all("<MouseWheel>", self._on_wheel)
+
+    def _unbind_wheel(self, _event=None) -> None:
+        self._canvas.unbind_all("<MouseWheel>")
+
+    def _on_wheel(self, event) -> None:
+        if len(self._rows) > self._max_visible:
+            self._canvas.yview_scroll(int(-event.delta / 120), "units")
+
+    # ------------------------------------------------------------------- rows
+
+    def add_row(self, values: dict | None = None, notify: bool = True) -> None:
+        r = len(self._rows)
+        entry: dict = {"_vars": {}, "_widgets": []}
+        for c, col in enumerate(self._columns):
+            var = tk.StringVar(value=(values or {}).get(col.key, ""))
+            entry["_vars"][col.key] = var
+            if col.kind == "combo":
+                w = ttk.Combobox(
+                    self._inner, textvariable=var, width=col.width,
+                    values=list(col.values),
+                    state="readonly" if col.readonly_combo else "normal")
+            elif col.kind == "static":
+                w = ttk.Label(self._inner, textvariable=var, width=col.width,
+                              anchor="w")
+            else:
+                w = ttk.Entry(self._inner, textvariable=var, width=col.width)
+            w.grid(row=r, column=c, sticky="we", padx=1, pady=1)
+            entry["_widgets"].append(w)
+            if self._on_change is not None:
+                var.trace_add("write", lambda *_a: self._on_change())
+        btn = ttk.Button(self._inner, text="✕", width=2,
+                         command=lambda: self._delete_row(entry))
+        btn.grid(row=r, column=len(self._columns), padx=1, pady=1)
+        entry["_widgets"].append(btn)
+        self._rows.append(entry)
+        for c, col in enumerate(self._columns):
+            self._inner.columnconfigure(c, weight=1 if col.kind != "static" else 0)
+        self._inner.update_idletasks()
+        self._on_inner_configure()
+        if notify and self._on_change is not None:
+            self._on_change()
+
+    def _delete_row(self, entry: dict) -> None:
+        if entry not in self._rows:
+            return
+        for w in entry["_widgets"]:
+            w.destroy()
+        self._rows.remove(entry)
+        self._regrid()
+        if len(self._rows) < self._min_rows:
+            self.add_row(notify=False)
+        self._on_inner_configure()
+        if self._on_change is not None:
+            self._on_change()
+
+    def _regrid(self) -> None:
+        for r, entry in enumerate(self._rows):
+            for c, w in enumerate(entry["_widgets"]):
+                w.grid_configure(row=r, column=c)
+
+    def clear(self) -> None:
+        for entry in list(self._rows):
+            for w in entry["_widgets"]:
+                w.destroy()
+        self._rows.clear()
+
+    # ------------------------------------------------------------ get / set
+
+    def get_rows(self) -> list:
+        """Row dataclasses, blanks dropped (the row type decides what blank is)."""
+        out = []
+        for entry in self._rows:
+            row = self._row_factory()
+            for col in self._columns:
+                setattr(row, col.key, entry["_vars"][col.key].get().strip())
+            if not row.is_blank():
+                out.append(row)
+        return out
+
+    def set_rows(self, rows: Sequence) -> None:
+        self.clear()
+        for row in rows:
+            self.add_row({col.key: str(getattr(row, col.key, "") or "")
+                          for col in self._columns}, notify=False)
+        while len(self._rows) < self._min_rows:
+            self.add_row(notify=False)
+        self._on_inner_configure()
+
+    def set_column_values(self, key: str, values: Sequence[str]) -> None:
+        """Repopulate a combo column's choices (e.g. after a file change)."""
+        idx = next((i for i, c in enumerate(self._columns) if c.key == key), None)
+        if idx is None:
+            return
+        for entry in self._rows:
+            w = entry["_widgets"][idx]
+            if isinstance(w, ttk.Combobox):
+                w.configure(values=list(values))
+        self._columns[idx] = replace(self._columns[idx], values=tuple(values))
+
+
 # Per-mode placeholder hints. Keyed by (field, mode) -> hint text.
 # Fields: port_a, port_b, short_pairs, gnd, mp1_name, mp1_plus, mp1_minus,
 #         mp2_name, mp2_plus, mp2_minus, mp_more
@@ -882,6 +1140,17 @@ MP_MORE_PLACEHOLDER = (
 )
 
 MODE_PLACEHOLDERS["mp_more"] = {6: MP_MORE_PLACEHOLDER}
+
+# Shown under the Mode 6 measurement-port table. This has to carry everything
+# the six retired placeholder hints used to say, because a plain ttk.Entry in
+# a table cell has no room for a hint of its own.
+MP_TABLE_HINT = (
+    "One row per measurement port. '+' is the red probe, '−' the black one; "
+    "leave '−' empty to measure against GND. Ports listed on the same side are "
+    "tied together, and ranges work (5,7 or 5:1:8). Two or more rows give you "
+    "the coupling (M, k) between them. Names are optional (P1, P2, … if blank) "
+    "but 'A' and 'B' are reserved."
+)
 
 # Shown under the mode-6 plot checkboxes: the subplot grid is shared with the
 # self curves, so the axis titles need reinterpreting on a mutual curve.
@@ -1035,39 +1304,30 @@ class App(tk.Tk):
         row += 1
 
         # --- Mode 6: measurement ports (probe pairs) ---
-        # Two structured ports cover the common case; "More ports" takes any
-        # number of extra "name = +ports / -ports" lines.
-        self.ed_mp_widgets: list[tuple] = []   # (label, entry) pairs, mode 6
-
-        def _mp_row(r, text, field):
-            lbl = ttk.Label(parent, text=text)
-            lbl.grid(row=r, column=0, sticky="e", padx=2, pady=1)
-            ent = PlaceholderEntry(parent, width=42,
-                                   placeholder=MODE_PLACEHOLDERS[field][6])
-            ent.grid(row=r, column=1, columnspan=3, sticky="we", padx=2, pady=1)
-            self.ed_mp_widgets.append((lbl, ent))
-            return ent
-
-        self.ed_mp1_name = _mp_row(row, "Port 1 name:", "mp1_name")
-        row += 1
-        self.ed_mp1_plus = _mp_row(row, "Port 1  (+):", "mp1_plus")
-        row += 1
-        self.ed_mp1_minus = _mp_row(row, "Port 1  (−):", "mp1_minus")
-        row += 1
-        self.ed_mp2_name = _mp_row(row, "Port 2 name:", "mp2_name")
-        row += 1
-        self.ed_mp2_plus = _mp_row(row, "Port 2  (+):", "mp2_plus")
-        row += 1
-        self.ed_mp2_minus = _mp_row(row, "Port 2  (−):", "mp2_minus")
+        # One table row per measurement port, added with the '+' button. This
+        # replaces two hard-coded ports plus a free-text box for the third
+        # onward -- that cliff (ports 1-2 get fields, port 3+ gets syntax) was
+        # the same disease as the Mode 5 text box, just less obvious.
+        self.ed_mp_lbl = ttk.Label(parent, text="Measurement\nports:",
+                                   justify=tk.RIGHT)
+        self.ed_mp_lbl.grid(row=row, column=0, sticky="ne", padx=2, pady=1)
+        self.ed_mp_table = RowTable(
+            parent,
+            columns=(ColumnSpec("name", "Name", 9),
+                     ColumnSpec("plus", "+ ports (red)", 13),
+                     ColumnSpec("minus", "− ports (black)", 13)),
+            row_factory=MeasPortRow,
+            min_rows=1, max_visible=5,
+        )
+        self.ed_mp_table.grid(row=row, column=1, columnspan=3, sticky="we",
+                              padx=2, pady=1)
         row += 1
 
-        self.ed_mp_more_lbl = ttk.Label(parent, text="More ports:")
-        self.ed_mp_more_lbl.grid(row=row, column=0, sticky="ne", padx=2, pady=1)
-        self.ed_mp_more = PlaceholderText(parent, width=42, height=5,
-                                          font=("Consolas", 9),
-                                          placeholder=MP_MORE_PLACEHOLDER)
-        self.ed_mp_more.grid(row=row, column=1, columnspan=3, sticky="we",
-                             padx=2, pady=1)
+        self.ed_mp_hint = ttk.Label(parent, text=MP_TABLE_HINT,
+                                    foreground=PLACEHOLDER_FG,
+                                    justify=tk.LEFT, wraplength=320)
+        self.ed_mp_hint.grid(row=row, column=1, columnspan=3, sticky="w",
+                             padx=2, pady=(0, 2))
         row += 1
 
         # GND / VDD ports (VDD merged in: for AC small-signal they are the same)
@@ -1303,13 +1563,7 @@ class App(tk.Tk):
         idx = self._sel_idx(self.traces_lb)
         if idx is None:
             return
-        src = self.traces[idx]
-        new = TraceConfig(**{**src.__dict__,
-                             "id": self._next_trace_id,
-                             "label": src.label + "_copy",
-                             "Z": None, "rlc": None, "fit": None, "fit_kind": "",
-                             "Zmat": None, "mport_names": None,
-                             "coupling": None})
+        new = _duplicate_trace_config(self.traces[idx], self._next_trace_id)
         self._next_trace_id += 1
         self.traces.append(new)
         self._refresh_trace_list()
@@ -1331,13 +1585,7 @@ class App(tk.Tk):
             self.ed_portb.set_value(tc.port_b)
             self.ed_short.set_value(tc.short_pairs)
             self.ed_gnd.set_value(tc.gnd_ports)
-            self.ed_mp1_name.set_value(tc.mp1_name)
-            self.ed_mp1_plus.set_value(tc.mp1_plus)
-            self.ed_mp1_minus.set_value(tc.mp1_minus)
-            self.ed_mp2_name.set_value(tc.mp2_name)
-            self.ed_mp2_plus.set_value(tc.mp2_plus)
-            self.ed_mp2_minus.set_value(tc.mp2_minus)
-            self.ed_mp_more.set_value(tc.mp_more or "")
+            self.ed_mp_table.set_rows(tc.mports)
             self.ed_plot_self_var.set(bool(tc.plot_self))
             self.ed_plot_mutual_var.set(bool(tc.plot_mutual))
             self.ed_label.set_value(tc.label)
@@ -1349,12 +1597,18 @@ class App(tk.Tk):
         self._update_mode_visibility()
 
     def _migrate_trace(self, tc: TraceConfig) -> None:
-        """Fold a retired mode-4 trace into mode 2 (VDD is an AC ground)."""
+        """Fold retired shapes forward: mode 4 -> 2, mp1/mp2/mp_more -> table."""
         if tc.migrate_legacy_mode():
             self._append_result(
                 f"  [{tc.id}] {tc.label}: mode 4 (A↔B + VDD/GND) is retired; "
                 f"migrated to mode 2 with VDD folded into GND "
                 f"(GND = {tc.gnd_ports or '(none)'})")
+            self._refresh_trace_list()
+        if tc.migrate_legacy_mports():
+            self._append_result(
+                f"  [{tc.id}] {tc.label}: the Port 1 / Port 2 / 'More ports' "
+                f"fields are retired; migrated to {len(tc.mports)} row(s) of "
+                "the measurement-port table")
             self._refresh_trace_list()
 
     def _on_mode_changed(self) -> None:
@@ -1379,11 +1633,9 @@ class App(tk.Tk):
         show(self.ed_portb, mode in (2, 3))
         show(self.ed_short_lbl, mode == 3)
         show(self.ed_short, mode == 3)
-        for lbl, ent in self.ed_mp_widgets:
-            show(lbl, coupling)
-            show(ent, coupling)
-        show(self.ed_mp_more_lbl, coupling)
-        show(self.ed_mp_more, coupling)
+        show(self.ed_mp_lbl, coupling)
+        show(self.ed_mp_table, coupling)
+        show(self.ed_mp_hint, coupling)
         show(self.ed_gnd_lbl, ab_modes or coupling)
         show(self.ed_gnd, ab_modes or coupling)
         show(self.ed_plot_lbl, coupling)
@@ -1401,14 +1653,9 @@ class App(tk.Tk):
             MODE_PLACEHOLDERS["short_pairs"].get(mode, ""))
         self.ed_gnd.set_placeholder(
             MODE_PLACEHOLDERS["gnd"].get(mode, ""))
-        for field, widget in (("mp1_name", self.ed_mp1_name),
-                              ("mp1_plus", self.ed_mp1_plus),
-                              ("mp1_minus", self.ed_mp1_minus),
-                              ("mp2_name", self.ed_mp2_name),
-                              ("mp2_plus", self.ed_mp2_plus),
-                              ("mp2_minus", self.ed_mp2_minus),
-                              ("mp_more", self.ed_mp_more)):
-            widget.set_placeholder(MODE_PLACEHOLDERS[field].get(mode, ""))
+        # The measurement-port table needs no per-mode placeholders: it is
+        # mode-6-only and its hint lives permanently under it (MP_TABLE_HINT),
+        # where -- unlike a PlaceholderEntry -- focus cannot delete it.
 
     def _on_apply_editor(self) -> None:
         idx = self._sel_idx(self.traces_lb)
@@ -1430,13 +1677,7 @@ class App(tk.Tk):
         tc.port_b = self.ed_portb.get_value()
         tc.short_pairs = self.ed_short.get_value()
         tc.gnd_ports = self.ed_gnd.get_value()
-        tc.mp1_name = self.ed_mp1_name.get_value()
-        tc.mp1_plus = self.ed_mp1_plus.get_value()
-        tc.mp1_minus = self.ed_mp1_minus.get_value()
-        tc.mp2_name = self.ed_mp2_name.get_value()
-        tc.mp2_plus = self.ed_mp2_plus.get_value()
-        tc.mp2_minus = self.ed_mp2_minus.get_value()
-        tc.mp_more = self.ed_mp_more.get_value().rstrip()
+        tc.mports = self.ed_mp_table.get_rows()
         tc.plot_self = bool(self.ed_plot_self_var.get())
         tc.plot_mutual = bool(self.ed_plot_mutual_var.get())
         tc.custom_text = self.ed_custom_text.get_value().rstrip()

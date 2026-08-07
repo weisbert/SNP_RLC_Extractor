@@ -166,8 +166,13 @@ Chain dashes to tie more than two ports into one node: `1-2-3-4` is a single 4-p
 
 ### Measurement-port (mport) syntax
 
-Used by Mode 6 in the GUI and by every `--mport` on the CLI. One measurement port per
-entry — a red probe on the `+` ports, a black probe on the `-` ports:
+Used by every `--mport` on the CLI. In the GUI, Mode 6 presents the same thing as a
+**table** — one row per measurement port, `Name` / `+ ports` / `- ports`, with a `+ Add`
+button — so the syntax below is only needed on the command line. The rules are identical
+either way; a row's two port cells take the same range syntax as the sides of a spec.
+
+One measurement port per entry — a red probe on the `+` ports, a black probe on the
+`-` ports:
 
 ```
 [<name> =] <+ ports> [/ <- ports>]
@@ -202,8 +207,13 @@ Rules:
 | 2    | `A <-> B`               | Impedance between two port groups; collapse to 2x2 then `Z = Z11 + Z22 - Z12 - Z21`.              |
 | 3    | `A <-> B + Short Pairs` | Like Mode 2, but with explicit `i-j` shorts (Y-matrix row/col merging) before reduction.          |
 | 4    | *(retired)*             | Was `A <-> B + VDD/GND`. See below.                                                               |
-| 5    | `Custom (advanced)`     | Per-port termination editor: `open / ground / vdd / signal <name> [+ or -] / short_to / lumped_to_gnd / lumped_between`, with R/L/C values for the lumped types. |
-| 6    | `+/- Ports / Coupling (M, k)` | Any number of measurement ports, each a `+` / `-` probe pair. Produces the G x G impedance matrix: self impedance on the diagonal, **open-circuit mutual impedance** off it, and from that M, k, C_c and the M/L ratios. |
+| 5    | `Custom (advanced)`     | Per-port termination editor: `open / ground / vdd / signal <name> [+ or -] / short_to / lumped_to_gnd / lumped_between`, with R/L/C values for the lumped types. Every directive's port field takes the full range syntax, so `6:1:14 ground` is one line. |
+| 6    | `+/- Ports / Coupling (M, k)` | Any number of measurement ports, each a `+` / `-` probe pair, entered as table rows. Produces the G x G impedance matrix: self impedance on the diagonal, **open-circuit mutual impedance** off it, and from that M, k, C_c and the M/L ratios. |
+
+Defining more than one measurement port gives you the coupling matrix **in either mode** —
+Mode 5 used to report only the first one and warn about the rest, which was a wrong number
+with no visible difference. The full matrix is now produced whenever the spec defines two
+or more measurement ports, whichever mode wrote it.
 
 Mode codes are stable and are never renumbered, so saved configurations keep working.
 

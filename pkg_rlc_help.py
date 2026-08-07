@@ -536,11 +536,15 @@ Three rules, and that is the whole model:
 
 Inputs
 ------
-Measurement ports : one spec per port -- Port 1, Port 2, and any
-                    further entries. Full syntax in the "Input
-                    syntax" tab. Names are optional; unnamed ports
-                    are auto-named P1, P2, ... The names "A" and "B"
-                    are reserved for the legacy modes.
+Measurement ports : a TABLE, one row per measurement port, with a
+                    "+ Add" button for as many as you need. Each row
+                    is Name / + ports / - ports. Names are optional;
+                    unnamed rows are auto-named P1, P2, ... The names
+                    "A" and "B" are reserved for the legacy modes.
+                    Both port columns take the full range syntax
+                    ("5,7" or "5:1:8") -- see the "Input syntax" tab --
+                    so a shield tapped at eight ports is one row, not
+                    eight. Delete a row with the "X" at its end.
 GND Ports         : V=0 ports, exactly as in the other modes.
                     Include supply pins here too (AC ground).
                     A port that is already a probe may NOT also be
@@ -558,9 +562,9 @@ is an error, not a silently ground-referenced probe.
 
 One measurement port: the differential self impedance
 -----------------------------------------------------
-Fill in Port 1 only and leave Port 2 empty:
+One row in the table is enough:
 
-      Port 1 = tank = 1 / 2
+      Name: tank    + ports: 1    - ports: 2
 
 You get the DIFFERENTIAL self impedance of that structure -- the
 impedance a differential driver sees across the two terminals, so
@@ -569,7 +573,8 @@ actually resonates with.
 
 Contrast that with tying both terminals into one node:
 
-      Port 1 = tank = 1,2 /        <-- both on the RED probe
+      Name: tank    + ports: 1,2   - ports: (empty)
+                                   ^ both on the RED probe
 
 That is the COMMON-mode impedance (Mode 1 with Signal = "1,2"),
 which is a completely different number and is usually not what you
@@ -786,10 +791,11 @@ Goal:    Is the magnetic coupling between them under a -30 dBc
 
 Field entries:
    Mode        = 6 (+/- Ports / Coupling)
-   Port 1      = tank = 1 / 2
-   Port 2      = vco2 = 3 / 4
+   Measurement ports table:
+        Name    + ports    - ports
+        tank    1          2
+        vco2    3          4
    GND Ports   = (blank -- the file has no ground port)
-   Short Pairs = (blank)
    RLC Freq    = 10 GHz
 
 Results at 10 GHz:
@@ -1038,8 +1044,10 @@ File:    6-port PKG file (wire A: die=1, ball=2;
 Goal:    M and k between the two loops at 1 GHz
 
    Mode        = 6 (+/- Ports / Coupling)
-   Port 1      = wA = 1 / 2
-   Port 2      = wB = 3 / 4
+   Measurement ports table:
+        Name    + ports    - ports
+        wA      1          2
+        wB      3          4
    GND Ports   = 5,6
    RLC Freq    = 1.0 GHz
 
