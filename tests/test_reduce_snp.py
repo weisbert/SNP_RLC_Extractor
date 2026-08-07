@@ -1,0 +1,440 @@
+"""
+Tests for reduce_snp.py -- the standalone Touchstone port-reduction tool.
+
+Reduction results are checked against independent references (physical limits,
+sub-matrix identities), and file I/O is checked by reading the output back with
+`pkg_rlc_core.parse_touchstone`, which is a completely separate parser.
+"""
+
+from __future__ import annotations
+
+import shutil
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import numpy as np  # noqa: E402
+
+import reduce_snp as rs  # noqa: E402
+from pkg_rlc_core import parse_touchstone as core_parse  # noqa: E402
+
+Z0 = 50.0
+
+
+def make_network(n_ports, n_freq=7, seed=0, reciprocal=True):
+    """A random, well-conditioned Y network -> S, shape (n_freq, n, n)."""
+    rng = np.random.default_rng(seed)
+    S = np.empty((n_freq, n_ports, n_ports), dtype=complex)
+    for f in range(n_freq):
+        A = rng.normal(size=(n_ports, n_ports)) + 1j * rng.normal(size=(n_ports, n_ports))
+        Y = A * 0.01
+        if reciprocal:
+            Y = 0.5 * (Y + Y.T)
+        Y = Y + np.eye(n_ports) * (0.05 + 0.01 * f)   # keep it invertible
+        S[f] = rs.y_to_s(Y[None, :, :], Z0)[0]
+    return S
+
+
+def schur_open(Y, keep, unused):
+    """Reference open-circuit elimination for a single Y matrix."""
+    return (Y[np.ix_(keep, keep)]
+            - Y[np.ix_(keep, unused)]
+            @ np.linalg.solve(Y[np.ix_(unused, unused)], Y[np.ix_(unused, keep)]))
+
+
+class TestPortConfig(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _cfg(self, text):
+        p = self.tmp / "ports.txt"
+        p.write_text(text)
+        return rs.parse_port_config(p)
+
+    def test_groups_and_separators(self):
+        groups = self._cfg("# DTC\n11, 141 70;71\n# RX\n26 77\n")
+        self.assertEqual(list(groups), ["DTC", "RX"])
+        self.assertEqual(groups["DTC"], ["11", "141", "70", "71"])
+        self.assertEqual(groups["RX"], ["26", "77"])
+
+    def test_ungrouped_and_blank_lines(self):
+        groups = self._cfg("5\n\n# A\n6\n")
+        self.assertEqual(groups["Ungrouped"], ["5"])
+        self.assertEqual(groups["A"], ["6"])
+
+    def test_trailing_comment_stripped(self):
+        groups = self._cfg("# A\n1 2 ! keep these\n")
+        self.assertEqual(groups["A"], ["1", "2"])
+
+    def test_gnd_group_is_split_out(self):
+        groups = self._cfg("# GND\n3 4\n# SIG\n1 2\n")
+        keep_groups, keep, gnd = rs.resolve_port_config(groups, 6, [""] * 6)
+        self.assertEqual(keep, [1, 2])
+        self.assertEqual(gnd, [3, 4])
+        self.assertEqual(list(keep_groups), ["SIG"])
+
+    def test_gnd_aliases_are_case_insensitive(self):
+        for alias in ("gnd", "Ground", "SHORT", "shorted"):
+            groups = self._cfg(f"# {alias}\n3\n# SIG\n1\n")
+            _, keep, gnd = rs.resolve_port_config(groups, 4, [""] * 4)
+            self.assertEqual((keep, gnd), ([1], [3]), msg=alias)
+
+    def test_order_sorted_vs_config(self):
+        groups = self._cfg("# B\n5 3\n# A\n1\n")
+        _, keep_sorted, _ = rs.resolve_port_config(groups, 6, [""] * 6, order="sorted")
+        _, keep_config, _ = rs.resolve_port_config(groups, 6, [""] * 6, order="config")
+        self.assertEqual(keep_sorted, [1, 3, 5])
+        self.assertEqual(keep_config, [5, 3, 1])
+
+    def test_duplicate_ports_deduplicated(self):
+        groups = self._cfg("# A\n1 2\n# B\n2 3\n")
+        _, keep, _ = rs.resolve_port_config(groups, 4, [""] * 4)
+        self.assertEqual(keep, [1, 2, 3])
+
+    def test_port_names_resolve(self):
+        names = ["in_p", "in_n", "VDD_RX_1", "gnd_ball"]
+        groups = self._cfg("# RX\nVDD_RX_1\n# IN\nin_p, in_n\n")
+        _, keep, _ = rs.resolve_port_config(groups, 4, names)
+        self.assertEqual(keep, [1, 2, 3])
+
+    def test_ambiguous_port_name_errors(self):
+        names = ["vdd_a", "vdd_b", "x", "y"]
+        groups = self._cfg("# A\nvdd\n")
+        with self.assertRaises(SystemExit):
+            rs.resolve_port_config(groups, 4, names)
+
+    def test_unknown_token_errors(self):
+        groups = self._cfg("# A\nnot_a_port\n")
+        with self.assertRaises(SystemExit):
+            rs.resolve_port_config(groups, 4, [""] * 4)
+
+    def test_out_of_range_port_errors(self):
+        groups = self._cfg("# A\n99\n")
+        with self.assertRaises(SystemExit):
+            rs.resolve_port_config(groups, 4, [""] * 4)
+
+    def test_keep_and_gnd_clash_errors(self):
+        groups = self._cfg("# GND\n2\n# SIG\n1 2\n")
+        with self.assertRaises(SystemExit):
+            rs.resolve_port_config(groups, 4, [""] * 4)
+
+
+class TestReduction(unittest.TestCase):
+    def test_open_matches_hand_coded_schur(self):
+        S = make_network(5, seed=1)
+        got = rs.reduce_block(S, Z0, [0, 1, 2], [], "open")
+        Y = rs.s_to_y(S, Z0)
+        for f in range(S.shape[0]):
+            ref = rs.y_to_s(schur_open(Y[f], [0, 1, 2], [3, 4])[None], Z0)[0]
+            np.testing.assert_allclose(got[f], ref, rtol=1e-10, atol=1e-12)
+
+    def test_matched_equals_submatrix(self):
+        """Z0-terminating the unused ports must equal plain sub-matrix extraction."""
+        S = make_network(5, seed=2)
+        keep, unused = [0, 2], [1, 3, 4]
+        got = rs.reduce_block(S, Z0, keep, [], "matched")
+        Y = rs.s_to_y(S, Z0)
+        for f in range(S.shape[0]):
+            Yuu = Y[f][np.ix_(unused, unused)] + np.eye(len(unused)) / Z0
+            Yred = (Y[f][np.ix_(keep, keep)]
+                    - Y[f][np.ix_(keep, unused)]
+                    @ np.linalg.solve(Yuu, Y[f][np.ix_(unused, keep)]))
+            np.testing.assert_allclose(rs.y_to_s(Yred[None], Z0)[0],
+                                       S[f][np.ix_(keep, keep)],
+                                       rtol=1e-9, atol=1e-11)
+        np.testing.assert_allclose(got, S[:, keep][:, :, keep], rtol=1e-12)
+
+    def test_open_and_matched_differ(self):
+        """Guard against the two methods silently collapsing into one."""
+        S = make_network(4, seed=3)
+        a = rs.reduce_block(S, Z0, [0, 1], [], "open")
+        b = rs.reduce_block(S, Z0, [0, 1], [], "matched")
+        self.assertGreater(np.abs(a - b).max(), 1e-3)
+
+    def test_ground_equals_heavy_shunt_limit(self):
+        """
+        Grounding port g (delete row+col in Y) must equal the limit of hanging a
+        very large shunt admittance on g and then eliminating it as an open.
+        """
+        S = make_network(5, seed=4)
+        keep, gnd = [0, 1], [4]
+        got = rs.reduce_block(S, Z0, keep, gnd, "open")
+
+        Y = rs.s_to_y(S, Z0)
+        unused = [2, 3, 4]
+        for f in range(S.shape[0]):
+            Ym = Y[f].copy()
+            Ym[4, 4] += 1e12                       # near-ideal short to reference
+            Yred = (Ym[np.ix_(keep, keep)]
+                    - Ym[np.ix_(keep, unused)]
+                    @ np.linalg.solve(Ym[np.ix_(unused, unused)], Ym[np.ix_(unused, keep)]))
+            np.testing.assert_allclose(rs.y_to_s(Yred[None], Z0)[0], got[f],
+                                       rtol=1e-6, atol=1e-9)
+
+    def test_ground_differs_from_open(self):
+        S = make_network(5, seed=5)
+        opened = rs.reduce_block(S, Z0, [0, 1], [], "open")
+        grounded = rs.reduce_block(S, Z0, [0, 1], [4], "open")
+        self.assertGreater(np.abs(opened - grounded).max(), 1e-3)
+
+    def test_no_unused_ports_is_identity(self):
+        """keep + gnd covering every port must skip the Schur step cleanly."""
+        S = make_network(3, seed=6)
+        got = rs.reduce_block(S, Z0, [0, 1, 2], [], "open")
+        np.testing.assert_allclose(got, S, rtol=1e-10, atol=1e-12)
+
+    def test_keep_order_permutes_output(self):
+        S = make_network(4, seed=7)
+        a = rs.reduce_block(S, Z0, [0, 2], [], "open")
+        b = rs.reduce_block(S, Z0, [2, 0], [], "open")
+        # keep=[2,0] is keep=[0,2] with both axes reversed
+        np.testing.assert_allclose(b, a[:, ::-1, ::-1], rtol=1e-10, atol=1e-14)
+
+    def test_batching_does_not_change_result(self):
+        S = make_network(5, n_freq=11, seed=8)
+        whole = rs.reduce_all(S, Z0, [0, 1], [], "open", batch=1000)
+        chunked = rs.reduce_all(S, Z0, [0, 1], [], "open", batch=3)
+        np.testing.assert_allclose(whole, chunked, rtol=1e-12, atol=1e-14)
+
+    def test_s_y_roundtrip(self):
+        S = make_network(6, seed=9)
+        np.testing.assert_allclose(rs.y_to_s(rs.s_to_y(S, Z0), Z0), S,
+                                   rtol=1e-9, atol=1e-12)
+
+
+class TestFileIO(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _roundtrip(self, S, freqs, fmt="RI", names=None, ext=None):
+        n = S.shape[-1]
+        path = self.tmp / f"net{ext or ('.s%dp' % n)}"
+        rs.write_touchstone(path, "HZ", Z0, names or [f"p{i}" for i in range(n)],
+                            freqs, S, data_format=fmt)
+        return path
+
+    def test_roundtrip_via_independent_parser(self):
+        for n in (1, 2, 3, 5):
+            S = make_network(n, n_freq=5, seed=10 + n)
+            freqs = np.linspace(1e6, 1e9, S.shape[0])
+            path = self._roundtrip(S, freqs)
+            net = core_parse(path)
+            self.assertEqual(net.nports, n)
+            np.testing.assert_allclose(net.freqs, freqs, rtol=1e-10)
+            np.testing.assert_allclose(net.s, S, rtol=1e-9, atol=1e-14,
+                                       err_msg=f"n={n}")
+
+    def test_two_port_column_order_non_reciprocal(self):
+        """
+        Touchstone v1 writes a 2-port as S11 S21 S12 S22. A reciprocal network
+        hides a transpose bug, so this uses a deliberately non-reciprocal one.
+        """
+        S = make_network(2, n_freq=4, seed=42, reciprocal=False)
+        self.assertGreater(np.abs(S[:, 0, 1] - S[:, 1, 0]).max(), 1e-3,
+                           "fixture must be non-reciprocal for this test to bite")
+        freqs = np.linspace(1e6, 1e9, S.shape[0])
+        net = core_parse(self._roundtrip(S, freqs))
+        np.testing.assert_allclose(net.s[:, 0, 1], S[:, 0, 1], rtol=1e-9, atol=1e-14)
+        np.testing.assert_allclose(net.s[:, 1, 0], S[:, 1, 0], rtol=1e-9, atol=1e-14)
+
+    def test_own_parser_roundtrip_all_formats(self):
+        S = make_network(3, n_freq=4, seed=11)
+        freqs = np.linspace(1e6, 1e9, S.shape[0])
+        for fmt, rtol in (("RI", 1e-10), ("MA", 1e-9), ("DB", 1e-8)):
+            path = self.tmp / f"net_{fmt}.s3p"
+            rs.write_touchstone(path, "HZ", Z0, ["a", "b", "c"], freqs, S,
+                                data_format=fmt)
+            ts = rs.parse_touchstone(path)
+            self.assertEqual(ts.data_format, fmt)
+            np.testing.assert_allclose(ts.s, S, rtol=rtol, atol=1e-13,
+                                       err_msg=f"fmt={fmt}")
+
+    def test_port_names_survive_roundtrip(self):
+        S = make_network(3, n_freq=3, seed=12)
+        freqs = np.linspace(1e6, 1e9, 3)
+        path = self._roundtrip(S, freqs, names=["in_p", "VDD_RX", "gnd_ball"])
+        ts = rs.parse_touchstone(path)
+        self.assertEqual(ts.port_names, ["in_p", "VDD_RX", "gnd_ball"])
+
+    def test_precision_flag_tightens_error(self):
+        S = make_network(3, n_freq=3, seed=13)
+        freqs = np.linspace(1e6, 1e9, 3)
+        errs = []
+        for prec in (6, 14):
+            path = self.tmp / f"p{prec}.s3p"
+            rs.write_touchstone(path, "HZ", Z0, ["a", "b", "c"], freqs, S,
+                                data_format="RI", precision=prec)
+            errs.append(np.abs(rs.parse_touchstone(path).s - S).max())
+        self.assertGreater(errs[0], errs[1])
+
+
+class TestParserRobustness(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write(self, name, text):
+        p = self.tmp / name
+        p.write_text(text)
+        return p
+
+    def test_q3d_style_header(self):
+        path = self._write("q3d.s2p", "\n".join([
+            "! Touchstone file exported from Q3D Extractor 2019.1.0",
+            "! Terminal data exported",
+            "! Port[1] = Net_A",
+            "! Port [2] : Net_B",
+            "# Hz S RI R 50",
+            "1e6 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8",
+        ]))
+        ts = rs.parse_touchstone(path)
+        self.assertEqual(ts.n_ports, 2)
+        self.assertEqual(ts.freq_unit, "HZ")
+        self.assertEqual(ts.port_names, ["Net_A", "Net_B"])
+        # file order S11 S21 S12 S22 -> matrix must be transposed on read
+        self.assertAlmostEqual(ts.s[0, 1, 0], 0.3 + 0.4j)
+        self.assertAlmostEqual(ts.s[0, 0, 1], 0.5 + 0.6j)
+
+    def test_alternate_port_name_comment(self):
+        path = self._write("alt.s1p", "! Port 1 = only_one\n# Hz S RI R 50\n1e6 0.1 0.2\n")
+        self.assertEqual(rs.parse_touchstone(path).port_names, ["only_one"])
+
+    def test_mid_line_comment_stripped(self):
+        path = self._write("mid.s1p", "# Hz S RI R 50\n1e6 0.1 0.2 ! trailing junk\n"
+                                      "2e6 0.3 0.4\n")
+        ts = rs.parse_touchstone(path)
+        self.assertEqual(len(ts.freqs), 2)
+        self.assertAlmostEqual(ts.s[1, 0, 0], 0.3 + 0.4j)
+
+    def test_wrong_extension_infers_port_count(self):
+        """A 2-port file misnamed .s4p must be re-sniffed, not silently mangled."""
+        body = "\n".join(f"{i}e6 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8" for i in range(1, 9))
+        path = self._write("wrong.s4p", "# Hz S RI R 50\n" + body + "\n")
+        ts = rs.parse_touchstone(path)
+        self.assertEqual(ts.n_ports, 2)
+        self.assertEqual(len(ts.freqs), 8)
+
+    def test_nports_override(self):
+        body = "\n".join(f"{i}e6 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8" for i in range(1, 9))
+        path = self._write("amb.dat", "# Hz S RI R 50\n" + body + "\n")
+        self.assertEqual(rs.parse_touchstone(path, force_nports=2).n_ports, 2)
+
+    def test_y_parameter_file_rejected(self):
+        path = self._write("y.s1p", "# Hz Y RI R 50\n1e6 0.1 0.2\n")
+        with self.assertRaises(SystemExit):
+            rs.parse_touchstone(path)
+
+    def test_missing_option_line_defaults(self):
+        path = self._write("noopt.s1p", "1e6 0.5 30\n2e6 0.5 30\n")
+        ts = rs.parse_touchstone(path)
+        self.assertEqual((ts.freq_unit, ts.data_format, ts.z0), ("GHZ", "MA", 50.0))
+
+    def test_chunked_read_matches_single_chunk(self):
+        body = "\n".join(f"{i}e6 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8" for i in range(1, 51))
+        path = self._write("chunk.s2p", "# Hz S RI R 50\n" + body + "\n")
+        a = rs.parse_touchstone(path, flush_values=3)
+        b = rs.parse_touchstone(path, flush_values=10 ** 6)
+        np.testing.assert_allclose(a.s, b.s)
+        np.testing.assert_allclose(a.freqs, b.freqs)
+
+    def test_bad_token_raises_not_truncates(self):
+        path = self._write("bad.s1p", "# Hz S RI R 50\n1e6 0.1 0.2\n2e6 oops 0.4\n")
+        with self.assertRaises(ValueError):
+            rs.parse_touchstone(path)
+
+    def test_z0_other_than_50(self):
+        path = self._write("z75.s1p", "# Hz S RI R 75\n1e6 0.1 0.2\n")
+        self.assertEqual(rs.parse_touchstone(path).z0, 75.0)
+
+
+class TestEndToEndCLI(unittest.TestCase):
+    """Drive the actual command line, then read the output with the other parser."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.S = make_network(6, n_freq=9, seed=77)
+        self.freqs = np.linspace(1e6, 1e9, self.S.shape[0])
+        self.src = self.tmp / "src.s6p"
+        rs.write_touchstone(self.src, "HZ", Z0,
+                            ["sig_a", "sig_b", "gnd1", "gnd2", "spare1", "spare2"],
+                            self.freqs, self.S, data_format="RI", precision=15)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _run(self, cfg_text, *extra):
+        import subprocess
+        cfg = self.tmp / "ports.txt"
+        cfg.write_text(cfg_text)
+        out = self.tmp / "out.snp"
+        script = Path(__file__).resolve().parent.parent / "reduce_snp.py"
+        r = subprocess.run([sys.executable, str(script), str(self.src),
+                            "--ports", str(cfg), "-o", str(out), *extra],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, msg=r.stdout + r.stderr)
+        return out, r.stdout
+
+    def test_cli_open_with_gnd_group(self):
+        out, log = self._run("# GND\ngnd1, gnd2\n# SIG\n1 2\n")
+        got = core_parse(out)
+        ref = rs.reduce_block(self.S, Z0, [0, 1], [2, 3], "open")
+        self.assertEqual(got.nports, 2)
+        np.testing.assert_allclose(got.s, ref, rtol=1e-8, atol=1e-12)
+        self.assertIn("2 grounded", log)
+
+    def test_cli_matched_equals_submatrix(self):
+        out, _ = self._run("# SIG\n1 3\n", "--method", "matched")
+        got = core_parse(out)
+        np.testing.assert_allclose(got.s, self.S[:, [0, 2]][:, :, [0, 2]],
+                                   rtol=1e-8, atol=1e-12)
+
+    def test_cli_config_order(self):
+        out, _ = self._run("# SIG\n5 1\n", "--order", "config")
+        got = core_parse(out)
+        ref = rs.reduce_block(self.S, Z0, [4, 0], [], "open")
+        np.testing.assert_allclose(got.s, ref, rtol=1e-8, atol=1e-12)
+        self.assertEqual(got.port_names, ["spare1", "sig_a"])
+
+    def test_cli_writes_mapping_file(self):
+        out, _ = self._run("# GND\n3\n# SIG\n1 2\n")
+        mapping = Path(out).with_suffix(".port_mapping.txt")
+        self.assertTrue(mapping.exists())
+        text = mapping.read_text()
+        self.assertIn("SHORTED TO REFERENCE GROUND", text)
+        self.assertIn("sig_a", text)
+
+    def test_cli_refuses_when_nothing_to_reduce(self):
+        import subprocess
+        cfg = self.tmp / "all.txt"
+        cfg.write_text("# ALL\n1 2 3 4 5 6\n")
+        script = Path(__file__).resolve().parent.parent / "reduce_snp.py"
+        r = subprocess.run([sys.executable, str(script), str(self.src),
+                            "--ports", str(cfg)], capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+
+
+class TestPassivity(unittest.TestCase):
+    def test_passive_network_reported_ok(self):
+        S = np.zeros((5, 2, 2), dtype=complex)
+        S[:, 0, 1] = S[:, 1, 0] = 0.5
+        check = rs.check_passivity
+        check(S, label="[t]")   # must not raise
+
+    def test_active_network_detected(self):
+        S = np.eye(2, dtype=complex)[None].repeat(4, axis=0) * 2.0
+        rs.check_passivity(S, label="[t]")  # prints a warning, must not raise
+
+
+if __name__ == "__main__":
+    unittest.main()
