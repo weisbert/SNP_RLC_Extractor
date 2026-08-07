@@ -30,7 +30,7 @@ Basic flow:
 
 1. **Add File...** — load any Touchstone file. The parser content-sniffs the port count and ignores the file extension; `.s2p`, `.s45p`, `.txt`, `.dat`, or no extension all work.
 2. A default trace is auto-created against the loaded file. Select it in the **Traces** listbox to edit.
-3. In **Edit Selected Trace**, pick a measurement mode (Modes 1-3, `+/- Ports / Coupling`, or Custom) and fill in the relevant port fields.
+3. In **Edit Selected Trace**, pick a measurement mode (Modes 1-3, `+/- Ports / Coupling`, or Custom) and fill in the relevant port fields. Modes 5 and 6 are filled in as **tables** with a `+ Add` button rather than typed as text: Mode 6 gets the measurement-port table, Mode 5 that table plus a connections table underneath, with a port-overview line and a validation line under both. Every port cell takes port **numbers**; **Show Ports** lists the file's port *names* in the Results pane, which is where to look on an unfamiliar package. R/L/C cells take one word with an SI suffix and no unit (`5m`, `0.5n`, `1u`) — the unit is in the column header, and a value with a space in it is rejected rather than silently truncated.
 4. Set **RLC Freq (GHz)** for single-point extraction, optionally enter a **Band Fit** range and model.
 5. Click **Calculate All & Plot**. Results appear in the right pane and overlay on the multi-subplot view.
 
@@ -207,7 +207,7 @@ Rules:
 | 2    | `A <-> B`               | Impedance between two port groups; collapse to 2x2 then `Z = Z11 + Z22 - Z12 - Z21`.              |
 | 3    | `A <-> B + Short Pairs` | Like Mode 2, but with explicit `i-j` shorts (Y-matrix row/col merging) before reduction.          |
 | 4    | *(retired)*             | Was `A <-> B + VDD/GND`. See below.                                                               |
-| 5    | `Custom (advanced)`     | Per-port termination editor: `open / ground / vdd / signal <name> [+ or -] / short_to / lumped_to_gnd / lumped_between`, with R/L/C values for the lumped types. Every directive's port field takes the full range syntax, so `6:1:14 ground` is one line. |
+| 5    | `Custom (advanced)`     | Two tables: the measurement-port table (Name / `+` / `−`) plus a connections table (Type / Port / To / R / L / C), where Type is `ground / vdd / open / short / rlc_gnd / rlc_between`. Port and To take the full range syntax, so `6-14` or `35:1:45` is one row. **Edit as text…** shows and takes back the equivalent DSL — `open / ground / vdd / signal <name> [+ or -] / short_to / lumped_to_gnd / lumped_between`, one directive per line — which is what the tables serialise to and what is actually computed. |
 | 6    | `+/- Ports / Coupling (M, k)` | Any number of measurement ports, each a `+` / `-` probe pair, entered as table rows. Produces the G x G impedance matrix: self impedance on the diagonal, **open-circuit mutual impedance** off it, and from that M, k, C_c and the M/L ratios. |
 
 Defining more than one measurement port gives you the coupling matrix **in either mode** —

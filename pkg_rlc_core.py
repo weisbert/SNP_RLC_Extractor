@@ -1146,12 +1146,32 @@ class ConnectionRow:
 
 
 def _rlc_tokens(row: ConnectionRow) -> list[str]:
-    """Non-blank R/L/C fields -> ['R=50', 'L=1n'] in canonical R, L, C order."""
+    """
+    Non-blank R/L/C fields -> ['R=50', 'L=1n'] in canonical R, L, C order.
+
+    A value containing WHITESPACE is rejected rather than emitted.  The DSL is
+    whitespace-tokenised and parse_kv_rlc_params drops any token without an
+    '=', so 'R=5 m' silently computes R = 5 ohm -- a factor of 1000 -- and
+    'C=1 uF' silently computes C = 1 farad.  The cell UI invites exactly that
+    (the unit is in the column header, so 'uF' looks like it belongs in the
+    cell), and the validation strip re-parses the raw cell as ONE token, so it
+    would cheerfully echo '5 mOhm' next to a computed 5 ohm.  There is no way
+    to quote a value in the DSL, so the only answer that cannot be silently
+    wrong is to refuse.
+    """
     out = []
     for key in ("R", "L", "C"):
         val = getattr(row, key).strip()
-        if val:
-            out.append(f"{key}={val}")
+        if not val:
+            continue
+        if any(ch.isspace() for ch in val):
+            raise ValueError(
+                f"{key} value '{val}' contains a space. Write it as one token "
+                f"-- 5m, 0.5n, 1u -- with no unit ('{key}={val}' would be read "
+                f"as '{key}={val.split()[0]}' and the rest thrown away). The "
+                "unit belongs in the column header, not in the cell."
+            )
+        out.append(f"{key}={val}")
     return out
 
 
