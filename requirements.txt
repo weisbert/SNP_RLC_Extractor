@@ -1,3 +1,10 @@
+# Hard requirement -- reduce_snp.py, the CLI and the GUI all need it.
 numpy>=1.24
-scipy>=1.11
+
+# GUI only. Without it (and tkinter, which ships with CPython) the CLI and
+# reduce_snp.py still work -- see deploy/doctor.sh, which reports these tiers.
 matplotlib>=3.7
+
+# Not currently imported anywhere. Allowed for future fit models; do NOT chase
+# it on an isolated machine, nothing needs it today.
+# scipy>=1.11

@@ -12,7 +12,9 @@ Requires Python 3.11+.
 pip install -r requirements.txt
 ```
 
-`requirements.txt` pulls in `numpy`, `scipy`, and `matplotlib`. Tkinter ships with the standard Python distribution.
+`requirements.txt` pulls in `numpy` (hard requirement) and `matplotlib` (GUI only). Tkinter ships with the standard Python distribution.
+
+On an isolated machine where nothing can be installed, see [Air-gapped deployment](#air-gapped-deployment-red-zone) — `numpy` alone is enough for the CLI and for `reduce_snp.py`.
 
 ---
 
@@ -135,19 +137,59 @@ SNP_RLC_Extractor/
   CLAUDE.md                  Conventions for future Claude Code sessions
   README.md                  This file
   CLAUDE_CODE_PROMPT.md      Authoritative spec
-  requirements.txt           numpy, scipy, matplotlib
+  requirements.txt           numpy (hard), matplotlib (GUI only)
+  VERSION                    Commit stamp, filled in by the red-zone packer
   pkg_rlc_core.py            Touchstone parser, S->Y, termination model, Schur, RLC, fits
   pkg_rlc_plot.py            Matplotlib plot panel with M / V / Delete / drag features
   pkg_rlc_gui.py             Tkinter GUI with file/trace management
   pkg_rlc_extractor.py       Entry point (GUI + CLI)
+  reduce_snp.py              Standalone CLI: shrink a big .sNp to a few ports
   tests/
     test_core.py
     test_port_parser.py
     test_content_sniffer.py
+    test_reduce_snp.py
     generate_test_snp.py
   docs/
     theory.md                Math, circuit diagrams, mode derivations
+  deploy/
+    pack.ps1                 Windows: build the red-zone package
+    deploy.sh                Red zone: verify, back up, swap in, auto-rollback
+    doctor.sh                Red zone: what can this box actually run?
+    README.md                Full air-gap procedure
 ```
+
+---
+
+## Air-gapped deployment (red zone)
+
+To run this on an isolated Linux machine with no network, no git, and no ability
+to `pip install` or create a venv:
+
+```powershell
+# on Windows, after committing
+powershell -ExecutionPolicy Bypass -File deploy\pack.ps1
+```
+
+Upload `deploy\dist\snp_rlc_extractor_<short>.tar.gz` **and** its `.sha256`, then
+on the isolated box (its login shell is often tcsh, so invoke with `bash`):
+
+```bash
+bash deploy/deploy.sh snp_rlc_extractor_<short>.tar.gz
+bash deploy/doctor.sh --test
+```
+
+`deploy.sh` checksums the package, backs up the current install, swaps atomically
+enough to auto-roll-back on failure, and keeps the last 3 versions. `doctor.sh`
+then reports what that box can run, in tiers — `reduce_snp.py` and the CLI need
+only `numpy`; the GUI additionally needs `matplotlib`, `tkinter` and `$DISPLAY`.
+Missing GUI dependencies are a degrade, not a failure.
+
+If you only need port reduction on a simulation server, `pack.ps1` also emits a
+standalone `reduce_snp_<short>.py` that runs on its own with nothing but `numpy`.
+
+Full procedure, rollback, and how to keep your own data across deploys:
+[deploy/README.md](deploy/README.md).
 
 ---
 

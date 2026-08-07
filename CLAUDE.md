@@ -16,6 +16,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `pkg_rlc_help.py`       | In-app Help window content (`HELP_TOPICS`, `HelpWindow`). One tab per mode + syntax + worked examples. |
 | `pkg_rlc_extractor.py`  | Entry point: dispatches GUI vs CLI from argv.                                   |
 | `reduce_snp.py`         | **Standalone** CLI: shrinks a big `.sNp` to a few ports (KEEP / GND-short / open-or-matched elimination). Deliberately imports nothing from this repo — it gets copied to simulation servers on its own. |
+| `deploy/`               | Air-gapped ("red zone") sync pipeline: `pack.ps1` (Windows, `git archive`) -> `deploy.sh` (isolated Linux, verify/backup/swap/rollback) -> `doctor.sh` (what can this box run?). No network, no pip, no venv on the far side. |
 | `tests/`                | `unittest`-based suite (102 tests covering parser, port range, short groups, content sniffer, terminations, fits, Schur fallback, and `reduce_snp`). |
 | `tests/generate_test_snp.py` | Builds synthetic fixtures with analytically known R/L/C; run as a script to (re)generate `tests/fixtures/`. |
 | `tests/_smoke.py`       | Manual sanity-check script (NOT auto-discovered by `unittest`). |
@@ -48,6 +49,32 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 - **Build `s` via `s.real = ... / s.imag = ...`,** never `raw[...,0] + 1j*raw[...,1]` — the latter allocates two full-size complex temporaries and doubles peak memory on multi-GB files.
 - **Output defaults to `RI` with 12 significant digits.** DB output loses precision on small entries; on a 4-port fixture this default is ~300x more accurate than the old `DB`/`%.10g` combination.
 - **Frequency-batched everywhere** (`--batch`, default 256) so a 153-port file doesn't materialise every Y matrix at once. `s_to_y`/`y_to_s`/Schur all operate on stacked `(F,N,N)` arrays via `np.linalg.solve`, with a per-frequency `lstsq` fallback in `_solve_batch`.
+
+### `deploy/` specifics (red-zone pipeline)
+
+- **The package is a blacklist, not a whitelist.** `git archive` ships everything
+  except what `.gitattributes` marks `export-ignore`. New scripts are packaged
+  automatically — do NOT convert this to an explicit file list, that was the
+  design requirement.
+- **Shell scripts must be LF in the git index.** CRLF there is the one mistake
+  that bricks a deploy (`bash: $'\r': command not found`). `.gitattributes` pins
+  `*.sh text eol=lf`, and `pack.ps1` aborts if the index ever disagrees. Keep both
+  halves of that guard.
+- **`git archive`, never the working tree.** Packing from committed blobs is what
+  makes the package immune to autocrlf, backslash paths, and lost exec bits.
+- **The single-file `reduce_snp_<hash>.py` is extracted via `cmd.exe` redirection
+  of `git cat-file blob`**, not PowerShell capture — PowerShell re-encodes the
+  stream and would turn LF into CRLF, desyncing it from the copy in the tarball.
+- **`deploy.sh` touches only the install dir**, never the parent. Preserves
+  `.deploy/` plus anything in `.deploy/preserve.list`, and rolls back via an `ERR`
+  trap if the swap fails halfway.
+- **The far side has no network, no pip, no venv.** Never add a dependency that
+  cannot be assumed present; `numpy` is the only hard one. Anything new that the
+  GUI needs must degrade gracefully, and `deploy/_env_check.py` must learn about
+  it so `doctor.sh` reports the right tier.
+- **`_env_check.py` is parse-compatible with Python 2** on purpose, so an ancient
+  interpreter reports itself as unusable instead of throwing a `SyntaxError` that
+  looks like a corrupt package. No f-strings, no annotations in that file.
 
 ## How to run tests
 

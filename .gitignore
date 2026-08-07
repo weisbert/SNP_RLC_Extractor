@@ -25,3 +25,11 @@ env/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Red-zone deploy artifacts (see deploy/README.md)
+deploy/dist/
+.deploy/
+
+# Private local notes (company env details -- never push these)
+*.local.md
+.local/

@@ -1,0 +1,11 @@
+SNP_RLC_Extractor
+commit:  $Format:%H$
+short:   $Format:%h$
+date:    $Format:%cI$
+subject: $Format:%s$
+
+(In a git work tree these stay literal $Format:...$ placeholders. They are
+ substituted only when the red-zone package is built by `git archive` --
+ see deploy/README.md. So a VERSION full of placeholders means "you are
+ looking at a git checkout", and real values mean "this is a deployed
+ package".)

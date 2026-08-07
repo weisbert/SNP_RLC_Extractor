@@ -1,0 +1,23 @@
+# Line endings -------------------------------------------------------------
+# The `eol=lf` below is load-bearing for the red zone, and NOT redundant with
+# `text=auto`: when a file has `text` set but no `eol`, `git archive` falls back
+# to core.eol, which on Windows is native = CRLF. Packing on Windows would then
+# emit a CRLF package and the red zone's bash would die on deploy.sh with
+# `$'\r': command not found`. The target is Linux, so pin LF for everything.
+* text=auto eol=lf
+*.sh  text eol=lf
+*.ps1 text eol=crlf
+
+# Red-zone package contents -------------------------------------------------
+# BLACKLIST, not whitelist: everything in the repo ships to the red zone unless
+# listed here. New scripts are packaged automatically -- no maintenance needed.
+# Only developer-facing files that are meaningless across the air gap are cut.
+CLAUDE.md             export-ignore
+CLAUDE_CODE_PROMPT.md export-ignore
+.gitignore            export-ignore
+.gitattributes        export-ignore
+deploy/pack.ps1       export-ignore
+
+# VERSION stamping ----------------------------------------------------------
+# `git archive` substitutes these; in a work tree they stay literal.
+VERSION export-subst
