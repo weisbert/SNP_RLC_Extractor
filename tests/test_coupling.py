@@ -1001,5 +1001,97 @@ class TestComputeZMultiPortWarning(_CouplingTestCase):
         self.assertEqual(warns, [])
 
 
+class TestThreeMeasurementPorts(unittest.TestCase):
+    """
+    G >= 3.  Nothing in the pipeline hardcodes two measurement ports, but until
+    the connection table gave the GUI a '+ Add' button nobody could easily make
+    a third, and EVERY other test in this file uses one or two -- so the G >= 3
+    path had zero coverage.
+
+    Three ground-referenced probes on a 4-port fixture, with the fourth port
+    grounded, is the cheapest honest G = 3 case.
+    """
+
+    THREE = [("p1", [1], []), ("p2", [2], []), ("p3", [3], [])]
+    FIXTURES = ("coupled_4port_diff.s4p", "decap_4port.s4p",
+                "diff_pair_4port.s4p")
+
+    def _z(self, fixture, mports):
+        ts = parse_touchstone(FIX / fixture)
+        Y = s_to_y(ts.s, ts.z0)
+        Zmat, names, warns = compute_z_matrix(
+            Y, ts.freqs, build_terminations_coupling(mports, gnd_ports=[4]))
+        return ts, Zmat, names, warns
+
+    def test_three_ports_produce_a_3x3_matrix(self):
+        ts, Zmat, names, _w = self._z(self.FIXTURES[0], self.THREE)
+        self.assertEqual(Zmat.shape, (len(ts.freqs), 3, 3))
+        self.assertEqual(names, ["p1", "p2", "p3"])
+
+    def test_matrix_is_symmetric(self):
+        for fx in self.FIXTURES:
+            with self.subTest(fixture=fx):
+                _ts, Zmat, _n, _w = self._z(fx, self.THREE)
+                scale = float(np.max(np.abs(Zmat)))
+                asym = float(np.max(np.abs(Zmat - np.transpose(Zmat, (0, 2, 1)))))
+                self.assertLess(asym / scale, 1e-12,
+                                f"Z is not symmetric: rel {asym / scale:.2e}")
+
+    def test_subblock_equals_the_standalone_pair(self):
+        """
+        The defining property of the OPEN-CIRCUIT matrix.
+
+        Z[a, b] is defined with every OTHER measurement port carrying no
+        current, so the 2x2 sub-block of a G = 3 matrix must equal the G = 2
+        matrix computed with that third port simply left open.  If the G >= 3
+        contraction were wrong, this is what would catch it.
+
+        Tolerance is per-frequency and relative.  Measured: the median relative
+        error is ~3e-14 and p99 is ~9e-11, i.e. floating point.  ONE frequency
+        of 401 on diff_pair_4port.s4p reaches 8e-7 -- the 1 MHz point, where
+        the structure is essentially an open (|Z| ~ 8e7 ohm), the node
+        admittance is near-singular, and pinv's rcond truncation therefore
+        depends on the size of the matrix being inverted, which is exactly what
+        differs between the G = 3 and G = 2 problems.  The disagreement is in
+        the REAL part, of a point whose R is already negative and flagged
+        non-passive.  Hence: p99 pinned tight, max pinned loose but finite.
+        """
+        for fx in self.FIXTURES:
+            with self.subTest(fixture=fx):
+                _ts, Z3, _n, _w = self._z(fx, self.THREE)
+                _ts2, Z2, _n2, _w2 = self._z(fx, self.THREE[:2])
+                mag = np.maximum(np.abs(Z2).max(axis=(1, 2)), 1e-30)
+                rel = np.abs(Z3[:, :2, :2] - Z2).max(axis=(1, 2)) / mag
+                self.assertLess(float(np.percentile(rel, 99)), 1e-9,
+                                f"p99 rel err {np.percentile(rel, 99):.2e}")
+                self.assertLess(float(rel.max()), 1e-5,
+                                f"max rel err {rel.max():.2e}")
+
+    def test_three_ports_give_three_pairs(self):
+        ts, Zmat, names, _w = self._z(self.FIXTURES[0], self.THREE)
+        cres = extract_coupling_at_freq(ts.freqs, Zmat, names, F_TEST)
+        self.assertEqual([p.name for p in cres.ports], ["p1", "p2", "p3"])
+        self.assertEqual([(p.name_a, p.name_b) for p in cres.pairs],
+                         [("p1", "p2"), ("p1", "p3"), ("p2", "p3")])
+
+    def test_reciprocity_is_reported_and_finite(self):
+        ts, Zmat, names, _w = self._z(self.FIXTURES[0], self.THREE)
+        cres = extract_coupling_at_freq(ts.freqs, Zmat, names, F_TEST)
+        self.assertTrue(math.isfinite(cres.reciprocity_error))
+        self.assertLess(cres.reciprocity_error, RECIPROCITY_WARN)
+
+    def test_a_fourth_port_still_works(self):
+        """G = 4 on a 4-port file: nothing caps the count at three either."""
+        ts = parse_touchstone(FIX / "decap_4port.s4p")
+        Y = s_to_y(ts.s, ts.z0)
+        four = [("p1", [1], []), ("p2", [2], []),
+                ("p3", [3], []), ("p4", [4], [])]
+        Zmat, names, _w = compute_z_matrix(
+            Y, ts.freqs, build_terminations_coupling(four))
+        self.assertEqual(Zmat.shape, (len(ts.freqs), 4, 4))
+        cres = extract_coupling_at_freq(ts.freqs, Zmat, names, F_TEST)
+        self.assertEqual(len(cres.pairs), 6)      # 4*3/2
+
+
 if __name__ == "__main__":
     unittest.main()

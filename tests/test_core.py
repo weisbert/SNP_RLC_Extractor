@@ -25,6 +25,9 @@ from pkg_rlc_core import (  # noqa: E402
     fit_inductor, fit_capacitor, fit_auto,
     build_terminations_mode1, build_terminations_mode2,
     build_terminations_mode3, build_terminations_mode4,
+    build_terminations_coupling,
+    parse_custom_termination_text,
+    parse_short_pairs,
     TerminationSet, Signal, Ground, Open, Vdd, LumpedToGnd,
     y_capacitor,
     format_si,
@@ -134,6 +137,125 @@ class TestModeEquivalence(unittest.TestCase):
         max_err = float(np.max(np.abs(Z_builder - Z_hand)))
         self.assertLess(max_err, 1e-12,
                         f"Mode1 builder vs hand-built mismatch: {max_err:.3e}")
+
+
+class TestTerminationPrecedence(unittest.TestCase):
+    """
+    Pin what happens when one port is claimed twice -- the named modes and the
+    probe model deliberately DISAGREE, and nothing used to test it.
+
+    build_terminations_mode1/2/3 assign Signal first and Ground second into the
+    same dict, so GROUND SILENTLY WINS.  build_terminations_coupling RAISES on
+    the same overlap instead, because under the probe model the ports on one
+    side are tied together: grounding one of them grounds the whole side, and
+    reporting a plausible non-zero impedance for a node the tool believes is at
+    0 V is worse than refusing.
+
+    Both behaviours are intended and neither may drift.  The reason this class
+    exists is that the golden reference does NOT guard it: tests/_golden_capture
+    calls build_terminations_modeN directly, so any NEW path to a TerminationSet
+    -- the GUI connection table, a preset that seeds it, a row->TerminationSet
+    builder -- bypasses the golden cases entirely and could diverge here without
+    a single test going red.  Anything that claims to reproduce a named mode
+    must reproduce THIS, including the overlap cases.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        _ensure_fixtures()
+
+    # ---- named modes: ground wins ------------------------------------------
+
+    def test_mode1_ground_wins_over_signal(self):
+        term = build_terminations_mode1(signal_ports=[1, 2], gnd_ports=[2, 3])
+        self.assertIsInstance(term.per_port[0], Signal)   # port 1: signal only
+        self.assertIsInstance(term.per_port[1], Ground)   # port 2: BOTH -> gnd
+        self.assertIsInstance(term.per_port[2], Ground)   # port 3: gnd only
+
+    def test_mode2_ground_wins_over_both_probe_sides(self):
+        term = build_terminations_mode2(port_a=[1, 2], port_b=[3, 4],
+                                        gnd_ports=[2, 4])
+        self.assertIsInstance(term.per_port[0], Signal)
+        self.assertIsInstance(term.per_port[1], Ground)   # was in A
+        self.assertIsInstance(term.per_port[2], Signal)
+        self.assertIsInstance(term.per_port[3], Ground)   # was in B
+
+    def test_mode3_inherits_mode2_precedence_and_keeps_shorts(self):
+        term = build_terminations_mode3(port_a=[1, 2], port_b=[3], gnd_ports=[2],
+                                        short_pairs=parse_short_pairs("3-4"))
+        self.assertIsInstance(term.per_port[1], Ground)
+        self.assertEqual([(c.port_i, c.port_j) for c in term.couplings],
+                         [(2, 3)])
+
+    def test_mode4_vdd_wins_over_ground(self):
+        """VDD is applied last. Numerically identical (Vdd evaluates as Ground)."""
+        term = build_terminations_mode4(port_a=[1], port_b=[2], gnd_ports=[3],
+                                        vdd_ports=[3])
+        self.assertIsInstance(term.per_port[2], Vdd)
+
+    def test_ground_wins_is_visible_in_the_answer(self):
+        """
+        Not just a dict-shape assertion: the overlap changes the number.
+
+        A=[1,2] with port 2 also grounded must equal A=[1] with gnd=[2] --
+        i.e. port 2 really did leave the probe.
+        """
+        ts = parse_touchstone(FIX / "diff_pair_4port.s4p")
+        Y = s_to_y(ts.s, ts.z0)
+        Z_overlap, _ = compute_z(
+            Y, ts.freqs, build_terminations_mode1([1, 2], [2, 3]))
+        Z_explicit, _ = compute_z(
+            Y, ts.freqs, build_terminations_mode1([1], [2, 3]))
+        self.assertLess(float(np.max(np.abs(Z_overlap - Z_explicit))), 1e-15)
+
+    # ---- probe model: the same overlap raises ------------------------------
+
+    def test_coupling_builder_raises_on_probe_ground_overlap(self):
+        with self.assertRaises(ValueError) as cm:
+            build_terminations_coupling([("tank", [1, 2], [3])], gnd_ports=[2])
+        msg = str(cm.exception)
+        self.assertIn("2", msg)
+        self.assertIn("ground", msg.lower())
+
+    def test_coupling_builder_raises_on_minus_side_overlap_too(self):
+        with self.assertRaises(ValueError):
+            build_terminations_coupling([("tank", [1], [2, 3])], gnd_ports=[3])
+
+    def test_named_modes_and_probe_model_disagree_on_purpose(self):
+        """The divergence itself, stated as one assertion."""
+        overlap = dict(signal=[1, 2], gnd=[2])
+        # Named mode: accepted, ground wins.
+        term = build_terminations_mode1(overlap["signal"], overlap["gnd"])
+        self.assertIsInstance(term.per_port[1], Ground)
+        # Probe model: refused.
+        with self.assertRaises(ValueError):
+            build_terminations_coupling([("m1", overlap["signal"], [])],
+                                        gnd_ports=overlap["gnd"])
+
+    # ---- the DSL is a third path; pin it against the named modes -----------
+
+    def test_dsl_last_line_wins_within_a_spec(self):
+        """
+        The DSL has no precedence rule -- it is last-assignment-wins, line by
+        line.  A connection table serialising to DSL text therefore has to emit
+        ground AFTER the probe to reproduce a named mode's overlap behaviour.
+        """
+        gnd_last = parse_custom_termination_text("1 signal A\n2 signal A\n2 ground\n")
+        self.assertIsInstance(gnd_last.per_port[1], Ground)
+        sig_last = parse_custom_termination_text("2 ground\n1 signal A\n2 signal A\n")
+        self.assertIsInstance(sig_last.per_port[1], Signal)
+
+    def test_dsl_reproduces_mode1_including_the_overlap(self):
+        """A DSL spec written ground-last is numerically identical to mode 1."""
+        ts = parse_touchstone(FIX / "diff_pair_4port.s4p")
+        Y = s_to_y(ts.s, ts.z0)
+        Z_mode1, _ = compute_z(
+            Y, ts.freqs, build_terminations_mode1([1, 2], [2, 3]))
+        Z_dsl, _ = compute_z(Y, ts.freqs, parse_custom_termination_text(
+            "1,2 signal A\n"
+            "2,3 ground\n"
+        ))
+        self.assertLess(float(np.max(np.abs(Z_mode1 - Z_dsl))), 1e-15)
 
 
 class TestLumpedTermination(unittest.TestCase):

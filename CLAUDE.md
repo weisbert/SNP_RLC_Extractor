@@ -10,15 +10,17 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 
 | File                    | Responsibility                                                                  |
 |-------------------------|---------------------------------------------------------------------------------|
-| `pkg_rlc_core.py`       | Touchstone parser, S<->Y, unified `TerminationSet` model + the Mode 5 DSL (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`), `parse_mport_spec`, `resolve_meas_ports`, `compute_z_matrix` / `compute_z`, `extract_rlc_at_freq` / `extract_coupling_at_freq`, `fit_inductor` / `fit_capacitor` / `fit_auto`. |
+| `pkg_rlc_core.py`       | Touchstone parser, S<->Y, unified `TerminationSet` model + the Mode 5 DSL (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`), the connection-table row model (`MeasPortRow`, `ConnectionRow`, `rows_to_dsl_text`, `dsl_text_to_rows`, `build_terminations_rows`), `parse_mport_spec`, `resolve_meas_ports`, `compute_z_matrix` / `compute_z`, `extract_rlc_at_freq` / `extract_coupling_at_freq`, `fit_inductor` / `fit_capacitor` / `fit_auto`. |
 | `pkg_rlc_plot.py`       | Matplotlib plot panel: multi-subplot grid over R/L/C/\|Z\|/Re/Im/Q/**k**, draggable freq marker, M / V / Delete keys, fullscreen window. Quantities that cannot be derived from one `(freqs, Z)` pair (today only `k`) arrive via the optional `Trace.aux` dict. |
-| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` / `PlaceholderText` hints, results pane. Re-exports the DSL helpers it no longer defines. |
+| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` / `PlaceholderText` hints and the `RowTable` / `ColumnSpec` row editor, results pane. Re-exports the DSL helpers it no longer defines. |
 | `pkg_rlc_help.py`       | In-app Help window content (`HELP_TOPICS`, `HelpWindow`). One tab per mode + syntax + worked examples. |
 | `pkg_rlc_extractor.py`  | Entry point: dispatches GUI vs CLI from argv. CLI `--mode gnd \| p2p \| coupling`, `--mport` repeatable. |
 | `reduce_snp.py`         | **Standalone** CLI: shrinks a big `.sNp` to a few ports (KEEP / GND-short / open-or-matched elimination). Deliberately imports nothing from this repo — it gets copied to simulation servers on its own. |
 | `deploy.sh`             | **Top level on purpose.** Red-zone update entry point: `cd <install> && bash deploy.sh` auto-detects the uploaded tarball. The operator's cross-project convention is `<install>/deploy.sh` — do not move it back under `deploy/`. |
 | `deploy/`               | Rest of the air-gapped ("red zone") pipeline: `pack.ps1` (Windows, `git archive`), `doctor.sh` + `_env_check.py` (what can this box run?). No network, no pip, no venv on the far side. |
-| `tests/`                | `unittest`-based suite (170 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/`                | `unittest`-based suite (252 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, and the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see. |
+| `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set, the `mp1_*`->`mports` migration, and that Duplicate does not share the row list. |
 | `tests/generate_test_snp.py` | Builds synthetic fixtures with analytically known R/L/C/M; run as a script to (re)generate `tests/fixtures/`. The `COUPLED_*` module constants are the single source of truth for the coupled-coil fixtures. |
 | `tests/test_golden_regression.py` | Replays `tests/fixtures/golden_legacy.npz` through the current API and asserts `assert_array_equal`. This is the guard on every "stays bit-identical" claim below. |
 | `tests/_golden_capture.py` | Script + case registry that (re)generates `golden_legacy.npz`. NOT auto-discovered (leading underscore). Regenerate ONLY in the same commit that justifies moving the reference. |
@@ -69,6 +71,86 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 - **`tests/fixtures/golden_legacy.npz` is the guard for all of the above.** It pins `parse_touchstone -> s_to_y -> compute_z` bit-for-bit for every fixture and for representative Mode 1/2/3/4/5 cases. If it fails, the reduction path changed: fix the change, do not regenerate the reference to make the test pass.
 - **The Mode 5 DSL and its helpers live in `pkg_rlc_core.py`** (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`) — terminations belong to core. `pkg_rlc_gui.py` re-imports them so `from pkg_rlc_gui import parse_si` and friends keep resolving; keep that re-export list intact.
 - **DSL signal syntax is `<port> signal <groupname> [+|-]`.** Group names are arbitrary strings; the sign is a **separate whitespace token** defaulting to `+`, and anything other than exactly `+` or `-` raises. A name whose `.upper()` is `A` or `B` is upper-cased so legacy `signal a` / `signal b` keep working. There is deliberately **no** "signal group must be A or B" validation any more, in either `compute_z_matrix` or the DSL — don't reintroduce it.
+### Connection table (the Mode 5 / Mode 6 row editor)
+
+Design note: `docs/design_connection_table.md`. Stages 0-2 are done; stages 3-4
+(the full Mode 5 editor, and modes reframed as presets) are specified there and
+deliberately unstarted — they need a human looking at the screen.
+
+- **The DSL's leading port field takes `parse_port_range`, not `int`.** `6:1:14 ground`
+  is one line, which is what lets a table row hold a package's ground balls without
+  one row per ball. A single port number still parses to a one-element list, so every
+  pre-existing spec and every golden case is unaffected. `short_to` takes a range on
+  both sides (shorting is transitive, so the chained-pair spelling `parse_short_pairs`
+  uses is unambiguous); **`lumped_between` refuses one on its right** — an N-to-M lumped
+  element is ambiguous (star? mesh?) and guessing would be a silent wrong answer.
+- **Rows reach a `TerminationSet` through the DSL text, never by building one directly.**
+  `build_terminations_rows` = `parse_custom_termination_text(rows_to_dsl_text(...))`.
+  One parser, one set of error messages, one thing for the tests to pin — and the "edit
+  as text" view then shows literally what is computed.
+- **`rows_to_dsl_text` emits measurement ports BEFORE connections, and that order is
+  load-bearing.** The DSL is last-assignment-wins, so a later `ground` row must win over
+  a probe on the same port — that is the "ground wins" precedence
+  `build_terminations_mode1/2/3` have always had. Reversing the order makes a table
+  seeded from a named mode answer a different question.
+- **`build_terminations_mode1/2/3` let ground win over a probe; `build_terminations_coupling`
+  raises on the same overlap.** Both are intended. **The golden reference does not guard
+  this** — `tests/_golden_capture.py` calls the builders directly, so any new path to a
+  `TerminationSet` bypasses every golden case. `tests/test_core.py::TestTerminationPrecedence`
+  and `tests/test_connection_rows.py::TestRowsReproduceNamedModes` are the guard. Anything
+  claiming to reproduce a named mode must satisfy them, including the overlap cases.
+- **The coupling path is chosen by the measurement-port count, not the mode number.**
+  A Mode 5 spec with two probes used to go to `compute_z`, which returns `Zmat[:, 0, 0]`
+  and warns that the rest were ignored — a wrong number with no visible difference. Once
+  both modes share an editor, "I defined two probes" has to mean the same thing in both.
+  Single-measurement-port specs still take `compute_z` so they stay bit-identical.
+- **`RowTable` is a Canvas plus a grid of real widgets, NOT `ttk.Treeview`.** Treeview has
+  no cell editors: it means floating Entry/Combobox widgets over cells and hand-managing
+  placement, tab order and scroll offset, and the overlays misalign under Win11 DPI
+  scaling. Its mousewheel is bound on `<Enter>`/`<Leave>`, **never `bind_all`**, or the
+  table and the Matplotlib canvas fight over every scroll event. Both `<Configure>`
+  bindings are needed (inner frame -> scrollregion, canvas -> inner frame width).
+- **`TraceConfig.mports` is a LIST, so Duplicate must copy it element-wise.**
+  `TraceConfig(**src.__dict__)` is a shallow splat and handed both traces the same list;
+  editing the copy's measurement ports then silently edited the original's, with no
+  symptom but two curves quietly agreeing. `_duplicate_trace_config` exists to make that
+  testable. Same trap for any future list-valued field.
+- **`mp1_*` / `mp2_*` / `mp_more` are retired but must keep loading.** `migrate_legacy_mports`
+  folds them into `mports` the same way `migrate_legacy_mode` folds mode 4 into mode 2.
+  It splits the old `name = +ports / -ports` lines **textually**, not via `parse_mport_spec`,
+  so ranges survive as ranges and a malformed old line migrates instead of raising during
+  load (it fails later, at Calculate, with a message that names it).
+- **`pack` UNMAPS what does not fit, starting from the end — so pin fixed sections first.**
+  A fixed-size section packed *after* an `expand=True` sibling disappears entirely once the
+  sibling outgrows the panel; it is not clipped, `winfo_ismapped()` returns 0. Measured: in
+  mode 6 at 1500x900 the whole "Global Controls" frame was gone, i.e. **Calculate All &
+  Plot / Export CSV / Help were not on screen**, while modes 1/2/3/5 looked fine — which is
+  what made it read as flaky rather than broken. `Global Controls` is therefore packed
+  `side=BOTTOM` **before** the editor, and `Apply to Trace` is packed `side=BOTTOM` inside
+  the editor **before** the scrollable body. Do not reorder either.
+- **The editor form lives in a Canvas and must have its scrollregion refreshed on every
+  mode change.** `_update_mode_visibility` uses `grid()`/`grid_remove()`, and the inner
+  frame's `<Configure>` does NOT fire usefully for that: the scrollregion keeps its old
+  height and the view stays scrolled down, parking a now-short form out of sight.
+  `_refresh_editor_scrollregion` handles it — via `after_idle`, never `update_idletasks`.
+- **Never call `update_idletasks()` while the UI is being built.** It flushes geometry for
+  the WHOLE application, not just the calling widget. `RowTable` did this to auto-size
+  itself, and because `_build_left_panel` runs before `_build_right_panel`, the flush
+  pinned the right-hand `ttk.PanedWindow`'s sash at 2px — the entire **Results pane
+  disappeared**, with `_build_right_panel` untouched in the diff. Defer to `after_idle`
+  (`RowTable._schedule_resize`, which also coalesces repeats and checks `winfo_exists`).
+  `tests/test_row_table.py::TestResultsPaneVisible` is the guard; it needs a MAPPED
+  window, because `sashpos()` reads 0 on a withdrawn root whatever the layout is.
+- **Populate a pane before `PanedWindow.add()`ing it.** ttk sizes a pane from its requested
+  size at `add()` time and never recomputes, so adding an empty frame and filling it after
+  works only while nothing forces a geometry pass in between. This alone did NOT fix the
+  bug above (measured: reverting it leaves the test green) — it removes the latent
+  fragility that made an unrelated widget able to trigger it.
+- **A table cell cannot hold a placeholder hint, so the hint is a permanent label under
+  the table.** `PlaceholderEntry` / `PlaceholderText` delete their hint on `<FocusIn>` —
+  that deletion is the mechanical reason nobody could remember the syntax. Do not
+  "restore" per-cell placeholders.
+
 - **Plot quantities that need more than one curve arrive via `Trace.aux`.** `k` needs three curves at once (`Z_ab`, `Z_aa`, `Z_bb`) and so cannot be derived from a single `(freqs, Z)` pair; the GUI precomputes it and attaches it. `trace_y_values` must return an all-NaN array (draw nothing) for a trace with no matching `aux` entry, never raise — self curves share the subplot grid with mutual ones. New derived quantities go in `AUX_PLOT_TYPES` the same way.
 
 ### `reduce_snp.py` specifics

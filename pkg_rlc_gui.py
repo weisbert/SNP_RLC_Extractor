@@ -24,9 +24,9 @@ from __future__ import annotations
 import csv
 import math
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -38,9 +38,11 @@ from pkg_rlc_core import (
     DEFAULT_Z0,
     RECIPROCITY_WARN,
     SI_SUFFIXES,
+    ConnectionRow,
     Ground,
     LumpedBetween,
     LumpedToGnd,
+    MeasPortRow,
     Open,
     ShortPair,
     Signal,
@@ -68,6 +70,9 @@ from pkg_rlc_core import (
     parse_short_pairs,
     parse_si,
     parse_touchstone,
+    resolve_meas_ports,
+    rows_to_dsl_text,
+    dsl_text_to_rows,
     s_to_y,
     y_series_rlc,
     format_si,
@@ -130,6 +135,12 @@ class TraceConfig:
     vdd_ports: str = ""      # retired; kept so mode-4 configs still migrate
     custom_text: str = ""
     # --- Mode 6 (+/- measurement ports / coupling) ---
+    # `mports` is the live storage: one MeasPortRow per measurement port, port
+    # specs kept as typed so '5:1:8' stays a range.  The mp1_*/mp2_*/mp_more
+    # fields below are RETIRED -- Mode 6 used to offer two hard-coded ports and
+    # a free-text box for the third onward -- and are kept only so an older
+    # config still loads (see migrate_legacy_mports).
+    mports: list = field(default_factory=list)   # list[MeasPortRow]
     mp1_name: str = ""
     mp1_plus: str = ""
     mp1_minus: str = ""
@@ -176,6 +187,43 @@ class TraceConfig:
         self.gnd_ports = _union_port_specs(self.gnd_ports, self.vdd_ports)
         self.vdd_ports = ""
         self.mode = 2
+        return True
+
+    def migrate_legacy_mports(self) -> bool:
+        """
+        Fold the retired mp1_*/mp2_*/mp_more fields into the `mports` table.
+
+        The old Mode 6 editor had two hard-coded measurement ports plus a
+        free-text box for the third onward; the table replaces all three.  The
+        'name = +ports / -ports' lines are split textually rather than through
+        parse_mport_spec, so port RANGES survive as ranges ('5:1:8' stays one
+        cell) and a malformed old line migrates instead of raising during load.
+        It will fail later, at Calculate, with a message that names it.
+
+        Returns True when a migration actually happened.
+        """
+        if self.mports:
+            return False
+        rows: list = []
+        for name, plus, minus in ((self.mp1_name, self.mp1_plus, self.mp1_minus),
+                                  (self.mp2_name, self.mp2_plus, self.mp2_minus)):
+            if (plus or "").strip() or (minus or "").strip():
+                rows.append(MeasPortRow(name=(name or "").strip(),
+                                        plus=(plus or "").strip(),
+                                        minus=(minus or "").strip()))
+        for line in _mport_more_lines(self.mp_more):
+            name, sep, rest = line.partition("=")
+            if not sep:
+                name, rest = "", line
+            plus, _slash, minus = rest.partition("/")
+            rows.append(MeasPortRow(name=name.strip(), plus=plus.strip(),
+                                    minus=minus.strip()))
+        if not rows:
+            return False
+        self.mports = rows
+        self.mp1_name = self.mp1_plus = self.mp1_minus = ""
+        self.mp2_name = self.mp2_plus = self.mp2_minus = ""
+        self.mp_more = ""
         return True
 
 
@@ -262,15 +310,12 @@ def _port_descriptor(tc: "TraceConfig") -> str:
         return (f"M4→M2: {_fmt_port_terminal(tc.port_a)}↔{_fmt_port_terminal(tc.port_b)} "
                 f"G:{_fmt_port_set(_union_port_specs(tc.gnd_ports, tc.vdd_ports))}")
     if tc.mode == 6:
-        parts = []
-        if (tc.mp1_plus or "").strip():
-            parts.append(_fmt_mport(tc.mp1_name, tc.mp1_plus, tc.mp1_minus))
-        if (tc.mp2_plus or "").strip():
-            parts.append(_fmt_mport(tc.mp2_name, tc.mp2_plus, tc.mp2_minus))
-        extra = len(_mport_more_lines(tc.mp_more))
-        if extra:
-            parts.append(f"+{extra}")
-        body = " ".join(parts) if parts else "(empty)"
+        tc.migrate_legacy_mports()
+        parts = [_fmt_mport(r.name, r.plus, r.minus) for r in tc.mports
+                 if r.plus.strip() or r.minus.strip()]
+        body = " ".join(parts[:3]) if parts else "(empty)"
+        if len(parts) > 3:
+            body += f" +{len(parts) - 3}"
         return f"M6: {body} G:{_fmt_port_set(tc.gnd_ports)}"
     if tc.mode == 5:
         text = (tc.custom_text or "").strip().replace("\n", " ")
@@ -284,34 +329,49 @@ def _port_descriptor(tc: "TraceConfig") -> str:
 # Mode 6 helpers (+/- measurement ports, coupling)
 # ============================================================================
 
+def _duplicate_trace_config(src: "TraceConfig", new_id: int) -> "TraceConfig":
+    """
+    Copy a trace for the Duplicate button, dropping last run's results.
+
+    `mports` is a LIST of dataclasses, so it is copied element-wise.  A plain
+    `TraceConfig(**src.__dict__)` hands both traces the same list object, and
+    editing the copy's measurement ports then silently edits the original's --
+    a bug with no visible symptom until two curves quietly agree.
+    """
+    return TraceConfig(**{**src.__dict__,
+                          "id": new_id,
+                          "label": src.label + "_copy",
+                          "mports": [replace(r) for r in src.mports],
+                          "Z": None, "rlc": None, "fit": None, "fit_kind": "",
+                          "Zmat": None, "mport_names": None,
+                          "coupling": None})
+
+
 def _collect_mports(tc: "TraceConfig") -> list[tuple[str, list[int], list[int]]]:
     """
-    Editor fields -> the (name, plus_1based, minus_1based) triples that
-    build_terminations_coupling expects.  Ports stay 1-based here; the core
-    builder is the 1-based/0-based boundary.
+    Measurement-port table -> the (name, plus_1based, minus_1based) triples
+    that build_terminations_coupling expects.  Ports stay 1-based here; the
+    core builder is the 1-based/0-based boundary.
     """
+    tc.migrate_legacy_mports()
     out: list[tuple[str, list[int], list[int]]] = []
-    for idx, (name, plus, minus) in enumerate(
-            ((tc.mp1_name, tc.mp1_plus, tc.mp1_minus),
-             (tc.mp2_name, tc.mp2_plus, tc.mp2_minus)), start=1):
-        plus = (plus or "").strip()
-        minus = (minus or "").strip()
+    for idx, row in enumerate(tc.mports, start=1):
+        plus = row.plus.strip()
+        minus = row.minus.strip()
         if not plus:
             if minus:
+                label = f"'{row.name.strip()}'" if row.name.strip() else f"row {idx}"
                 raise ValueError(
-                    f"Port {idx} has a '-' side but no '+' side; the red probe "
-                    "must touch at least one port.")
+                    f"Measurement port {label} has a '-' side but no '+' side; "
+                    "the red probe must touch at least one port.")
             continue
-        out.append(((name or "").strip(),
+        out.append((row.name.strip(),
                     parse_port_range(plus), parse_port_range(minus)))
-
-    for line in _mport_more_lines(tc.mp_more):
-        out.append(parse_mport_spec(line))
 
     if not out:
         raise ValueError(
-            "No measurement ports defined: fill in Port 1 (+) "
-            "(or add lines under 'More ports').")
+            "No measurement ports defined: add a row to the measurement-port "
+            "table and fill in its '+' side.")
     return out
 
 
@@ -823,6 +883,239 @@ class PlaceholderText(tk.Text):
                 self._show_if_empty()
 
 
+# ============================================================================
+# RowTable -- scrollable table of editable rows with a '+' button
+# ============================================================================
+#
+# The replacement for the free-text boxes in Mode 5 and Mode 6.  Deliberately
+# built from a Canvas plus a grid of real widgets rather than ttk.Treeview:
+# Treeview has no cell editors, so it means floating Entry/Combobox widgets
+# over cells and hand-managing placement, tab order and scroll offset, and the
+# overlays misalign under Win11 DPI scaling.  A grid of real widgets is less
+# code and behaves correctly.
+
+
+@dataclass(frozen=True)
+class ColumnSpec:
+    """One column of a RowTable.  `key` is the row dataclass's field name."""
+    key: str
+    title: str
+    width: int                      # in characters
+    kind: str = "entry"             # "entry" | "combo" | "static"
+    values: tuple = ()              # choices, for kind="combo"
+    placeholder: str = ""
+    readonly_combo: bool = False    # combo that rejects typed-in values
+
+
+class RowTable(ttk.Frame):
+    """
+    A '+ Add' button over a scrollable grid of editable rows.
+
+    get_rows() / set_rows() speak lists of the dataclass `row_factory` makes,
+    so the caller never touches a widget.  Blank trailing rows are kept in the
+    UI (somewhere to type) but dropped by get_rows() via the row's own
+    is_blank(), which is what lets the table start with an empty row without
+    that empty row meaning anything.
+    """
+
+    def __init__(self, master, columns: Sequence[ColumnSpec], row_factory,
+                 on_change=None, min_rows: int = 1, max_visible: int = 6,
+                 add_text: str = "+ Add", **kwargs):
+        super().__init__(master, **kwargs)
+        self._columns = list(columns)
+        self._row_factory = row_factory
+        self._on_change = on_change
+        self._min_rows = max(0, int(min_rows))
+        self._max_visible = max(1, int(max_visible))
+        self._rows: list[dict] = []      # per row: {key: tk.StringVar} + widgets
+        self._resize_pending = False
+
+        # --- add button (outside the scroll area) ---
+        head = ttk.Frame(self)
+        head.pack(side=tk.TOP, fill=tk.X)
+        ttk.Button(head, text=add_text, width=8, command=self.add_row
+                   ).pack(side=tk.RIGHT, padx=1)
+
+        # --- scrollable body ---
+        body = ttk.Frame(self)
+        body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self._canvas = tk.Canvas(body, highlightthickness=0, height=1)
+        self._vsb = ttk.Scrollbar(body, orient="vertical",
+                                  command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=self._vsb.set)
+        self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._inner = ttk.Frame(self._canvas)
+        self._window = self._canvas.create_window((0, 0), window=self._inner,
+                                                  anchor="nw")
+
+        # Both bindings are needed: the inner frame drives the scrollregion,
+        # the canvas drives the inner frame's width (without it the columns
+        # do not stretch).
+        self._inner.bind("<Configure>", self._on_inner_configure)
+        self._canvas.bind("<Configure>", self._on_canvas_configure)
+        # Wheel handling is NOT bound here.  The App installs one pointer-based
+        # router and calls register_wheel() below; a per-widget bind_all /
+        # unbind_all pair does not compose once there is more than one
+        # scrollable region (unbind_all drops every binding on the `all` tag).
+
+        # Column headers live in the SAME grid as the cells (grid row 0, cells
+        # from row 1), so they line up exactly.  A separate header frame packed
+        # above cannot: its labels measure in characters of a different font
+        # than the Entry widgets below, and the last title ends up clipped.
+        for c, col in enumerate(self._columns):
+            ttk.Label(self._inner, text=col.title, anchor="w",
+                      font=("TkDefaultFont", 8)
+                      ).grid(row=0, column=c, sticky="w", padx=1)
+
+        for _ in range(self._min_rows):
+            self.add_row(notify=False)
+
+    # ------------------------------------------------------------------ scroll
+
+    def _on_inner_configure(self, _event=None) -> None:
+        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+        self._schedule_resize()
+
+    def _on_canvas_configure(self, event) -> None:
+        self._canvas.itemconfigure(self._window, width=event.width)
+
+    def _schedule_resize(self) -> None:
+        """
+        Queue _resize_to_content for the next idle moment, coalescing repeats.
+
+        Never call update_idletasks() here.  It flushes geometry for the WHOLE
+        application, and this widget is built while the rest of the window still
+        is: one such flush during construction froze the Results pane's
+        PanedWindow sash at 2px and made the pane vanish.  after_idle runs after
+        Tk's own geometry pass, so reqheight is valid without forcing anything.
+        """
+        if self._resize_pending:
+            return
+        self._resize_pending = True
+        self.after_idle(self._resize_to_content)
+
+    def _resize_to_content(self) -> None:
+        """Grow with the rows up to max_visible, then show the scrollbar."""
+        self._resize_pending = False
+        if not self.winfo_exists():
+            return
+        # A frame in create_window contributes NOTHING to the canvas's requested
+        # size, so without this the canvas keeps Tk's default 378px forever and
+        # a 6-column table is silently squashed with no way to reach the rest.
+        self._canvas.configure(width=self._inner.winfo_reqwidth())
+        total = max(1, self._inner.winfo_reqheight())
+        n = len(self._rows)
+        if n > self._max_visible:
+            per = total / (n + 1)          # +1 for the header row
+            self._canvas.configure(height=int(per * (self._max_visible + 1)))
+            self._vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        else:
+            self._canvas.configure(height=total)
+            self._vsb.pack_forget()
+
+    def register_wheel(self, register) -> None:
+        """Hand the App's router this table's canvas and handler."""
+        register(self._canvas, self._on_wheel)
+
+    def _on_wheel(self, event) -> bool:
+        """Scroll this table. Returns False when it fits, so the event bubbles."""
+        first, last = self._canvas.yview()
+        if first <= 0.0 and last >= 1.0:
+            return False
+        self._canvas.yview_scroll(int(-event.delta / 120), "units")
+        return True
+
+    # ------------------------------------------------------------------- rows
+
+    def add_row(self, values: dict | None = None, notify: bool = True) -> None:
+        r = len(self._rows) + 1          # grid row 0 holds the column headers
+        entry: dict = {"_vars": {}, "_widgets": []}
+        for c, col in enumerate(self._columns):
+            var = tk.StringVar(value=(values or {}).get(col.key, ""))
+            entry["_vars"][col.key] = var
+            if col.kind == "combo":
+                w = ttk.Combobox(
+                    self._inner, textvariable=var, width=col.width,
+                    values=list(col.values),
+                    state="readonly" if col.readonly_combo else "normal")
+            elif col.kind == "static":
+                w = ttk.Label(self._inner, textvariable=var, width=col.width,
+                              anchor="w")
+            else:
+                w = ttk.Entry(self._inner, textvariable=var, width=col.width)
+            w.grid(row=r, column=c, sticky="we", padx=1, pady=1)
+            entry["_widgets"].append(w)
+            if self._on_change is not None:
+                var.trace_add("write", lambda *_a: self._on_change())
+        btn = ttk.Button(self._inner, text="✕", width=2,
+                         command=lambda: self._delete_row(entry))
+        btn.grid(row=r, column=len(self._columns), padx=1, pady=1)
+        entry["_widgets"].append(btn)
+        self._rows.append(entry)
+        for c, col in enumerate(self._columns):
+            self._inner.columnconfigure(c, weight=1 if col.kind != "static" else 0)
+        self._schedule_resize()
+        if notify and self._on_change is not None:
+            self._on_change()
+
+    def _delete_row(self, entry: dict) -> None:
+        if entry not in self._rows:
+            return
+        for w in entry["_widgets"]:
+            w.destroy()
+        self._rows.remove(entry)
+        self._regrid()
+        if len(self._rows) < self._min_rows:
+            self.add_row(notify=False)
+        self._schedule_resize()
+        if self._on_change is not None:
+            self._on_change()
+
+    def _regrid(self) -> None:
+        for r, entry in enumerate(self._rows, start=1):   # 0 is the header row
+            for c, w in enumerate(entry["_widgets"]):
+                w.grid_configure(row=r, column=c)
+
+    def clear(self) -> None:
+        for entry in list(self._rows):
+            for w in entry["_widgets"]:
+                w.destroy()
+        self._rows.clear()
+
+    # ------------------------------------------------------------ get / set
+
+    def get_rows(self) -> list:
+        """Row dataclasses, blanks dropped (the row type decides what blank is)."""
+        out = []
+        for entry in self._rows:
+            row = self._row_factory()
+            for col in self._columns:
+                setattr(row, col.key, entry["_vars"][col.key].get().strip())
+            if not row.is_blank():
+                out.append(row)
+        return out
+
+    def set_rows(self, rows: Sequence) -> None:
+        self.clear()
+        for row in rows:
+            self.add_row({col.key: str(getattr(row, col.key, "") or "")
+                          for col in self._columns}, notify=False)
+        while len(self._rows) < self._min_rows:
+            self.add_row(notify=False)
+        self._schedule_resize()
+
+    def set_column_values(self, key: str, values: Sequence[str]) -> None:
+        """Repopulate a combo column's choices (e.g. after a file change)."""
+        idx = next((i for i, c in enumerate(self._columns) if c.key == key), None)
+        if idx is None:
+            return
+        for entry in self._rows:
+            w = entry["_widgets"][idx]
+            if isinstance(w, ttk.Combobox):
+                w.configure(values=list(values))
+        self._columns[idx] = replace(self._columns[idx], values=tuple(values))
+
+
 # Per-mode placeholder hints. Keyed by (field, mode) -> hint text.
 # Fields: port_a, port_b, short_pairs, gnd, mp1_name, mp1_plus, mp1_minus,
 #         mp2_name, mp2_plus, mp2_minus, mp_more
@@ -878,8 +1171,64 @@ MP_MORE_PLACEHOLDER = (
 
 MODE_PLACEHOLDERS["mp_more"] = {6: MP_MORE_PLACEHOLDER}
 
+# Shown under the Mode 6 measurement-port table. This has to carry everything
+# the six retired placeholder hints used to say, because a plain ttk.Entry in
+# a table cell has no room for a hint of its own -- so it is long, and it lives
+# behind a disclosure triangle (collapsed by default) rather than costing 125px
+# of a form that already does not fit. Unlike a PlaceholderEntry's hint, focus
+# cannot destroy it: it is a Label, and it is still there after you click away.
+MP_TABLE_HINT_SHORT = "'+' = red probe, '−' = black (empty = vs GND)"
+MP_TABLE_HINT = (
+    "One row per measurement port. '+' is the red probe, '−' the black one; "
+    "leave '−' empty to measure against GND. Ports listed on the same side are "
+    "tied together, and ranges work (5,7 or 5:1:8). Two or more rows give you "
+    "the coupling (M, k) between them. Names are optional (P1, P2, … if blank) "
+    "but 'A' and 'B' are reserved."
+)
+
+
+class _CollapsibleHint(ttk.Frame):
+    """
+    A one-line grey summary plus a disclosure triangle for the full text.
+
+    Collapsed by default: the long hints measured 182px in mode 6, more than
+    twice the table they explain, on a form that already overflowed. The full
+    text stays one click away and the expanded/collapsed state is remembered
+    for the session, so a user who needs it once keeps it, and a user who has
+    internalised it never sees it again.
+    """
+
+    _expanded = False        # class-level: shared across every hint instance
+
+    def __init__(self, master, short: str, long: str, **kwargs):
+        super().__init__(master, **kwargs)
+        self._long_text = long
+        self._btn = ttk.Label(self, foreground=PLACEHOLDER_FG, cursor="hand2")
+        self._btn.pack(side=tk.TOP, anchor="w")
+        self._btn.bind("<Button-1>", self._toggle)
+        self._short = short
+        self._body = ttk.Label(self, text=long, foreground=PLACEHOLDER_FG,
+                               justify=tk.LEFT, wraplength=320)
+        self._render()
+
+    def _render(self) -> None:
+        arrow = "▾" if _CollapsibleHint._expanded else "▸"
+        self._btn.configure(text=f"{arrow} {self._short}")
+        if _CollapsibleHint._expanded:
+            self._body.pack(side=tk.TOP, anchor="w", pady=(1, 0))
+        else:
+            self._body.pack_forget()
+
+    def _toggle(self, _event=None) -> None:
+        _CollapsibleHint._expanded = not _CollapsibleHint._expanded
+        for w in self.master.winfo_children():
+            if isinstance(w, _CollapsibleHint):
+                w._render()
+        self.event_generate("<<HintToggled>>")
+
 # Shown under the mode-6 plot checkboxes: the subplot grid is shared with the
 # self curves, so the axis titles need reinterpreting on a mutual curve.
+MUTUAL_CURVE_HINT_SHORT = "on a mutual curve, L(nH) reads as M and C(pF) as C_c"
 MUTUAL_CURVE_HINT = (
     "On a mutual curve the L(nH) subplot IS M in nH and C(pF) IS the coupling "
     "capacitance C_c; the k subplot is filled in for mutual curves only."
@@ -912,9 +1261,76 @@ class App(tk.Tk):
         self.traces: list[TraceConfig] = []
         self._next_trace_id = 1
         self._suppress_editor_sync = False
+        self._scrollables: dict[str, object] = {}
 
+        self._install_wheel_router()
         self._build_ui()
         self._bind_events()
+        self._clamp_to_screen()
+
+    # ------------------------------------------------------- wheel routing
+
+    # Widget classes that scroll (or otherwise act on) the wheel themselves.
+    # The router must not double-handle for these.
+    _WHEEL_OWNERS = frozenset({"Text", "Listbox", "Treeview", "TCombobox",
+                               "TSpinbox", "Spinbox", "TScrollbar", "Scrollbar"})
+
+    def _install_wheel_router(self) -> None:
+        """
+        One pointer-based wheel router for the whole window.
+
+        Replaces the per-widget <Enter>/<Leave> + bind_all/unbind_all dance,
+        which does not compose: unbind_all deletes EVERY binding on the `all`
+        tag, so a second scrollable region silently disables the first, and a
+        table that cannot scroll swallowed the event instead of letting the
+        form behind it scroll.  Here each registered handler returns False when
+        its content already fits, and the event bubbles to the next scrollable
+        ancestor -- innermost wins, with fall-through.
+
+        Matplotlib is unaffected: its wheel binding is on the figure canvas
+        widget itself, which fires before the `all` tag, and the router finds
+        nothing registered above it. The plot panel's <Enter> -> focus_set()
+        for the M / V / Delete keys is untouched -- this keys off the POINTER,
+        not focus.
+        """
+        self.bind_all("<MouseWheel>", self._route_wheel, add="+")
+        # A ttk Combobox CHANGES ITS VALUE on the wheel (class binding
+        # 'ttk::combobox::Scroll'). On a form where one of those comboboxes
+        # selects the Touchstone file, an accidental scroll silently rebinds
+        # the trace to a different file and every number changes with no
+        # warning. Nothing here wants that behaviour.
+        self.unbind_class("TCombobox", "<MouseWheel>")
+
+    def _register_scrollable(self, widget, handler) -> None:
+        """handler(event) -> True if it consumed the wheel, False to bubble."""
+        self._scrollables[str(widget)] = handler
+
+    def _route_wheel(self, event):
+        w = self.winfo_containing(event.x_root, event.y_root)
+        while w is not None:
+            try:
+                if w.winfo_class() in self._WHEEL_OWNERS:
+                    return None          # it handles itself; don't double-scroll
+                handler = self._scrollables.get(str(w))
+                if handler is not None and handler(event):
+                    return "break"
+                w = w.master
+            except Exception:
+                return None
+        return None
+
+    def _clamp_to_screen(self) -> None:
+        """
+        Never open taller than the desktop.
+
+        The hardcoded 1500x900 is fine on a large monitor and is born partly
+        off-screen on a 1920x1080 laptop at 150% scaling (1280x680 logical),
+        which puts the bottom of the window -- Calculate, Apply -- beyond the
+        desktop before layout is even involved.
+        """
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"{min(1500, sw - 80)}x{min(900, sh - 140)}+40+20")
+        self.minsize(1040, 600)
 
     # ------------------------------------------------------------------ UI
 
@@ -965,17 +1381,102 @@ class App(tk.Tk):
                                     activestyle="dotbox")
         self.traces_lb.pack(side=tk.TOP, fill=tk.X, padx=2, pady=2)
 
+        # --- Global controls ---
+        # PACKED BEFORE THE EDITOR, AND side=BOTTOM.  pack allocates in call
+        # order and simply UNMAPS whatever no longer fits, starting from the
+        # end -- so a fixed-size section packed after an expand=True sibling
+        # vanishes entirely once the sibling outgrows the panel.  Measured: in
+        # mode 6 at 1500x900 this whole frame came back winfo_ismapped() == 0,
+        # i.e. Calculate / Export CSV / Help were not on screen at all. Claiming
+        # the bottom first is what makes them unconditional.
+        gc = ttk.LabelFrame(parent, text="Global Controls")
+        gc.pack(side=tk.BOTTOM, fill=tk.X, padx=4, pady=2)
+        self._build_global_controls(gc)
+
         # --- Editor section ---
         ed = ttk.LabelFrame(parent, text="Edit Selected Trace")
         ed.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=4, pady=2)
         self._build_editor(ed)
 
-        # --- Global controls ---
-        gc = ttk.LabelFrame(parent, text="Global Controls")
-        gc.pack(side=tk.TOP, fill=tk.X, padx=4, pady=2)
-        self._build_global_controls(gc)
-
     def _build_editor(self, parent: ttk.LabelFrame) -> None:
+        """
+        Editor = a pinned footer + a scrollable form.
+
+        The form is mode-dependent and in mode 5 it is taller than any laptop
+        screen, so it lives in a Canvas.  "Apply to Trace" does NOT: it is
+        packed side=BOTTOM *first*, outside the scroll region, so the form can
+        clip or scroll all it likes and the button stays reachable.  Packing it
+        after the expanding body is what made it fall off the bottom.
+        """
+        foot = ttk.Frame(parent)
+        foot.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(foot, text="Apply to Trace", command=self._on_apply_editor
+                   ).pack(side=tk.RIGHT, padx=6, pady=3)
+
+        body = ttk.Frame(parent)
+        body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self._ed_vsb = ttk.Scrollbar(body, orient="vertical")
+        self._ed_canvas = tk.Canvas(body, highlightthickness=0, borderwidth=0,
+                                    yscrollcommand=self._ed_scroll_set)
+        self._ed_vsb.configure(command=self._ed_canvas.yview)
+        self._ed_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._ed_form = ttk.Frame(self._ed_canvas)
+        self._ed_win = self._ed_canvas.create_window(
+            (0, 0), window=self._ed_form, anchor="nw")
+        # Never let the form be narrower than it asked for: a squashed 6-column
+        # table with no horizontal scrollbar is unreachable content.
+        self._ed_canvas.bind(
+            "<Configure>",
+            lambda e: self._ed_canvas.itemconfigure(
+                self._ed_win,
+                width=max(e.width, self._ed_form.winfo_reqwidth())))
+        self._register_scrollable(self._ed_canvas, self._ed_wheel)
+
+        self._build_editor_form(self._ed_form)
+
+    def _ed_scroll_set(self, first: str, last: str) -> None:
+        """Autohide the editor scrollbar when the form fits."""
+        self._ed_vsb.set(first, last)
+        if float(first) <= 0.0 and float(last) >= 1.0:
+            self._ed_vsb.pack_forget()
+        else:
+            self._ed_vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def _ed_wheel(self, event) -> bool:
+        """Scroll the editor form. Returns False when it has nowhere to go."""
+        first, last = self._ed_canvas.yview()
+        if first <= 0.0 and last >= 1.0:
+            return False
+        self._ed_canvas.yview_scroll(int(-event.delta / 120), "units")
+        return True
+
+    def _refresh_editor_scrollregion(self) -> None:
+        """
+        Re-measure after grid()/grid_remove() changed which rows exist.
+
+        The <Configure> binding on the inner frame is NOT sufficient: measured,
+        after hiding 17 rows the scrollregion stayed at its old height and the
+        view stayed scrolled down, leaving a short form parked out of sight.
+
+        Deferred to after_idle, NEVER update_idletasks(). This runs during
+        construction too (_build_editor_form ends by calling
+        _update_mode_visibility), and forcing a geometry pass there is exactly
+        what collapsed the Results pane's PanedWindow sash to 2px --
+        tests/test_row_table.py::TestResultsPaneVisible caught this very edit.
+        """
+        if getattr(self, "_ed_scroll_pending", False):
+            return
+        self._ed_scroll_pending = True
+        self.after_idle(self._apply_editor_scrollregion)
+
+    def _apply_editor_scrollregion(self) -> None:
+        self._ed_scroll_pending = False
+        if not self._ed_canvas.winfo_exists():
+            return
+        self._ed_canvas.configure(scrollregion=self._ed_canvas.bbox("all"))
+        self._ed_canvas.yview_moveto(0)
+
+    def _build_editor_form(self, parent: ttk.Frame) -> None:
         # File combobox
         row = 0
         ttk.Label(parent, text="File:").grid(row=row, column=0, sticky="e", padx=2, pady=1)
@@ -1030,39 +1531,30 @@ class App(tk.Tk):
         row += 1
 
         # --- Mode 6: measurement ports (probe pairs) ---
-        # Two structured ports cover the common case; "More ports" takes any
-        # number of extra "name = +ports / -ports" lines.
-        self.ed_mp_widgets: list[tuple] = []   # (label, entry) pairs, mode 6
-
-        def _mp_row(r, text, field):
-            lbl = ttk.Label(parent, text=text)
-            lbl.grid(row=r, column=0, sticky="e", padx=2, pady=1)
-            ent = PlaceholderEntry(parent, width=42,
-                                   placeholder=MODE_PLACEHOLDERS[field][6])
-            ent.grid(row=r, column=1, columnspan=3, sticky="we", padx=2, pady=1)
-            self.ed_mp_widgets.append((lbl, ent))
-            return ent
-
-        self.ed_mp1_name = _mp_row(row, "Port 1 name:", "mp1_name")
-        row += 1
-        self.ed_mp1_plus = _mp_row(row, "Port 1  (+):", "mp1_plus")
-        row += 1
-        self.ed_mp1_minus = _mp_row(row, "Port 1  (−):", "mp1_minus")
-        row += 1
-        self.ed_mp2_name = _mp_row(row, "Port 2 name:", "mp2_name")
-        row += 1
-        self.ed_mp2_plus = _mp_row(row, "Port 2  (+):", "mp2_plus")
-        row += 1
-        self.ed_mp2_minus = _mp_row(row, "Port 2  (−):", "mp2_minus")
+        # One table row per measurement port, added with the '+' button. This
+        # replaces two hard-coded ports plus a free-text box for the third
+        # onward -- that cliff (ports 1-2 get fields, port 3+ gets syntax) was
+        # the same disease as the Mode 5 text box, just less obvious.
+        self.ed_mp_lbl = ttk.Label(parent, text="Measurement\nports:",
+                                   justify=tk.RIGHT)
+        self.ed_mp_lbl.grid(row=row, column=0, sticky="ne", padx=2, pady=1)
+        self.ed_mp_table = RowTable(
+            parent,
+            columns=(ColumnSpec("name", "Name", 9),
+                     ColumnSpec("plus", "+ ports (red)", 13),
+                     ColumnSpec("minus", "− ports (black)", 13)),
+            row_factory=MeasPortRow,
+            min_rows=1, max_visible=5,
+        )
+        self.ed_mp_table.grid(row=row, column=1, columnspan=3, sticky="we",
+                              padx=2, pady=1)
+        self.ed_mp_table.register_wheel(self._register_scrollable)
         row += 1
 
-        self.ed_mp_more_lbl = ttk.Label(parent, text="More ports:")
-        self.ed_mp_more_lbl.grid(row=row, column=0, sticky="ne", padx=2, pady=1)
-        self.ed_mp_more = PlaceholderText(parent, width=42, height=5,
-                                          font=("Consolas", 9),
-                                          placeholder=MP_MORE_PLACEHOLDER)
-        self.ed_mp_more.grid(row=row, column=1, columnspan=3, sticky="we",
-                             padx=2, pady=1)
+        self.ed_mp_hint = _CollapsibleHint(parent, MP_TABLE_HINT_SHORT,
+                                           MP_TABLE_HINT)
+        self.ed_mp_hint.grid(row=row, column=1, columnspan=3, sticky="we",
+                             padx=2, pady=(0, 2))
         row += 1
 
         # GND / VDD ports (VDD merged in: for AC small-signal they are the same)
@@ -1088,10 +1580,9 @@ class App(tk.Tk):
                         variable=self.ed_plot_mutual_var).pack(side=tk.LEFT)
         row += 1
 
-        self.ed_mutual_hint = ttk.Label(parent, text=MUTUAL_CURVE_HINT,
-                                        foreground=PLACEHOLDER_FG,
-                                        justify=tk.LEFT, wraplength=320)
-        self.ed_mutual_hint.grid(row=row, column=1, columnspan=3, sticky="w",
+        self.ed_mutual_hint = _CollapsibleHint(parent, MUTUAL_CURVE_HINT_SHORT,
+                                               MUTUAL_CURVE_HINT)
+        self.ed_mutual_hint.grid(row=row, column=1, columnspan=3, sticky="we",
                                  padx=2, pady=(0, 2))
         row += 1
 
@@ -1127,9 +1618,8 @@ class App(tk.Tk):
                    width=5).grid(row=row, column=3, sticky="w", padx=2, pady=1)
         row += 1
 
-        # Apply button
-        ttk.Button(parent, text="Apply to Trace", command=self._on_apply_editor
-                   ).grid(row=row, column=1, columnspan=2, pady=4)
+        # "Apply to Trace" is NOT here -- it is pinned in the editor's footer,
+        # outside the scroll region, so it survives however long this form gets.
 
         parent.columnconfigure(1, weight=1)
         self._update_mode_visibility()
@@ -1170,10 +1660,15 @@ class App(tk.Tk):
         parent.columnconfigure(1, weight=1)
 
     def _build_right_panel(self, parent: ttk.PanedWindow) -> None:
+        # POPULATE BEFORE add().  A ttk.PanedWindow sizes a new pane from its
+        # requested size AT THE MOMENT IT IS ADDED, and never recomputes. Adding
+        # an empty frame and filling it afterwards therefore works only by luck:
+        # it depends on no geometry pass running in between, so any widget built
+        # earlier that calls update_idletasks() silently pins the sash at ~2px
+        # and the whole Results pane disappears. Build the children first and the
+        # sash position stops depending on timing.
         results_frame = ttk.Frame(parent, height=180)
         plot_frame = ttk.Frame(parent)
-        parent.add(results_frame, weight=0)
-        parent.add(plot_frame, weight=1)
 
         header = ttk.Frame(results_frame)
         header.pack(side=tk.TOP, fill=tk.X)
@@ -1196,9 +1691,15 @@ class App(tk.Tk):
         self.plot = PlotPanel(plot_frame, on_marker_changed=self._on_marker_drag)
         self.plot.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
+        parent.add(results_frame, weight=0)
+        parent.add(plot_frame, weight=1)
+
     def _bind_events(self) -> None:
         self.files_lb.bind("<<ListboxSelect>>", lambda e: self._on_file_selected())
         self.traces_lb.bind("<<ListboxSelect>>", lambda e: self._on_trace_selected())
+        # Expanding or collapsing a hint changes the form's height.
+        self.bind("<<HintToggled>>",
+                  lambda e: self._refresh_editor_scrollregion(), add="+")
 
     # --------------------------------------------------------------- File ops
 
@@ -1298,13 +1799,7 @@ class App(tk.Tk):
         idx = self._sel_idx(self.traces_lb)
         if idx is None:
             return
-        src = self.traces[idx]
-        new = TraceConfig(**{**src.__dict__,
-                             "id": self._next_trace_id,
-                             "label": src.label + "_copy",
-                             "Z": None, "rlc": None, "fit": None, "fit_kind": "",
-                             "Zmat": None, "mport_names": None,
-                             "coupling": None})
+        new = _duplicate_trace_config(self.traces[idx], self._next_trace_id)
         self._next_trace_id += 1
         self.traces.append(new)
         self._refresh_trace_list()
@@ -1326,13 +1821,7 @@ class App(tk.Tk):
             self.ed_portb.set_value(tc.port_b)
             self.ed_short.set_value(tc.short_pairs)
             self.ed_gnd.set_value(tc.gnd_ports)
-            self.ed_mp1_name.set_value(tc.mp1_name)
-            self.ed_mp1_plus.set_value(tc.mp1_plus)
-            self.ed_mp1_minus.set_value(tc.mp1_minus)
-            self.ed_mp2_name.set_value(tc.mp2_name)
-            self.ed_mp2_plus.set_value(tc.mp2_plus)
-            self.ed_mp2_minus.set_value(tc.mp2_minus)
-            self.ed_mp_more.set_value(tc.mp_more or "")
+            self.ed_mp_table.set_rows(tc.mports)
             self.ed_plot_self_var.set(bool(tc.plot_self))
             self.ed_plot_mutual_var.set(bool(tc.plot_mutual))
             self.ed_label.set_value(tc.label)
@@ -1344,12 +1833,18 @@ class App(tk.Tk):
         self._update_mode_visibility()
 
     def _migrate_trace(self, tc: TraceConfig) -> None:
-        """Fold a retired mode-4 trace into mode 2 (VDD is an AC ground)."""
+        """Fold retired shapes forward: mode 4 -> 2, mp1/mp2/mp_more -> table."""
         if tc.migrate_legacy_mode():
             self._append_result(
                 f"  [{tc.id}] {tc.label}: mode 4 (A↔B + VDD/GND) is retired; "
                 f"migrated to mode 2 with VDD folded into GND "
                 f"(GND = {tc.gnd_ports or '(none)'})")
+            self._refresh_trace_list()
+        if tc.migrate_legacy_mports():
+            self._append_result(
+                f"  [{tc.id}] {tc.label}: the Port 1 / Port 2 / 'More ports' "
+                f"fields are retired; migrated to {len(tc.mports)} row(s) of "
+                "the measurement-port table")
             self._refresh_trace_list()
 
     def _on_mode_changed(self) -> None:
@@ -1374,11 +1869,9 @@ class App(tk.Tk):
         show(self.ed_portb, mode in (2, 3))
         show(self.ed_short_lbl, mode == 3)
         show(self.ed_short, mode == 3)
-        for lbl, ent in self.ed_mp_widgets:
-            show(lbl, coupling)
-            show(ent, coupling)
-        show(self.ed_mp_more_lbl, coupling)
-        show(self.ed_mp_more, coupling)
+        show(self.ed_mp_lbl, coupling)
+        show(self.ed_mp_table, coupling)
+        show(self.ed_mp_hint, coupling)
         show(self.ed_gnd_lbl, ab_modes or coupling)
         show(self.ed_gnd, ab_modes or coupling)
         show(self.ed_plot_lbl, coupling)
@@ -1396,14 +1889,13 @@ class App(tk.Tk):
             MODE_PLACEHOLDERS["short_pairs"].get(mode, ""))
         self.ed_gnd.set_placeholder(
             MODE_PLACEHOLDERS["gnd"].get(mode, ""))
-        for field, widget in (("mp1_name", self.ed_mp1_name),
-                              ("mp1_plus", self.ed_mp1_plus),
-                              ("mp1_minus", self.ed_mp1_minus),
-                              ("mp2_name", self.ed_mp2_name),
-                              ("mp2_plus", self.ed_mp2_plus),
-                              ("mp2_minus", self.ed_mp2_minus),
-                              ("mp_more", self.ed_mp_more)):
-            widget.set_placeholder(MODE_PLACEHOLDERS[field].get(mode, ""))
+        # The measurement-port table needs no per-mode placeholders: it is
+        # mode-6-only and its hint lives permanently under it (MP_TABLE_HINT),
+        # where -- unlike a PlaceholderEntry -- focus cannot delete it.
+
+        # Which rows exist just changed, so the scroll region is stale. The
+        # inner frame's <Configure> does NOT cover this -- see the docstring.
+        self._refresh_editor_scrollregion()
 
     def _on_apply_editor(self) -> None:
         idx = self._sel_idx(self.traces_lb)
@@ -1425,13 +1917,7 @@ class App(tk.Tk):
         tc.port_b = self.ed_portb.get_value()
         tc.short_pairs = self.ed_short.get_value()
         tc.gnd_ports = self.ed_gnd.get_value()
-        tc.mp1_name = self.ed_mp1_name.get_value()
-        tc.mp1_plus = self.ed_mp1_plus.get_value()
-        tc.mp1_minus = self.ed_mp1_minus.get_value()
-        tc.mp2_name = self.ed_mp2_name.get_value()
-        tc.mp2_plus = self.ed_mp2_plus.get_value()
-        tc.mp2_minus = self.ed_mp2_minus.get_value()
-        tc.mp_more = self.ed_mp_more.get_value().rstrip()
+        tc.mports = self.ed_mp_table.get_rows()
         tc.plot_self = bool(self.ed_plot_self_var.get())
         tc.plot_mutual = bool(self.ed_plot_mutual_var.get())
         tc.custom_text = self.ed_custom_text.get_value().rstrip()
@@ -1490,12 +1976,36 @@ class App(tk.Tk):
             tc.mport_names = None
             tc.coupling = None
 
-            # Mode 6 produces a G x G Z matrix, not one curve; it gets its own
+            try:
+                term = self._build_termination(tc, nports=fe.ts.nports)
+                n_mports = len(resolve_meas_ports(term, fe.ts.nports))
+            except Exception as e:
+                tc.Z = None
+                self._append_result(f"  [{tc.id}] {tc.label}: ERROR {e}")
+                self._append_result(traceback.format_exc())
+                continue
+
+            # Mode 6 -- and ANY spec that defines more than one measurement
+            # port -- produces a G x G Z matrix, not one curve; it gets its own
             # results block and expands into several plot curves.
-            if tc.mode == 6:
+            #
+            # Routing on the measurement-port count rather than on the mode is
+            # what stops Mode 5 from silently reporting only the first port.
+            # compute_z returns Zmat[:, 0, 0] and warns about the rest, which
+            # is a wrong number with no visible difference -- and once the two
+            # modes share an editor, "I defined two probes here" has to mean
+            # the same thing in both.  A single-measurement-port spec still
+            # takes the compute_z path, so every pre-existing trace stays
+            # bit-identical (golden regression).
+            if tc.mode == 6 or n_mports > 1:
+                if tc.mode != 6:
+                    self._append_result(
+                        f"    [{tc.id}] {n_mports} measurement ports defined -- "
+                        "reporting the full coupling matrix (M, k), same as "
+                        "Mode 6.")
                 try:
                     cres = self._calculate_coupling_trace(
-                        tc, fe, f_rlc_hz, plot_traces)
+                        tc, fe, f_rlc_hz, plot_traces, term=term)
                 except Exception as e:
                     tc.Z = None
                     self._append_result(f"  [{tc.id}] {tc.label}: ERROR {e}")
@@ -1509,7 +2019,6 @@ class App(tk.Tk):
                 continue
 
             try:
-                term = self._build_termination(tc, nports=fe.ts.nports)
                 Z, warns = compute_z(fe.Y, fe.ts.freqs, term)
             except Exception as e:
                 self._append_result(f"  [{tc.id}] {tc.label}: ERROR {e}")
@@ -1581,13 +2090,20 @@ class App(tk.Tk):
 
     def _calculate_coupling_trace(self, tc: TraceConfig, fe: FileEntry,
                                   f_rlc_hz: float,
-                                  plot_traces: list) -> object:
+                                  plot_traces: list,
+                                  term: TerminationSet | None = None) -> object:
         """
-        Mode 6: reduce to the G x G measurement-port Z matrix, extract the
-        coupling result at the marker frequency, and append the expanded
-        self / mutual curves to `plot_traces`.  Returns the CouplingResult.
+        Reduce to the G x G measurement-port Z matrix, extract the coupling
+        result at the marker frequency, and append the expanded self / mutual
+        curves to `plot_traces`.  Returns the CouplingResult.
+
+        Used by Mode 6 and by any Mode 5 spec that defines more than one
+        measurement port.  `term` may be passed in when the caller has already
+        built it, which is the normal path -- the caller has to build it anyway
+        to count the measurement ports.
         """
-        term = self._build_termination(tc, nports=fe.ts.nports)
+        if term is None:
+            term = self._build_termination(tc, nports=fe.ts.nports)
         Zmat, names, warns = compute_z_matrix(fe.Y, fe.ts.freqs, term)
         for w in warns:
             self._append_result(f"    [{tc.id}] {w}")

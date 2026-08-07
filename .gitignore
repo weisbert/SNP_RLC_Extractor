@@ -33,3 +33,6 @@ deploy/dist/
 # Private local notes (company env details -- never push these)
 *.local.md
 .local/
+
+# Local review scratch (screenshots, throwaway captures)
+.review/
