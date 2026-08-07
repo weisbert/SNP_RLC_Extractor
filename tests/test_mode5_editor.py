@@ -33,6 +33,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import tkinter as tk  # noqa: E402
 from tkinter import ttk  # noqa: E402
 
+import numpy as np  # noqa: E402
+
 import pkg_rlc_gui  # noqa: E402
 from pkg_rlc_core import (  # noqa: E402
     ConnectionRow,
@@ -853,6 +855,131 @@ class TestCsvExport(_EditorCase):
                       if r and r[0] == "Freq_GHz")
         self.assertTrue(any(c.startswith("M_nH_") for c in header), header)
         self.assertTrue(any(c.startswith("k_") for c in header), header)
+
+
+@unittest.skipUnless(TK_OK, "no Tk display available")
+class TestGroundReferencedProbeThroughTheEditor(_EditorCase):
+    """
+    The ports->GND shape (Mode 1), driven through the real widgets.
+
+    A ground-referenced probe is a measurement-port row whose MINUS side is
+    BLANK -- the return path is the reference node -- and it is the difference
+    between Mode 1 and Mode 2 in the table: one column, filled or not.  Every
+    other Tk-driven test in this file happens to use a two-sided probe
+    ("tank", "1", "2"), so the whole ground-referenced path from cells to a
+    computed number was covered only at the row-model layer
+    (test_connection_rows.py::TestRowsReproduceNamedModes, which never touches
+    a widget).  A blank cell that silently became something else -- an empty
+    string reaching parse_port_range, a RowTable default, a strip that reads
+    the minus column -- would have shown up nowhere.
+    """
+
+    def _fill(self, mport, conns):
+        """
+        Fill the cells the way a user does, then Apply.
+
+        set_rows() deliberately does NOT notify -- that is what keeps loading a
+        trace from re-running the strips once per row -- so the explicit
+        _on_editor_rows_changed() is what a keystroke would have done.  The
+        load path is covered separately by _load(), below.
+        """
+        self.app.ed_mp_table.set_rows([mport])
+        self.app.ed_conn_table.set_rows(conns)
+        self.app._on_editor_rows_changed()
+        self.app._on_apply_editor()
+        self._settle()
+
+    def _load(self, mport, conns):
+        """The other way in: a saved trace selected in the list."""
+        self.tc.mports = [mport]
+        self.tc.conn_rows = list(conns)
+        self._select()
+        self._settle()
+
+    def test_typed_cells_reach_the_same_Z_as_build_terminations_mode1(self):
+        self._fill(MeasPortRow("tank", "1", ""),
+                   [ConnectionRow(kind="ground", ports="2-4")])
+        self.app._on_calculate()
+        self.assertIsNotNone(self.tc.Z, "trace did not compute")
+
+        from pkg_rlc_core import build_terminations_mode1, compute_z, s_to_y
+        Y = s_to_y(self.fe.ts.s, self.fe.ts.z0)
+        want, _ = compute_z(Y, self.fe.ts.freqs,
+                            build_terminations_mode1([1], [2, 3, 4]))
+        self.assertLess(float(np.max(np.abs(np.asarray(self.tc.Z) - want))),
+                        1e-15)
+
+    def test_it_takes_the_single_probe_path_not_the_coupling_path(self):
+        """One measurement port -> compute_z, so no Zmat and no k/M columns."""
+        self._fill(MeasPortRow("tank", "1", ""),
+                   [ConnectionRow(kind="ground", ports="2-4")])
+        self.app._on_calculate()
+        self.assertIsNone(self.tc.Zmat)
+        self.assertIsNotNone(self.tc.rlc)
+
+    def test_the_blank_minus_side_is_legal_and_not_flagged(self):
+        """
+        A ground-referenced probe must warn at most, never error -- it is the
+        single most common thing anyone measures.  Checked on BOTH ways into
+        the tables, because they refresh the strips through different paths:
+        typing goes via _on_editor_rows_changed, selecting a trace via
+        _update_mode_visibility.
+        """
+        for how in (self._fill, self._load):
+            with self.subTest(how=how.__name__):
+                how(MeasPortRow("tank", "1", ""),
+                    [ConnectionRow(kind="ground", ports="2-4")])
+                strip = self.app.ed_validation.cget("text")
+                self.assertNotIn("⚠", strip, strip)
+                self.assertIn("1 probe", self.app.ed_overview.cget("text"))
+
+    def test_the_generated_dsl_says_what_it_computes(self):
+        self._fill(MeasPortRow("tank", "1", ""),
+                   [ConnectionRow(kind="ground", ports="2-4")])
+        self.assertEqual(self.app._editor_dsl_text().split("\n")[:2],
+                         ["1 signal tank +", "2-4 ground"])
+
+    def test_it_exports_an_ordinary_rlc_csv_with_no_coupling_columns(self):
+        self._fill(MeasPortRow("tank", "1", ""),
+                   [ConnectionRow(kind="ground", ports="2-4")])
+        self.app._on_calculate()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "out.csv")
+            real = pkg_rlc_gui.filedialog.asksaveasfilename
+            pkg_rlc_gui.filedialog.asksaveasfilename = lambda *a, **k: path
+            try:
+                self.app._on_export_csv()
+            finally:
+                pkg_rlc_gui.filedialog.asksaveasfilename = real
+            body = Path(path).read_text(encoding="utf-8")
+        header = next(r for r in csv.reader(body.splitlines())
+                      if r and r[0] == "Freq_GHz")
+        self.assertFalse([c for c in header
+                          if c.startswith(("M_nH_", "k_"))], header)
+        self.assertTrue([c for c in header if c.startswith("L_nH")], header)
+
+    def test_adding_a_minus_side_turns_it_into_the_A_to_B_measurement(self):
+        """
+        Mode 1 and Mode 2 differ by exactly one cell, so pin that the cell is
+        what decides -- with everything else held fixed the answer must move
+        to build_terminations_mode2's.
+        """
+        from pkg_rlc_core import (build_terminations_mode2, compute_z, s_to_y)
+        Y = s_to_y(self.fe.ts.s, self.fe.ts.z0)
+
+        self._fill(MeasPortRow("tank", "1", ""), [])
+        self.app._on_calculate()
+        Z_gnd = np.asarray(self.tc.Z).copy()
+
+        self._fill(MeasPortRow("tank", "1", "2"), [])
+        self.app._on_calculate()
+        Z_ab = np.asarray(self.tc.Z)
+
+        want, _ = compute_z(Y, self.fe.ts.freqs,
+                            build_terminations_mode2([1], [2], []))
+        self.assertLess(float(np.max(np.abs(Z_ab - want))), 1e-15)
+        self.assertGreater(float(np.max(np.abs(Z_ab - Z_gnd))), 1e-12,
+                           "the minus cell changed nothing")
 
 
 @unittest.skipUnless(TK_OK, "no Tk display available")
