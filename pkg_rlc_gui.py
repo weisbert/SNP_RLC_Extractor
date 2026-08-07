@@ -38,9 +38,11 @@ from pkg_rlc_core import (
     DEFAULT_Z0,
     RECIPROCITY_WARN,
     SI_SUFFIXES,
+    ConnectionRow,
     Ground,
     LumpedBetween,
     LumpedToGnd,
+    MeasPortRow,
     Open,
     ShortPair,
     Signal,
@@ -68,6 +70,9 @@ from pkg_rlc_core import (
     parse_short_pairs,
     parse_si,
     parse_touchstone,
+    resolve_meas_ports,
+    rows_to_dsl_text,
+    dsl_text_to_rows,
     s_to_y,
     y_series_rlc,
     format_si,
@@ -1490,12 +1495,36 @@ class App(tk.Tk):
             tc.mport_names = None
             tc.coupling = None
 
-            # Mode 6 produces a G x G Z matrix, not one curve; it gets its own
+            try:
+                term = self._build_termination(tc, nports=fe.ts.nports)
+                n_mports = len(resolve_meas_ports(term, fe.ts.nports))
+            except Exception as e:
+                tc.Z = None
+                self._append_result(f"  [{tc.id}] {tc.label}: ERROR {e}")
+                self._append_result(traceback.format_exc())
+                continue
+
+            # Mode 6 -- and ANY spec that defines more than one measurement
+            # port -- produces a G x G Z matrix, not one curve; it gets its own
             # results block and expands into several plot curves.
-            if tc.mode == 6:
+            #
+            # Routing on the measurement-port count rather than on the mode is
+            # what stops Mode 5 from silently reporting only the first port.
+            # compute_z returns Zmat[:, 0, 0] and warns about the rest, which
+            # is a wrong number with no visible difference -- and once the two
+            # modes share an editor, "I defined two probes here" has to mean
+            # the same thing in both.  A single-measurement-port spec still
+            # takes the compute_z path, so every pre-existing trace stays
+            # bit-identical (golden regression).
+            if tc.mode == 6 or n_mports > 1:
+                if tc.mode != 6:
+                    self._append_result(
+                        f"    [{tc.id}] {n_mports} measurement ports defined -- "
+                        "reporting the full coupling matrix (M, k), same as "
+                        "Mode 6.")
                 try:
                     cres = self._calculate_coupling_trace(
-                        tc, fe, f_rlc_hz, plot_traces)
+                        tc, fe, f_rlc_hz, plot_traces, term=term)
                 except Exception as e:
                     tc.Z = None
                     self._append_result(f"  [{tc.id}] {tc.label}: ERROR {e}")
@@ -1509,7 +1538,6 @@ class App(tk.Tk):
                 continue
 
             try:
-                term = self._build_termination(tc, nports=fe.ts.nports)
                 Z, warns = compute_z(fe.Y, fe.ts.freqs, term)
             except Exception as e:
                 self._append_result(f"  [{tc.id}] {tc.label}: ERROR {e}")
@@ -1581,13 +1609,20 @@ class App(tk.Tk):
 
     def _calculate_coupling_trace(self, tc: TraceConfig, fe: FileEntry,
                                   f_rlc_hz: float,
-                                  plot_traces: list) -> object:
+                                  plot_traces: list,
+                                  term: TerminationSet | None = None) -> object:
         """
-        Mode 6: reduce to the G x G measurement-port Z matrix, extract the
-        coupling result at the marker frequency, and append the expanded
-        self / mutual curves to `plot_traces`.  Returns the CouplingResult.
+        Reduce to the G x G measurement-port Z matrix, extract the coupling
+        result at the marker frequency, and append the expanded self / mutual
+        curves to `plot_traces`.  Returns the CouplingResult.
+
+        Used by Mode 6 and by any Mode 5 spec that defines more than one
+        measurement port.  `term` may be passed in when the caller has already
+        built it, which is the normal path -- the caller has to build it anyway
+        to count the measurement ports.
         """
-        term = self._build_termination(tc, nports=fe.ts.nports)
+        if term is None:
+            term = self._build_termination(tc, nports=fe.ts.nports)
         Zmat, names, warns = compute_z_matrix(fe.Y, fe.ts.freqs, term)
         for w in warns:
             self._append_result(f"    [{tc.id}] {w}")

@@ -1084,6 +1084,255 @@ def parse_custom_termination_text(text: str) -> TerminationSet:
 
 
 # ============================================================================
+# Connection-table row model (the GUI's Mode 5 / Mode 6 editor)
+# ============================================================================
+#
+# The editor is two tables: measurement ports (what am I measuring) and
+# connections (what else is attached).  A row of either is a *statement over a
+# set of ports*, not a single directive -- the port field takes a range, so a
+# package's ground balls are one row rather than one row per ball.
+#
+# Rows are the GUI's storage.  They reach a TerminationSet by being serialised
+# to DSL text and handed to parse_custom_termination_text, NOT by building a
+# TerminationSet directly.  That is deliberate: it keeps one parser, one set of
+# error messages, and one thing for the tests to pin, and it makes the "edit as
+# text" escape hatch show exactly what is computed rather than an approximation
+# of it.  See docs/design_connection_table.md.
+
+# Connection-row kinds.  Probes are NOT here -- they live in the measurement
+# port table, which is what keeps this table's "To" column single-domain (a
+# port number or GND, never a measurement-port name).
+CONN_KINDS = ("ground", "vdd", "open", "short", "rlc_gnd", "rlc_between")
+
+# Kinds whose "To" field names one or more partner ports.
+CONN_KINDS_WITH_PARTNER = ("short", "rlc_between")
+
+# Kinds that carry R / L / C values.
+CONN_KINDS_WITH_RLC = ("rlc_gnd", "rlc_between")
+
+
+@dataclass
+class MeasPortRow:
+    """One row of the measurement-port table.  Port specs are 1-based text."""
+    name: str = ""
+    plus: str = ""
+    minus: str = ""
+
+    def is_blank(self) -> bool:
+        return not (self.name.strip() or self.plus.strip() or self.minus.strip())
+
+
+@dataclass
+class ConnectionRow:
+    """
+    One row of the connection table.  All fields are text exactly as typed, so
+    '5:12' round-trips as a range instead of expanding into eight rows.
+
+    `to` is the partner port spec for 'short' and 'rlc_between' and is ignored
+    otherwise ('ground'/'rlc_gnd' are implicitly to GND).  Blank R/L/C mean
+    OMITTED, which is not the same as zero: an omitted C is C=inf (no capacitor
+    in the series branch), while C=0 would be an open circuit.
+    """
+    kind: str = "ground"
+    ports: str = ""
+    to: str = ""
+    R: str = ""
+    L: str = ""
+    C: str = ""
+
+    def is_blank(self) -> bool:
+        return not (self.ports.strip() or self.to.strip()
+                    or self.R.strip() or self.L.strip() or self.C.strip())
+
+
+def _rlc_tokens(row: ConnectionRow) -> list[str]:
+    """Non-blank R/L/C fields -> ['R=50', 'L=1n'] in canonical R, L, C order."""
+    out = []
+    for key in ("R", "L", "C"):
+        val = getattr(row, key).strip()
+        if val:
+            out.append(f"{key}={val}")
+    return out
+
+
+def rows_to_dsl_text(mport_rows: Sequence[MeasPortRow] = (),
+                     conn_rows: Sequence[ConnectionRow] = (),
+                     extra_lines: str = "") -> str:
+    """
+    Serialise the two tables to Mode 5 DSL text.
+
+    ORDER IS LOAD-BEARING.  The DSL is last-assignment-wins, and measurement
+    ports are emitted FIRST so that a later 'ground' row wins over a probe on
+    the same port -- which is exactly the "ground wins" precedence that
+    build_terminations_mode1/2/3 have always had.  Emitting them the other way
+    round would make a table seeded from a named mode answer a different
+    question.  tests/test_core.py::TestTerminationPrecedence pins this.
+
+    Blank rows are skipped.  `extra_lines` is appended verbatim and is how
+    comments and hand-written lines survive a round trip through the table.
+    """
+    lines: list[str] = []
+
+    auto = 0
+    used: set[str] = set()
+    for row in mport_rows:
+        if row.is_blank():
+            continue
+        name = row.name.strip()
+        if not name:
+            while True:
+                auto += 1
+                name = f"P{auto}"
+                if name not in used:
+                    break
+        used.add(name)
+        if row.plus.strip():
+            lines.append(f"{row.plus.strip()} signal {name} +")
+        if row.minus.strip():
+            lines.append(f"{row.minus.strip()} signal {name} -")
+
+    for row in conn_rows:
+        if row.is_blank():
+            continue
+        ports = row.ports.strip()
+        if not ports:
+            continue
+        kind = row.kind
+        if kind == "ground":
+            lines.append(f"{ports} ground")
+        elif kind == "vdd":
+            lines.append(f"{ports} vdd")
+        elif kind == "open":
+            lines.append(f"{ports} open")
+        elif kind == "short":
+            lines.append(f"{ports} short_to {row.to.strip()}")
+        elif kind == "rlc_gnd":
+            lines.append(" ".join([f"{ports} lumped_to_gnd", *_rlc_tokens(row)]))
+        elif kind == "rlc_between":
+            lines.append(" ".join([f"{ports} lumped_between {row.to.strip()}",
+                                   *_rlc_tokens(row)]))
+        else:
+            raise ValueError(
+                f"Unknown connection-row kind '{kind}' "
+                f"(expected one of {', '.join(CONN_KINDS)})"
+            )
+
+    text = "\n".join(lines)
+    extra = extra_lines.strip("\n")
+    if extra:
+        text = f"{text}\n{extra}" if text else extra
+    return text + "\n" if text else ""
+
+
+def dsl_text_to_rows(text: str) -> tuple[list[MeasPortRow], list[ConnectionRow], str]:
+    """
+    Parse DSL text back into the two tables -> (mport_rows, conn_rows, extra).
+
+    Round-trip contract: this is NOT byte-exact, it is idempotent after one
+    pass.  `rows_to_dsl_text(*dsl_text_to_rows(t))` re-parses to the same
+    TerminationSet as `t`, and running the pair again changes nothing further.
+    Comment lines land in `extra` so hand-written notes survive.
+
+    Legacy 'signal B' is normalised here the same way resolve_meas_ports does
+    it -- group "B" is the minus side of group "A" -- so an old spec imports as
+    ONE measurement port with a plus and a minus side rather than two.
+
+    Lines the table cannot represent are passed through in `extra` rather than
+    dropped; nothing the user typed is ever silently lost.
+    """
+    order: list[str] = []
+    plus: dict[str, list[str]] = {}
+    minus: dict[str, list[str]] = {}
+    conn: list[ConnectionRow] = []
+    extra: list[str] = []
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            if line:
+                extra.append(raw.rstrip())
+            continue
+        body = line.split("#", 1)[0].strip()
+        parts = body.split()
+        if len(parts) < 2:
+            extra.append(raw.rstrip())
+            continue
+        ports, kind, rest = parts[0], parts[1].lower(), parts[2:]
+
+        if kind == "signal":
+            grp = rest[0] if rest else "A"
+            if grp.upper() in LEGACY_GROUP_NAMES:
+                grp = grp.upper()
+            sign = +1
+            if len(rest) >= 2 and rest[1] == "-":
+                sign = -1
+            elif len(rest) >= 2 and rest[1] != "+":
+                extra.append(raw.rstrip())   # malformed; let the parser complain
+                continue
+            grp, sign = _normalize_signal(Signal(grp, sign))
+            if grp not in plus:
+                order.append(grp)
+                plus[grp], minus[grp] = [], []
+            (plus if sign > 0 else minus)[grp].append(ports)
+        elif kind in ("ground", "gnd"):
+            conn.append(ConnectionRow(kind="ground", ports=ports))
+        elif kind == "vdd":
+            conn.append(ConnectionRow(kind="vdd", ports=ports))
+        elif kind == "open":
+            conn.append(ConnectionRow(kind="open", ports=ports))
+        elif kind == "short_to" and rest:
+            conn.append(ConnectionRow(kind="short", ports=ports, to=rest[0]))
+        elif kind == "lumped_to_gnd":
+            conn.append(_conn_with_rlc("rlc_gnd", ports, "", rest))
+        elif kind == "lumped_between" and rest:
+            conn.append(_conn_with_rlc("rlc_between", ports, rest[0], rest[1:]))
+        else:
+            extra.append(raw.rstrip())
+
+    mports = [MeasPortRow(name=g,
+                          plus=",".join(plus[g]),
+                          minus=",".join(minus[g]))
+              for g in order]
+    return mports, conn, "\n".join(extra)
+
+
+def _conn_with_rlc(kind: str, ports: str, to: str,
+                   tokens: Sequence[str]) -> ConnectionRow:
+    """Build an R/L/C-bearing connection row from 'R=50 L=1n' tokens."""
+    row = ConnectionRow(kind=kind, ports=ports, to=to)
+    for tok in tokens:
+        if "=" not in tok:
+            continue
+        key, val = tok.split("=", 1)
+        key = key.strip().upper()
+        if key in ("R", "L", "C"):
+            setattr(row, key, val.strip())
+    return row
+
+
+def build_terminations_rows(mport_rows: Sequence[MeasPortRow] = (),
+                            conn_rows: Sequence[ConnectionRow] = (),
+                            extra_lines: str = "",
+                            nports: int | None = None) -> TerminationSet:
+    """
+    Connection-table rows -> TerminationSet, via the DSL.
+
+    Going through the text keeps parse_custom_termination_text as the single
+    validation authority: one parser, one set of error messages, and the "edit
+    as text" view shows literally what gets computed.
+
+    Pass `nports` (the file's port count) to reject out-of-range ports here,
+    with a message naming the file size, instead of letting a one-digit typo
+    become a plausible wrong answer.
+    """
+    ts = parse_custom_termination_text(
+        rows_to_dsl_text(mport_rows, conn_rows, extra_lines))
+    if nports is not None:
+        _validate_port_indices(ts, int(nports))
+    return ts
+
+
+# ============================================================================
 # Z computation: unified termination -> Z(f)
 # ============================================================================
 
