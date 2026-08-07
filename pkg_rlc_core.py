@@ -945,7 +945,7 @@ def build_terminations_coupling(
 
 def parse_custom_termination_text(text: str) -> TerminationSet:
     """
-    Parse a text spec for Mode 5 (Custom).  One per-port directive per line, e.g.
+    Parse a text spec for Mode 5 (Custom).  One directive per line, e.g.
         1 signal A
         2 signal B
         3 ground
@@ -954,11 +954,28 @@ def parse_custom_termination_text(text: str) -> TerminationSet:
         6 short_to 7
         8 lumped_between 9 R=1 L=1n
         10 open
+        6:1:14 ground          <- the port field takes a range
 
     `signal <groupname> [+|-]` declares a probe: <groupname> names the
     measurement port and the optional sign picks the plus (red, default) or
     minus (black) side.  Group names are arbitrary strings; "A" and "B" keep
     their legacy meaning, where "signal B" == "signal A -".
+
+    PORT RANGES: the leading port field accepts the full `parse_port_range`
+    syntax ('3', '1,2', '5:1:12', '6-14'), so one line can terminate a whole
+    group of ports -- a package's ground balls, an inductor's shield taps.  The
+    directive is applied to each listed port independently, and a single port
+    number parses to a one-element list, so every pre-existing spec is
+    unaffected.  This is what lets the GUI's connection table hold "ports 5-12,
+    ground" as ONE row instead of eight identical ones.
+
+    `short_to` also takes a range on its right-hand side: every port on both
+    sides is tied into one node, emitted as chained binary pairs exactly the way
+    `parse_short_pairs` spells '1-2-3-4' (Union-Find inside compute_z merges
+    them).  `lumped_between` deliberately does NOT take a range on the right --
+    an N-to-M lumped element is ambiguous (star? mesh?), so its partner must be
+    a single port.  A range on its LEFT is unambiguous (one element from each
+    listed port to the one partner) and is allowed.
 
     Blank lines and lines starting with '#' are ignored.
     """
@@ -969,21 +986,32 @@ def parse_custom_termination_text(text: str) -> TerminationSet:
             continue
         parts = line.split()
         try:
-            port = int(parts[0])  # 1-based
-        except ValueError:
-            raise ValueError(f"Line {ln_no}: first token must be an integer port number")
-        if port < 1:
-            raise ValueError(f"Line {ln_no}: port must be >= 1, got {port}")
+            ports = parse_port_range(parts[0])  # 1-based; '3' -> [3]
+        except ValueError as e:
+            raise ValueError(
+                f"Line {ln_no}: first token must be a port number or range "
+                f"(e.g. '3', '1,2', '5:1:12', '6-14'), got '{parts[0]}': {e}"
+            ) from e
+        if not ports:
+            raise ValueError(
+                f"Line {ln_no}: port specification '{parts[0]}' selects no ports"
+            )
+        for port in ports:
+            if port < 1:
+                raise ValueError(f"Line {ln_no}: port must be >= 1, got {port}")
         if len(parts) < 2:
             raise ValueError(f"Line {ln_no}: missing termination kind")
         kind = parts[1].lower()
         rest = parts[2:]
         if kind in ("open",):
-            ts.per_port[port - 1] = Open()
+            for port in ports:
+                ts.per_port[port - 1] = Open()
         elif kind in ("ground", "gnd"):
-            ts.per_port[port - 1] = Ground()
+            for port in ports:
+                ts.per_port[port - 1] = Ground()
         elif kind == "vdd":
-            ts.per_port[port - 1] = Vdd()
+            for port in ports:
+                ts.per_port[port - 1] = Vdd()
         elif kind == "signal":
             grp = rest[0] if rest else "A"
             if grp.upper() in LEGACY_GROUP_NAMES:
@@ -1003,22 +1031,53 @@ def parse_custom_termination_text(text: str) -> TerminationSet:
                 raise ValueError(
                     f"Line {ln_no}: signal takes at most a group name and a sign"
                 )
-            ts.per_port[port - 1] = Signal(grp, sign)
+            for port in ports:
+                ts.per_port[port - 1] = Signal(grp, sign)
         elif kind == "short_to":
             if not rest:
                 raise ValueError(f"Line {ln_no}: short_to needs a partner port")
-            other = int(rest[0])
-            ts.couplings.append(ShortPair(port - 1, other - 1))
+            try:
+                others = parse_port_range(rest[0])
+            except ValueError as e:
+                raise ValueError(
+                    f"Line {ln_no}: short_to partner must be a port number or "
+                    f"range, got '{rest[0]}': {e}"
+                ) from e
+            if not others:
+                raise ValueError(
+                    f"Line {ln_no}: short_to partner '{rest[0]}' selects no ports"
+                )
+            # Chain the whole node: (p0,p1), (p1,p2), ...  One port on each side
+            # reduces to the historical single ShortPair(port-1, other-1).
+            chain = list(ports) + [p for p in others if p not in ports]
+            for a, b in zip(chain, chain[1:]):
+                ts.couplings.append(ShortPair(a - 1, b - 1))
         elif kind == "lumped_to_gnd":
             params = parse_kv_rlc_params(rest)
-            ts.per_port[port - 1] = LumpedToGnd(y_series_rlc(**params))
+            y = y_series_rlc(**params)   # shared: a pure function of frequency
+            for port in ports:
+                ts.per_port[port - 1] = LumpedToGnd(y)
         elif kind == "lumped_between":
             if not rest:
                 raise ValueError(f"Line {ln_no}: lumped_between needs a partner port")
-            other = int(rest[0])
+            try:
+                others = parse_port_range(rest[0])
+            except ValueError as e:
+                raise ValueError(
+                    f"Line {ln_no}: lumped_between partner must be a single "
+                    f"port number, got '{rest[0]}': {e}"
+                ) from e
+            if len(others) != 1:
+                raise ValueError(
+                    f"Line {ln_no}: lumped_between takes exactly ONE partner "
+                    f"port, but '{rest[0]}' selects {len(others)}. An N-to-M "
+                    "lumped element is ambiguous -- write one line per element."
+                )
+            other = others[0]
             params = parse_kv_rlc_params(rest[1:])
-            ts.couplings.append(LumpedBetween(port - 1, other - 1,
-                                              y_series_rlc(**params)))
+            y = y_series_rlc(**params)   # shared: a pure function of frequency
+            for port in ports:
+                ts.couplings.append(LumpedBetween(port - 1, other - 1, y))
         else:
             raise ValueError(f"Line {ln_no}: unknown termination kind '{kind}'")
     return ts
