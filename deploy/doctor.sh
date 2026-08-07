@@ -41,7 +41,11 @@ done
 
 [[ -f "$PROBE" ]] || { echo "ERROR: $PROBE missing -- incomplete install." >&2; exit 1; }
 
-TMP="$(mktemp -d)"
+# Scratch stays inside the install dir -- never /tmp, /var or anywhere else on
+# the box. Same rule the deployer follows: everything under ./.deploy/.
+TMP="$ROOT/.deploy/tmp"
+rm -rf "$TMP"
+mkdir -p "$TMP" || { echo "ERROR: cannot create $TMP -- is $ROOT writable?" >&2; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
 getval() { sed -n "s/^$1=//p" "$2" | head -1; }
@@ -197,7 +201,9 @@ echo
 # --- optional self-test ------------------------------------------------------
 if (( RUN_TESTS )); then
   echo "=== running the shipped unit-test suite with $BEST ==="
-  if ( cd "$ROOT" && "$BEST" -m unittest discover -s tests ); then
+  # The tests use tempfile.mkdtemp(); TMPDIR keeps even those inside .deploy/tmp
+  # so a doctor run leaves nothing at all in /tmp on the box.
+  if ( cd "$ROOT" && TMPDIR="$TMP" TEMP="$TMP" TMP="$TMP" "$BEST" -m unittest discover -s tests ); then
     echo
     echo "OK  self-test passed -- the package landed intact and this interpreter runs it."
   else

@@ -144,6 +144,7 @@ SNP_RLC_Extractor/
   pkg_rlc_gui.py             Tkinter GUI with file/trace management
   pkg_rlc_extractor.py       Entry point (GUI + CLI)
   reduce_snp.py              Standalone CLI: shrink a big .sNp to a few ports
+  deploy.sh                  Red-zone update entry point (top level by design)
   tests/
     test_core.py
     test_port_parser.py
@@ -154,8 +155,8 @@ SNP_RLC_Extractor/
     theory.md                Math, circuit diagrams, mode derivations
   deploy/
     pack.ps1                 Windows: build the red-zone package
-    deploy.sh                Red zone: verify, back up, swap in, auto-rollback
     doctor.sh                Red zone: what can this box actually run?
+    _env_check.py            Per-interpreter probe used by doctor.sh
     README.md                Full air-gap procedure
 ```
 
@@ -171,19 +172,22 @@ to `pip install` or create a venv:
 powershell -ExecutionPolicy Bypass -File deploy\pack.ps1
 ```
 
-Upload `deploy\dist\snp_rlc_extractor_<short>.tar.gz` **and** its `.sha256`, then
-on the isolated box (its login shell is often tcsh, so invoke with `bash`):
+Upload `deploy\dist\Snp_analyzer_<short>.tar.gz` **and** its `.sha256` into the
+install directory, then on the isolated box (its login shell is often tcsh, so
+invoke with `bash`):
 
 ```bash
-bash deploy/deploy.sh snp_rlc_extractor_<short>.tar.gz
+cd .../Snp_analyzer
+bash deploy.sh              # no argument -- picks up the tarball sitting here
 bash deploy/doctor.sh --test
 ```
 
 `deploy.sh` checksums the package, backs up the current install, swaps atomically
-enough to auto-roll-back on failure, and keeps the last 3 versions. `doctor.sh`
-then reports what that box can run, in tiers — `reduce_snp.py` and the CLI need
-only `numpy`; the GUI additionally needs `matplotlib`, `tkinter` and `$DISPLAY`.
-Missing GUI dependencies are a degrade, not a failure.
+enough to auto-roll-back on failure, and keeps the last 3 versions. Everything it
+writes stays under `<install>/.deploy/` — never `/tmp` or anywhere else on the box.
+`doctor.sh` then reports what that box can run, in tiers — `reduce_snp.py` and the
+CLI need only `numpy`; the GUI additionally needs `matplotlib`, `tkinter` and
+`$DISPLAY`. Missing GUI dependencies are a degrade, not a failure.
 
 If you only need port reduction on a simulation server, `pack.ps1` also emits a
 standalone `reduce_snp_<short>.py` that runs on its own with nothing but `numpy`.

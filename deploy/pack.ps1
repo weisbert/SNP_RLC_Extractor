@@ -15,8 +15,8 @@
     * VERSION is stamped with the real commit hash + date via export-subst
 
   Emits, under <OutDir>:
-    snp_rlc_extractor_<shorthash>.tar.gz   full package (code + tests + docs)
-    snp_rlc_extractor_<shorthash>.tar.gz.sha256
+    <Name>_<shorthash>.tar.gz              full package (code + tests + docs)
+    <Name>_<shorthash>.tar.gz.sha256
     reduce_snp_<shorthash>.py              standalone single-file fast lane
     reduce_snp_<shorthash>.py.sha256
   Sidecars are in GNU `sha256sum -c` format (LF, no BOM).
@@ -30,6 +30,10 @@
 .PARAMETER OutDir
   Output directory (default: <script dir>\dist).
 
+.PARAMETER Name
+  Package root directory name, i.e. what you get after `tar -xzf`, and the name
+  of the red-zone install dir. Default 'Snp_analyzer'.
+
 .PARAMETER NoSingleFile
   Skip emitting the standalone reduce_snp_<hash>.py fast lane.
 
@@ -39,6 +43,7 @@
 param(
     [string]$Ref    = 'HEAD',
     [string]$OutDir = (Join-Path $PSScriptRoot 'dist'),
+    [string]$Name   = 'Snp_analyzer',
     [switch]$NoSingleFile
 )
 $ErrorActionPreference = 'Stop'
@@ -48,7 +53,7 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 
 $Sentinel = 'pkg_rlc_extractor.py'
-$Prefix   = 'snp_rlc_extractor'
+$Prefix   = $Name
 
 # --- sanity ------------------------------------------------------------------
 & git rev-parse --is-inside-work-tree 1>$null 2>$null
@@ -74,7 +79,9 @@ if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrEmpty($short)) { throw "cannot res
 #   2. the `eol` attribute is lf, so `git archive` does not re-expand it to CRLF
 #      via core.eol=native (the Windows default). Without an explicit eol, a
 #      `text`-marked file IS re-expanded -- verified, not theoretical.
-$shScripts = @('deploy/deploy.sh', 'deploy/doctor.sh')
+if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out-Null }
+
+$shScripts = @('deploy.sh', 'deploy/doctor.sh')
 foreach ($sh in $shScripts) {
     $eolInfo = & git ls-files --eol -- $sh
     if ([string]::IsNullOrEmpty($eolInfo)) { throw "$sh is not tracked by git - `git add` it first." }
@@ -89,20 +96,19 @@ foreach ($sh in $shScripts) {
 # green while the package still ships CRLF. Archive the scripts on their own and
 # scan the raw bytes: a tar holds ASCII headers plus file content, and neither
 # may contain CR here, so a single byte scan is exact.
-$probeTar = Join-Path ([System.IO.Path]::GetTempPath()) ("snp_pack_probe_{0}.tar" -f $PID)
+$probeTar = Join-Path $OutDir ("_pack_probe_{0}.tar" -f $PID)   # stays in OutDir, not the system temp
 & cmd.exe /c "git archive --format=tar $Ref -- $($shScripts -join ' ') > `"$probeTar`" 2>nul"
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $probeTar)) {
     if (Test-Path $probeTar) { Remove-Item -LiteralPath $probeTar -Force }
-    throw "git archive cannot find deploy/*.sh in $Ref - commit deploy/ (and .gitattributes) first."
+    throw "git archive cannot find $($shScripts -join ', ') in $Ref - commit them (and .gitattributes) first."
 }
 $probeBytes = [System.IO.File]::ReadAllBytes($probeTar)
 Remove-Item -LiteralPath $probeTar -Force
 if ($probeBytes -contains [byte]13) {
-    throw "git archive emits CRLF for deploy/*.sh, so the red zone's bash would fail with `$'\r'. Ensure .gitattributes (with '* text=auto eol=lf') is COMMITTED in $Ref, not just saved."
+    throw "git archive emits CRLF for the shell scripts, so the red zone's bash would fail with `$'\r'. Ensure .gitattributes (with '* text=auto eol=lf') is COMMITTED in $Ref, not just saved."
 }
 
 # --- pack --------------------------------------------------------------------
-if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out-Null }
 $tarName = "${Prefix}_$short.tar.gz"
 $tarPath = Join-Path $OutDir $tarName
 
@@ -156,13 +162,15 @@ Write-Host "commit info:"
 & git --no-pager show -s --format='    %h  %cI  %s' $Ref
 Write-Host ""
 Write-Host "NEXT:"
-Write-Host "  A) FULL INSTALL -- upload BOTH files into  .../workarea/$Prefix/ :"
+Write-Host "  A) UPDATE AN EXISTING INSTALL -- upload BOTH files into  .../$Prefix/ :"
 Write-Host "       $tarName"
 Write-Host "       $tarName.sha256"
 Write-Host "     then on the red zone (login shell is often tcsh -- use bash):"
-Write-Host "       cd .../workarea/$Prefix"
-Write-Host "       bash deploy/deploy.sh $tarName"
+Write-Host "       cd .../$Prefix"
+Write-Host "       bash deploy.sh                    # picks up the tarball sitting here"
 Write-Host "       bash deploy/doctor.sh --test      # verify the box can run it"
+Write-Host ""
+Write-Host "     (first time only: tar -xzf $tarName  ->  ./$Prefix/ is the install)"
 if ($singleName) {
     Write-Host ""
     Write-Host "  B) JUST reduce_snp ON A SIM SERVER -- upload $singleName anywhere, then:"

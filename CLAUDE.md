@@ -16,7 +16,8 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `pkg_rlc_help.py`       | In-app Help window content (`HELP_TOPICS`, `HelpWindow`). One tab per mode + syntax + worked examples. |
 | `pkg_rlc_extractor.py`  | Entry point: dispatches GUI vs CLI from argv.                                   |
 | `reduce_snp.py`         | **Standalone** CLI: shrinks a big `.sNp` to a few ports (KEEP / GND-short / open-or-matched elimination). Deliberately imports nothing from this repo — it gets copied to simulation servers on its own. |
-| `deploy/`               | Air-gapped ("red zone") sync pipeline: `pack.ps1` (Windows, `git archive`) -> `deploy.sh` (isolated Linux, verify/backup/swap/rollback) -> `doctor.sh` (what can this box run?). No network, no pip, no venv on the far side. |
+| `deploy.sh`             | **Top level on purpose.** Red-zone update entry point: `cd <install> && bash deploy.sh` auto-detects the uploaded tarball. The operator's cross-project convention is `<install>/deploy.sh` — do not move it back under `deploy/`. |
+| `deploy/`               | Rest of the air-gapped ("red zone") pipeline: `pack.ps1` (Windows, `git archive`), `doctor.sh` + `_env_check.py` (what can this box run?). No network, no pip, no venv on the far side. |
 | `tests/`                | `unittest`-based suite (102 tests covering parser, port range, short groups, content sniffer, terminations, fits, Schur fallback, and `reduce_snp`). |
 | `tests/generate_test_snp.py` | Builds synthetic fixtures with analytically known R/L/C; run as a script to (re)generate `tests/fixtures/`. |
 | `tests/_smoke.py`       | Manual sanity-check script (NOT auto-discovered by `unittest`). |
@@ -68,6 +69,20 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 - **`deploy.sh` touches only the install dir**, never the parent. Preserves
   `.deploy/` plus anything in `.deploy/preserve.list`, and rolls back via an `ERR`
   trap if the swap fails halfway.
+- **Nothing may be written outside the install dir** — no `/tmp`, no `/opt`, no
+  `mktemp`. All staging, backups and scratch go under `<install>/.deploy/`. This
+  is an operator requirement, not a preference; `doctor.sh` uses `.deploy/tmp`.
+- **Rollback must distinguish backup-phase from install-phase failure** (`PHASE`).
+  A partial backup does NOT license deleting what is still in the install dir —
+  those are the only surviving originals. Collapsing the two branches silently
+  destroys the install; there is a regression test for this in the commit history.
+- **Neither the install dir name nor the package root name is hardcoded.**
+  `deploy.sh` treats its own directory as the install, and auto-detects the single
+  top-level dir in the archive. `pack.ps1 -Name` sets the package root
+  (default `Snp_analyzer`).
+- **No-argument deploy is the primary path.** `bash deploy.sh` picks the newest
+  `*.tar.gz` in the install dir and prints which it chose. Keep the explicit-path
+  form working as an override.
 - **The far side has no network, no pip, no venv.** Never add a dependency that
   cannot be assumed present; `numpy` is the only hard one. Anything new that the
   GUI needs must degrade gracefully, and `deploy/_env_check.py` must learn about

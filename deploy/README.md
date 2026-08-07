@@ -7,7 +7,7 @@ that particular box is able to run.
 
 ```
 dev / yellow (Windows, has git)  ──upload──▶  red zone (Linux, isolated)
-        pack.ps1                               deploy.sh  →  doctor.sh
+      deploy\pack.ps1                          ./deploy.sh  →  deploy/doctor.sh
 ```
 
 The package is built with `git archive`, so it is **100% git-free** (no `.git/`,
@@ -19,6 +19,31 @@ exec bit is preserved.
 **What ships is a blacklist, not a whitelist.** Everything in the repo crosses the
 gap unless it is `export-ignore`d in `.gitattributes` — so new scripts you add are
 packaged automatically, with no change to this pipeline.
+
+**Nothing is ever written outside the install directory.** No `/tmp`, no `/opt`, no
+`/var`, no `mktemp`. Every staging, backup and scratch path lives under
+`<install>/.deploy/`.
+
+## The red-zone layout
+
+```
+.../Snp_analyzer/                 ← the install dir; call it whatever you like
+├── deploy.sh                     ← update entry point (top level, on purpose)
+├── Snp_analyzer_<short>.tar.gz   ← you upload the package here
+├── Snp_analyzer_<short>.tar.gz.sha256
+├── pkg_rlc_extractor.py, reduce_snp.py, ... , tests/, docs/
+├── deploy/{doctor.sh, _env_check.py, README.md}
+└── .deploy/                      ← all runtime state, never leaves the box
+    ├── incoming/                 # uploaded tarball + .sha256
+    ├── staging/                  # full extract before swap
+    ├── backups/<timestamp>/      # previous installs (last 3)
+    ├── tmp/                      # scratch
+    └── preserve.list             # optional, see below
+```
+
+Nothing depends on the install dir being named `Snp_analyzer` — `deploy.sh`
+locates the install as *its own directory*, and the package root is auto-detected
+from the archive. Rename either freely.
 
 ## 1. Windows — pack
 
@@ -32,34 +57,41 @@ Produces, under `deploy\dist\`:
 
 | file | for |
 |---|---|
-| `snp_rlc_extractor_<short>.tar.gz` + `.sha256` | full install (code + tests + docs) |
+| `Snp_analyzer_<short>.tar.gz` + `.sha256` | full install (code + tests + docs) |
 | `reduce_snp_<short>.py` + `.sha256` | single-file fast lane, see §4 |
+
+Use `-Name <dir>` to change the package root directory name (default
+`Snp_analyzer`, i.e. what you get after `tar -xzf`).
 
 Needs only **git + PowerShell** (no Python, no external tar). It packages the
 committed `HEAD` — uncommitted changes are *not* included (you get a warning).
 
-It also **preflights the shell scripts**: if `deploy.sh` or `doctor.sh` ever ends
-up CRLF in the git index, packing aborts. That one mistake is what bricks a
-red-zone deploy (`bash: $'\r': command not found`), so it is caught here rather
-than over there where you cannot debug it.
-
-Upload **both** files of whichever route you need, into `.../workarea/snp_rlc_extractor/`.
+It also **preflights the shell scripts**: it archives them on their own and scans
+the raw bytes for CR. If `deploy.sh` would ship as CRLF, packing aborts. That one
+mistake is what bricks a red-zone deploy (`bash: $'\r': command not found`), so it
+is caught here rather than over there where you cannot debug it.
 
 ## 2. Red zone — deploy
 
+Upload the tarball **and** its `.sha256` into the install dir, then:
+
 ```tcsh
-cd .../workarea/snp_rlc_extractor
-bash deploy/deploy.sh snp_rlc_extractor_<short>.tar.gz
+cd .../Snp_analyzer
+bash deploy.sh
 ```
 
-> Invoke with **`bash`**, not `./deploy/deploy.sh`: the red zone's login shell is
-> often **tcsh/csh**, and an upload channel may drop the exec bit — `bash` needs
+No argument needed — it picks up the newest `*.tar.gz` sitting in the install dir
+and says which one it chose (and which it ignored, if several are lying around).
+Pass a path explicitly to override.
+
+> Invoke with **`bash`**, not `./deploy.sh`: the red zone's login shell is often
+> **tcsh/csh**, and an upload channel may drop the exec bit — `bash` needs
 > neither. Run it as a script; don't `source` it.
 
 It verifies the sha256, extracts to staging, **backs up** the current install to
 `.deploy/backups/<timestamp>/` (keeps the newest 3), then swaps the new content in
 place. **Only the install dir is touched — the parent dir is never modified.** On
-any failure during the swap it auto-rolls-back to the backup.
+any failure during the swap it auto-rolls-back.
 
 ## 3. Red zone — doctor (this is the step that matters here)
 
@@ -114,13 +146,14 @@ python3 reduce_snp_<short>.py --help
 the very first time there is nothing to run it with. Once:
 
 ```tcsh
-cd .../workarea
-tar -xzf snp_rlc_extractor_<short>.tar.gz   # yields ./snp_rlc_extractor/
-# move/merge ./snp_rlc_extractor into place as .../workarea/snp_rlc_extractor
-bash snp_rlc_extractor/deploy/doctor.sh --test
+cd .../                        # wherever the install should live
+tar -xzf Snp_analyzer_<short>.tar.gz    # yields ./Snp_analyzer/
+cd Snp_analyzer
+bash deploy/doctor.sh --test
 ```
 
-After that, `deploy/deploy.sh` is in place and handles every future update.
+That extracted directory **is** the install. From then on every update is just
+"upload the tarball into it, run `bash deploy.sh`".
 
 ## Keeping your own data across deploys
 
@@ -136,28 +169,25 @@ results
 They are then left untouched by the swap. A name that the package itself ships
 (e.g. `docs`) is rejected with a clear error rather than silently nested.
 
+Uploaded `*.tar.gz` files are left where you put them (a copy goes to
+`.deploy/incoming/`). Deleting them afterwards is optional — the next deploy just
+takes the newest one.
+
 ## Rollback
 
 Each deploy backs up the previous install to `.deploy/backups/<timestamp>/`.
 To revert manually:
 
 ```bash
-cd .../workarea/snp_rlc_extractor
+cd .../Snp_analyzer
 # remove current contents (everything except .deploy), then:
 mv .deploy/backups/<timestamp>/* .
 ```
 
-Or simply re-deploy an older tarball.
+Or simply re-deploy an older tarball: `bash deploy.sh <older>.tar.gz`.
 
-## Layout (all runtime state stays inside the install dir)
-
-```
-snp_rlc_extractor/
-├── deploy/{pack.ps1, deploy.sh, doctor.sh, _env_check.py, README.md}
-├── VERSION                       # stamped by git archive; `cat` to see commit+date
-└── .deploy/                      # runtime only (gitignored), never leaves the red zone
-    ├── incoming/                 # uploaded tarball + .sha256
-    ├── staging/                  # full extract before swap
-    ├── backups/<timestamp>/      # previous installs (last 3)
-    └── preserve.list             # optional, see above
-```
+If a deploy fails partway it rolls back on its own. The rollback distinguishes a
+failure *during backup* (where the backup is incomplete, so the originals still in
+place must not be deleted) from one *during install* (where the backup is complete
+and the new files can be cleared) — getting that distinction wrong destroys the
+install, so don't simplify it.

@@ -7,29 +7,37 @@
 # install dir -- the PARENT directory is NEVER touched. No git, no network, no
 # pip, no venv, no Python required: only bash + tar + sha256sum (base RHEL).
 #
-# Managed layout (all inside the install dir):
+# Managed layout (all inside the install dir, e.g. .../Snp_analyzer/):
+#   <install>/deploy.sh                     this script -- the update entry point
 #   <install>/.deploy/incoming/             uploaded tarball + .sha256
 #   <install>/.deploy/staging/              full extract happens here first
 #   <install>/.deploy/backups/<timestamp>/  previous install (keeps last N)
+#   <install>/.deploy/tmp/                  scratch (doctor.sh)
 #   <install>/.deploy/preserve.list         optional: top-level names to KEEP
 #                                           across deploys (your own data dirs)
 #
-# Usage (after the one-time bootstrap below):
-#   cd .../workarea/snp_rlc_extractor
-#   bash deploy/deploy.sh snp_rlc_extractor_<hash>.tar.gz
+# Usage -- upload the tarball INTO the install dir, then just run this:
+#   cd .../Snp_analyzer
+#   bash deploy.sh                      # auto-detects the .tar.gz sitting here
 #   bash deploy/doctor.sh --test        # then check the box can actually run it
+#
+# With no argument it picks up the newest *.tar.gz in the install dir (and says
+# which one, plus which it ignored). Pass a path explicitly to override.
+#
+# Uploaded *.tar.gz / *.sha256 at the top level are treated as DELIVERIES, not as
+# install content: they are never backed up and never removed, so the file you
+# uploaded is still there afterwards and backups stay the size of the install.
 #
 # Invoke via `bash` (not ./deploy.sh): the red zone's login shell is often
 # tcsh/csh, and an upload channel may drop the exec bit. `bash` needs neither.
 # Run it as a script -- never `source` it (it is bash, and it exits on success).
 #
-# The tarball + its .sha256 sidecar should be uploaded together (typically into
-# the install dir itself); both are copied into .deploy/incoming/ before the swap.
+# Nothing is ever written outside the install dir: no /tmp, no /opt, no
+# /var. Every scratch, staging and backup path lives under ./.deploy/.
 #
 # FIRST-TIME BOOTSTRAP (no deploy.sh on the box yet):
-#   tar -xzf snp_rlc_extractor_<hash>.tar.gz     # yields ./snp_rlc_extractor/
-#   # move ./snp_rlc_extractor into place as .../workarea/snp_rlc_extractor
-#   # thereafter deploy/deploy.sh lives in place and handles every update.
+#   tar -xzf Snp_analyzer_<hash>.tar.gz   # yields ./Snp_analyzer/
+#   # that directory IS the install; thereafter ./deploy.sh handles every update.
 #
 # ROLLBACK: each run backs up the previous install to .deploy/backups/<ts>/.
 # To revert: delete the new contents (everything but .deploy) and
@@ -40,12 +48,12 @@ set -euo pipefail
 KEEP_BACKUPS=3
 SENTINEL="pkg_rlc_extractor.py"  # must exist at the install root -- guards against
                                  # running in the wrong dir or extracting a bad archive
-ARCHIVE_ROOT="snp_rlc_extractor" # --prefix used by pack.ps1
 
-# --- locate ourselves: deploy.sh lives at <install>/deploy/deploy.sh ---------
+# --- locate ourselves: deploy.sh sits AT the install root -------------------
+# i.e. .../Snp_analyzer/deploy.sh, so the install dir is simply our own dir.
+# The install dir may be named anything; nothing here depends on its name.
 SELF="$(readlink -f "$0")"
-SCRIPT_DIR="$(dirname "$SELF")"
-TARGET="$(dirname "$SCRIPT_DIR")"     # .../snp_rlc_extractor
+TARGET="$(dirname "$SELF")"
 DEPLOY="$TARGET/.deploy"
 INCOMING="$DEPLOY/incoming"
 STAGING="$DEPLOY/staging"
@@ -54,12 +62,33 @@ BACKUPS="$DEPLOY/backups"
 die() { echo "ERROR: $*" >&2; exit 1; }
 print_version() { while IFS= read -r _l; do echo "     $_l"; done < "$1"; }
 
-# --- args --------------------------------------------------------------------
-[[ $# -ge 1 ]] || die "usage: $(basename "$0") <tarball.tar.gz>"
-TARBALL_SRC="$(readlink -f "$1")"
-[[ -f "$TARBALL_SRC" ]] || die "tarball not found: $1"
 [[ -f "$TARGET/$SENTINEL" ]] || die \
-  "$TARGET/$SENTINEL missing -- not an SNP_RLC_Extractor install. Do the one-time bootstrap first (see header)."
+  "$TARGET/$SENTINEL missing -- $TARGET is not an SNP_RLC_Extractor install. Do the one-time bootstrap first (see header)."
+
+# --- pick the tarball --------------------------------------------------------
+# No argument: take the newest *.tar.gz sitting in the install dir. That is the
+# normal path -- you upload the package here and run ./deploy.sh, nothing else.
+# Only the top level is scanned, so old copies kept under .deploy/ are ignored.
+if [[ $# -ge 1 ]]; then
+  TARBALL_SRC="$(readlink -f "$1")"
+  [[ -f "$TARBALL_SRC" ]] || die "tarball not found: $1"
+else
+  _found=()
+  shopt -s nullglob
+  while IFS= read -r _c; do _found+=("$_c"); done < <(ls -1t "$TARGET"/*.tar.gz 2>/dev/null || true)
+  shopt -u nullglob
+  if (( ${#_found[@]} == 0 )); then
+    die "no *.tar.gz found in $TARGET -- upload the package here first (with its .sha256), then re-run. Or pass a path explicitly."
+  fi
+  TARBALL_SRC="$(readlink -f "${_found[0]}")"
+  if (( ${#_found[@]} > 1 )); then
+    echo ">> found ${#_found[@]} archives here; using the newest:"
+    echo "     $(basename "$TARBALL_SRC")"
+    for _o in "${_found[@]:1}"; do echo "     (ignoring $(basename "$_o"))"; done
+  else
+    echo ">> found package: $(basename "$TARBALL_SRC")"
+  fi
+fi
 
 mkdir -p "$INCOMING" "$STAGING" "$BACKUPS"
 
@@ -81,6 +110,24 @@ is_preserved() {
   for _p in "${PRESERVE[@]}"; do
     if [[ "$_n" == "$_p" ]]; then return 0; fi
   done
+  return 1
+}
+
+# Uploaded packages are DELIVERIES, not install content. They live at the top
+# level because that is where you drop them, but they must never be backed up
+# (which would silently eat the file you just uploaded and bloat every backup by
+# a full package) nor deleted by a rollback.
+is_payload() {
+  case "$1" in
+    *.tar.gz|*.tar.gz.sha256|*.tgz|*.tgz.sha256) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Anything the swap must leave exactly where it is.
+is_untouchable() {
+  if is_preserved "$1"; then return 0; fi
+  if is_payload   "$1"; then return 0; fi
   return 1
 }
 
@@ -108,8 +155,18 @@ fi
 echo ">> extracting to staging..."
 rm -rf "${STAGING:?}/"*
 tar -xzf "$INCOMING/$TAR_NAME" -C "$STAGING"
-NEW="$STAGING/$ARCHIVE_ROOT"
-[[ -d "$NEW" ]]           || die "archive has no $ARCHIVE_ROOT/ root."
+# The package root is whatever single directory the archive contains -- do not
+# hardcode it, so renaming the package (or the install dir) never breaks a deploy.
+NEW=""
+shopt -s nullglob
+for _d in "$STAGING"/*; do
+  if [[ -d "$_d" ]]; then
+    if [[ -n "$NEW" ]]; then shopt -u nullglob; die "archive has more than one top-level directory -- bad package."; fi
+    NEW="$_d"
+  fi
+done
+shopt -u nullglob
+[[ -n "$NEW" ]]           || die "archive has no top-level directory -- bad package."
 [[ -f "$NEW/$SENTINEL" ]] || die "staged package missing $SENTINEL -- bad archive."
 
 if [[ -f "$NEW/VERSION" ]]; then echo ">> incoming version:"; print_version "$NEW/VERSION"; fi
@@ -147,7 +204,7 @@ rollback() {
   # package (the backup is complete by then), so only then may we clear it.
   if [[ "$PHASE" == "install" ]]; then
     for _it in "$TARGET"/*; do
-      if is_preserved "$(basename "$_it")"; then continue; fi
+      if is_untouchable "$(basename "$_it")"; then continue; fi
       rm -rf "$_it"
     done
   fi
@@ -165,14 +222,14 @@ rollback() {
 }
 trap rollback ERR
 
-# NOTE: this moves deploy/ -- the very directory this script lives in. That is
-# safe on Linux: mv within one filesystem is a rename, the inode is untouched,
-# and bash keeps reading the script through its open fd. (It does fail on
-# Windows, which locks the running script's directory -- but the red zone is
-# Linux.) Do not "fix" this by copying the script elsewhere first.
+# NOTE: this moves deploy.sh -- this very script. That is safe on Linux: mv
+# within one filesystem is a rename, the inode is untouched, and bash keeps
+# reading the script through its open fd. (It does fail on Windows, which locks
+# the running script -- but the red zone is Linux.) Do not "fix" this by copying
+# the script elsewhere first.
 echo ">> backing up current install -> $BK"
 for _it in "$TARGET"/*; do
-  if is_preserved "$(basename "$_it")"; then continue; fi
+  if is_untouchable "$(basename "$_it")"; then continue; fi
   mv "$_it" "$BK"/
 done
 
@@ -206,6 +263,8 @@ echo "    previous install backed up at: $BK"
 if (( ${#PRESERVE[@]} > 1 )); then
   echo "    preserved across swap: ${PRESERVE[*]}"
 fi
+echo "    $(basename "$TARBALL_SRC") left in place; delete it whenever you like"
+echo "      (a copy is kept in .deploy/incoming/)"
 echo
 echo "    NEXT -- check this box can actually run it (no network / no venv needed):"
-echo "       bash $TARGET/deploy/doctor.sh --test"
+echo "       cd $TARGET && bash deploy/doctor.sh --test"
