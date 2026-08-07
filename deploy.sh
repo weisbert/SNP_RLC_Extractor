@@ -138,12 +138,34 @@ cp -f "$TARBALL_SRC" "$INCOMING/$TAR_NAME"
 if [[ -f "$TARBALL_SRC.sha256" ]]; then cp -f "$TARBALL_SRC.sha256" "$INCOMING/$TAR_NAME.sha256"; fi
 
 # --- verify checksum (abort before touching the install) ---------------------
+# Compare HASH VALUES, not `sha256sum -c`. The sidecar records the name the file
+# had when it was packed, and -c looks that name up on disk -- so renaming the
+# tarball (or letting a transfer tool rename it) would fail verification even
+# though the bytes are perfect. Hash-only comparison makes the filename
+# irrelevant, which is the whole point: name the package whatever you like.
 if [[ -f "$INCOMING/$TAR_NAME.sha256" ]]; then
   sed -i 's/\r$//' "$INCOMING/$TAR_NAME.sha256"   # tolerate a CRLF sidecar (Windows-edited)
   if command -v sha256sum >/dev/null 2>&1; then
     echo ">> verifying sha256..."
-    ( cd "$INCOMING" && sha256sum -c "$TAR_NAME.sha256" ) \
-      || die "checksum FAILED -- aborting, install untouched."
+    # GNU "<hash>  <name>" and BSD "SHA256 (<name>) = <hash>" both supported.
+    _first="$(awk 'NF{print $1; exit}' "$INCOMING/$TAR_NAME.sha256")"
+    case "$_first" in
+      SHA256|sha256) _expect="$(awk 'NF{print $NF; exit}' "$INCOMING/$TAR_NAME.sha256")" ;;
+      *)             _expect="$_first" ;;
+    esac
+    _recorded="$(awk 'NF{print $2; exit}' "$INCOMING/$TAR_NAME.sha256")"
+    [[ -n "$_expect" ]] || die "sidecar $TAR_NAME.sha256 is empty or unparseable."
+    _actual="$(sha256sum "$INCOMING/$TAR_NAME" | awk '{print $1}')"
+    _expect="$(printf '%s' "$_expect" | tr 'A-F' 'a-f')"
+    _actual="$(printf '%s' "$_actual" | tr 'A-F' 'a-f')"
+    if [[ "$_expect" != "$_actual" ]]; then
+      echo "   expected $_expect" >&2
+      echo "   actual   $_actual" >&2
+      die "checksum FAILED -- the package is corrupt or truncated. Aborting, install untouched."
+    fi
+    if [[ -n "$_recorded" && "$_recorded" != "$TAR_NAME" ]]; then
+      echo "   (contents verified; sidecar was written for '$_recorded', file is now '$TAR_NAME')"
+    fi
   else
     echo "WARN: sha256sum not found; skipping checksum verification" >&2
   fi
