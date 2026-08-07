@@ -120,6 +120,19 @@ deliberately unstarted — they need a human looking at the screen.
   It splits the old `name = +ports / -ports` lines **textually**, not via `parse_mport_spec`,
   so ranges survive as ranges and a malformed old line migrates instead of raising during
   load (it fails later, at Calculate, with a message that names it).
+- **`pack` UNMAPS what does not fit, starting from the end — so pin fixed sections first.**
+  A fixed-size section packed *after* an `expand=True` sibling disappears entirely once the
+  sibling outgrows the panel; it is not clipped, `winfo_ismapped()` returns 0. Measured: in
+  mode 6 at 1500x900 the whole "Global Controls" frame was gone, i.e. **Calculate All &
+  Plot / Export CSV / Help were not on screen**, while modes 1/2/3/5 looked fine — which is
+  what made it read as flaky rather than broken. `Global Controls` is therefore packed
+  `side=BOTTOM` **before** the editor, and `Apply to Trace` is packed `side=BOTTOM` inside
+  the editor **before** the scrollable body. Do not reorder either.
+- **The editor form lives in a Canvas and must have its scrollregion refreshed on every
+  mode change.** `_update_mode_visibility` uses `grid()`/`grid_remove()`, and the inner
+  frame's `<Configure>` does NOT fire usefully for that: the scrollregion keeps its old
+  height and the view stays scrolled down, parking a now-short form out of sight.
+  `_refresh_editor_scrollregion` handles it — via `after_idle`, never `update_idletasks`.
 - **Never call `update_idletasks()` while the UI is being built.** It flushes geometry for
   the WHOLE application, not just the calling widget. `RowTable` did this to auto-size
   itself, and because `_build_left_panel` runs before `_build_right_panel`, the flush

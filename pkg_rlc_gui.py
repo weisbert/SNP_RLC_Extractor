@@ -953,10 +953,10 @@ class RowTable(ttk.Frame):
         # do not stretch).
         self._inner.bind("<Configure>", self._on_inner_configure)
         self._canvas.bind("<Configure>", self._on_canvas_configure)
-        # Wheel is bound on enter/leave, NOT bind_all -- bind_all would make
-        # this table and the Matplotlib canvas fight over every scroll event.
-        self._canvas.bind("<Enter>", self._bind_wheel)
-        self._canvas.bind("<Leave>", self._unbind_wheel)
+        # Wheel handling is NOT bound here.  The App installs one pointer-based
+        # router and calls register_wheel() below; a per-widget bind_all /
+        # unbind_all pair does not compose once there is more than one
+        # scrollable region (unbind_all drops every binding on the `all` tag).
 
         # Column headers live in the SAME grid as the cells (grid row 0, cells
         # from row 1), so they line up exactly.  A separate header frame packed
@@ -999,6 +999,10 @@ class RowTable(ttk.Frame):
         self._resize_pending = False
         if not self.winfo_exists():
             return
+        # A frame in create_window contributes NOTHING to the canvas's requested
+        # size, so without this the canvas keeps Tk's default 378px forever and
+        # a 6-column table is silently squashed with no way to reach the rest.
+        self._canvas.configure(width=self._inner.winfo_reqwidth())
         total = max(1, self._inner.winfo_reqheight())
         n = len(self._rows)
         if n > self._max_visible:
@@ -1009,15 +1013,17 @@ class RowTable(ttk.Frame):
             self._canvas.configure(height=total)
             self._vsb.pack_forget()
 
-    def _bind_wheel(self, _event=None) -> None:
-        self._canvas.bind_all("<MouseWheel>", self._on_wheel)
+    def register_wheel(self, register) -> None:
+        """Hand the App's router this table's canvas and handler."""
+        register(self._canvas, self._on_wheel)
 
-    def _unbind_wheel(self, _event=None) -> None:
-        self._canvas.unbind_all("<MouseWheel>")
-
-    def _on_wheel(self, event) -> None:
-        if len(self._rows) > self._max_visible:
-            self._canvas.yview_scroll(int(-event.delta / 120), "units")
+    def _on_wheel(self, event) -> bool:
+        """Scroll this table. Returns False when it fits, so the event bubbles."""
+        first, last = self._canvas.yview()
+        if first <= 0.0 and last >= 1.0:
+            return False
+        self._canvas.yview_scroll(int(-event.delta / 120), "units")
+        return True
 
     # ------------------------------------------------------------------- rows
 
@@ -1167,7 +1173,11 @@ MODE_PLACEHOLDERS["mp_more"] = {6: MP_MORE_PLACEHOLDER}
 
 # Shown under the Mode 6 measurement-port table. This has to carry everything
 # the six retired placeholder hints used to say, because a plain ttk.Entry in
-# a table cell has no room for a hint of its own.
+# a table cell has no room for a hint of its own -- so it is long, and it lives
+# behind a disclosure triangle (collapsed by default) rather than costing 125px
+# of a form that already does not fit. Unlike a PlaceholderEntry's hint, focus
+# cannot destroy it: it is a Label, and it is still there after you click away.
+MP_TABLE_HINT_SHORT = "'+' = red probe, '−' = black (empty = vs GND)"
 MP_TABLE_HINT = (
     "One row per measurement port. '+' is the red probe, '−' the black one; "
     "leave '−' empty to measure against GND. Ports listed on the same side are "
@@ -1176,8 +1186,49 @@ MP_TABLE_HINT = (
     "but 'A' and 'B' are reserved."
 )
 
+
+class _CollapsibleHint(ttk.Frame):
+    """
+    A one-line grey summary plus a disclosure triangle for the full text.
+
+    Collapsed by default: the long hints measured 182px in mode 6, more than
+    twice the table they explain, on a form that already overflowed. The full
+    text stays one click away and the expanded/collapsed state is remembered
+    for the session, so a user who needs it once keeps it, and a user who has
+    internalised it never sees it again.
+    """
+
+    _expanded = False        # class-level: shared across every hint instance
+
+    def __init__(self, master, short: str, long: str, **kwargs):
+        super().__init__(master, **kwargs)
+        self._long_text = long
+        self._btn = ttk.Label(self, foreground=PLACEHOLDER_FG, cursor="hand2")
+        self._btn.pack(side=tk.TOP, anchor="w")
+        self._btn.bind("<Button-1>", self._toggle)
+        self._short = short
+        self._body = ttk.Label(self, text=long, foreground=PLACEHOLDER_FG,
+                               justify=tk.LEFT, wraplength=320)
+        self._render()
+
+    def _render(self) -> None:
+        arrow = "▾" if _CollapsibleHint._expanded else "▸"
+        self._btn.configure(text=f"{arrow} {self._short}")
+        if _CollapsibleHint._expanded:
+            self._body.pack(side=tk.TOP, anchor="w", pady=(1, 0))
+        else:
+            self._body.pack_forget()
+
+    def _toggle(self, _event=None) -> None:
+        _CollapsibleHint._expanded = not _CollapsibleHint._expanded
+        for w in self.master.winfo_children():
+            if isinstance(w, _CollapsibleHint):
+                w._render()
+        self.event_generate("<<HintToggled>>")
+
 # Shown under the mode-6 plot checkboxes: the subplot grid is shared with the
 # self curves, so the axis titles need reinterpreting on a mutual curve.
+MUTUAL_CURVE_HINT_SHORT = "on a mutual curve, L(nH) reads as M and C(pF) as C_c"
 MUTUAL_CURVE_HINT = (
     "On a mutual curve the L(nH) subplot IS M in nH and C(pF) IS the coupling "
     "capacitance C_c; the k subplot is filled in for mutual curves only."
@@ -1210,9 +1261,76 @@ class App(tk.Tk):
         self.traces: list[TraceConfig] = []
         self._next_trace_id = 1
         self._suppress_editor_sync = False
+        self._scrollables: dict[str, object] = {}
 
+        self._install_wheel_router()
         self._build_ui()
         self._bind_events()
+        self._clamp_to_screen()
+
+    # ------------------------------------------------------- wheel routing
+
+    # Widget classes that scroll (or otherwise act on) the wheel themselves.
+    # The router must not double-handle for these.
+    _WHEEL_OWNERS = frozenset({"Text", "Listbox", "Treeview", "TCombobox",
+                               "TSpinbox", "Spinbox", "TScrollbar", "Scrollbar"})
+
+    def _install_wheel_router(self) -> None:
+        """
+        One pointer-based wheel router for the whole window.
+
+        Replaces the per-widget <Enter>/<Leave> + bind_all/unbind_all dance,
+        which does not compose: unbind_all deletes EVERY binding on the `all`
+        tag, so a second scrollable region silently disables the first, and a
+        table that cannot scroll swallowed the event instead of letting the
+        form behind it scroll.  Here each registered handler returns False when
+        its content already fits, and the event bubbles to the next scrollable
+        ancestor -- innermost wins, with fall-through.
+
+        Matplotlib is unaffected: its wheel binding is on the figure canvas
+        widget itself, which fires before the `all` tag, and the router finds
+        nothing registered above it. The plot panel's <Enter> -> focus_set()
+        for the M / V / Delete keys is untouched -- this keys off the POINTER,
+        not focus.
+        """
+        self.bind_all("<MouseWheel>", self._route_wheel, add="+")
+        # A ttk Combobox CHANGES ITS VALUE on the wheel (class binding
+        # 'ttk::combobox::Scroll'). On a form where one of those comboboxes
+        # selects the Touchstone file, an accidental scroll silently rebinds
+        # the trace to a different file and every number changes with no
+        # warning. Nothing here wants that behaviour.
+        self.unbind_class("TCombobox", "<MouseWheel>")
+
+    def _register_scrollable(self, widget, handler) -> None:
+        """handler(event) -> True if it consumed the wheel, False to bubble."""
+        self._scrollables[str(widget)] = handler
+
+    def _route_wheel(self, event):
+        w = self.winfo_containing(event.x_root, event.y_root)
+        while w is not None:
+            try:
+                if w.winfo_class() in self._WHEEL_OWNERS:
+                    return None          # it handles itself; don't double-scroll
+                handler = self._scrollables.get(str(w))
+                if handler is not None and handler(event):
+                    return "break"
+                w = w.master
+            except Exception:
+                return None
+        return None
+
+    def _clamp_to_screen(self) -> None:
+        """
+        Never open taller than the desktop.
+
+        The hardcoded 1500x900 is fine on a large monitor and is born partly
+        off-screen on a 1920x1080 laptop at 150% scaling (1280x680 logical),
+        which puts the bottom of the window -- Calculate, Apply -- beyond the
+        desktop before layout is even involved.
+        """
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"{min(1500, sw - 80)}x{min(900, sh - 140)}+40+20")
+        self.minsize(1040, 600)
 
     # ------------------------------------------------------------------ UI
 
@@ -1263,17 +1381,102 @@ class App(tk.Tk):
                                     activestyle="dotbox")
         self.traces_lb.pack(side=tk.TOP, fill=tk.X, padx=2, pady=2)
 
+        # --- Global controls ---
+        # PACKED BEFORE THE EDITOR, AND side=BOTTOM.  pack allocates in call
+        # order and simply UNMAPS whatever no longer fits, starting from the
+        # end -- so a fixed-size section packed after an expand=True sibling
+        # vanishes entirely once the sibling outgrows the panel.  Measured: in
+        # mode 6 at 1500x900 this whole frame came back winfo_ismapped() == 0,
+        # i.e. Calculate / Export CSV / Help were not on screen at all. Claiming
+        # the bottom first is what makes them unconditional.
+        gc = ttk.LabelFrame(parent, text="Global Controls")
+        gc.pack(side=tk.BOTTOM, fill=tk.X, padx=4, pady=2)
+        self._build_global_controls(gc)
+
         # --- Editor section ---
         ed = ttk.LabelFrame(parent, text="Edit Selected Trace")
         ed.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=4, pady=2)
         self._build_editor(ed)
 
-        # --- Global controls ---
-        gc = ttk.LabelFrame(parent, text="Global Controls")
-        gc.pack(side=tk.TOP, fill=tk.X, padx=4, pady=2)
-        self._build_global_controls(gc)
-
     def _build_editor(self, parent: ttk.LabelFrame) -> None:
+        """
+        Editor = a pinned footer + a scrollable form.
+
+        The form is mode-dependent and in mode 5 it is taller than any laptop
+        screen, so it lives in a Canvas.  "Apply to Trace" does NOT: it is
+        packed side=BOTTOM *first*, outside the scroll region, so the form can
+        clip or scroll all it likes and the button stays reachable.  Packing it
+        after the expanding body is what made it fall off the bottom.
+        """
+        foot = ttk.Frame(parent)
+        foot.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(foot, text="Apply to Trace", command=self._on_apply_editor
+                   ).pack(side=tk.RIGHT, padx=6, pady=3)
+
+        body = ttk.Frame(parent)
+        body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self._ed_vsb = ttk.Scrollbar(body, orient="vertical")
+        self._ed_canvas = tk.Canvas(body, highlightthickness=0, borderwidth=0,
+                                    yscrollcommand=self._ed_scroll_set)
+        self._ed_vsb.configure(command=self._ed_canvas.yview)
+        self._ed_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._ed_form = ttk.Frame(self._ed_canvas)
+        self._ed_win = self._ed_canvas.create_window(
+            (0, 0), window=self._ed_form, anchor="nw")
+        # Never let the form be narrower than it asked for: a squashed 6-column
+        # table with no horizontal scrollbar is unreachable content.
+        self._ed_canvas.bind(
+            "<Configure>",
+            lambda e: self._ed_canvas.itemconfigure(
+                self._ed_win,
+                width=max(e.width, self._ed_form.winfo_reqwidth())))
+        self._register_scrollable(self._ed_canvas, self._ed_wheel)
+
+        self._build_editor_form(self._ed_form)
+
+    def _ed_scroll_set(self, first: str, last: str) -> None:
+        """Autohide the editor scrollbar when the form fits."""
+        self._ed_vsb.set(first, last)
+        if float(first) <= 0.0 and float(last) >= 1.0:
+            self._ed_vsb.pack_forget()
+        else:
+            self._ed_vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def _ed_wheel(self, event) -> bool:
+        """Scroll the editor form. Returns False when it has nowhere to go."""
+        first, last = self._ed_canvas.yview()
+        if first <= 0.0 and last >= 1.0:
+            return False
+        self._ed_canvas.yview_scroll(int(-event.delta / 120), "units")
+        return True
+
+    def _refresh_editor_scrollregion(self) -> None:
+        """
+        Re-measure after grid()/grid_remove() changed which rows exist.
+
+        The <Configure> binding on the inner frame is NOT sufficient: measured,
+        after hiding 17 rows the scrollregion stayed at its old height and the
+        view stayed scrolled down, leaving a short form parked out of sight.
+
+        Deferred to after_idle, NEVER update_idletasks(). This runs during
+        construction too (_build_editor_form ends by calling
+        _update_mode_visibility), and forcing a geometry pass there is exactly
+        what collapsed the Results pane's PanedWindow sash to 2px --
+        tests/test_row_table.py::TestResultsPaneVisible caught this very edit.
+        """
+        if getattr(self, "_ed_scroll_pending", False):
+            return
+        self._ed_scroll_pending = True
+        self.after_idle(self._apply_editor_scrollregion)
+
+    def _apply_editor_scrollregion(self) -> None:
+        self._ed_scroll_pending = False
+        if not self._ed_canvas.winfo_exists():
+            return
+        self._ed_canvas.configure(scrollregion=self._ed_canvas.bbox("all"))
+        self._ed_canvas.yview_moveto(0)
+
+    def _build_editor_form(self, parent: ttk.Frame) -> None:
         # File combobox
         row = 0
         ttk.Label(parent, text="File:").grid(row=row, column=0, sticky="e", padx=2, pady=1)
@@ -1345,12 +1548,12 @@ class App(tk.Tk):
         )
         self.ed_mp_table.grid(row=row, column=1, columnspan=3, sticky="we",
                               padx=2, pady=1)
+        self.ed_mp_table.register_wheel(self._register_scrollable)
         row += 1
 
-        self.ed_mp_hint = ttk.Label(parent, text=MP_TABLE_HINT,
-                                    foreground=PLACEHOLDER_FG,
-                                    justify=tk.LEFT, wraplength=320)
-        self.ed_mp_hint.grid(row=row, column=1, columnspan=3, sticky="w",
+        self.ed_mp_hint = _CollapsibleHint(parent, MP_TABLE_HINT_SHORT,
+                                           MP_TABLE_HINT)
+        self.ed_mp_hint.grid(row=row, column=1, columnspan=3, sticky="we",
                              padx=2, pady=(0, 2))
         row += 1
 
@@ -1377,10 +1580,9 @@ class App(tk.Tk):
                         variable=self.ed_plot_mutual_var).pack(side=tk.LEFT)
         row += 1
 
-        self.ed_mutual_hint = ttk.Label(parent, text=MUTUAL_CURVE_HINT,
-                                        foreground=PLACEHOLDER_FG,
-                                        justify=tk.LEFT, wraplength=320)
-        self.ed_mutual_hint.grid(row=row, column=1, columnspan=3, sticky="w",
+        self.ed_mutual_hint = _CollapsibleHint(parent, MUTUAL_CURVE_HINT_SHORT,
+                                               MUTUAL_CURVE_HINT)
+        self.ed_mutual_hint.grid(row=row, column=1, columnspan=3, sticky="we",
                                  padx=2, pady=(0, 2))
         row += 1
 
@@ -1416,9 +1618,8 @@ class App(tk.Tk):
                    width=5).grid(row=row, column=3, sticky="w", padx=2, pady=1)
         row += 1
 
-        # Apply button
-        ttk.Button(parent, text="Apply to Trace", command=self._on_apply_editor
-                   ).grid(row=row, column=1, columnspan=2, pady=4)
+        # "Apply to Trace" is NOT here -- it is pinned in the editor's footer,
+        # outside the scroll region, so it survives however long this form gets.
 
         parent.columnconfigure(1, weight=1)
         self._update_mode_visibility()
@@ -1496,6 +1697,9 @@ class App(tk.Tk):
     def _bind_events(self) -> None:
         self.files_lb.bind("<<ListboxSelect>>", lambda e: self._on_file_selected())
         self.traces_lb.bind("<<ListboxSelect>>", lambda e: self._on_trace_selected())
+        # Expanding or collapsing a hint changes the form's height.
+        self.bind("<<HintToggled>>",
+                  lambda e: self._refresh_editor_scrollregion(), add="+")
 
     # --------------------------------------------------------------- File ops
 
@@ -1688,6 +1892,10 @@ class App(tk.Tk):
         # The measurement-port table needs no per-mode placeholders: it is
         # mode-6-only and its hint lives permanently under it (MP_TABLE_HINT),
         # where -- unlike a PlaceholderEntry -- focus cannot delete it.
+
+        # Which rows exist just changed, so the scroll region is stale. The
+        # inner frame's <Configure> does NOT cover this -- see the docstring.
+        self._refresh_editor_scrollregion()
 
     def _on_apply_editor(self) -> None:
         idx = self._sel_idx(self.traces_lb)
