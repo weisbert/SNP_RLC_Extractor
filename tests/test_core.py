@@ -358,5 +358,106 @@ class TestFormatSI(unittest.TestCase):
         self.assertEqual(format_si(1e-18, "F"), "0.001 fF")
 
 
+class TestParserLineBreaks(unittest.TestCase):
+    """
+    The parser streams the file line by line, but `str.splitlines()` -- what it
+    used before -- also breaks on \\x0b \\x0c \\x1c-\\x1e \\x85 \\u2028 \\u2029.
+    A comment or option line terminated by one of those (older EDA flows page-
+    break their headers with a form feed) must not swallow the data record that
+    follows it.
+    """
+
+    def _parse(self, text: str):
+        import tempfile
+        d = Path(tempfile.mkdtemp())
+        p = d / "brk.s1p"
+        p.write_text(text, encoding="utf-8", newline="")
+        return parse_touchstone(p)
+
+    def test_form_feed_after_comment_keeps_the_data_row(self):
+        ts = self._parse("# HZ S RI R 50\n"
+                         "1 0.1 0.2\n"
+                         "! page break follows\x0c2 0.3 0.4\n"
+                         "3 0.5 0.6\n")
+        np.testing.assert_array_equal(ts.freqs, [1.0, 2.0, 3.0])
+        np.testing.assert_array_equal(
+            ts.s.ravel(), [0.1 + 0.2j, 0.3 + 0.4j, 0.5 + 0.6j])
+
+    def test_form_feed_after_option_line_keeps_the_data_row(self):
+        ts = self._parse("# GHZ S RI R 50\x0c1 0.1 0.2\n2 0.3 0.4\n")
+        np.testing.assert_array_equal(ts.freqs, [1e9, 2e9])
+        self.assertEqual(ts.z0, 50.0)
+
+    def test_next_line_char_after_comment(self):
+        ts = self._parse("# HZ S RI R 50\n1 0.1 0.2\n! note\x852 0.3 0.4\n")
+        np.testing.assert_array_equal(ts.freqs, [1.0, 2.0])
+
+    def test_form_feed_inside_a_mid_line_comment(self):
+        ts = self._parse("# HZ S RI R 50\n1 0.1 0.2 ! note\x0c2 0.3 0.4\n")
+        np.testing.assert_array_equal(ts.freqs, [1.0, 2.0])
+        np.testing.assert_array_equal(ts.s.ravel(), [0.1 + 0.2j, 0.3 + 0.4j])
+
+    def test_port_name_comment_still_parsed_when_split(self):
+        ts = self._parse("# HZ S RI R 50\n! Port 1 = VDD\x0c1 0.1 0.2\n")
+        self.assertEqual(list(ts.port_names), ["VDD"])
+        np.testing.assert_array_equal(ts.freqs, [1.0])
+
+    def test_crlf_and_plain_lf_are_unaffected(self):
+        a = self._parse("# HZ S RI R 50\r\n1 0.1 0.2\r\n2 0.3 0.4\r\n")
+        b = self._parse("# HZ S RI R 50\n1 0.1 0.2\n2 0.3 0.4\n")
+        np.testing.assert_array_equal(a.s, b.s)
+        np.testing.assert_array_equal(a.freqs, b.freqs)
+
+
+class TestParserSignedZero(unittest.TestCase):
+    """
+    Real EDA exports write '-0.000000e+00'.  The historical
+    `body[...,0] + 1j*body[...,1]` normalised those to +0.0; the streaming
+    in-place fill must keep doing so, or L/Q print as '-0'.  Note that
+    np.testing.assert_array_equal cannot catch this (-0.0 == 0.0), so the
+    golden regression would never have flagged it.
+    """
+
+    def _parse(self, text: str):
+        import tempfile
+        d = Path(tempfile.mkdtemp())
+        p = d / "negzero.s1p"
+        p.write_text(text, encoding="utf-8", newline="")
+        return parse_touchstone(p)
+
+    def test_ri_negative_zero_is_normalised(self):
+        ts = self._parse("# HZ S RI R 50\n1 -0 -0\n2 0.5 -0.0\n")
+        flat = ts.s.ravel()
+        for z in flat:
+            self.assertFalse(bool(np.signbit(z.real)), "-0.0 leaked into Re")
+            self.assertFalse(bool(np.signbit(z.imag)), "-0.0 leaked into Im")
+
+    def test_matches_the_historical_expression(self):
+        """
+        Same signed zeros as `body[...,0] + 1j*body[...,1]` everywhere except
+        the one corner documented in parse_touchstone: a record with BOTH parts
+        written '-0' used to keep a -0.0 real part, because Re(1j * -0.0) is
+        -0.0.  Every other combination must agree bit for bit.
+        """
+        rows = [(0.5, -0.0), (-0.0, 0.0), (-0.0, 2.0), (0.0, -0.0),
+                (-1.5, 2.25)]
+        text = "# HZ S RI R 50\n" + "".join(
+            f"{i + 1} {re!r} {im!r}\n" for i, (re, im) in enumerate(rows))
+        ts = self._parse(text)
+        body = np.array(rows)
+        old = (body[:, 0] + 1j * body[:, 1]).reshape(ts.s.shape)
+        np.testing.assert_array_equal(
+            ts.s.view(np.float64), old.view(np.float64))
+        np.testing.assert_array_equal(
+            np.signbit(ts.s.view(np.float64)), np.signbit(old.view(np.float64)))
+
+    def test_ma_and_db_paths_are_unchanged(self):
+        for fmt in ("MA", "DB"):
+            with self.subTest(fmt=fmt):
+                ts = self._parse(f"# HZ S {fmt} R 50\n1 0.5 -0.0\n2 0.25 30\n")
+                self.assertEqual(ts.s.shape, (2, 1, 1))
+                self.assertFalse(bool(np.signbit(ts.s.ravel()[0].imag)))
+
+
 if __name__ == "__main__":
     unittest.main()

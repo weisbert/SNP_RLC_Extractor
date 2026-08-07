@@ -8,6 +8,13 @@
 *.sh  text eol=lf
 *.ps1 text eol=crlf
 
+# Binary data ---------------------------------------------------------------
+# The golden regression reference is a bit-exact float64 capture. `text=auto`
+# already classifies it as binary (NUL byte at offset 5), but say it explicitly:
+# a single EOL substitution in this file would silently corrupt the only proof
+# that the legacy measurement modes still produce identical numbers.
+*.npz binary
+
 # Red-zone package contents -------------------------------------------------
 # BLACKLIST, not whitelist: everything in the repo ships to the red zone unless
 # listed here. New scripts are packaged automatically -- no maintenance needed.

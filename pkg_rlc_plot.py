@@ -3,7 +3,10 @@ pkg_rlc_plot.py  --  Matplotlib plot panel with interactive features.
 
 Features (per spec):
   - Multi-trace overlay with 12 colors x 4 linestyles
-  - Subplot grid (max 4 cols) over R, L, C, |Z|, Re(Z), Im(Z), Q
+  - Subplot grid (max 4 cols) over R, L, C, |Z|, Re(Z), Im(Z), Q, k
+  - Derived quantities that cannot be computed from a single Z curve (today only
+    the coupling coefficient k = M / sqrt(L_a * L_b)) are supplied per trace via
+    the optional ``Trace.aux`` dict of precomputed arrays aligned with ``freqs``.
   - X / Y log toggles (Y uses symlog for sign-crossing data)
   - Draggable red-dashed freq marker line with intersection annotations
   - 'M' key  : add square marker at nearest data point
@@ -34,7 +37,12 @@ from matplotlib.backends.backend_tkagg import (  # noqa: E402
 # Constants
 # ============================================================================
 
-PLOT_TYPES = ["R(mOhm)", "L(nH)", "C(pF)", "|Z|(Ohm)", "Re(Z)", "Im(Z)", "Q"]
+PLOT_TYPES = ["R(mOhm)", "L(nH)", "C(pF)", "|Z|(Ohm)", "Re(Z)", "Im(Z)", "Q", "k"]
+
+# Plot types that cannot be derived from a single (freqs, Z) pair and must be
+# fed through Trace.aux instead.  Traces without the matching aux entry draw
+# nothing on that subplot rather than raising.
+AUX_PLOT_TYPES: tuple[str, ...] = ("k",)
 
 COLORS = [
     "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
@@ -59,13 +67,50 @@ class Trace:
     ls_idx: int = 0
     fit_freqs: Optional[np.ndarray] = None    # optional fit overlay
     fit_Z: Optional[np.ndarray] = None
+    # Precomputed derived quantities that are not a function of Z alone,
+    # e.g. {"k": <float array aligned with freqs>} for a mutual-coupling
+    # trace.  Missing / absent entries simply plot as NaN.
+    aux: Optional[dict] = None
 
 
 # ============================================================================
 # Plot-type to y-axis values
 # ============================================================================
 
-def trace_y_values(freqs: np.ndarray, Z: np.ndarray, plot_type: str) -> np.ndarray:
+def _aux_series(aux: Optional[dict], key: str, n: int) -> np.ndarray:
+    """
+    Fetch ``aux[key]`` as a float array of length ``n``.
+
+    Returns an all-NaN array when there is no aux dict, no such key, or the
+    stored array does not line up with the frequency axis.  That way a plain
+    self-impedance trace draws nothing on an aux subplot instead of raising.
+    """
+    nan = np.full(n, np.nan, dtype=float)
+    if not aux:
+        return nan
+    v = aux.get(key)
+    if v is None:
+        return nan
+    arr = np.asarray(v, dtype=float)
+    if arr.ndim != 1 or arr.shape[0] != n:
+        return nan
+    return arr
+
+
+def trace_y_values(freqs: np.ndarray, Z: np.ndarray, plot_type: str,
+                   aux: Optional[dict] = None) -> np.ndarray:
+    """
+    Map a trace onto the y values for ``plot_type``.
+
+    ``aux`` is optional so every existing positional call site keeps working.
+    It carries precomputed series for the plot types listed in
+    ``AUX_PLOT_TYPES`` (currently just "k", the coupling coefficient, which
+    needs three curves at once and so cannot be derived from ``Z``).
+
+    Values keep their physical sign -- nothing here clips or takes abs().
+    """
+    if plot_type == "k":
+        return _aux_series(aux, "k", len(freqs))
     omega = 2.0 * np.pi * freqs
     with np.errstate(divide="ignore", invalid="ignore"):
         if plot_type == "R(mOhm)":
@@ -98,6 +143,8 @@ def _format_value(v: float, plot_type: str) -> str:
         return f"{v:.3g} Ω"
     if plot_type == "Q":
         return f"Q={v:.3g}"
+    if plot_type == "k":
+        return f"k={v:.3g}"
     return f"{v:.3g}"
 
 
@@ -197,12 +244,14 @@ class _PlotView:
         if self.y_log:
             ax.set_yscale("symlog", linthresh=1e-6)
         for tr in self.traces:
-            y = trace_y_values(tr.freqs, tr.Z, plot_type)
+            y = trace_y_values(tr.freqs, tr.Z, plot_type, tr.aux)
             color = COLORS[tr.color_idx % len(COLORS)]
             ls = LINESTYLES[tr.ls_idx % len(LINESTYLES)]
             label = (tr.label or "")[:MAX_LABEL_LEN]
             ax.plot(tr.freqs, y, color=color, linestyle=ls, label=label, linewidth=1.2)
             if tr.fit_freqs is not None and tr.fit_Z is not None:
+                # aux is aligned with tr.freqs, not the fit grid, so the fit
+                # overlay has no aux series -- it simply skips aux subplots.
                 yf = trace_y_values(tr.fit_freqs, tr.fit_Z, plot_type)
                 ax.plot(tr.fit_freqs, yf, color=color, linestyle=":",
                         linewidth=1.0, alpha=0.7)
@@ -228,7 +277,7 @@ class _PlotView:
                             linewidth=1.0, alpha=0.7)
             self._marker_lines.append(ln)
             for tr in self.traces:
-                y_arr = trace_y_values(tr.freqs, tr.Z, t)
+                y_arr = trace_y_values(tr.freqs, tr.Z, t, tr.aux)
                 if len(tr.freqs) == 0:
                     continue
                 idx = int(np.argmin(np.abs(tr.freqs - self.marker_freq_hz)))
@@ -273,7 +322,7 @@ class _PlotView:
         # Find nearest data point across all traces in *display* coords
         best = None  # (dist, tr, idx, x_data, y_data)
         for tr in self.traces:
-            y_arr = trace_y_values(tr.freqs, tr.Z, t)
+            y_arr = trace_y_values(tr.freqs, tr.Z, t, tr.aux)
             mask = np.isfinite(y_arr)
             if not mask.any():
                 continue
@@ -314,7 +363,7 @@ class _PlotView:
             for tr in self.traces:
                 if len(tr.freqs) == 0:
                     continue
-                y_arr = trace_y_values(tr.freqs, tr.Z, t)
+                y_arr = trace_y_values(tr.freqs, tr.Z, t, tr.aux)
                 idx = int(np.argmin(np.abs(tr.freqs - x_freq)))
                 yv = float(y_arr[idx])
                 if not np.isfinite(yv):
