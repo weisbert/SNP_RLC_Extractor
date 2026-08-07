@@ -1,8 +1,14 @@
 # Design note — the connection table (Mode 5 / Mode 6 editor)
 
-Status: **in progress on branch `feature/connection-table`.**
-Stages 0–2 are implemented; stages 3–4 are specified here but deliberately NOT
-started — they need a human looking at the screen. See "Staging" at the bottom.
+Status: **stages 0–2 implemented on branch `feature/connection-table`** (commits
+`abdc067`, `a676ec8`, `edf8814`). Stages 3–4 are specified here but deliberately
+NOT started — they need a human looking at the screen. See "Staging" at the bottom.
+
+What works today: Mode 6 is a table with a `+ Add` button, the DSL takes port
+ranges, the row model round-trips, and any spec defining two or more measurement
+ports produces the full coupling matrix regardless of which mode wrote it.
+What does not exist yet: the Mode 5 connection table, the port overview, the
+validation strip, and preset seeding.
 
 ---
 

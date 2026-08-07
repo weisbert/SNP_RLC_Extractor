@@ -929,13 +929,9 @@ class RowTable(ttk.Frame):
         self._max_visible = max(1, int(max_visible))
         self._rows: list[dict] = []      # per row: {key: tk.StringVar} + widgets
 
-        # --- header + add button (outside the scroll area) ---
+        # --- add button (outside the scroll area) ---
         head = ttk.Frame(self)
         head.pack(side=tk.TOP, fill=tk.X)
-        for col in self._columns:
-            ttk.Label(head, text=col.title, width=col.width,
-                      anchor="w", font=("TkDefaultFont", 8)
-                      ).pack(side=tk.LEFT, padx=1)
         ttk.Button(head, text=add_text, width=8, command=self.add_row
                    ).pack(side=tk.RIGHT, padx=1)
 
@@ -961,6 +957,15 @@ class RowTable(ttk.Frame):
         self._canvas.bind("<Enter>", self._bind_wheel)
         self._canvas.bind("<Leave>", self._unbind_wheel)
 
+        # Column headers live in the SAME grid as the cells (grid row 0, cells
+        # from row 1), so they line up exactly.  A separate header frame packed
+        # above cannot: its labels measure in characters of a different font
+        # than the Entry widgets below, and the last title ends up clipped.
+        for c, col in enumerate(self._columns):
+            ttk.Label(self._inner, text=col.title, anchor="w",
+                      font=("TkDefaultFont", 8)
+                      ).grid(row=0, column=c, sticky="w", padx=1)
+
         for _ in range(self._min_rows):
             self.add_row(notify=False)
 
@@ -975,13 +980,15 @@ class RowTable(ttk.Frame):
 
     def _resize_to_content(self) -> None:
         """Grow with the rows up to max_visible, then show the scrollbar."""
-        n = max(1, len(self._rows))
-        row_h = max(1, self._inner.winfo_reqheight() // max(1, len(self._rows) or 1))
-        visible = min(n, self._max_visible)
-        self._canvas.configure(height=row_h * visible)
+        self._inner.update_idletasks()
+        total = max(1, self._inner.winfo_reqheight())
+        n = len(self._rows)
         if n > self._max_visible:
+            per = total / (n + 1)          # +1 for the header row
+            self._canvas.configure(height=int(per * (self._max_visible + 1)))
             self._vsb.pack(side=tk.RIGHT, fill=tk.Y)
         else:
+            self._canvas.configure(height=total)
             self._vsb.pack_forget()
 
     def _bind_wheel(self, _event=None) -> None:
@@ -997,7 +1004,7 @@ class RowTable(ttk.Frame):
     # ------------------------------------------------------------------- rows
 
     def add_row(self, values: dict | None = None, notify: bool = True) -> None:
-        r = len(self._rows)
+        r = len(self._rows) + 1          # grid row 0 holds the column headers
         entry: dict = {"_vars": {}, "_widgets": []}
         for c, col in enumerate(self._columns):
             var = tk.StringVar(value=(values or {}).get(col.key, ""))
@@ -1042,7 +1049,7 @@ class RowTable(ttk.Frame):
             self._on_change()
 
     def _regrid(self) -> None:
-        for r, entry in enumerate(self._rows):
+        for r, entry in enumerate(self._rows, start=1):   # 0 is the header row
             for c, w in enumerate(entry["_widgets"]):
                 w.grid_configure(row=r, column=c)
 
