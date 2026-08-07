@@ -21,6 +21,7 @@ import tkinter as tk  # noqa: E402
 
 from pkg_rlc_core import ConnectionRow, MeasPortRow  # noqa: E402
 from pkg_rlc_gui import (  # noqa: E402
+    App,
     ColumnSpec,
     RowTable,
     TraceConfig,
@@ -117,6 +118,51 @@ class TestRowTable(unittest.TestCase):
         table.set_rows([ConnectionRow(kind="ground", ports="5:12")])
         got = table.get_rows()
         self.assertEqual((got[0].kind, got[0].ports), ("ground", "5:12"))
+
+
+@unittest.skipUnless(TK_OK, "no Tk display available")
+class TestResultsPaneVisible(unittest.TestCase):
+    """
+    The Results pane must not collapse to a sliver.
+
+    A ttk.PanedWindow sizes a pane from its requested size AT THE MOMENT IT IS
+    ADDED and never recomputes. _build_right_panel used to add an empty frame
+    and populate it afterwards, which works only as long as no geometry pass
+    runs in between -- so adding a widget on the OTHER side of the window that
+    called update_idletasks() during construction pinned the sash at 2px and the
+    entire Results pane disappeared. Nothing in that commit's diff touched
+    _build_right_panel, which is why this needs a test rather than review.
+    """
+
+    @staticmethod
+    def _pane_and_paned(app):
+        """Walk up from results_text to the pane frame and its PanedWindow."""
+        w, prev = app.results_text, app.results_text
+        while w is not None and w.winfo_class() != "TPanedwindow":
+            prev, w = w, w.master
+        return prev, w
+
+    def test_sash_leaves_the_results_pane_usable(self):
+        # The window has to be MAPPED for Tk to assign sash positions at all --
+        # on a withdrawn root sashpos() reads 0 whether the layout is right or
+        # wrong. So this test briefly shows a window; that is the only way to
+        # measure the thing that actually broke.
+        app = App()
+        try:
+            app.geometry("1200x800")
+            app.deiconify()
+            app.update()
+            pane, paned = self._pane_and_paned(app)
+            self.assertIsNotNone(paned, "results_text is not inside a PanedWindow")
+            self.assertGreater(
+                pane.winfo_reqheight(), 100,
+                "the Results pane does not even request a usable height")
+            self.assertGreater(
+                paned.sashpos(0), 100,
+                f"Results pane collapsed: sash at {paned.sashpos(0)}px. A pane "
+                "was added to the PanedWindow before its children existed.")
+        finally:
+            app.destroy()
 
 
 class TestLegacyMportMigration(unittest.TestCase):

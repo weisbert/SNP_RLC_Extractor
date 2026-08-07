@@ -120,6 +120,19 @@ deliberately unstarted — they need a human looking at the screen.
   It splits the old `name = +ports / -ports` lines **textually**, not via `parse_mport_spec`,
   so ranges survive as ranges and a malformed old line migrates instead of raising during
   load (it fails later, at Calculate, with a message that names it).
+- **Never call `update_idletasks()` while the UI is being built.** It flushes geometry for
+  the WHOLE application, not just the calling widget. `RowTable` did this to auto-size
+  itself, and because `_build_left_panel` runs before `_build_right_panel`, the flush
+  pinned the right-hand `ttk.PanedWindow`'s sash at 2px — the entire **Results pane
+  disappeared**, with `_build_right_panel` untouched in the diff. Defer to `after_idle`
+  (`RowTable._schedule_resize`, which also coalesces repeats and checks `winfo_exists`).
+  `tests/test_row_table.py::TestResultsPaneVisible` is the guard; it needs a MAPPED
+  window, because `sashpos()` reads 0 on a withdrawn root whatever the layout is.
+- **Populate a pane before `PanedWindow.add()`ing it.** ttk sizes a pane from its requested
+  size at `add()` time and never recomputes, so adding an empty frame and filling it after
+  works only while nothing forces a geometry pass in between. This alone did NOT fix the
+  bug above (measured: reverting it leaves the test green) — it removes the latent
+  fragility that made an unrelated widget able to trigger it.
 - **A table cell cannot hold a placeholder hint, so the hint is a permanent label under
   the table.** `PlaceholderEntry` / `PlaceholderText` delete their hint on `<FocusIn>` —
   that deletion is the mechanical reason nobody could remember the syntax. Do not

@@ -928,6 +928,7 @@ class RowTable(ttk.Frame):
         self._min_rows = max(0, int(min_rows))
         self._max_visible = max(1, int(max_visible))
         self._rows: list[dict] = []      # per row: {key: tk.StringVar} + widgets
+        self._resize_pending = False
 
         # --- add button (outside the scroll area) ---
         head = ttk.Frame(self)
@@ -973,14 +974,31 @@ class RowTable(ttk.Frame):
 
     def _on_inner_configure(self, _event=None) -> None:
         self._canvas.configure(scrollregion=self._canvas.bbox("all"))
-        self._resize_to_content()
+        self._schedule_resize()
 
     def _on_canvas_configure(self, event) -> None:
         self._canvas.itemconfigure(self._window, width=event.width)
 
+    def _schedule_resize(self) -> None:
+        """
+        Queue _resize_to_content for the next idle moment, coalescing repeats.
+
+        Never call update_idletasks() here.  It flushes geometry for the WHOLE
+        application, and this widget is built while the rest of the window still
+        is: one such flush during construction froze the Results pane's
+        PanedWindow sash at 2px and made the pane vanish.  after_idle runs after
+        Tk's own geometry pass, so reqheight is valid without forcing anything.
+        """
+        if self._resize_pending:
+            return
+        self._resize_pending = True
+        self.after_idle(self._resize_to_content)
+
     def _resize_to_content(self) -> None:
         """Grow with the rows up to max_visible, then show the scrollbar."""
-        self._inner.update_idletasks()
+        self._resize_pending = False
+        if not self.winfo_exists():
+            return
         total = max(1, self._inner.winfo_reqheight())
         n = len(self._rows)
         if n > self._max_visible:
@@ -1030,8 +1048,7 @@ class RowTable(ttk.Frame):
         self._rows.append(entry)
         for c, col in enumerate(self._columns):
             self._inner.columnconfigure(c, weight=1 if col.kind != "static" else 0)
-        self._inner.update_idletasks()
-        self._on_inner_configure()
+        self._schedule_resize()
         if notify and self._on_change is not None:
             self._on_change()
 
@@ -1044,7 +1061,7 @@ class RowTable(ttk.Frame):
         self._regrid()
         if len(self._rows) < self._min_rows:
             self.add_row(notify=False)
-        self._on_inner_configure()
+        self._schedule_resize()
         if self._on_change is not None:
             self._on_change()
 
@@ -1079,7 +1096,7 @@ class RowTable(ttk.Frame):
                           for col in self._columns}, notify=False)
         while len(self._rows) < self._min_rows:
             self.add_row(notify=False)
-        self._on_inner_configure()
+        self._schedule_resize()
 
     def set_column_values(self, key: str, values: Sequence[str]) -> None:
         """Repopulate a combo column's choices (e.g. after a file change)."""
@@ -1442,10 +1459,15 @@ class App(tk.Tk):
         parent.columnconfigure(1, weight=1)
 
     def _build_right_panel(self, parent: ttk.PanedWindow) -> None:
+        # POPULATE BEFORE add().  A ttk.PanedWindow sizes a new pane from its
+        # requested size AT THE MOMENT IT IS ADDED, and never recomputes. Adding
+        # an empty frame and filling it afterwards therefore works only by luck:
+        # it depends on no geometry pass running in between, so any widget built
+        # earlier that calls update_idletasks() silently pins the sash at ~2px
+        # and the whole Results pane disappears. Build the children first and the
+        # sash position stops depending on timing.
         results_frame = ttk.Frame(parent, height=180)
         plot_frame = ttk.Frame(parent)
-        parent.add(results_frame, weight=0)
-        parent.add(plot_frame, weight=1)
 
         header = ttk.Frame(results_frame)
         header.pack(side=tk.TOP, fill=tk.X)
@@ -1467,6 +1489,9 @@ class App(tk.Tk):
 
         self.plot = PlotPanel(plot_frame, on_marker_changed=self._on_marker_drag)
         self.plot.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        parent.add(results_frame, weight=0)
+        parent.add(plot_frame, weight=1)
 
     def _bind_events(self) -> None:
         self.files_lb.bind("<<ListboxSelect>>", lambda e: self._on_file_selected())
