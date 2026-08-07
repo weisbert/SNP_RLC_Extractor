@@ -161,6 +161,38 @@ class TestTextToRows(unittest.TestCase):
         self.assertEqual(len(conn), 1)
         self.assertIn("wat_is_this", extra)
 
+    def test_extra_kinds_are_exactly_the_kinds_the_parser_rejects(self):
+        """
+        `extra` is re-emitted at the END of a last-assignment-wins language.
+
+        That is only safe because every DIRECTIVE line routed there is one the
+        parser refuses outright -- so it can never quietly override an earlier
+        row.  The two kind lists are maintained independently; this pins that
+        they agree.
+        """
+        for line in ("9 wat_is_this",
+                     "5 short_to",
+                     "8 lumped_between",
+                     "1 signal A x",
+                     "3"):
+            with self.subTest(line=line):
+                mports, conn, extra = dsl_text_to_rows(line + "\n")
+                self.assertEqual((mports, conn), ([], []))
+                self.assertEqual(extra, line)
+                with self.assertRaises(ValueError):
+                    parse_custom_termination_text(line + "\n")
+
+    def test_tail_comment_is_dropped(self):
+        """
+        A documented lossy normalisation: the 'Edit as text' dialog promises
+        end-of-line comments are dropped, so it must not silently start
+        keeping them (or start dropping the directive with them).
+        """
+        _m, conn, extra = dsl_text_to_rows("3 lumped_to_gnd r=50   # far end\n")
+        self.assertEqual((conn[0].kind, conn[0].ports, conn[0].R),
+                         ("rlc_gnd", "3", "50"))
+        self.assertEqual(extra, "")
+
 
 class TestRoundTripIdempotent(unittest.TestCase):
     """text -> rows -> text is idempotent after one pass, and preserves meaning."""
@@ -171,7 +203,49 @@ class TestRoundTripIdempotent(unittest.TestCase):
         "1 signal m1 +\n3 lumped_to_gnd R=50\n4 lumped_between 2 R=0.01 L=0.1n C=1p\n",
         "1 signal m1 +\n2 signal m1 -\n3 short_to 4\n12 open\n",
         "1,2 signal m1 +\n3,4 signal m1 -\n6-9 ground\n",
+        # A connection BEFORE the signals, on ports that do not overlap. Every
+        # other spec here puts the signals first, which is exactly why the
+        # reordering hazard below stayed invisible.
+        "3 ground\n1 signal m1 +\n2 signal m1 -\n",
     ]
+
+    # The hazard the round trip cannot survive: a probe that overrides an
+    # earlier ground on the SAME port. dsl_text_to_rows discards line order and
+    # rows_to_dsl_text hoists every probe above every connection, so the ground
+    # ends up last and wins instead of losing.
+    FLIPPING_SPEC = "3 ground\n3 signal A\n4 signal B\n"
+
+    def test_probe_after_ground_changes_meaning_on_import(self):
+        direct = parse_custom_termination_text(self.FLIPPING_SPEC)
+        self.assertIsInstance(direct.per_port[2], Signal)
+        self.assertEqual([(mp.name, mp.plus, mp.minus)
+                          for mp in resolve_meas_ports(direct, 4)],
+                         [("A", [2], [3])])
+
+        once = parse_custom_termination_text(
+            rows_to_dsl_text(*dsl_text_to_rows(self.FLIPPING_SPEC)))
+        self.assertIsInstance(once.per_port[2], Ground)
+        with self.assertRaises(ValueError) as cm:
+            resolve_meas_ports(once, 4)
+        self.assertIn("No Signal-group-A ports", str(cm.exception))
+
+    def test_whole_spec_as_extra_lines_is_bit_identical(self):
+        """
+        The correctness proof of the fallback: a spec the table would change is
+        parked verbatim in extra_lines, and extra_lines is appended unchanged.
+        """
+        direct = parse_custom_termination_text(self.FLIPPING_SPEC)
+        parked = build_terminations_rows([], [], self.FLIPPING_SPEC)
+        self.assertEqual(direct.per_port.keys(), parked.per_port.keys())
+        for port, term in direct.per_port.items():
+            self.assertIs(type(term), type(parked.per_port[port]))
+        self.assertEqual([(c.port_i, c.port_j) for c in direct.couplings],
+                         [(c.port_i, c.port_j) for c in parked.couplings])
+        self.assertEqual(
+            [(mp.name, mp.plus, mp.minus)
+             for mp in resolve_meas_ports(direct, 4)],
+            [(mp.name, mp.plus, mp.minus)
+             for mp in resolve_meas_ports(parked, 4)])
 
     def test_second_pass_changes_nothing(self):
         for spec in self.SPECS:
@@ -326,6 +400,51 @@ class TestRowsValidation(unittest.TestCase):
         self.assertIsInstance(term.per_port[0], LumpedToGnd)
         self.assertEqual(len(term.couplings), 1)
         self.assertIsInstance(term.couplings[0], LumpedBetween)
+
+
+class TestRlcValuesMustBeOneToken(unittest.TestCase):
+    """
+    A cell value with a space in it must be refused, not serialised.
+
+    The DSL is whitespace-tokenised and parse_kv_rlc_params drops any token
+    without an '=', so before this 'R=5 m' computed R = 5 Ω -- a factor of
+    1000 from the 5 mΩ that was typed -- and 'C=1 uF' computed C = 1 farad,
+    a factor of 1e6. Nothing anywhere said so: the GUI's echo re-parses the
+    raw cell as ONE token, so it printed '5 mΩ' next to the computed 5 Ω, and
+    for '1 uF' / '0.5 nH' the echo failed silently and the strip fell through
+    to '✓ no problems found'. The column header carries the unit, which is
+    exactly what invites 'uF' into the cell.
+    """
+
+    SPACED = ("5 m", "1 uF", "0.5 nH", "50 Ohm", "1 000")
+
+    def _row(self, key, value):
+        return ConnectionRow(**{"kind": "rlc_gnd", "ports": "3", key: value})
+
+    def test_every_rlc_column_rejects_a_value_with_a_space(self):
+        for key in ("R", "L", "C"):
+            for value in self.SPACED:
+                with self.subTest(key=key, value=value):
+                    with self.assertRaises(ValueError) as cm:
+                        rows_to_dsl_text([], [self._row(key, value)])
+                    msg = str(cm.exception)
+                    self.assertIn(value, msg)
+                    self.assertIn(key, msg)
+
+    def test_the_builder_reports_it_rather_than_computing_something_else(self):
+        with self.assertRaises(ValueError) as cm:
+            build_terminations_rows([MeasPortRow("m1", "1", "2")],
+                                    [self._row("R", "5 m")], nports=4)
+        self.assertIn("5 m", str(cm.exception))
+
+    def test_one_token_values_are_untouched(self):
+        """The whole point: '5m' still means 5 mΩ, and leading/trailing space
+        is still stripped rather than being an error."""
+        for value, expect in (("5m", "R=5m"), (" 5m ", "R=5m"),
+                              ("1e-3", "R=1e-3"), ("5M", "R=5M")):
+            with self.subTest(value=value):
+                text = rows_to_dsl_text([], [self._row("R", value)])
+                self.assertEqual(text.strip(), f"3 lumped_to_gnd {expect}")
 
 
 class TestMeasurementPortRouting(unittest.TestCase):

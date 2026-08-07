@@ -1,14 +1,17 @@
 # Design note — the connection table (Mode 5 / Mode 6 editor)
 
-Status: **stages 0–2 implemented on branch `feature/connection-table`** (commits
-`abdc067`, `a676ec8`, `edf8814`). Stages 3–4 are specified here but deliberately
-NOT started — they need a human looking at the screen. See "Staging" at the bottom.
+Status: **stages 0–3 implemented.** Stage 4 (modes reframed as presets that fill
+the table) is specified here and deliberately NOT started — it rewrites the main
+editor skeleton and needs a human looking at the screen. See "Staging" at the
+bottom, and "What shipped differs from the mock" below it.
 
-What works today: Mode 6 is a table with a `+ Add` button, the DSL takes port
-ranges, the row model round-trips, and any spec defining two or more measurement
-ports produces the full coupling matrix regardless of which mode wrote it.
-What does not exist yet: the Mode 5 connection table, the port overview, the
-validation strip, and preset seeding.
+What works today: Modes 5 and 6 share the measurement-port table; Mode 5 adds
+the connections table, the port-overview strip, the validation strip and an
+"Edit as text…" escape hatch. The DSL takes port ranges, the row model
+round-trips, and any spec defining two or more measurement ports produces the
+full coupling matrix regardless of which mode wrote it.
+What does not exist yet: preset seeding (stage 4), and everything in
+"Deliberately out of scope" below.
 
 ---
 
@@ -48,14 +51,18 @@ Measurement ports                                   [+ Add]
 Connections                                  [+ Add] [Text…]
 ┌────────────┬────────┬────────┬──────┬──────┬──────┬─┐
 │ Type       │ Port   │ To     │ R Ω  │ L H  │ C F  │ │
-│ Ground   ▾ │ 5:12 ▾ │ GND    │      │      │      │✕│
-│ Series RLC▾│ 13   ▾ │ GND  ▾ │ 5m   │ 0.5n │ 1u   │✕│
-│ Short    ▾ │ 3    ▾ │ 4    ▾ │      │      │      │✕│
+│ ground   ▾ │ 6-14 ▾ │        │      │      │      │✕│
+│ rlc_gnd  ▾ │ 13   ▾ │        │ 5m   │ 0.5n │ 1u   │✕│
+│ short    ▾ │ 3    ▾ │ 4    ▾ │      │      │      │✕│
 └────────────┴────────┴────────┴──────┴──────┴──────┴─┘
 
-▸ Ports (45): 4 probe · 8 ground · 1 element · 32 open
-⚠ 3 open ports are named VSS_ball_*  — intended?
+Ports (45): 4 probe · 8 ground · 1 element · 32 open
+✓ port 13 → GND: 5 mΩ + 500 pH + 1 uF
 ```
+
+(The second line is the validation strip. The name-aware warning sketched here
+— "3 open ports are named VSS_ball_*" — is not shipped; the strip reports what
+the two tables say, plus the parsed value of the first element row.)
 
 - **Mode 6** is the measurement-port table + GND field. Nothing else.
 - **Mode 5** is that same table *plus* the connections table underneath. The
@@ -66,13 +73,21 @@ Connections                                  [+ Add] [Text…]
 Key details that came out of the design review and are not negotiable
 afterwards without redoing the analysis:
 
-- **The Port cell takes a range**, not a single port. `5:12 ground` is one row.
+- **The Port cell takes a range**, not a single port. `6-14 ground` — or
+  `35:1:45 ground`, the MATLAB `start:step:stop` form — is one row. (`5:12` is
+  NOT valid: `parse_port_range` requires all three colon-separated fields.)
   Without this a 45-port package needs a row per ground ball and the table is
   worse than the text box it replaces.
 - **The Port dropdown carries the file's port names** — the parser already
   harvests `! Port[12] = VDD_ball_2` into `TouchstoneData.port_names`. On an
   unfamiliar file this is the single highest-value affordance in the design:
   what the user has forgotten is not the syntax, it is *the layout*.
+  (**Deferred in stage 3** for a measured width reason — see §5a. The shipped
+  dropdown carries bare port numbers; the names stay reachable through
+  **Show Ports**, which is now named in both table hints, in Help → Mode 5 and
+  Help → Input syntax, and in the README, and which falls back to the editor's
+  file instead of silently doing nothing when the Files listbox has no
+  selection. A deferral nobody is told about is just a missing feature.)
 - **Units live in the column headers** (`R Ω`, `L H`, `C F`); the cell holds
   `5m`. The string `R=` never appears in the UI again.
 - **Each element row echoes its parsed value** (`5 mΩ + 0.5 nH + 1 µF series`).
@@ -99,9 +114,11 @@ element is ambiguous (star? mesh?) and guessing would be a silent wrong answer.
 **(b) Rows are stored structurally on `TraceConfig`; `custom_text` becomes a
 derived view.** The alternative — text as the single source of truth — cannot
 represent state the table needs: which preset a trace came from, whether it has
-been edited since, and the order of measurement ports. `custom_text` is kept and
-still round-trips, but it is now an interchange/escape-hatch format rather than
-storage.
+been edited since, and the order of measurement ports. As of stage 3 the field
+is *retired-but-loading*, like `mp1_*`: `migrate_legacy_custom_text` folds it
+into the two tables on load and nothing writes it again. The DSL text is
+computed on demand by `_editor_dsl_text()`; storing it as well would leave the
+migration guard unable to tell a legacy trace from a freshly synced one.
 
 **(c) The row model is serialisable to a file.** Not used yet. It costs nothing
 now and it is the thing that later enables "save a configuration and reuse it
@@ -135,6 +152,17 @@ test anywhere pinned the precedence.
 
 Anything that claims to reproduce a named mode must satisfy this class.
 
+The same hole has a second mouth, found in stage 3: **importing existing text
+into the table can flip the precedence the other way.** `dsl_text_to_rows`
+discards line order and `rows_to_dsl_text` re-emits every probe before every
+connection, so `3 ground / 3 signal A / 4 signal B` — where the probe
+deliberately overrides the earlier ground — comes back with port 3 grounded and
+`resolve_meas_ports` then raises. `_import_dsl_text` therefore compares the
+resolved `TerminationSet` before and after the round trip and, when they differ,
+keeps the whole spec verbatim in `extra_lines` (which `rows_to_dsl_text` appends
+unchanged, so it is bit-identical to what the trace computed before).
+`tests/test_connection_rows.py::TestRoundTripIdempotent` pins both halves.
+
 ## 5. Staging
 
 | Stage | Content | Verifiable without a human? |
@@ -142,13 +170,53 @@ Anything that claims to reproduce a named mode must satisfy this class.
 | 0 | Precedence tests, DSL port ranges, this note | **Yes** — test suite |
 | 1 | Row model, `build_terminations_rows`, Mode 5 → `compute_z_matrix` when ≥2 probes | **Yes** — test suite |
 | 2 | Measurement-port table widget, wired to Mode 6 | Code yes, look-and-feel no |
-| 3 | Mode 5 full editor: both tables, port overview, validation strip | **No** |
+| 3 | Mode 5 full editor: both tables, port overview, validation strip | **Done** — the verifiable half only |
 | 4 | Modes reframed as presets that fill the table | **No** |
 
-Stages 3 and 4 are where the actual UX judgement lives — whether the result is
-less confusing than what it replaces cannot be settled by a test. Stage 4 also
-rewrites the main editor skeleton and changes what every existing workflow looks
-like. Both wait for review.
+Stage 3's *verifiable* half is pinned by `tests/test_mode5_editor.py`: the
+text↔rows import decision, both strip renderers, what the editor loads and
+stores, which widgets each mode grids, and every layout claim measured off a
+mapped window (`winfo_ismapped`, `winfo_reqwidth`, canvas `xview`/`yview`/
+`scrollregion`, `PanedWindow.sashpos`). Its look-and-feel half — whether the
+result is less confusing than what it replaces — still cannot be settled by a
+test and wants review.
+
+Stage 4 rewrites the main editor skeleton and changes what every existing
+workflow looks like. It waits.
+
+## 5a. What shipped differs from the mock
+
+Four decisions taken during stage 3, each for a measured reason:
+
+- **No `GND` entry in the "To" dropdown.** `ConnectionRow(kind="short",
+  to="GND")` emits `3 short_to GND` and the parser raises *"short_to partner
+  must be a port number or range"*. "To ground" is a **kind** here (`ground`,
+  `rlc_gnd`), whose `to` field is ignored entirely. Putting GND in both places
+  makes the same fact expressible two ways, one of which is an error message
+  the user cannot connect to what they clicked.
+- **The Port dropdown carries port NUMBERS, not names** — deferred, not
+  dropped. Measured: a ttk Combobox's popdown is only as wide as the widget, so
+  a 7-char Port cell shows `12: VDD_bal…` truncated in the list as well as in
+  the cell. A name-bearing dropdown needs ≥15 chars ≈ 105 px, which the 431 px
+  editor viewport does not have. Revisit in stage 4, when the rail can be
+  re-proportioned; the names stay reachable through **Show Ports**.
+- **The per-row parsed-value echo moved into the validation strip.** A dedicated
+  static column needs ~20 chars ≈ 140 px. The strip costs nothing and catches
+  the same error (`✓ port 13 → GND: 5 mΩ + 500 pH + 1 uF`). It emits **one line
+  per element row**, so the property design §2 asked for holds for every row;
+  the strip itself shows two and `Calculate All & Plot` writes the whole list to
+  the Results pane. (It shipped emitting only the first row's echo plus
+  `(+N more)`, which left the `5m` vs `5M` typo invisible on every row but one.)
+- **An R/L/C cell must be one token.** `5 m` and `1 uF` are refused rather than
+  serialised. The DSL splits on whitespace and drops a token with no `=`, so
+  `R=5 m` computed 5 Ω and `C=1 uF` computed 1 farad — and because the echo
+  re-parses the raw cell as one token it printed `5 mΩ` beside the 5 Ω. The unit
+  in the column header is exactly what invites `uF` into the cell, so the guard
+  is not optional.
+- **The two strips are Mode 5 only.** Mode 6 shipped and is on main; every check
+  the strips make is one `build_terminations_coupling` already raises for at
+  Calculate, so two extra rows there buy little and risk the one mode that must
+  not regress.
 
 ## 6. Deliberately out of scope
 
@@ -170,6 +238,18 @@ Raised during the design review, real, and not part of this branch:
    are valid, common mode is undefined"). A warning that fires on every
    frequency of every normal coupled-inductor file trains users to stop reading
    warnings.
+7. **Both strips are below the fold at rest.** Measured on a mapped window at
+   1500x900: the editor canvas is 345 px against a 501 px mode-5 form, and
+   `_update_mode_visibility` resets the scroll to 0 on every mode change (it has
+   to — a now-short form must not stay parked out of sight), so switching to
+   Mode 5 shows File, the mode radios, the measurement-port table and the top of
+   the connections table, and neither strip until the user scrolls. Nothing is
+   unreachable and once scrolled to the connections table the table and both
+   strips are co-visible; the first impression is simply that the strips do not
+   exist. Pinning them into the editor's footer would fix it and would also eat
+   the last of a viewport that is already a 45 px slit at the 1040x600 minsize —
+   which is the proportion question **stage 4** exists to answer, since it
+   rewrites the editor skeleton anyway.
 
 (3) is the one that changes what the tool is for; the row model in stage 1 is
 shaped so it stays cheap.

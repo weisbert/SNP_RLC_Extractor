@@ -12,15 +12,16 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 |-------------------------|---------------------------------------------------------------------------------|
 | `pkg_rlc_core.py`       | Touchstone parser, S<->Y, unified `TerminationSet` model + the Mode 5 DSL (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`), the connection-table row model (`MeasPortRow`, `ConnectionRow`, `rows_to_dsl_text`, `dsl_text_to_rows`, `build_terminations_rows`), `parse_mport_spec`, `resolve_meas_ports`, `compute_z_matrix` / `compute_z`, `extract_rlc_at_freq` / `extract_coupling_at_freq`, `fit_inductor` / `fit_capacitor` / `fit_auto`. |
 | `pkg_rlc_plot.py`       | Matplotlib plot panel: multi-subplot grid over R/L/C/\|Z\|/Re/Im/Q/**k**, draggable freq marker, M / V / Delete keys, fullscreen window. Quantities that cannot be derived from one `(freqs, Z)` pair (today only `k`) arrive via the optional `Trace.aux` dict. |
-| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` / `PlaceholderText` hints and the `RowTable` / `ColumnSpec` row editor, results pane. Re-exports the DSL helpers it no longer defines. |
+| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), results pane. Re-exports the DSL helpers it no longer defines. |
 | `pkg_rlc_help.py`       | In-app Help window content (`HELP_TOPICS`, `HelpWindow`). One tab per mode + syntax + worked examples. |
 | `pkg_rlc_extractor.py`  | Entry point: dispatches GUI vs CLI from argv. CLI `--mode gnd \| p2p \| coupling`, `--mport` repeatable. |
 | `reduce_snp.py`         | **Standalone** CLI: shrinks a big `.sNp` to a few ports (KEEP / GND-short / open-or-matched elimination). Deliberately imports nothing from this repo — it gets copied to simulation servers on its own. |
 | `deploy.sh`             | **Top level on purpose.** Red-zone update entry point: `cd <install> && bash deploy.sh` auto-detects the uploaded tarball. The operator's cross-project convention is `<install>/deploy.sh` — do not move it back under `deploy/`. |
 | `deploy/`               | Rest of the air-gapped ("red zone") pipeline: `pack.ps1` (Windows, `git archive`), `doctor.sh` + `_env_check.py` (what can this box run?). No network, no pip, no venv on the far side. |
-| `tests/`                | `unittest`-based suite (252 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
-| `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, and the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see. |
-| `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set, the `mp1_*`->`mports` migration, and that Duplicate does not share the row list. |
+| `tests/`                | `unittest`-based suite (334 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see, and the reordering hazard that forces `_import_dsl_text`'s verbatim fallback. |
+| `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
+| `tests/test_mode5_editor.py` | Stage 3: the pure text<->rows import decision and both strip renderers, plus Tk-driven editor wiring, per-mode widget visibility, the text hatch, the CSV gate, wheel routing, and the LAYOUT numbers (`ismapped` / `reqwidth` / `xview` / `scrollregion` / `sashpos`) measured off a mapped window. |
 | `tests/generate_test_snp.py` | Builds synthetic fixtures with analytically known R/L/C/M; run as a script to (re)generate `tests/fixtures/`. The `COUPLED_*` module constants are the single source of truth for the coupled-coil fixtures. |
 | `tests/test_golden_regression.py` | Replays `tests/fixtures/golden_legacy.npz` through the current API and asserts `assert_array_equal`. This is the guard on every "stays bit-identical" claim below. |
 | `tests/_golden_capture.py` | Script + case registry that (re)generates `golden_legacy.npz`. NOT auto-discovered (leading underscore). Regenerate ONLY in the same commit that justifies moving the reference. |
@@ -73,9 +74,10 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 - **DSL signal syntax is `<port> signal <groupname> [+|-]`.** Group names are arbitrary strings; the sign is a **separate whitespace token** defaulting to `+`, and anything other than exactly `+` or `-` raises. A name whose `.upper()` is `A` or `B` is upper-cased so legacy `signal a` / `signal b` keep working. There is deliberately **no** "signal group must be A or B" validation any more, in either `compute_z_matrix` or the DSL — don't reintroduce it.
 ### Connection table (the Mode 5 / Mode 6 row editor)
 
-Design note: `docs/design_connection_table.md`. Stages 0-2 are done; stages 3-4
-(the full Mode 5 editor, and modes reframed as presets) are specified there and
-deliberately unstarted — they need a human looking at the screen.
+Design note: `docs/design_connection_table.md`. Stages 0-3 are done; stage 4
+(modes reframed as presets that seed the table) is specified there and
+deliberately unstarted — it rewrites the editor skeleton and needs a human
+looking at the screen.
 
 - **The DSL's leading port field takes `parse_port_range`, not `int`.** `6:1:14 ground`
   is one line, which is what lets a table row hold a package's ground balls without
@@ -149,7 +151,114 @@ deliberately unstarted — they need a human looking at the screen.
 - **A table cell cannot hold a placeholder hint, so the hint is a permanent label under
   the table.** `PlaceholderEntry` / `PlaceholderText` delete their hint on `<FocusIn>` —
   that deletion is the mechanical reason nobody could remember the syntax. Do not
-  "restore" per-cell placeholders.
+  "restore" per-cell placeholders, and do not wire `ColumnSpec.placeholder` into
+  anything. A table-based mode therefore registers **no** `MODE_PLACEHOLDERS` entry.
+- **Port cells take NUMBERS; `Show Ports` is the only route to the file's port names.**
+  A name-bearing dropdown does not fit the editor width (design note §5a — a ttk popdown
+  is only as wide as the widget, and 15 chars ≈ 105 px the 431 px viewport does not have),
+  so it is deferred to stage 4. Until then the substitute has to be *findable*: it is named
+  in both table hints, in Help → Mode 5 and Help → Input syntax, and in the README, and
+  `_on_show_ports` falls back to the editor's file rather than silently doing nothing when
+  the Files listbox has no selection. If the dropdown ever carries names, delete those five
+  pointers together.
+- **`TraceConfig.custom_text` is retired-but-loading, exactly like `mp1_*`.** `conn_rows`
+  + `extra_lines` are the storage; the DSL text is a DERIVED view (`_editor_dsl_text()`).
+  `migrate_legacy_custom_text` folds an old free-text spec in on load and
+  `_sync_editor_to_trace` never writes the field again — two stored copies would leave
+  the migration guard unable to tell a legacy trace from a freshly synced one, and the
+  text would overwrite the rows on the next selection. The guard is on **three** fields
+  (`mports`, `conn_rows`, `extra_lines`), because unlike `mports` no single one proves
+  the conversion happened. `_migrate_trace` runs it **after** `migrate_legacy_mports`, so
+  a config carrying both does not merge two unrelated specs.
+- **A text→rows import that would change the answer keeps the text verbatim in
+  `extra_lines`.** `dsl_text_to_rows` drops line order and `rows_to_dsl_text` hoists every
+  probe above every connection, so `3 ground / 3 signal A / 4 signal B` — where the probe
+  deliberately overrides the ground — comes back with port 3 grounded and
+  `resolve_meas_ports` then raises. `_import_dsl_text` compares the resolved
+  `TerminationSet` (per-port types, couplings, measurement-port triples) before and after
+  and falls back; `extra_lines` is re-emitted unchanged, so the fallback is bit-identical.
+  It also **never raises**: that, not the accident of `dsl_text_to_rows` being total, is
+  what makes "a malformed old spec migrates instead of failing to load" hold.
+- **The connections table's column widths are a measured budget.** 405 px table / 418 px
+  form against a **431 px** viewport (the editor canvas once its vertical scrollbar shows,
+  which in Mode 5 is always) — so the headroom for a new column is **13 px**, not 22.
+  Re-measure `_ed_form.winfo_reqwidth()` before adding one; the in-file comment beside
+  `CONN_TABLE_COLUMNS` carries the same two numbers. The table is gridded across all four
+  form columns with its caption **above** it, because a label beside it costs 91 px. The
+  editor canvas has an **x-scrollbar** as the safety net — the budget is a 100%-font
+  number and no column set fits at 150% DPI. It also fixes a pre-existing Mode 6 defect:
+  form 463 vs canvas 431, `xview (0.0, 0.962)`, 32 px of the ✕ column unreachable with no
+  way to scroll to it.
+- **Both editor scrollbars are decided in ONE function, `_apply_editor_scrollbars`.**
+  Autohiding each off its own `yscrollcommand` / `xscrollcommand` is a **limit cycle**,
+  not a race: hiding the horizontal bar gives the canvas 17 px of height back, which can
+  hide the vertical bar, which gives 17 px of width back, which brings the horizontal bar
+  back. Measured with the two decisions split: the editor flipped `431x245 <-> 448x228`
+  forever and `update()` never returned — the whole GUI hangs, and so does the test suite.
+  The single decision reads the **body frame's** size and the **form's requested** size,
+  neither of which a scrollbar packed inside `body` can change, so it is a fixed point.
+  `_ed_scroll_set` / `_ed_hscroll_set` move the thumb and nothing else. Both bars are
+  packed `before=self._ed_canvas` — pack unmaps from the end, and an `expand=True` canvas
+  packed first leaves nothing for either. There is deliberately **no host frame** for the
+  horizontal bar: Tk does not reissue a geometry request when a master's LAST slave is
+  removed, so an "empty" host keeps a 17 px requested height forever, in every mode
+  (measured at the 1040x600 minsize: 45 px of editor viewport became 28).
+- **`_refresh_editor_scrollregion` has two entry points.** `preserve=False` for a mode
+  change (a now-short form must not stay parked out of sight); `preserve=True` for a row
+  add or a hint toggle (or the row the user just created scrolls away). Within one pending
+  batch a reset wins over a preserve, and the flag is re-armed each time it is scheduled —
+  a sticky `False` swallowed every later row add. Both the canvas's **and the form's**
+  `<Configure>` must re-measure: a table grows the form one idle pass *after* the row was
+  added, so a scrollregion measured from the row-add callback alone is one row short.
+- **The strips run inside Tk variable traces.** `_apply_editor_strips` is
+  `after_idle`-coalesced, must never raise (a raised error there reaches no handler you
+  control — Tk prints it and the GUI carries on showing a stale "spec is fine"), and must
+  write to nothing but its three Labels (overview, validation, and the kept-as-text marker
+  on the Connections caption). `_sync_editor_to_trace` stays the only writer to a
+  `TraceConfig`. `_on_editor_rows_changed` returns early while `_suppress_editor_sync` is
+  set — that flag was inert before stage 3, and leaving it inert while adding an
+  `on_change` is exactly how it becomes a re-entrancy bug.
+- **A green tick has to mean "Calculate will work".** `_validation_messages` reports every
+  way a row contributes nothing or something other than it looks like — no Port, no R/L/C
+  at all (`y_series_rlc(0, 0, inf)` is `1/0`, so Z is NaN at every frequency while the
+  emitted warning blames the measurement port's return path), a name-only measurement-port
+  row, and **no measurement port at all**. The last one is why an empty Mode 5 editor says
+  so instead of "✓ no problems found" and then raising at Calculate. Echoes are one
+  message per element row, not one line naming the first, because `5m` vs `5M` is a
+  property of the row it is on; `_validation_strip_text` caps the strip at
+  `VALIDATION_STRIP_LINES` and `_on_calculate` prints the whole list to the Results pane,
+  which is what makes "… +N more (see Results)" true.
+- **An R/L/C cell must be ONE token, and `_rlc_tokens` raises otherwise.** The DSL is
+  whitespace-separated and `parse_kv_rlc_params` drops any token without an `=`, so
+  `R=5 m` computed 5 Ω where 5 mΩ was typed and `C=1 uF` computed 1 farad — with the
+  validation strip cheerfully echoing "5 mΩ" beside the 5 Ω, because it re-parses the raw
+  cell as one token. There is no way to quote a value in the DSL, so refusing is the only
+  answer that cannot be silently wrong. The unit lives in the column header. `_rlc_echo`
+  carries the same guard so it never echoes a value that will not be computed, and
+  `_on_edit_as_text` catches the raise (it would otherwise be an unhandled Tk traceback
+  with the dialog half-built).
+- **`extra_lines` has a permanent marker on the Connections caption.** It is the only part
+  of the spec with no widget of its own and `rows_to_dsl_text` emits it LAST, so it wins
+  over everything typed into the two tables. After a verbatim-kept import both tables are
+  empty while it decides the whole answer; `_extra_lines_indicator` says "(+N lines kept as
+  text)" on the caption row (no vertical cost) and the validation strip names the
+  measurement ports that come from it and not from the table. `_port_descriptor` shows the
+  text for a Mode 5 trace with empty tables and appends `+txt` when both are present —
+  "M5: (no probe) C:0" was a false claim in the column the user reads to confirm what ran.
+- **`TCombobox` is no longer in `App._WHEEL_OWNERS`.** Three of the connections table's six
+  columns are comboboxes, so with it there the router bailed out and *nothing* scrolled
+  over half the table. It is safe because `unbind_class("TCombobox", "<MouseWheel>")` in
+  `_install_wheel_router` already removed the value-changing class binding; an OPEN
+  dropdown is a `Listbox`, still in the set, and still scrolls itself.
+- **The Mode 5 table lets ground win over a probe; Mode 6's builder raises on the same
+  overlap.** Both are pinned and intended. The validation strip is where Mode 5 makes the
+  overlap visible — it must report it, not raise, and not "fix" it.
+- **Mode 5 passes `nports` to `build_terminations_rows`.** It used to pass none, so a
+  one-digit typo (`3 / 5` on a 4-port file) became a plausible wrong number until
+  `compute_z_matrix`'s backstop. Likewise the CSV exporter gates the coupling block on
+  `tc.Zmat is not None`, the same predicate `_on_calculate` routes on — gating on
+  `tc.mode == 6` exported a two-probe Mode 5 trace as a well-formed scalar table with
+  every M and every k silently absent.
 
 - **Plot quantities that need more than one curve arrive via `Trace.aux`.** `k` needs three curves at once (`Z_ab`, `Z_aa`, `Z_bb`) and so cannot be derived from a single `(freqs, Z)` pair; the GUI precomputes it and attaches it. `trace_y_values` must return an all-NaN array (draw nothing) for a trace with no matching `aux` entry, never raise — self curves share the subplot grid with mutual ones. New derived quantities go in `AUX_PLOT_TYPES` the same way.
 
@@ -214,7 +323,7 @@ python -m unittest discover -s tests
 Pick the **next unused integer** code (4 is retired, not free) and never renumber the existing ones — saved trace configs carry the integer.
 
 1. **Core**: add a `build_terminations_modeN(...)` helper in `pkg_rlc_core.py` that produces a `TerminationSet`, converting 1-based to 0-based *there* and nowhere deeper. If a new termination semantic is needed, add a dataclass to the `PortTermination` / `Coupling` unions and handle it in `compute_z_matrix`'s evaluation order (lumped -> short merge -> ground/vdd drop -> Schur -> probe-node contraction). If the mode only rearranges probes, it needs no new semantic at all — `Signal(group, sign)` already covers arbitrarily many measurement ports.
-2. **GUI**: add a new radio button in `_build_editor`, add the fields to `TraceConfig`, register placeholder hints in `MODE_PLACEHOLDERS`, extend `_update_mode_visibility` to show/hide and re-set placeholders, extend `_port_descriptor`, and dispatch in `_build_termination`. Mirror the dispatch in the CLI argparser (`_make_arg_parser` + `_run_cli`) and reject flags that belong to other modes with a clear message.
+2. **GUI**: add a new radio button in `_build_editor`, add the fields to `TraceConfig`, register placeholder hints in `MODE_PLACEHOLDERS`, extend `_update_mode_visibility` to show/hide and re-set placeholders, extend `_port_descriptor`, and dispatch in `_build_termination`. Mirror the dispatch in the CLI argparser (`_make_arg_parser` + `_run_cli`) and reject flags that belong to other modes with a clear message. A **table-based** mode registers NO `MODE_PLACEHOLDERS` entry — a cell cannot hold a hint, so its hint is a `_CollapsibleHint` under the table.
 3. **Help**: add a new tab to `HELP_TOPICS` in `pkg_rlc_help.py` with assumptions, inputs, and a worked example. Update the `Input syntax` tab if the mode adds syntax, and the `Mode 5 (Custom)` tab if the new mode could also be expressed in the DSL.
 4. **Docs**: update the mode table in `README.md` and add a section to `docs/theory.md`. If the mode changes what a "measurement" is (rather than just which ports are terminated how), say so in both.
 5. **Tests**: add a case in `test_core.py` (or `test_coupling.py` for anything probe-shaped) that builds the new termination set and asserts the result matches a hand-coded reference. Also add an "equivalence test" pinning that the new named mode produces identical results to a hand-built `TerminationSet`.

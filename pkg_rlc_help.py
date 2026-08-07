@@ -86,7 +86,9 @@ Each Calculate prints a single aligned table. Columns:
               M2: 1<->2 G:[]                 -- Mode 2 (port-to-port)
               M2: 1<->{2,3} G:[4]            -- multi-port terminal
               M3: 1<->2 G:[] S:[3-4]         -- Mode 3 with shorts
-              M5: <first 28 chars of DSL>    -- Mode 5 (custom)
+              M5: tank:1/2 C:3               -- Mode 5 (custom):
+                                                measurement ports, then
+                                                the connection-row count
               M6: <measurement-port list>    -- Mode 6 (+/- coupling)
    R/L/C/Q numeric values
    Sign    flag column. Always indicates the sign of Im(Z); may also
@@ -384,13 +386,94 @@ Mode 5 -- Custom (advanced)
 
 The named modes cover the most common configurations. For anything
 beyond them -- arbitrary lumped R/L/C terminations, mixed short and
-lumped couplings, etc. -- use Custom mode and write a small per-port
-termination spec.
+lumped couplings, etc. -- use Custom mode.
 
-Syntax
-------
+Two tables
+----------
+Mode 5 is the Mode 6 measurement-port table (what am I measuring)
+plus a connections table underneath it (what else is attached).
+Both grow by one row per click of "+ Add"; the "X" at the end of a
+row deletes it.
+
+MEASUREMENT PORTS -- Name / "+ ports" / "- ports". Identical to
+Mode 6; see that tab. Two or more rows give you the coupling matrix
+(M, k) between them, in Mode 5 exactly as in Mode 6.
+
+CONNECTIONS -- Type / Port / To / R / L / C:
+
+   Type          Attaches                            uses To?  R/L/C?
+   ------------  ----------------------------------  --------  ------
+   ground        V = 0                               no        no
+   vdd           V = 0 as well (AC small-signal)     no        no
+   open          nothing (the default anyway)        no        no
+   short         ties Port to To                     YES       no
+   rlc_gnd       series R-L-C from Port to ground    no        YES
+   rlc_between   the same element from Port to To    YES       YES
+
+   * Port and To take the full range syntax, so a package's ground
+     balls are ONE row: "6-14" or "35:1:45". See the Input syntax
+     tab. ("35:45" is an error -- the MATLAB form needs all three
+     fields.)
+   * The Port / To dropdowns list port NUMBERS, not names. To see
+     which ball is which on an unfamiliar file, click "Show Ports"
+     at the top of the left panel; the names go to the Results
+     pane. (A name-bearing dropdown does not fit the editor's
+     width; it is planned, not forgotten.)
+   * "To" is ignored by ground / vdd / open / rlc_gnd, which are
+     always to ground. rlc_between takes exactly ONE partner port
+     (an N-to-M lumped element is ambiguous -- star? mesh?).
+   * R / L / C hold the bare value; the unit is in the header.
+     SI suffixes apply, and "5m" is 5 milli while "5M" is 5 Mega.
+     The value must be ONE word: "5 m" and "1 uF" are REJECTED,
+     because the text form is whitespace-separated and "R=5 m"
+     would quietly compute 5 ohm instead of 5 milliohm.
+   * A BLANK R/L/C means OMITTED, which is not zero. An omitted C
+     is "no capacitor in the series branch"; C = 0 would be an open
+     circuit. An element row with NO R, L and C at all is a 0-ohm
+     short and gives NaN everywhere; the strip says so.
+
+Under the tables, two lines:
+
+   Ports (45): 4 probe . 8 ground . 1 element . 32 open
+   ✓ port 13 -> GND: 5 mOhm + 500 pH + 1 uF
+
+The first is the port census -- every port of the file, bucketed.
+The second is either a problem or, when there is none, the PARSED
+value of your element rows. That echo is there because "5m" and
+"5M" are one shift key and nine orders of magnitude apart. The
+strip shows at most two lines; "Calculate All & Plot" writes the
+whole list to the Results pane.
+
+Edit as text...
+---------------
+The button above the connections table opens the equivalent DSL
+text. It is not a second format: the tables serialise to exactly
+that text and that text is what the parser sees.
+
+Your text comes back rewritten into canonical form -- "gnd" becomes
+"ground", "signal a" becomes "signal A", "r=" becomes "R=", R/L/C
+are reordered to R, L, C, blank lines and end-of-line comments are
+dropped, and every measurement port is emitted BEFORE every
+connection (which is what makes a later "ground" win over a probe
+on the same port). Anything the tables cannot represent -- comment
+lines, hand-written directives -- is kept verbatim and appended.
+
+If reordering would change what your spec computes, the whole spec
+is kept as text instead of being moved into the tables, and you are
+told so. It still computes exactly what it computed before.
+
+When that happens the tables can be EMPTY while the kept text is
+what decides the answer -- and, being emitted last, it wins over
+anything you then type into the tables. The Connections caption
+therefore carries a permanent "(+N lines kept as text)" marker, and
+the validation strip says so when the kept text defines measurement
+ports the table does not show.
+
+DSL syntax (what "Edit as text..." speaks)
+------------------------------------------
 One directive per line. Lines starting with '#' are comments.
-Each directive begins with a 1-based port number, then a kind:
+Each directive begins with a 1-based port number or range, then a
+kind:
 
   <port>  signal <name> [+|-]           (sign defaults to '+')
   <port>  signal A                      (legacy: '+' side of group A)
@@ -445,8 +528,8 @@ every old Mode 1/2/3 spec still parses and still produces
 bit-identical numbers. Because of that alias, A and B are RESERVED:
 pick any other name for new multi-port work.
 
-Examples
---------
+Examples (text form; each line is one table row)
+------------------------------------------------
 50-ohm-terminated through-line (1-port file):
     1 signal A
     2 lumped_to_gnd R=50
@@ -503,6 +586,11 @@ Typical questions it answers:
   * Two adjacent bond-wire loops -- what is M between them?
   * Is the coupling between these two on-chip inductors under my
     -30 dBc budget, and did my layout change help?
+
+Mode 5 is this same measurement-port table plus a connections table
+underneath it, so anything you can set up here you can also set up
+there with extra terminations attached -- and two or more
+measurement ports produce the coupling matrix in either mode.
 
 The two-probe mental model
 --------------------------
@@ -860,8 +948,9 @@ Input syntax reference
 
 Port range syntax
 -----------------
-Used for Signal/Port A, Port B, GND Ports, and for each side of a
-Mode 6 measurement port. All port numbers are 1-based.
+Used for Signal/Port A, Port B, GND Ports, each side of a
+measurement-port row, and the Port / To cells of the Mode 5
+connections table. All port numbers are 1-based.
 
    Format            Example         Meaning
    ----------------  --------------  -----------------------------
@@ -877,6 +966,9 @@ Mode 6 measurement port. All port numbers are 1-based.
 
 Whitespace is tolerated. Duplicate ports are deduplicated while
 preserving order.
+
+NOTE the MATLAB range needs all THREE fields. "35:45" is an error;
+write "35:1:45" or "35-45".
 
 Short-pair / short-group syntax
 -------------------------------
@@ -950,6 +1042,17 @@ Custom-mode SI suffixes for R/L/C
                             T=1e12 (tera)
 
    Examples: R=50, R=1k, L=1.5n, C=10p, R=2.5, L=0.5e-9
+
+   ONE WORD, NO UNIT. "5 m", "1 uF" and "0.5 nH" are rejected: the
+   text form splits on whitespace, so "R=5 m" would be read as
+   "R=5" with the "m" thrown away -- 5 ohm where you meant 5
+   milliohm. The unit lives in the column header.
+
+Where the file's port names are
+-------------------------------
+Every port cell and dropdown in this tool takes port NUMBERS. To
+see the names the file carries ("! Port[12] = VDD_ball_2"), select
+the file and click "Show Ports"; the list goes to the Results pane.
 """
 
 
@@ -1031,10 +1134,18 @@ File:    2-port trace
 Goal:    Driving-point impedance with realistic 50-ohm far-end load
 
    Mode = 5 (Custom)
-   Custom Spec:
-       1 signal A
-       2 lumped_to_gnd R=50
+   Measurement ports table:
+        Name    + ports    - ports
+        m1      1
+   Connections table:
+        Type       Port   To    R    L    C
+        rlc_gnd    2            50
    RLC Freq    = your operating frequency
+
+   ("Edit as text..." shows the same thing as
+        1 signal m1 +
+        2 lumped_to_gnd R=50
+    which is literally what gets parsed.)
 
 
 Example F: Mutual inductance between two bond-wire loops

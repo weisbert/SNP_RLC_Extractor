@@ -35,6 +35,8 @@ from tkinter.scrolledtext import ScrolledText
 import numpy as np
 
 from pkg_rlc_core import (
+    CONN_KINDS,
+    CONN_KINDS_WITH_RLC,
     DEFAULT_Z0,
     RECIPROCITY_WARN,
     SI_SUFFIXES,
@@ -54,6 +56,7 @@ from pkg_rlc_core import (
     build_terminations_mode2,
     build_terminations_mode3,
     build_terminations_mode4,
+    build_terminations_rows,
     compute_z,
     compute_z_matrix,
     eval_capacitor_model,
@@ -133,6 +136,11 @@ class TraceConfig:
     short_pairs: str = ""
     gnd_ports: str = ""
     vdd_ports: str = ""      # retired; kept so mode-4 configs still migrate
+    # RETIRED: the free-text Mode 5 spec.  Kept only so an older config still
+    # loads (see migrate_legacy_custom_text) and never written again -- the two
+    # tables below are the live storage and the DSL text is a DERIVED view,
+    # computed on demand.  Storing both would give the migration guard two
+    # states it cannot tell apart.
     custom_text: str = ""
     # --- Mode 6 (+/- measurement ports / coupling) ---
     # `mports` is the live storage: one MeasPortRow per measurement port, port
@@ -148,6 +156,13 @@ class TraceConfig:
     mp2_plus: str = ""
     mp2_minus: str = ""
     mp_more: str = ""
+    # --- Mode 5 (Custom): the connection table ---
+    # conn_rows + extra_lines are the LIVE storage, exactly as `mports` is for
+    # the measurement-port table.  `extra_lines` holds whatever the table
+    # cannot represent (comments, hand-written directives, and a whole spec
+    # whose meaning the table would change -- see migrate_legacy_custom_text).
+    conn_rows: list = field(default_factory=list)   # list[ConnectionRow]
+    extra_lines: str = ""
     plot_self: bool = True
     plot_mutual: bool = True
     label: str = ""
@@ -224,6 +239,40 @@ class TraceConfig:
         self.mp1_name = self.mp1_plus = self.mp1_minus = ""
         self.mp2_name = self.mp2_plus = self.mp2_minus = ""
         self.mp_more = ""
+        return True
+
+    def migrate_legacy_custom_text(self) -> bool:
+        """
+        Fold the retired free-text Mode 5 spec into the two tables.
+
+        Guarded on THREE fields, not one: unlike `mports` there is no single
+        field that proves the conversion happened -- a Mode 5 trace can
+        legitimately have rows in one table and none in the other.
+
+        MEANING IS NEVER CHANGED.  dsl_text_to_rows discards line order and
+        rows_to_dsl_text re-emits every probe BEFORE every connection, so a
+        spec whose 'signal' line follows a 'ground' on the same port would come
+        back meaning something else ('3 ground / 3 signal A / 4 signal B'
+        resolves port 3 as Signal directly and as Ground after one pass, and
+        then resolve_meas_ports raises because group A is left with only a
+        minus side).  When the round trip is not meaning-preserving the WHOLE
+        spec is parked verbatim in extra_lines, which rows_to_dsl_text appends
+        unchanged -- bit-identical to what the trace computed before.
+
+        Returns True when a migration actually happened.
+        """
+        if self.mports or self.conn_rows or self.extra_lines:
+            return False
+        text = (self.custom_text or "").strip()
+        if not text:
+            return False
+        mports, conn, extra, changed = _import_dsl_text(self.custom_text)
+        if changed:
+            self.mports, self.conn_rows = [], []
+            self.extra_lines = self.custom_text.rstrip()
+        else:
+            self.mports, self.conn_rows, self.extra_lines = mports, conn, extra
+        self.custom_text = ""
         return True
 
 
@@ -318,11 +367,410 @@ def _port_descriptor(tc: "TraceConfig") -> str:
             body += f" +{len(parts) - 3}"
         return f"M6: {body} G:{_fmt_port_set(tc.gnd_ports)}"
     if tc.mode == 5:
-        text = (tc.custom_text or "").strip().replace("\n", " ")
-        if len(text) > 28:
-            text = text[:25] + "..."
-        return f"M5: {text}" if text else "M5: (empty)"
+        # No side effects here: unlike the mode-6 branch above this does NOT
+        # call the migration, because that would consume it silently and the
+        # user would never see the Results-pane message explaining what moved.
+        #
+        # With both tables empty the spec lives entirely in extra_lines (a
+        # migration that kept an order-dependent spec verbatim, or an import
+        # through 'Edit as text…').  Reporting '(no probe) C:0' for that is a
+        # positive false claim in the very column the user reads to confirm
+        # what was computed -- so fall back to showing the text, exactly as the
+        # unmigrated custom_text case below it does.
+        if not (tc.mports or tc.conn_rows):
+            text = (tc.extra_lines or tc.custom_text or "").strip()
+            if text:
+                text = " ".join(text.split())
+                return f"M5: {text[:25]}..." if len(text) > 28 else f"M5: {text}"
+        parts = [_fmt_mport(r.name, r.plus, r.minus) for r in tc.mports
+                 if r.plus.strip() or r.minus.strip()]
+        body = " ".join(parts[:2]) if parts else "(no probe)"
+        if len(parts) > 2:
+            body += f" +{len(parts) - 2}"
+        desc = f"M5: {body} C:{len(tc.conn_rows)}"
+        # Rows AND kept text: the text is in force too and is emitted last, so
+        # it wins.  Say it is there rather than describe the rows as the whole
+        # spec.
+        if (tc.extra_lines or "").strip():
+            desc += "+txt"
+        return desc
     return f"M?: mode={tc.mode}"
+
+
+# ============================================================================
+# Mode 5 helpers (the connection table <-> the DSL text)
+# ============================================================================
+
+def _import_dsl_text(text: str) -> tuple[list, list, str, bool]:
+    """
+    DSL text -> (mport_rows, conn_rows, extra_lines, meaning_changed).
+
+    `meaning_changed` is True when routing the text through the tables would
+    not compute the same thing, and the caller must then keep `text` verbatim
+    in extra_lines instead of using the rows.  It is decided by comparing the
+    RESOLVED TerminationSet before and after the round trip -- per-port
+    termination types, couplings, and the measurement ports resolve_meas_ports
+    produces -- because dsl_text_to_rows discards line order while the DSL is
+    last-assignment-wins.
+
+    Never raises.  On any internal failure it returns the same safe fallback
+    ([], [], text, True), which is what makes "a malformed old spec migrates
+    instead of raising during load" hold by construction rather than by the
+    accident of dsl_text_to_rows happening to be total today.
+    """
+    try:
+        mports, conn, extra = dsl_text_to_rows(text)
+        if _dsl_meaning(text) == _dsl_meaning(
+                rows_to_dsl_text(mports, conn, extra)):
+            return mports, conn, extra, False
+    except Exception:
+        pass
+    return [], [], text, True
+
+
+def _dsl_meaning(text: str):
+    """
+    A comparable fingerprint of what a DSL spec computes, or None if it does
+    not parse.  Used only to decide whether text may become rows.
+
+    The port count handed to the resolver is one past the largest port the spec
+    mentions: resolve_meas_ports only scans 0..n-1, so a smaller window would
+    hide a difference at the far end of the spec.
+    """
+    try:
+        term = parse_custom_termination_text(text)
+    except Exception:
+        return None
+    ports = set(term.per_port)
+    for cpl in term.couplings:
+        ports.add(cpl.port_i)
+        ports.add(cpl.port_j)
+    n = (max(ports) + 1) if ports else 0
+    try:
+        mports = [(mp.name, tuple(mp.plus), tuple(mp.minus))
+                  for mp in resolve_meas_ports(term, n)]
+    except Exception:
+        # A spec whose probes do not resolve still has a meaning -- "it fails"
+        # -- and one side failing while the other does not IS a change.
+        mports = None
+    return (
+        {p: type(t).__name__ for p, t in term.per_port.items()},
+        [(type(c).__name__, c.port_i, c.port_j) for c in term.couplings],
+        mports,
+    )
+
+
+def _ordering_diff_summary(text: str) -> str:
+    """
+    Name the ports whose termination changes when `text` goes through the
+    tables.  Used only to explain why a spec was kept verbatim.
+    """
+    before = _dsl_meaning(text)
+    try:
+        after = _dsl_meaning(rows_to_dsl_text(*dsl_text_to_rows(text)))
+    except Exception:
+        after = None
+    if before is None or after is None:
+        return ""
+    lines = []
+    for port in sorted(set(before[0]) | set(after[0])):
+        was = before[0].get(port, "Open")
+        now = after[0].get(port, "Open")
+        if was != now:
+            lines.append(f"  port {port + 1}: {was} → {now}")
+    return "\n".join(lines)
+
+
+def _scan_count(term: TerminationSet, nports: Optional[int]) -> int:
+    """
+    How many ports to scan when the file's port count is unknown.
+
+    resolve_meas_ports and the overview only look at 0..n-1, so with no file
+    loaded the window has to reach the largest port the spec mentions -- but
+    that number is NOT reported as a port count anywhere, because it is not one.
+    """
+    if nports is not None:
+        return int(nports)
+    ports = set(term.per_port)
+    for cpl in term.couplings:
+        ports.add(cpl.port_i)
+        ports.add(cpl.port_j)
+    return (max(ports) + 1) if ports else 0
+
+
+# Bucket order in the port-overview strip.
+_OVERVIEW_BUCKETS = ("probe", "ground", "vdd", "element", "shorted", "open")
+
+
+def _port_bucket(term: TerminationSet, port0: int,
+                 elem_ports: set, short_ports: set) -> str:
+    """Which overview bucket one 0-based port falls into."""
+    t = term.termination_of(port0)
+    if isinstance(t, Signal):
+        return "probe"
+    if isinstance(t, Vdd):
+        return "vdd"
+    if isinstance(t, Ground):
+        return "ground"
+    if isinstance(t, LumpedToGnd) or port0 in elem_ports:
+        return "element"
+    if port0 in short_ports:
+        return "shorted"
+    return "open"
+
+
+def _port_overview_text(term: Optional[TerminationSet],
+                        nports: Optional[int]) -> str:
+    """
+    'Ports (45): 4 probe · 8 ground · 1 element · 32 open'.
+
+    With no file loaded the port count is unknown, so only the ports the rows
+    mention are counted and the 'open' bucket is dropped entirely -- an open
+    port is one the file has and the spec did not name, which cannot be known
+    without the file.  Guessing nports from the largest port mentioned would
+    invent a number that looks authoritative.
+    """
+    header = (f"Ports ({nports})" if nports is not None
+              else "Ports (no file selected)")
+    if term is None:
+        return f"{header}: —"
+
+    elem_ports: set = set()
+    short_ports: set = set()
+    for cpl in term.couplings:
+        target = elem_ports if isinstance(cpl, LumpedBetween) else short_ports
+        target.add(cpl.port_i)
+        target.add(cpl.port_j)
+
+    n = _scan_count(term, nports)
+    scan = range(n) if nports is not None else sorted(
+        set(term.per_port) | elem_ports | short_ports)
+    counts = dict.fromkeys(_OVERVIEW_BUCKETS, 0)
+    for i in scan:
+        counts[_port_bucket(term, i, elem_ports, short_ports)] += 1
+    if nports is None:
+        counts["open"] = 0
+
+    parts = [f"{counts[b]} {b}" for b in _OVERVIEW_BUCKETS if counts[b]]
+    return f"{header}: " + (" · ".join(parts) if parts else "(no rows yet)")
+
+
+def _rlc_echo(row: ConnectionRow) -> str:
+    """
+    'port 13 → GND: 5 mΩ + 500 pH + 1 uF' for one element row, or "".
+
+    Design §2 wanted this per row; a static column costs ~140 px the 431 px
+    editor does not have, so it lands in the validation strip instead.  It
+    catches the same error: '5m' and '5M' are one shift key and nine orders of
+    magnitude apart, and only the parsed value shows which one was typed.
+    """
+    if row.kind not in CONN_KINDS_WITH_RLC or not row.ports.strip():
+        return ""
+    vals = {k: getattr(row, k).strip() for k in ("R", "L", "C")}
+    if any(any(ch.isspace() for ch in v) for v in vals.values()):
+        # rows_to_dsl_text refuses these (see _rlc_tokens): the DSL is
+        # whitespace-tokenised, so 'R=5 m' would compute 5 Ω while this
+        # function -- which re-parses the raw cell as ONE token -- would echo
+        # '5 mΩ' beside it.  Say nothing rather than say something else.
+        return ""
+    try:
+        params = parse_kv_rlc_params(
+            [f"{k}={v}" for k, v in vals.items() if v])
+    except Exception:
+        return ""
+    bits = []
+    if row.R.strip():
+        bits.append(format_si(params["R"], "Ω"))
+    if row.L.strip():
+        bits.append(format_si(params["L"], "H"))
+    if row.C.strip():
+        bits.append(format_si(params["C"], "F"))
+    if not bits:
+        return ""
+    to = row.to.strip() if row.kind == "rlc_between" else "GND"
+    return f"port {row.ports.strip()} → {to or '?'}: " + " + ".join(bits)
+
+
+def _validation_messages(mport_rows: Sequence, conn_rows: Sequence,
+                         extra_lines: str = "",
+                         nports: Optional[int] = None) -> list[str]:
+    """
+    Everything worth saying about the two tables, worst first.
+
+    MUST NOT RAISE.  It runs from a Tk variable trace on every keystroke, where
+    a raised exception does not reach a handler we control -- Tk prints it to
+    stderr and the GUI carries on showing a stale, wrong strip.  Half-typed
+    cells raise routinely: parse_port_range rejects '5:', '5:1:' and '-'.
+    """
+    msgs: list[str] = []
+    term: Optional[TerminationSet] = None
+    try:
+        term = build_terminations_rows(mport_rows, conn_rows, extra_lines,
+                                       nports=nports)
+    except Exception as e:
+        msgs.append(f"⚠ {e}")
+
+    # Rows that are not blank but contribute nothing. rows_to_dsl_text skips a
+    # connection row with an empty Port silently -- no error, no line, no hint
+    # that the R=50 sitting next to it was thrown away.
+    for i, row in enumerate(conn_rows, start=1):
+        if row.is_blank():
+            continue
+        if not row.ports.strip():
+            msgs.append(f"⚠ connection row {i} has values but no Port "
+                        "-- it does nothing.")
+        elif (row.kind in CONN_KINDS_WITH_RLC
+                and not (row.R.strip() or row.L.strip() or row.C.strip())):
+            # The mirror image of the check above, and the one that hurts:
+            # y_series_rlc(R=0, L=0, C=inf) is 1/0, so the element is an
+            # infinite-admittance short and Z comes out NaN at EVERY frequency
+            # -- with a warning that blames the measurement port's return path
+            # rather than the empty cells.
+            msgs.append(f"⚠ connection row {i} ({row.kind}) has no R, L or C "
+                        "-- a lumped element with no value is a 0 Ω short and "
+                        "the result is NaN everywhere.")
+    for i, row in enumerate(mport_rows, start=1):
+        if row.is_blank() or row.plus.strip():
+            continue
+        if row.minus.strip():
+            msgs.append(f"⚠ measurement port row {i} has a '−' side but no "
+                        "'+' side -- it does nothing.")
+        else:
+            # Name typed, ports never filled in. is_blank() is False, so
+            # neither branch used to see it and the row vanished silently.
+            msgs.append(f"⚠ measurement port row {i} has a name but no ports "
+                        "-- it does nothing.")
+
+    if term is not None:
+        # Overlaps first: grounding a probe is what CAUSES 'no measurement
+        # port defined', so naming the cause above the consequence.
+        msgs.extend(_probe_ground_messages(mport_rows, term))
+        msgs.extend(_measured_port_messages(mport_rows, term, nports))
+
+    if msgs:
+        return msgs
+
+    # One message per element row, not one line naming the first and counting
+    # the rest: the echo exists to catch '5m' typed as '5M', which is a
+    # property of the row it is on. _validation_strip_text caps the strip;
+    # Calculate prints the full list to the Results pane.
+    echoes = ["✓ " + e for e in (_rlc_echo(r) for r in conn_rows) if e]
+    return echoes or ["✓ no problems found"]
+
+
+def _measured_port_messages(mport_rows: Sequence, term: TerminationSet,
+                            nports: Optional[int]) -> list[str]:
+    """
+    Every way the measurement ports that will be MEASURED differ from the rows.
+
+    Comparing the row count to len(resolve_meas_ports(...)) catches all of the
+    merges at once without duplicating build_terminations_coupling's rule list:
+    'A' + 'B' collapse (B is the legacy minus side of A) and two rows sharing a
+    name do too.  Mode 6's identical-looking table RAISES on both; the Mode 5
+    table keeps the DSL's permissive behaviour, and this strip is where that
+    difference becomes visible instead of silent.
+
+    It also catches the two directions the row count cannot show at all:
+    NOTHING resolves (Calculate would raise), and MORE resolve than the table
+    has rows -- which can only come from the lines kept as text, and is how a
+    trace silently acquires a second probe and routes to the coupling path.
+    """
+    rows = [r for r in mport_rows if not r.is_blank() and r.plus.strip()]
+    try:
+        resolved = resolve_meas_ports(term, _scan_count(term, nports))
+    except Exception as e:
+        return [f"⚠ {e}"]
+    if not resolved:
+        return ["⚠ no measurement port defined -- add a row to the "
+                "measurement-port table and fill in its '+' side."]
+    if len(resolved) > len(rows):
+        hidden = [mp.name for mp in resolved
+                  if mp.name not in {r.name.strip() for r in rows}]
+        extra_n = len(resolved) - len(rows)
+        named = f" ('{hidden[0]}')" if len(hidden) == 1 else ""
+        head = ("1 measurement port is" if len(resolved) == 1
+                else f"{len(resolved)} measurement ports are")
+        return [f"⚠ {head} measured but the measurement-port table has "
+                f"{len(rows)} row(s): {extra_n} more{named} from the lines "
+                "kept as text. Open 'Edit as text…' to see them."]
+    if len(rows) < 2 or len(resolved) >= len(rows):
+        return []
+    head = (f"⚠ {len(rows)} measurement-port rows define only "
+            f"{len(resolved)} measurement port(s)")
+    names = [r.name.strip() for r in rows]
+    upper = {n.upper() for n in names}
+    if "A" in upper and "B" in upper:
+        return [f"{head}: 'B' is the legacy minus side of 'A'. "
+                "Rename one of them."]
+    dupes = sorted({n for n in names if n and names.count(n) > 1})
+    if dupes:
+        return [f"{head}: the name '{dupes[0]}' is used twice, so both rows "
+                "feed one measurement port. Rename one."]
+    return [f"{head}."]
+
+
+def _probe_ground_messages(mport_rows: Sequence,
+                           term: TerminationSet) -> list[str]:
+    """
+    Ports listed as a probe that a later connection row grounds.
+
+    This is legal and pinned: the rows path emits probes before connections, so
+    ground wins, exactly as build_terminations_mode1/2/3 always have.
+    build_terminations_coupling raises on the same overlap.  Do not unify them
+    -- just say which one happened.
+    """
+    probe_ports: set[int] = set()
+    for row in mport_rows:
+        for spec in (row.plus, row.minus):
+            try:
+                probe_ports.update(parse_port_range(spec))
+            except Exception:
+                continue
+    hit = sorted(p for p in probe_ports
+                 if isinstance(term.termination_of(p - 1), (Ground, Vdd)))
+    if not hit:
+        return []
+    listed = ", ".join(str(p) for p in hit)
+    noun = "port" if len(hit) == 1 else "ports"
+    verb = "is" if len(hit) == 1 else "are"
+    return [f"⚠ {noun} {listed} {verb} both a probe and a ground row "
+            "-- the ground row wins."]
+
+
+def _extra_lines_indicator(extra_lines: str) -> str:
+    """
+    '(+2 lines kept as text)' for the Connections caption, or "".
+
+    extra_lines is the one part of the spec with no widget of its own, and
+    rows_to_dsl_text emits it LAST -- so it wins over everything in the two
+    tables.  After a verbatim-kept import the tables can be empty while a
+    hidden block of DSL decides the whole answer; this is what says so without
+    costing a row of the form.
+    """
+    n = len([ln for ln in (extra_lines or "").splitlines() if ln.strip()])
+    if not n:
+        return ""
+    return f"(+{n} line{'' if n == 1 else 's'} kept as text)"
+
+
+# How many messages the strip shows before it defers to the Results pane.
+# _on_calculate uses the same number to decide what to print there, so the
+# "… +N more (see Results)" pointer names something that is actually written.
+VALIDATION_STRIP_LINES = 2
+
+
+def _validation_strip_text(msgs: Sequence[str],
+                           limit: int = VALIDATION_STRIP_LINES) -> str:
+    """
+    Cap the strip. Measured uncapped: 21 / 38 / 55 / 89 / 140 px at 1 / 2 / 3 /
+    5 / 8 lines, and 140 px is 41% of the editor canvas.  The overflow goes to
+    the Results pane, which scrolls -- _on_calculate writes the full list there.
+    """
+    msgs = list(msgs)
+    if len(msgs) <= limit:
+        return "\n".join(msgs)
+    return "\n".join(msgs[:limit]
+                     + [f"… +{len(msgs) - limit} more (see Results)"])
 
 
 # ============================================================================
@@ -333,15 +781,17 @@ def _duplicate_trace_config(src: "TraceConfig", new_id: int) -> "TraceConfig":
     """
     Copy a trace for the Duplicate button, dropping last run's results.
 
-    `mports` is a LIST of dataclasses, so it is copied element-wise.  A plain
-    `TraceConfig(**src.__dict__)` hands both traces the same list object, and
-    editing the copy's measurement ports then silently edits the original's --
-    a bug with no visible symptom until two curves quietly agree.
+    `mports` and `conn_rows` are LISTS of dataclasses, so both are copied
+    element-wise.  A plain `TraceConfig(**src.__dict__)` hands both traces the
+    same list object, and editing the copy's measurement ports or connections
+    then silently edits the original's -- a bug with no visible symptom until
+    two curves quietly agree.
     """
     return TraceConfig(**{**src.__dict__,
                           "id": new_id,
                           "label": src.label + "_copy",
                           "mports": [replace(r) for r in src.mports],
+                          "conn_rows": [replace(r) for r in src.conn_rows],
                           "Z": None, "rlc": None, "fit": None, "fit_kind": "",
                           "Zmat": None, "mport_names": None,
                           "coupling": None})
@@ -720,7 +1170,7 @@ def _format_coupling_block(tc: "TraceConfig", file_label: str,
     pairs = list(cres.pairs)
     if not pairs:
         lines.append("  coupling: (only one measurement port -- "
-                     "add Port 2 to get M and k)")
+                     "add a second measurement-port row to get M and k)")
     else:
         m_sfx, fmt_m = _value_formatter([p.M_henry for p in pairs], "H",
                                         units_mode)
@@ -905,6 +1355,11 @@ class ColumnSpec:
     values: tuple = ()              # choices, for kind="combo"
     placeholder: str = ""
     readonly_combo: bool = False    # combo that rejects typed-in values
+    # Value a '+ Add' row starts with.  The Add button is bound as
+    # command=self.add_row, which Tk calls with NO arguments, so without this a
+    # new connection row arrives with kind='' -- and rows_to_dsl_text raises on
+    # that rather than treating it as blank.
+    default: str = ""
 
 
 class RowTable(ttk.Frame):
@@ -1031,7 +1486,7 @@ class RowTable(ttk.Frame):
         r = len(self._rows) + 1          # grid row 0 holds the column headers
         entry: dict = {"_vars": {}, "_widgets": []}
         for c, col in enumerate(self._columns):
-            var = tk.StringVar(value=(values or {}).get(col.key, ""))
+            var = tk.StringVar(value=(values or {}).get(col.key, col.default))
             entry["_vars"][col.key] = var
             if col.kind == "combo":
                 w = ttk.Combobox(
@@ -1116,9 +1571,10 @@ class RowTable(ttk.Frame):
         self._columns[idx] = replace(self._columns[idx], values=tuple(values))
 
 
-# Per-mode placeholder hints. Keyed by (field, mode) -> hint text.
-# Fields: port_a, port_b, short_pairs, gnd, mp1_name, mp1_plus, mp1_minus,
-#         mp2_name, mp2_plus, mp2_minus, mp_more
+# Per-mode placeholder hints for the remaining PlaceholderEntry fields, keyed
+# by (field, mode) -> hint text.  A table-based mode registers NOTHING here: a
+# table cell cannot hold a hint (PlaceholderEntry deletes it on <FocusIn>), so
+# its hint is a _CollapsibleHint label under the table instead.
 MODE_PLACEHOLDERS: dict[str, dict[int, str]] = {
     "port_a": {
         1: "e.g.  1   (signal port to drive)",
@@ -1138,40 +1594,11 @@ MODE_PLACEHOLDERS: dict[str, dict[int, str]] = {
         3: "e.g.  5   (optional; V=0 -- supply balls belong here too)",
         6: "e.g.  5:1:8   (optional; V=0 -- supply balls belong here too)",
     },
-    "mp1_name": {
-        6: "e.g.  tank   (shown in the legend and the Z matrix; optional)",
-    },
-    "mp1_plus": {
-        6: "e.g.  1   or  1,3   (red probe; ports listed here are tied together)",
-    },
-    "mp1_minus": {
-        6: "e.g.  2   (black probe; empty = referenced to GND). "
-           "+ and - both set = differential self-inductance L_diff",
-    },
-    "mp2_name": {
-        6: "e.g.  rx   (optional)",
-    },
-    "mp2_plus": {
-        6: "e.g.  3   (leave Port 2 empty for self-impedance only, no coupling)",
-    },
-    "mp2_minus": {
-        6: "e.g.  4   (black probe; empty = referenced to GND)",
-    },
 }
 
 LABEL_PLACEHOLDER = "trace name shown in plot legend (optional)"
 
-MP_MORE_PLACEHOLDER = (
-    "# Extra measurement ports, one per line:\n"
-    "#   <name> = <+ ports> / <- ports>\n"
-    "vco = 5,7 / 6,8\n"
-    "sense = 9 /\n"
-    "# Ranges work on both sides. Empty = not used.\n"
-)
-
-MODE_PLACEHOLDERS["mp_more"] = {6: MP_MORE_PLACEHOLDER}
-
-# Shown under the Mode 6 measurement-port table. This has to carry everything
+# Shown under the measurement-port table. This has to carry everything
 # the six retired placeholder hints used to say, because a plain ttk.Entry in
 # a table cell has no room for a hint of its own -- so it is long, and it lives
 # behind a disclosure triangle (collapsed by default) rather than costing 125px
@@ -1183,7 +1610,9 @@ MP_TABLE_HINT = (
     "leave '−' empty to measure against GND. Ports listed on the same side are "
     "tied together, and ranges work (5,7 or 5:1:8). Two or more rows give you "
     "the coupling (M, k) between them. Names are optional (P1, P2, … if blank) "
-    "but 'A' and 'B' are reserved."
+    "but 'A' and 'B' are reserved. Port NUMBERS are what these cells take -- "
+    "for the file's port names use 'Show Ports' at the top of this panel; it "
+    "lists them in the Results pane."
 )
 
 
@@ -1234,16 +1663,59 @@ MUTUAL_CURVE_HINT = (
     "capacitance C_c; the k subplot is filled in for mutual curves only."
 )
 
-CUSTOM_PLACEHOLDER = (
-    "# Mode 5: per-port termination spec (one directive per line)\n"
-    "# Examples:\n"
-    "1 signal A\n"
-    "2 signal B\n"
-    "3 ground\n"
-    "4 lumped_to_gnd R=50\n"
-    "5 short_to 6\n"
-    "7 lumped_between 8 R=1 L=1n\n"
-    "# Use the Help button for full syntax.\n"
+# --- Mode 5 connections table -------------------------------------------
+#
+# Column widths are a MEASURED budget, not a preference. The editor canvas is
+# 431 px wide once its vertical scrollbar is showing, which in mode 5 it always
+# is; the label column costs 91 px, which is why this table gets a caption
+# ABOVE it and spans all four form columns instead of sitting beside a label.
+# At these widths the table asks for 405 px and the whole mode-5 form for 418,
+# so the headroom under the 431 px viewport is 13 px, not 22. Measure it again
+# before adding a column -- CLAUDE.md carries the same two numbers.
+#
+# Type is a readonly combo -- a kind that is not in CONN_KINDS raises at build
+# time, so there is nothing useful to type. Port and To are NOT readonly: a
+# range ('6-14', '35:1:45') has to be typeable, and a readonly combo cannot be
+# typed into at all. Their values are the file's bare port numbers, filled in
+# by _refresh_port_choices; there is deliberately no 'GND' entry, because "to
+# ground" is a KIND here (ground / rlc_gnd) and 'short_to GND' is a parser
+# error the user could not connect to what they clicked.
+CONN_TABLE_COLUMNS = (
+    ColumnSpec("kind", "Type", 11, kind="combo", values=CONN_KINDS,
+               readonly_combo=True, default="ground"),
+    ColumnSpec("ports", "Port", 7, kind="combo"),
+    ColumnSpec("to", "To", 7, kind="combo"),
+    ColumnSpec("R", "R Ω", 5),
+    ColumnSpec("L", "L H", 5),
+    ColumnSpec("C", "C F", 5),
+)
+
+CONN_TABLE_HINT_SHORT = "one row per connection; Port takes a range (6-14, 35:1:45)"
+CONN_TABLE_HINT = (
+    "One row per connection. Type picks what is attached: ground / vdd (both "
+    "are V=0 for AC), open, short (ties Port to To), rlc_gnd (a series R-L-C "
+    "from Port to ground) or rlc_between (the same element from Port to To). "
+    "Port and To take ranges -- 6-14 or 35:1:45 -- so a package's ground balls "
+    "are one row. R/L/C hold the bare value with SI suffixes and the unit is "
+    "in the header: 5m is 5 milli, 5M is 5 Mega, and the value must be ONE "
+    "word -- '5 m' and '1 uF' are rejected. A blank R/L/C means OMITTED, "
+    "which is not zero -- an omitted C is no capacitor, C=0 would be an open "
+    "circuit. 'To' is ignored by ground/vdd/open/rlc_gnd, which are always to "
+    "ground; rlc_between takes exactly ONE partner port. The dropdowns list "
+    "port NUMBERS; for the file's port names click 'Show Ports' at the top of "
+    "this panel and read them in the Results pane."
+)
+
+# What the "Edit as text…" dialog promises, verbatim. The round trip is
+# deliberately lossy in known ways and saying so is the difference between a
+# normalisation and a surprise.
+TEXT_DIALOG_NOTE = (
+    "This is the spec that will be computed. Your text is rewritten into "
+    "canonical form: 'gnd'→'ground', 'signal a'→'signal A', 'r='→'R=', R/L/C "
+    "reordered to R,L,C, and every measurement port emitted before every "
+    "connection (which is what makes a later 'ground' win). Blank lines and "
+    "end-of-line comments are dropped; anything the table cannot represent is "
+    "kept verbatim."
 )
 
 
@@ -1261,6 +1733,13 @@ class App(tk.Tk):
         self.traces: list[TraceConfig] = []
         self._next_trace_id = 1
         self._suppress_editor_sync = False
+        # Shadow of the selected trace's extra_lines: whatever the connections
+        # table cannot represent (comments, hand-written directives, a spec
+        # parked verbatim by the migration). The editor has no widget for it --
+        # it is edited through "Edit as text…" -- but it has to survive a load
+        # / apply cycle, so it lives here alongside the widgets.
+        self._ed_extra_lines: str = ""
+        self._ed_strips_pending = False
         self._scrollables: dict[str, object] = {}
 
         self._install_wheel_router()
@@ -1272,7 +1751,14 @@ class App(tk.Tk):
 
     # Widget classes that scroll (or otherwise act on) the wheel themselves.
     # The router must not double-handle for these.
-    _WHEEL_OWNERS = frozenset({"Text", "Listbox", "Treeview", "TCombobox",
+    #
+    # TCombobox is deliberately NOT here.  Its value-changing class binding is
+    # removed in _install_wheel_router below, so it no longer owns the wheel --
+    # and half the connections table (Type / Port / To) is a combobox, which
+    # made those three columns a dead zone the table could not be scrolled from.
+    # An OPEN dropdown is a Listbox, which is still in this set and still
+    # scrolls itself.
+    _WHEEL_OWNERS = frozenset({"Text", "Listbox", "Treeview",
                                "TSpinbox", "Spinbox", "TScrollbar", "Scrollbar"})
 
     def _install_wheel_router(self) -> None:
@@ -1413,34 +1899,109 @@ class App(tk.Tk):
         ttk.Button(foot, text="Apply to Trace", command=self._on_apply_editor
                    ).pack(side=tk.RIGHT, padx=6, pady=3)
 
-        body = ttk.Frame(parent)
+        self._ed_body = body = ttk.Frame(parent)
         body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self._ed_vsb = ttk.Scrollbar(body, orient="vertical")
         self._ed_canvas = tk.Canvas(body, highlightthickness=0, borderwidth=0,
-                                    yscrollcommand=self._ed_scroll_set)
+                                    yscrollcommand=self._ed_scroll_set,
+                                    xscrollcommand=self._ed_hscroll_set)
         self._ed_vsb.configure(command=self._ed_canvas.yview)
+        # The horizontal scrollbar is the safety net under DPI scaling: the
+        # column-width budget the tables fit into is a 100%-font number, and at
+        # 150% no column set fits.
+        #
+        # Both scrollbars are DIRECT children of `body` and neither is packed
+        # here: _apply_editor_scrollbars decides both together and packs them
+        # with `before=self._ed_canvas`, because pack unmaps from the END and a
+        # fixed-size slave after an expand=True one disappears rather than
+        # clipping.  The horizontal one used to live in a permanently packed
+        # host frame instead -- which is NOT "0 px tall while empty": Tk does
+        # not reissue a geometry request when a master's LAST slave is removed,
+        # so once the first layout pass had packed and unpacked the scrollbar
+        # the empty host kept a 17 px requested height forever, in EVERY mode,
+        # including 1/2/3 which never raise the scrollbar at all (measured at
+        # 1040x600: 45 px of editor viewport became 28).
+        self._ed_hsb = ttk.Scrollbar(body, orient="horizontal",
+                                     command=self._ed_canvas.xview)
         self._ed_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._ed_form = ttk.Frame(self._ed_canvas)
         self._ed_win = self._ed_canvas.create_window(
             (0, 0), window=self._ed_form, anchor="nw")
-        # Never let the form be narrower than it asked for: a squashed 6-column
-        # table with no horizontal scrollbar is unreachable content.
-        self._ed_canvas.bind(
+        self._ed_canvas.bind("<Configure>", self._on_editor_canvas_configure)
+        # The form's own <Configure> is needed as well as the canvas's, for the
+        # same reason RowTable needs both: a table that grows changes the form's
+        # size one idle pass AFTER the row was added, so a scrollregion measured
+        # from the row-add callback alone is one row short and the new row
+        # cannot be scrolled to.
+        self._ed_form.bind(
             "<Configure>",
-            lambda e: self._ed_canvas.itemconfigure(
-                self._ed_win,
-                width=max(e.width, self._ed_form.winfo_reqwidth())))
+            lambda e: self._refresh_editor_scrollregion(preserve=True))
         self._register_scrollable(self._ed_canvas, self._ed_wheel)
 
         self._build_editor_form(self._ed_form)
 
     def _ed_scroll_set(self, first: str, last: str) -> None:
-        """Autohide the editor scrollbar when the form fits."""
+        """Move the thumb only.  Whether the bar is SHOWN is decided in one
+        place -- see _apply_editor_scrollbars."""
         self._ed_vsb.set(first, last)
-        if float(first) <= 0.0 and float(last) >= 1.0:
-            self._ed_vsb.pack_forget()
+
+    def _on_editor_canvas_configure(self, event) -> None:
+        """
+        Keep the form at least as wide as it asked for, and re-measure.
+
+        Never let it be narrower: a squashed 6-column table with no horizontal
+        scrollbar is unreachable content.  The scrollregion has to be recomputed
+        here too, not only on a mode change -- when the vertical scrollbar
+        appears the canvas narrows 448 -> 431, and a scrollregion still 448 wide
+        raises a horizontal scrollbar for 17 px of nothing.
+        """
+        self._ed_canvas.itemconfigure(
+            self._ed_win, width=max(event.width,
+                                    self._ed_form.winfo_reqwidth()))
+        self._refresh_editor_scrollregion(preserve=True)
+
+    def _ed_hscroll_set(self, first: str, last: str) -> None:
+        """Thumb only; same reason as _ed_scroll_set."""
+        self._ed_hsb.set(first, last)
+
+    # Both editor scrollbars autohide.  Deciding each one from its own
+    # scrollcommand is a LIMIT CYCLE, not a race: hiding the horizontal bar
+    # gives the canvas 17 px of height back, which can hide the vertical bar,
+    # which gives 17 px of width back, which brings the horizontal bar back.
+    # Measured with the two decisions split: the editor flipped 431x245 <->
+    # 448x228 forever and update() never returned -- the whole GUI hangs.
+    #
+    # So both are decided HERE, in one pass, from inputs that a scrollbar
+    # cannot change: `body`'s size (set by its master, not by its slaves) and
+    # the form's REQUESTED size.  Same inputs -> same answer -> it converges.
+    def _apply_editor_scrollbars(self) -> None:
+        body = self._ed_body
+        avail_w, avail_h = body.winfo_width(), body.winfo_height()
+        form_w = self._ed_form.winfo_reqwidth()
+        form_h = self._ed_form.winfo_reqheight()
+        vsb_w = max(self._ed_vsb.winfo_reqwidth(), 1)
+        hsb_h = max(self._ed_hsb.winfo_reqheight(), 1)
+
+        need_v = form_h > avail_h
+        need_h = form_w > avail_w - (vsb_w if need_v else 0)
+        if need_h and not need_v:
+            # The bar we just decided to show eats the height. Re-check the
+            # vertical one ONCE and never re-check the horizontal one: a
+            # second round trip is how the cycle above got started.
+            need_v = form_h > avail_h - hsb_h
+
+        # Pinned ahead of the canvas: pack unmaps from the end, and an
+        # expand=True canvas packed first would leave nothing for either bar.
+        if need_v:
+            self._ed_vsb.pack(side=tk.RIGHT, fill=tk.Y,
+                              before=self._ed_canvas)
         else:
-            self._ed_vsb.pack(side=tk.RIGHT, fill=tk.Y)
+            self._ed_vsb.pack_forget()
+        if need_h:
+            self._ed_hsb.pack(side=tk.BOTTOM, fill=tk.X,
+                              before=self._ed_canvas)
+        else:
+            self._ed_hsb.pack_forget()
 
     def _ed_wheel(self, event) -> bool:
         """Scroll the editor form. Returns False when it has nowhere to go."""
@@ -1450,13 +2011,21 @@ class App(tk.Tk):
         self._ed_canvas.yview_scroll(int(-event.delta / 120), "units")
         return True
 
-    def _refresh_editor_scrollregion(self) -> None:
+    def _refresh_editor_scrollregion(self, preserve: bool = False) -> None:
         """
-        Re-measure after grid()/grid_remove() changed which rows exist.
+        Re-measure after grid()/grid_remove() or a row add changed the form.
 
         The <Configure> binding on the inner frame is NOT sufficient: measured,
         after hiding 17 rows the scrollregion stayed at its old height and the
-        view stayed scrolled down, leaving a short form parked out of sight.
+        view stayed scrolled down, leaving a short form parked out of sight;
+        and after six '+ Add' clicks in mode 6 the form grew 357 -> 476 px
+        while the scrollregion stayed at 357, so the new rows could not be
+        reached by scrolling at all.
+
+        `preserve` says what to do with the scroll offset.  A MODE CHANGE must
+        reset it (preserve=False) or a now-short form stays parked out of
+        sight; a ROW ADD must keep it (preserve=True) or the row the user just
+        created scrolls away and the view jumps back to the File combobox.
 
         Deferred to after_idle, NEVER update_idletasks(). This runs during
         construction too (_build_editor_form ends by calling
@@ -1465,7 +2034,13 @@ class App(tk.Tk):
         tests/test_row_table.py::TestResultsPaneVisible caught this very edit.
         """
         if getattr(self, "_ed_scroll_pending", False):
+            # Coalescing a reset with a preserve: the reset wins, because the
+            # reason for it (the form is a different shape now) has not gone
+            # away.  Only within one pending batch -- the flag is re-armed
+            # below, or a stale False would swallow every later row add.
+            self._ed_scroll_preserve = self._ed_scroll_preserve and preserve
             return
+        self._ed_scroll_preserve = preserve
         self._ed_scroll_pending = True
         self.after_idle(self._apply_editor_scrollregion)
 
@@ -1473,8 +2048,21 @@ class App(tk.Tk):
         self._ed_scroll_pending = False
         if not self._ed_canvas.winfo_exists():
             return
+        self._apply_editor_scrollbars()
+        first = self._ed_canvas.yview()[0]
+        # Re-apply the window item's width here as well as in the canvas's
+        # <Configure>: that binding fires only when the CANVAS resizes, so
+        # after a table grows the item width is stale and the form is clipped.
+        self._ed_canvas.itemconfigure(
+            self._ed_win,
+            width=max(self._ed_canvas.winfo_width(),
+                      self._ed_form.winfo_reqwidth()))
         self._ed_canvas.configure(scrollregion=self._ed_canvas.bbox("all"))
-        self._ed_canvas.yview_moveto(0)
+        if self._ed_scroll_preserve:
+            self._ed_canvas.yview_moveto(first)
+        else:
+            self._ed_canvas.yview_moveto(0)
+            self._ed_canvas.xview_moveto(0)
 
     def _build_editor_form(self, parent: ttk.Frame) -> None:
         # File combobox
@@ -1530,11 +2118,13 @@ class App(tk.Tk):
                            padx=2, pady=1)
         row += 1
 
-        # --- Mode 6: measurement ports (probe pairs) ---
+        # --- Modes 5 and 6: measurement ports (probe pairs) ---
         # One table row per measurement port, added with the '+' button. This
         # replaces two hard-coded ports plus a free-text box for the third
         # onward -- that cliff (ports 1-2 get fields, port 3+ gets syntax) was
-        # the same disease as the Mode 5 text box, just less obvious.
+        # the same disease as the Mode 5 text box, just less obvious.  Mode 5
+        # shows the same table plus the connections table below it, so the
+        # superset relationship is in the layout rather than hidden as a trap.
         self.ed_mp_lbl = ttk.Label(parent, text="Measurement\nports:",
                                    justify=tk.RIGHT)
         self.ed_mp_lbl.grid(row=row, column=0, sticky="ne", padx=2, pady=1)
@@ -1544,6 +2134,7 @@ class App(tk.Tk):
                      ColumnSpec("plus", "+ ports (red)", 13),
                      ColumnSpec("minus", "− ports (black)", 13)),
             row_factory=MeasPortRow,
+            on_change=self._on_editor_rows_changed,
             min_rows=1, max_visible=5,
         )
         self.ed_mp_table.grid(row=row, column=1, columnspan=3, sticky="we",
@@ -1586,14 +2177,56 @@ class App(tk.Tk):
                                  padx=2, pady=(0, 2))
         row += 1
 
-        # Custom text (Mode 5 only)
-        self.ed_custom_lbl = ttk.Label(parent, text="Custom Spec:")
-        self.ed_custom_lbl.grid(row=row, column=0, sticky="ne", padx=2, pady=1)
-        self.ed_custom_text = PlaceholderText(parent, width=42, height=8,
-                                              font=("Consolas", 9),
-                                              placeholder=CUSTOM_PLACEHOLDER)
-        self.ed_custom_text.grid(row=row, column=1, columnspan=3, sticky="we",
-                                 padx=2, pady=1)
+        # --- Mode 5: connections table ---
+        # The caption and the 'Edit as text…' button share ONE sub-frame across
+        # all four columns, so the button's width cannot influence the grid
+        # column widths the table needs.  The table itself spans columns 0-3
+        # rather than sitting beside a label: the label column costs 91 px and
+        # the budget is 431.
+        self.ed_conn_head = ttk.Frame(parent)
+        self.ed_conn_head.grid(row=row, column=0, columnspan=4, sticky="we",
+                               padx=2, pady=(4, 0))
+        ttk.Label(self.ed_conn_head, text="Connections:").pack(side=tk.LEFT)
+        ttk.Button(self.ed_conn_head, text="Edit as text…",
+                   command=self._on_edit_as_text).pack(side=tk.RIGHT)
+        # extra_lines has no widget of its own, so without this the two tables
+        # can be EMPTY while a hidden block of DSL is in force -- and, being
+        # emitted last, winning over anything typed into them afterwards.  The
+        # count rides on the caption row, so it costs no vertical space.
+        self.ed_extra_lbl = ttk.Label(self.ed_conn_head,
+                                      foreground=PLACEHOLDER_FG)
+        self.ed_extra_lbl.pack(side=tk.LEFT, padx=(6, 0))
+        row += 1
+
+        self.ed_conn_table = RowTable(
+            parent, columns=CONN_TABLE_COLUMNS, row_factory=ConnectionRow,
+            on_change=self._on_editor_rows_changed,
+            min_rows=1, max_visible=6,
+        )
+        self.ed_conn_table.grid(row=row, column=0, columnspan=4, sticky="we",
+                                padx=2, pady=1)
+        self.ed_conn_table.register_wheel(self._register_scrollable)
+        row += 1
+
+        # Direct child of the form, NOT of a sub-frame: _CollapsibleHint._toggle
+        # re-renders by walking self.master.winfo_children(), and the expanded
+        # flag is class-level, so a hint one level down desynchronises its arrow
+        # from the shared state.
+        self.ed_conn_hint = _CollapsibleHint(parent, CONN_TABLE_HINT_SHORT,
+                                             CONN_TABLE_HINT)
+        self.ed_conn_hint.grid(row=row, column=0, columnspan=4, sticky="we",
+                               padx=2, pady=(0, 2))
+        row += 1
+
+        self.ed_overview = ttk.Label(parent, anchor="w",
+                                     foreground=PLACEHOLDER_FG)
+        self.ed_overview.grid(row=row, column=0, columnspan=4, sticky="we",
+                              padx=2)
+        row += 1
+        self.ed_validation = ttk.Label(parent, anchor="w", justify=tk.LEFT,
+                                       wraplength=400)
+        self.ed_validation.grid(row=row, column=0, columnspan=4, sticky="we",
+                                padx=2)
         row += 1
 
         # Label
@@ -1697,9 +2330,14 @@ class App(tk.Tk):
     def _bind_events(self) -> None:
         self.files_lb.bind("<<ListboxSelect>>", lambda e: self._on_file_selected())
         self.traces_lb.bind("<<ListboxSelect>>", lambda e: self._on_trace_selected())
+        # A different file means a different port count: the Port / To
+        # dropdowns and the overview strip both key off it.
+        self.ed_file_cbo.bind("<<ComboboxSelected>>",
+                              lambda e: self._on_editor_file_changed())
         # Expanding or collapsing a hint changes the form's height.
         self.bind("<<HintToggled>>",
-                  lambda e: self._refresh_editor_scrollregion(), add="+")
+                  lambda e: self._refresh_editor_scrollregion(preserve=True),
+                  add="+")
 
     # --------------------------------------------------------------- File ops
 
@@ -1750,10 +2388,23 @@ class App(tk.Tk):
         self._append_result(f"Removed {fe.label}")
 
     def _on_show_ports(self) -> None:
+        """
+        List the selected file's port names in the Results pane.
+
+        This is the ONLY place the file's port names are reachable -- the Port
+        and To dropdowns carry bare numbers, for the measured width reason in
+        docs/design_connection_table.md §5a -- so it must not silently do
+        nothing.  With no selection in the Files list it falls back to the file
+        the editor is pointing at, which is the one the user is describing
+        ports for, and says so if there is no file at all.
+        """
         idx = self._sel_idx(self.files_lb)
-        if idx is None:
+        fe = self.files[idx] if idx is not None else None
+        if fe is None:
+            fe = self._file_by_label(self.ed_file_var.get())
+        if fe is None:
+            messagebox.showinfo("No file", "Add a file first.")
             return
-        fe = self.files[idx]
         self._append_result(f"\nPorts of {fe.label}:")
         for i, name in enumerate(fe.ts.port_names, 1):
             self._append_result(f"  {i:3d}: {name or '(unnamed)'}")
@@ -1827,13 +2478,22 @@ class App(tk.Tk):
             self.ed_label.set_value(tc.label)
             self.ed_color_var.set(tc.color_idx)
             self.ed_ls_var.set(tc.ls_idx)
-            self.ed_custom_text.set_value(tc.custom_text or "")
+            self.ed_conn_table.set_rows(tc.conn_rows)
+            self._ed_extra_lines = tc.extra_lines
+            self._refresh_port_choices()
         finally:
             self._suppress_editor_sync = False
         self._update_mode_visibility()
 
     def _migrate_trace(self, tc: TraceConfig) -> None:
-        """Fold retired shapes forward: mode 4 -> 2, mp1/mp2/mp_more -> table."""
+        """
+        Fold retired shapes forward: mode 4 -> 2, mp1/mp2/mp_more -> table,
+        custom_text -> the two tables.
+
+        The custom-text block runs LAST on purpose: a legacy config carrying
+        both mp1_* and a stale custom_text must fill `mports` first, so the
+        custom-text guard declines rather than merging two unrelated specs.
+        """
         if tc.migrate_legacy_mode():
             self._append_result(
                 f"  [{tc.id}] {tc.label}: mode 4 (A↔B + VDD/GND) is retired; "
@@ -1845,6 +2505,24 @@ class App(tk.Tk):
                 f"  [{tc.id}] {tc.label}: the Port 1 / Port 2 / 'More ports' "
                 f"fields are retired; migrated to {len(tc.mports)} row(s) of "
                 "the measurement-port table")
+            self._refresh_trace_list()
+        legacy_custom = tc.custom_text
+        if tc.migrate_legacy_custom_text():
+            # Ask _import_dsl_text again rather than inferring the verbatim
+            # fallback from empty tables: a spec that is nothing but comments
+            # also leaves both empty, and telling that user their precedence
+            # changed would be a lie.
+            if _import_dsl_text(legacy_custom)[3]:
+                self._append_result(
+                    f"  [{tc.id}] {tc.label}: the free-text Custom spec is kept "
+                    "verbatim -- moving it into the table would have changed "
+                    "which port wins (a 'signal' line follows a 'ground' on the "
+                    "same port). Open 'Edit as text…' to convert it by hand.")
+            else:
+                self._append_result(
+                    f"  [{tc.id}] {tc.label}: the free-text Custom spec is "
+                    f"retired; imported into {len(tc.mports)} measurement "
+                    f"port(s) and {len(tc.conn_rows)} connection row(s)")
             self._refresh_trace_list()
 
     def _on_mode_changed(self) -> None:
@@ -1859,26 +2537,39 @@ class App(tk.Tk):
             else:
                 widget.grid_remove()
 
-        # Mode 5 (Custom) replaces the structured fields with the Custom Spec
-        # text widget; mode 6 replaces them with the +/- measurement ports.
+        # Modes 5 and 6 both replace the structured fields with tables: mode 6
+        # is the measurement-port table alone, mode 5 is that table plus the
+        # connections table and the two strips under it.
         ab_modes = mode in (1, 2, 3)
         coupling = mode == 6
+        rows_mode = mode in (5, 6)
+        custom = mode == 5
         show(self.ed_porta_lbl, ab_modes)
         show(self.ed_porta, ab_modes)
         show(self.ed_portb_lbl, mode in (2, 3))
         show(self.ed_portb, mode in (2, 3))
         show(self.ed_short_lbl, mode == 3)
         show(self.ed_short, mode == 3)
-        show(self.ed_mp_lbl, coupling)
-        show(self.ed_mp_table, coupling)
-        show(self.ed_mp_hint, coupling)
+        show(self.ed_mp_lbl, rows_mode)
+        show(self.ed_mp_table, rows_mode)
+        show(self.ed_mp_hint, rows_mode)
+        # No GND field in mode 5: grounding there is a connection row, and two
+        # ways to say the same thing is what the table is trying to remove.
         show(self.ed_gnd_lbl, ab_modes or coupling)
         show(self.ed_gnd, ab_modes or coupling)
-        show(self.ed_plot_lbl, coupling)
-        show(self.ed_plot_frame, coupling)
-        show(self.ed_mutual_hint, coupling)
-        show(self.ed_custom_lbl, mode == 5)
-        show(self.ed_custom_text, mode == 5)
+        # The plot checkboxes are shown in mode 5 too. _coupling_plot_traces
+        # already READS tc.plot_self / tc.plot_mutual for any trace routed to
+        # the coupling path, mode 5 included, so hiding them left a Mode 5 user
+        # unable to turn either off -- and never shown the hint explaining that
+        # on a mutual curve L(nH) is M and C(pF) is C_c.
+        show(self.ed_plot_lbl, rows_mode)
+        show(self.ed_plot_frame, rows_mode)
+        show(self.ed_mutual_hint, rows_mode)
+        show(self.ed_conn_head, custom)
+        show(self.ed_conn_table, custom)
+        show(self.ed_conn_hint, custom)
+        show(self.ed_overview, custom)
+        show(self.ed_validation, custom)
 
         # Update placeholders to match the active mode
         self.ed_porta.set_placeholder(
@@ -1889,13 +2580,200 @@ class App(tk.Tk):
             MODE_PLACEHOLDERS["short_pairs"].get(mode, ""))
         self.ed_gnd.set_placeholder(
             MODE_PLACEHOLDERS["gnd"].get(mode, ""))
-        # The measurement-port table needs no per-mode placeholders: it is
-        # mode-6-only and its hint lives permanently under it (MP_TABLE_HINT),
-        # where -- unlike a PlaceholderEntry -- focus cannot delete it.
+        # Neither table needs per-mode placeholders: their hints live
+        # permanently under them (MP_TABLE_HINT / CONN_TABLE_HINT), where --
+        # unlike a PlaceholderEntry -- focus cannot delete them.
 
         # Which rows exist just changed, so the scroll region is stale. The
         # inner frame's <Configure> does NOT cover this -- see the docstring.
-        self._refresh_editor_scrollregion()
+        # preserve=False: a now-short form must not stay scrolled out of sight.
+        self._refresh_editor_scrollregion(preserve=False)
+        if custom:
+            # The tables' on_change does not fire on set_rows, so the strips
+            # would otherwise still show the previous mode's spec.
+            self._refresh_editor_strips()
+
+    # ------------------------------------------------- Mode 5 editor plumbing
+
+    def _editor_nports(self) -> Optional[int]:
+        """Port count of the file the editor currently points at, or None."""
+        fe = self._file_by_label(self.ed_file_var.get())
+        return fe.ts.nports if fe is not None else None
+
+    def _refresh_port_choices(self) -> None:
+        """
+        Fill the Port / To dropdowns with the current file's port numbers.
+
+        Numbers, not names: measured, a ttk Combobox's popdown is only as wide
+        as the widget, so a 7-char Port cell shows '12: VDD_bal…' truncated in
+        the list as well as in the cell.  A name-bearing dropdown needs ~105 px
+        the editor does not have; the names stay reachable through Show Ports.
+        """
+        n = self._editor_nports() or 0
+        values = [str(i) for i in range(1, n + 1)]
+        self.ed_conn_table.set_column_values("ports", values)
+        self.ed_conn_table.set_column_values("to", values)
+
+    def _on_editor_file_changed(self) -> None:
+        self._refresh_port_choices()
+        if self.ed_mode_var.get() == 5:
+            self._refresh_editor_strips()
+
+    def _on_editor_rows_changed(self) -> None:
+        """RowTable on_change: fires on EVERY keystroke in EVERY cell."""
+        if self._suppress_editor_sync:
+            return
+        self._refresh_editor_scrollregion(preserve=True)
+        if self.ed_mode_var.get() == 5:
+            self._refresh_editor_strips()
+
+    def _refresh_editor_strips(self) -> None:
+        """Queue a strip refresh for the next idle moment, coalescing repeats."""
+        if self._ed_strips_pending:
+            return
+        self._ed_strips_pending = True
+        self.after_idle(self._apply_editor_strips)
+
+    def _apply_editor_strips(self) -> None:
+        """
+        Recompute the port-overview strip, the validation strip and the
+        kept-as-text indicator on the Connections caption.
+
+        Writes to nothing but those three Labels -- _sync_editor_to_trace stays
+        the only writer to a TraceConfig -- and never lets an exception escape.
+        This is reached from a Tcl variable trace, where a raised error does not
+        reach a handler we control: Tk prints it to stderr and the GUI carries
+        on showing a stale strip that says the spec is fine.
+        """
+        self._ed_strips_pending = False
+        if not self.ed_overview.winfo_exists():
+            return
+        try:
+            mports = self.ed_mp_table.get_rows()
+            conn = self.ed_conn_table.get_rows()
+            extra = self._ed_extra_lines
+            nports = self._editor_nports()
+            try:
+                term = build_terminations_rows(mports, conn, extra,
+                                               nports=nports)
+            except Exception:
+                term = None
+            self.ed_overview.configure(
+                text=_port_overview_text(term, nports))
+            self.ed_validation.configure(text=_validation_strip_text(
+                _validation_messages(mports, conn, extra, nports)))
+            self.ed_extra_lbl.configure(text=_extra_lines_indicator(extra))
+        except Exception as e:
+            # Belt and braces: _validation_messages already swallows its own
+            # errors, but this is the last frame before Tcl and nothing beyond
+            # it can report a failure.
+            self.ed_overview.configure(text="")
+            self.ed_validation.configure(text=f"⚠ {e}")
+
+    def _editor_dsl_text(self) -> str:
+        """
+        The DSL the two tables currently serialise to -- what the text dialog
+        shows.  Built from the LIVE tables, not from the selected trace, so an
+        edit that has not been applied yet is visible there.
+        """
+        return rows_to_dsl_text(self.ed_mp_table.get_rows(),
+                                self.ed_conn_table.get_rows(),
+                                self._ed_extra_lines)
+
+    def _on_edit_as_text(self) -> None:
+        """
+        The escape hatch: show the DSL the tables serialise to, and take it back.
+
+        MODAL on purpose.  A non-modal editing surface is not part of the editor
+        form, so Calculate's auto-sync would push the tables and silently ignore
+        whatever is typed in the dialog -- which is the exact opposite of what
+        the button promises.
+        """
+        try:
+            initial = self._editor_dsl_text()
+        except Exception as e:
+            # rows_to_dsl_text refuses a cell it cannot serialise (an R/L/C
+            # value with a space in it).  There is no text to show, and letting
+            # this escape would be an unhandled Tk traceback.
+            messagebox.showerror(
+                "Cannot show the text",
+                f"{e}\n\nFix the cell in the connections table first; the "
+                "validation strip names it.")
+            return
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Edit as text")
+        dlg.transient(self)
+
+        ttk.Label(dlg, text=TEXT_DIALOG_NOTE, wraplength=560, justify=tk.LEFT,
+                  foreground=PLACEHOLDER_FG).pack(side=tk.TOP, anchor="w",
+                                                  padx=8, pady=(8, 4))
+
+        def _ok() -> None:
+            text = box.get("1.0", "end-1c")
+            dlg.destroy()
+            self._import_text_into_tables(text)
+
+        # THE FOOTER IS PACKED FIRST, side=BOTTOM.  pack unmaps what does not
+        # fit starting from the END, so packing it after the expand=True Text
+        # made both buttons winfo_ismapped() == 0 the moment the dialog was
+        # dragged shorter than its natural height -- and with grab_set() and no
+        # keyboard commit there was then no way to apply the edit at all.
+        # Same rule as Global Controls and Apply to Trace in the main window.
+        foot = ttk.Frame(dlg)
+        foot.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=6)
+        ttk.Button(foot, text="Cancel", command=dlg.destroy
+                   ).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(foot, text="OK", command=_ok).pack(side=tk.RIGHT, padx=2)
+
+        # Plain tk.Text, not PlaceholderText: a placeholder here would be a
+        # get_value() trap, and the hint above is a Label that focus cannot
+        # delete.  It gets a scrollbar because a spec long enough to want this
+        # dialog is long enough to overflow it.
+        wrap = ttk.Frame(dlg)
+        wrap.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=8)
+        vsb = ttk.Scrollbar(wrap, orient="vertical")
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        box = tk.Text(wrap, width=80, height=24, font=("Consolas", 9),
+                      yscrollcommand=vsb.set)
+        box.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.configure(command=box.yview)
+        box.insert("1.0", initial)
+
+        # Escape cancels.  Return is deliberately NOT bound: this is a
+        # multi-line editor and Return has to insert a newline.
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+        dlg.grab_set()
+        box.focus_set()
+        self.wait_window(dlg)
+
+    def _import_text_into_tables(self, text: str) -> None:
+        """
+        OK on the text dialog: import the text and re-render both tables
+        IMMEDIATELY, so the user sees the canonical rewrite rather than
+        discovering it later.
+        """
+        mports, conn, extra, changed = _import_dsl_text(text)
+        if changed:
+            self.ed_mp_table.set_rows([])
+            self.ed_conn_table.set_rows([])
+            self._ed_extra_lines = text.rstrip()
+            messagebox.showwarning(
+                "Kept as text",
+                "This spec is kept verbatim instead of being moved into the "
+                "table.\n\nThe table emits every measurement port before every "
+                "connection, which is what makes a later 'ground' win. Your "
+                "spec depends on the order it is written in, so importing it "
+                "would change which port wins:\n\n"
+                + (_ordering_diff_summary(text) or "(the resolved spec differs)")
+                + "\n\nIt still computes exactly what it computed before.")
+        else:
+            self.ed_mp_table.set_rows(mports)
+            self.ed_conn_table.set_rows(conn)
+            self._ed_extra_lines = extra
+        self._refresh_port_choices()
+        self._refresh_editor_strips()
+        self._refresh_editor_scrollregion(preserve=True)
 
     def _on_apply_editor(self) -> None:
         idx = self._sel_idx(self.traces_lb)
@@ -1920,7 +2798,13 @@ class App(tk.Tk):
         tc.mports = self.ed_mp_table.get_rows()
         tc.plot_self = bool(self.ed_plot_self_var.get())
         tc.plot_mutual = bool(self.ed_plot_mutual_var.get())
-        tc.custom_text = self.ed_custom_text.get_value().rstrip()
+        # custom_text is deliberately NOT written: the two tables are the
+        # storage and the DSL text is derived from them.  Writing both would
+        # leave migrate_legacy_custom_text unable to tell a legacy trace from a
+        # freshly synced one, and the text would overwrite the rows on the next
+        # selection.
+        tc.conn_rows = self.ed_conn_table.get_rows()
+        tc.extra_lines = self._ed_extra_lines
         tc.label = self.ed_label.get_value() or f"trace_{tc.id}"
         tc.color_idx = int(self.ed_color_var.get())
         tc.ls_idx = int(self.ed_ls_var.get())
@@ -1975,6 +2859,18 @@ class App(tk.Tk):
             tc.Zmat = None
             tc.mport_names = None
             tc.coupling = None
+
+            # The validation strip is capped at two lines and points here for
+            # the rest; this is what makes that pointer true. Only the OVERFLOW
+            # is printed -- the first two are already on screen, and repeating
+            # them for every clean trace would be noise.
+            if tc.mode == 5:
+                notes = _validation_messages(tc.mports, tc.conn_rows,
+                                             tc.extra_lines, fe.ts.nports)
+                if len(notes) > VALIDATION_STRIP_LINES:
+                    self._append_result(f"  [{tc.id}] {tc.label}: spec notes")
+                    for note in notes:
+                        self._append_result(f"      {note}")
 
             try:
                 term = self._build_termination(tc, nports=fe.ts.nports)
@@ -2210,7 +3106,13 @@ class App(tk.Tk):
                 _collect_mports(tc), parse_port_range(tc.gnd_ports),
                 nports=nports)
         if tc.mode == 5:
-            return parse_custom_termination_text(tc.custom_text)
+            # Through the rows, never through tc.custom_text: the tables are
+            # the storage and the DSL text is derived from them.  nports lets
+            # the builder reject a port the file does not have -- Mode 5 used
+            # to pass none, so '3 / 5' on a 4-port file became a plausible
+            # wrong number until compute_z_matrix's backstop caught it.
+            return build_terminations_rows(tc.mports, tc.conn_rows,
+                                           tc.extra_lines, nports=nports)
         a = parse_port_range(tc.port_a)
         b = parse_port_range(tc.port_b)
         g = parse_port_range(tc.gnd_ports)
@@ -2252,7 +3154,13 @@ class App(tk.Tk):
                         continue
                     fh.write(f"# Trace: {tc.label}\n")
                     fh.write(f"# File: {fe.label}, Mode: {tc.mode_name()}\n")
-                    if tc.mode == 6 and tc.Zmat is not None:
+                    # Gate on the DATA, not the mode -- _on_calculate routes on
+                    # the measurement-port count, so a Mode 5 spec with two
+                    # probes has a full Zmat too.  Gating on `mode == 6` used to
+                    # export that trace's scalar Zmat[:, 0, 0] table instead:
+                    # well-formed, headed '# Mode: Custom', and missing every
+                    # mutual term, every M and every k.
+                    if tc.Zmat is not None:
                         _write_coupling_csv(fh, w, tc, fe)
                         fh.write("\n")
                         continue

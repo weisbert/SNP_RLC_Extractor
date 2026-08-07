@@ -755,12 +755,26 @@ Reports: ESR, ESL, C as seen at the top mounting plane
 ### E. Custom — signal through a 50 ohm termination (Mode 5)
 
 ```
-Mode 5 with terminations:
-   port1 = signal
-   port2 = lumped_to_gnd(R = 50)
-   port3..N = ground
+Measurement ports:            Connections:
+  Name  +ports  -ports          Type      Port  To  R    L  C
+  m1    1                       rlc_gnd   2         50
+                                ground    3-N
 Why:    Measure driving-point impedance with a realistic source / load termination.
 ```
+
+The two tables serialise to exactly this DSL text, and that text is what the
+parser sees — "Edit as text…" shows it verbatim:
+
+```
+1 signal m1 +
+2 lumped_to_gnd R=50
+3-N ground
+```
+
+Rows and text are the same thing, not two ways of specifying the same thing:
+`build_terminations_rows` *is* `parse_custom_termination_text(rows_to_dsl_text(...))`.
+Measurement ports are emitted before connections, which is why a later `ground`
+row wins over a probe on the same port.
 
 ### F. Two floating coils — M and k (Mode 6, 4-port)
 
