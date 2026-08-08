@@ -399,6 +399,33 @@ looking at the screen.
   below and the swatches stop lining up with the curves. This is why
   `pkg_rlc_plot` imports `pkg_rlc_core` (acyclic: core imports nothing back);
   a second copy of the rule would let the plot and the results pane disagree.
+- **A dragged box must be captured BEFORE the legend is replaced, not from a
+  button-release handler.** The box is draggable (`set_draggable(True,
+  update="loc")`) and is rebuilt on every cursor move, so the position has to be
+  read back off the old artist or it snaps home on the next marker drag.
+  `DraggableLegend` registers its own release callback when the box is built —
+  *after* `_PlotView.__init__` registered ours — so a release handler here runs
+  first and reads the position from before the drag. `_capture_manual_locs` is
+  therefore called at the top of `_refresh_marker` and `redraw`, which does not
+  depend on callback order at all. It keys on **plot type, not axes id**, so a
+  placement survives Calculate rebuilding the axes. A dragged legend stores
+  `_loc` as a 2-tuple and an auto-placed one keeps an integer code — that is the
+  discriminator.
+- **`loc=(x, y)`, never `Legend.set_loc`.** `set_loc` is matplotlib 3.8+; the red
+  zone is pinned to **3.7.2** (see `ENVIRONMENT.local.md`). The 2-tuple form of
+  `loc=` is accepted by both and is exactly what `update="loc"` writes back.
+- **The readout wins the press gesture, and double-click is the way out.**
+  `_legend_at` gates `_on_press`: a box sitting over the marker line would
+  otherwise move the cursor and the box with one drag. Double-clicking inside it
+  drops the manual placement — and it must `remove()` the legend *before*
+  `_refresh_marker`, or the capture reads the dragged position straight back out
+  of the artist and undoes the reset.
+- **A test that parks the readout where the marker is not passes without the
+  guard.** `test_pressing_on_the_box_does_not_grab_the_marker` read green that
+  way once. It now computes the marker's x and asserts the press lands within
+  `MARKER_PIXEL_TOLERANCE` of it before testing anything — keep that
+  precondition assertion, it is what stops the test rotting back into a
+  tautology.
 
 ### `reduce_snp.py` specifics
 
