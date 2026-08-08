@@ -1680,9 +1680,139 @@ def log_tab_label(unseen: int) -> str:
     return f"Log {'!' if n else ' '}{n:02d}"
 
 
-def _format_results_table(rows, units_mode: str) -> str:
+# ============================================================================
+# Run snapshots -- what one finished Calculate leaves behind
+# ============================================================================
+#
+# THE BUG THESE EXIST TO PREVENT.  _on_calculate writes its results onto the
+# LIVE TraceConfig objects, and the render collections used to hold that live
+# object: (tc, file_label, res).  Re-rendering such a collection after the next
+# run -- or after any edit at all -- printed the NEW id / label / port
+# descriptor beside the OLD numbers.  Nothing raises, nothing looks wrong, and
+# the reader has no way to tell.
+#
+# The blast radius is exactly four fields, established by reading every
+# renderer below: id, label, port_descriptor() and (for the shown/hidden
+# filter) enabled -- plus color_idx, which App._append_swatched reads to tag
+# the row.  Everything else was already immutable: `res` and `cres` are FRESH
+# objects on every run, `file_label` is a str, and the fit summaries are
+# already strings.  _format_coupling_block takes its matrix from
+# cres.Z_matrix, never from tc.Zmat.
+#
+# port_desc is RESOLVED TO A STRING HERE.  port_descriptor() recomputes from
+# the live spec fields, so storing the method (or the trace it is bound to)
+# would reopen the hazard in a form that is harder to see.
+#
+# WHAT IS DELIBERATELY *NOT* IN A SNAPSHOT: Z, Zmat, fit_freqs, fit_Z and the
+# per-curve aux arrays.  Measured envelope at 10 runs x 6 traces: the text and
+# the rows are ~0.43 MB, while the arrays are 173 MB for a mode-6 run at 5000
+# frequencies and 6 measurement ports, and 691 MB at 20000.  A snapshot's size
+# must not depend on the sweep length; tests/test_run_snapshot.py pins that by
+# measuring it at two sweep lengths and demanding the same answer.  (The one
+# array a snapshot does reach is cres.Z_matrix, a G x G matrix at the single
+# marker frequency, which is what the block prints.)
+
+@dataclass(frozen=True)
+class RowSnapshot:
+    """One results-table row, resolved away from its TraceConfig."""
+    id: int
+    label: str
+    port_desc: str
+    enabled: bool
+    color_idx: int
+    file_label: str
+    res: object                 # RLCResult -- a fresh object per run
+
+
+@dataclass(frozen=True)
+class CouplingSnapshot:
+    """One mode-6 results block, resolved away from its TraceConfig."""
+    id: int
+    label: str
+    port_desc: str
+    enabled: bool
+    color_idx: int
+    file_label: str
+    cres: object                # CouplingResult -- a fresh object per run
+
+
+@dataclass(frozen=True)
+class FitSnapshot:
+    """One post-table fit summary line.
+
+    `enabled` travels with it because _render_results drops the hidden rows,
+    and a fit summary under a table with no such row is an orphan.
     """
-    rows: list of (tc, file_label, res). Returns a multi-line aligned table.
+    id: int
+    enabled: bool
+    text: str
+
+
+@dataclass(frozen=True)
+class RunSnapshot:
+    """Everything one Calculate produced, as a record that cannot move.
+
+    `number` is a MONOTONIC counter, not a value: two runs can be equal in
+    every field and still be different runs, so nothing may key a run by
+    equality (no sets, no value-keyed dicts).
+    """
+    number: int
+    when: datetime
+    marker_freq_hz: float
+    rows: tuple = ()
+    blocks: tuple = ()
+    fits: tuple = ()
+
+    def with_visibility(self, traces) -> "RunSnapshot":
+        """
+        This run with each record's `enabled` re-read from the live traces.
+
+        THE DEFAULT IS FROZEN: a run record is a record of what was measured,
+        so hiding a trace tomorrow must not retroactively rewrite it, and
+        _replot_from_cache stays the owner of "what is on the plot now".  This
+        is the one deliberate exception, and it is only ever applied to the
+        CURRENT run: re-rendering it (the units-mode switch) has always
+        followed the visibility as it stands then, and it has to, because
+        `enabled` gates the results table as well as the plot -- a row for a
+        curve that is not drawn reads as a duplicate of the one that is.
+
+        Matching is by trace id, which is unique and monotonic; a record whose
+        trace is gone keeps the flag it was snapshotted with.
+        """
+        live = {tc.id: bool(tc.enabled) for tc in traces}
+
+        def fix(recs):
+            return tuple(
+                replace(r, enabled=live[r.id]) if r.id in live else r
+                for r in recs)
+
+        return replace(self, rows=fix(self.rows), blocks=fix(self.blocks),
+                       fits=fix(self.fits))
+
+
+def _snapshot_row(tc: "TraceConfig", file_label: str, res) -> RowSnapshot:
+    return RowSnapshot(id=tc.id, label=tc.label,
+                       port_desc=tc.port_descriptor(),
+                       enabled=bool(tc.enabled), color_idx=int(tc.color_idx),
+                       file_label=file_label, res=res)
+
+
+def _snapshot_block(tc: "TraceConfig", file_label: str,
+                    cres) -> CouplingSnapshot:
+    return CouplingSnapshot(id=tc.id, label=tc.label,
+                            port_desc=tc.port_descriptor(),
+                            enabled=bool(tc.enabled),
+                            color_idx=int(tc.color_idx),
+                            file_label=file_label, cres=cres)
+
+
+def _snapshot_fit(tc: "TraceConfig", text: str) -> FitSnapshot:
+    return FitSnapshot(id=tc.id, enabled=bool(tc.enabled), text=text)
+
+
+def _format_results_table(rows: Sequence[RowSnapshot], units_mode: str) -> str:
+    """
+    rows: list of RowSnapshot. Returns a multi-line aligned table.
     units_mode in {'smart', 'aligned'}.
 
     Every data row starts with RESULTS_SWATCH and every other line starts with
@@ -1696,7 +1826,8 @@ def _format_results_table(rows, units_mode: str) -> str:
 
     file_labels_in_order = []
     seen = set()
-    for _, fl, _ in rows:
+    for r in rows:
+        fl = r.file_label
         if fl not in seen:
             seen.add(fl)
             file_labels_in_order.append(fl)
@@ -1725,10 +1856,10 @@ def _format_results_table(rows, units_mode: str) -> str:
     # Header
     if units_mode == "aligned":
         # Pick per-column prefix from the data
-        Rs = [tc_res[2].R_ohm for tc_res in rows]
-        Ls = [tc_res[2].L_henry for tc_res in rows]
-        Cs = [tc_res[2].C_farad for tc_res in rows]
-        Qs = [tc_res[2].Q for tc_res in rows]
+        Rs = [r.res.R_ohm for r in rows]
+        Ls = [r.res.L_henry for r in rows]
+        Cs = [r.res.C_farad for r in rows]
+        Qs = [r.res.Q for r in rows]
         r_exp, r_pfx = _aligned_prefix_for(Rs)
         l_exp, l_pfx = _aligned_prefix_for(Ls)
         c_exp, c_pfx = _aligned_prefix_for(Cs)
@@ -1755,7 +1886,8 @@ def _format_results_table(rows, units_mode: str) -> str:
     parts.append("Sign")
     lines.append("".join(parts))
 
-    for tc, fl, res in rows:
+    for r in rows:
+        res = r.res
         flag = _sign_flag(res)
         if units_mode == "aligned":
             r_str = _fmt_aligned(res.R_ohm, r_exp)
@@ -1777,12 +1909,12 @@ def _format_results_table(rows, units_mode: str) -> str:
             # what it looks like.  That is also what makes the swatch honest:
             # every swatched row has a curve of that colour on the plot.
             RESULTS_SWATCH + " ",
-            f"[{tc.id:>2}] ",
-            f"{_trunc(tc.label, LABEL_W):<{LABEL_W}}  ",
+            f"[{r.id:>2}] ",
+            f"{_trunc(r.label, LABEL_W):<{LABEL_W}}  ",
         ]
         if multi_file:
-            row_parts.append(f"{file_alias[fl]:<{FILE_W}}  ")
-        row_parts.append(f"{_trunc(tc.port_descriptor(), PORT_W):<{PORT_W}}  ")
+            row_parts.append(f"{file_alias[r.file_label]:<{FILE_W}}  ")
+        row_parts.append(f"{_trunc(r.port_desc, PORT_W):<{PORT_W}}  ")
         row_parts.append(f"{r_str:>{NUM_W}}  ")
         row_parts.append(f"{l_str:>{NUM_W}}  ")
         row_parts.append(f"{c_str:>{NUM_W}}  ")
@@ -1941,16 +2073,20 @@ def _format_z_matrix(names, Zk, indent: str = "      ") -> str:
     return "\n".join(out)
 
 
-def _format_coupling_block(tc: "TraceConfig", file_label: str,
-                           cres, units_mode: str) -> str:
+def _format_coupling_block(block: CouplingSnapshot, units_mode: str) -> str:
     """
     Full mode-6 results block for one trace at the marker frequency:
     the Z matrix, the per-port self table, then one entry per pair.
+
+    Takes a CouplingSnapshot, not a live TraceConfig: the heading is the
+    identity of the trace AS MEASURED, and the trace it came from may since
+    have been relabelled, re-ported or recomputed.
     """
+    cres = block.cres
     names = list(cres.names)
     lines = [
-        f"  [{tc.id}] {tc.label}  |  file: {file_label}  |  "
-        f"{tc.port_descriptor()}",
+        f"  [{block.id}] {block.label}  |  file: {block.file_label}  |  "
+        f"{block.port_desc}",
         f"  Z matrix @ {cres.freq_hz / 1e9:.6g} GHz   (Ω, Re+jIm; "
         f"off-diagonal = mutual, every other port open)",
         _format_z_matrix(names, cres.Z_matrix),
@@ -3141,6 +3277,13 @@ class App(tk.Tk):
         # an automatic switch to some other tab must not undo it.  See
         # _select_results_tab.
         self._log_forced = False
+
+        # Run history.  _run_counter is monotonic and is what identifies a run;
+        # _last_run is the record the Results pane is currently showing.  A run
+        # record is IMMUTABLE -- see RunSnapshot -- so re-rendering it can
+        # never print one run's numbers under another run's labels.
+        self._run_counter = 0
+        self._last_run: Optional[RunSnapshot] = None
 
         self._install_wheel_router()
         self._build_ui()
@@ -4348,18 +4491,18 @@ class App(tk.Tk):
             f"it (right-click → {UNFREEZE_MENU_LABEL} to release it).")
         # It goes into the results table NOW, not at the next Calculate -- the
         # table is where the two are read against each other, and a baseline
-        # that appears one press later is a baseline nobody trusts.
+        # that appears one press later is a baseline nobody trusts.  It joins
+        # the CURRENT run rather than starting one: the run number counts
+        # Calculates, and freezing measures nothing.
+        run = self._last_run or self._empty_run()
         if tc.coupling is not None:
-            self._last_coupling_blocks = (
-                list(getattr(self, "_last_coupling_blocks", []))
-                + [(tc, tc.file_label, tc.coupling)])
+            run = replace(run, blocks=run.blocks + (
+                _snapshot_block(tc, tc.file_label, tc.coupling),))
         elif tc.rlc is not None:
-            self._last_result_rows = (
-                list(getattr(self, "_last_result_rows", []))
-                + [(tc, tc.file_label, tc.rlc)])
-        self._render_results(getattr(self, "_last_result_rows", []),
-                             getattr(self, "_last_fit_lines", []),
-                             getattr(self, "_last_coupling_blocks", []))
+            run = replace(run, rows=run.rows + (
+                _snapshot_row(tc, tc.file_label, tc.rlc),))
+        self._last_run = run
+        self._render_results(run)
         self._replot_from_cache()
 
     def _on_unfreeze_trace(self) -> None:
@@ -4965,17 +5108,23 @@ class App(tk.Tk):
         # A new run releases the claim the PREVIOUS run's error put on the
         # Results pane; this run's own errors put it back.
         self._log_forced = False
+        # Runs are numbered by a monotonic counter, never identified by value:
+        # two runs of an unchanged spec are equal in every field and are still
+        # two different runs.
+        self._run_counter += 1
         scope = "" if only is None else f" [{only.id}] {only.label} only"
         self._append_result("\n=== Calculate @ {:.4g} GHz{} ==="
                             .format(f_rlc_hz / 1e9, scope))
 
         # First pass: compute Z and per-freq RLC; collect rows + fit_lines.
-        result_rows: list[tuple] = []   # (tc, file_label, res)
-        # (tc, line): post-table fit summaries.  The trace travels with the
-        # line because _render_results drops the hidden ones, and a fit summary
-        # for a row that is not in the table is an orphan.
-        fit_lines: list[tuple] = []
-        coupling_blocks: list[tuple] = []   # (tc, file_label, CouplingResult)
+        #
+        # These are SNAPSHOTS, taken as each trace finishes -- not the live
+        # TraceConfig.  The next run overwrites the trace, and a collection
+        # holding the object would then print this run's numbers under the next
+        # run's label and port descriptor.
+        result_rows: list[RowSnapshot] = []
+        fit_lines: list[FitSnapshot] = []
+        coupling_blocks: list[CouplingSnapshot] = []
         for tc in self.traces:
             fe = self._file_by_label(tc.file_label)
             if fe is None:
@@ -4991,9 +5140,10 @@ class App(tk.Tk):
                 # snapshot missing from the table it is meant to be compared
                 # against would be worse than useless.
                 if tc.coupling is not None:
-                    coupling_blocks.append((tc, fe.label, tc.coupling))
+                    coupling_blocks.append(
+                        _snapshot_block(tc, fe.label, tc.coupling))
                 elif tc.rlc is not None:
-                    result_rows.append((tc, fe.label, tc.rlc))
+                    result_rows.append(_snapshot_row(tc, fe.label, tc.rlc))
                 if only is tc:
                     # Asked for by name, so say no by name.
                     self._append_result(
@@ -5008,9 +5158,10 @@ class App(tk.Tk):
                 # A table that shrank to one row would make the fast path look
                 # like it had thrown the other traces away.
                 if tc.coupling is not None:
-                    coupling_blocks.append((tc, fe.label, tc.coupling))
+                    coupling_blocks.append(
+                        _snapshot_block(tc, fe.label, tc.coupling))
                 elif tc.rlc is not None:
-                    result_rows.append((tc, fe.label, tc.rlc))
+                    result_rows.append(_snapshot_row(tc, fe.label, tc.rlc))
                 continue
 
             # Drop last run's matrix so a failed or re-moded trace can never
@@ -5080,9 +5231,9 @@ class App(tk.Tk):
                         f"  [{tc.id}] {tc.label}: ERROR {e}", LOG_ERROR)
                     self._append_result(traceback.format_exc(), LOG_ERROR)
                     continue
-                coupling_blocks.append((tc, fe.label, cres))
+                coupling_blocks.append(_snapshot_block(tc, fe.label, cres))
                 if do_fit:
-                    fit_lines.append((
+                    fit_lines.append(_snapshot_fit(
                         tc,
                         f"  fit[{tc.id}]: skipped -- a band fit applies to one Z "
                         "curve, and a +/- coupling trace expands into several."))
@@ -5102,7 +5253,7 @@ class App(tk.Tk):
             tc.Z = Z
             res = extract_rlc_at_freq(fe.ts.freqs, Z, f_rlc_hz)
             tc.rlc = res
-            result_rows.append((tc, fe.label, res))
+            result_rows.append(_snapshot_row(tc, fe.label, res))
 
             fit_freqs = None
             fit_Z = None
@@ -5121,7 +5272,7 @@ class App(tk.Tk):
                                             & (fe.ts.freqs <= fmax_hz)]
                     if which == "inductor":
                         fit_Z = eval_inductor_model(fit, fit_freqs)
-                        fit_lines.append((
+                        fit_lines.append(_snapshot_fit(
                             tc,
                             f"  fit[{tc.id} {which}]: "
                             f"L={format_si(fit.L_henry, 'H')}, "
@@ -5133,7 +5284,7 @@ class App(tk.Tk):
                         fit_Z = eval_capacitor_model(fit, fit_freqs)
                         srf_str = ("nan" if math.isnan(fit.SRF_hz)
                                    else format_si(fit.SRF_hz, 'Hz'))
-                        fit_lines.append((
+                        fit_lines.append(_snapshot_fit(
                             tc,
                             f"  fit[{tc.id} {which}]: "
                             f"C={format_si(fit.C_farad, 'F')}, "
@@ -5142,16 +5293,18 @@ class App(tk.Tk):
                             f"SRF={srf_str}, "
                             f"RMSE={format_si(fit.rmse_ohm, 'Ω')}"))
                 except Exception as e:
-                    fit_lines.append((tc, f"  fit[{tc.id}] ERROR: {e}"))
+                    fit_lines.append(
+                        _snapshot_fit(tc, f"  fit[{tc.id}] ERROR: {e}"))
 
             tc.fit_freqs = fit_freqs
             tc.fit_Z = fit_Z
 
         # Second pass: render the table, fit lines and coupling blocks.
-        self._last_result_rows = result_rows
-        self._last_fit_lines = fit_lines
-        self._last_coupling_blocks = coupling_blocks
-        self._render_results(result_rows, fit_lines, coupling_blocks)
+        self._last_run = RunSnapshot(
+            number=self._run_counter, when=datetime.now(),
+            marker_freq_hz=f_rlc_hz, rows=tuple(result_rows),
+            blocks=tuple(coupling_blocks), fits=tuple(fit_lines))
+        self._render_results(self._last_run)
 
         # Curves are built in ONE place, from the cache, so that Calculate and
         # a visibility toggle cannot drift apart in what they draw.  A full
@@ -5301,37 +5454,47 @@ class App(tk.Tk):
                     n += 1
         return out
 
-    def _render_results(self, rows, fit_lines, coupling_blocks) -> None:
+    def _empty_run(self) -> RunSnapshot:
+        """A run record with nothing in it, for a report built before any
+        Calculate (freezing a trace restored from a session, say)."""
+        return RunSnapshot(number=self._run_counter, when=datetime.now(),
+                           marker_freq_hz=float("nan"))
+
+    def _render_results(self, run: RunSnapshot) -> None:
         """
-        Print the table, the fit summaries and the coupling blocks -- for the
-        traces that are ON THE PLOT.
+        Print one RUN's table, fit summaries and coupling blocks -- for the
+        records that are ON THE PLOT.
 
         A hidden trace is filtered out here rather than at collection time, so
-        `_last_result_rows` still holds everything and a units-mode re-render
-        follows the visibility as it stands then.  Its numbers are not lost --
-        they stay cached on the trace, so showing it again needs no Calculate
-        -- but they are not reported anywhere until it is shown, which is why
-        the line under the table has to name it.
+        `run.rows` still holds everything and the caller can decide whether the
+        visibility is the one that was recorded (any past run) or the one that
+        holds now (`with_visibility`, the current run).  Its numbers are not
+        lost -- they stay cached on the trace, so showing it again needs no
+        Calculate -- but they are not reported anywhere until it is shown,
+        which is why the line under the table has to name it.
+
+        Everything read here comes off the snapshot, never off a TraceConfig:
+        the id, label and port descriptor beside a number have to be the ones
+        that produced it.
         """
         units = self.units_mode_var.get()
-        shown_rows = [r for r in rows if r[0].enabled]
-        shown_blocks = [b for b in coupling_blocks if b[0].enabled]
-        hidden = [r[0] for r in rows if not r[0].enabled]
-        hidden += [b[0] for b in coupling_blocks if not b[0].enabled]
+        shown_rows = [r for r in run.rows if r.enabled]
+        shown_blocks = [b for b in run.blocks if b.enabled]
+        hidden = [r for r in run.rows if not r.enabled]
+        hidden += [b for b in run.blocks if not b.enabled]
 
         if shown_rows:
             self._append_swatched(_format_results_table(shown_rows, units),
-                                  [r[0].color_idx for r in shown_rows])
-            for tc, fl in fit_lines:
-                if tc.enabled:
+                                  [r.color_idx for r in shown_rows])
+            for f in run.fits:
+                if f.enabled:
                     # A fit that raised is reported on the same line as one
                     # that worked, so the severity has to come off the text.
                     self._append_result(
-                        fl, LOG_WARN if "ERROR" in fl else LOG_INFO)
-        for tc, file_label, cres in shown_blocks:
+                        f.text, LOG_WARN if "ERROR" in f.text else LOG_INFO)
+        for block in shown_blocks:
             self._append_result("")
-            self._append_result(
-                _format_coupling_block(tc, file_label, cres, units))
+            self._append_result(_format_coupling_block(block, units))
         if hidden:
             # Named, not silently dropped: Calculate still measured them, and
             # since they are in no other output either, this line is the only
@@ -5340,18 +5503,21 @@ class App(tk.Tk):
             self._append_result(
                 "  hidden (measured, not plotted, not exported; show it to "
                 "read or export it): "
-                + ", ".join(f"[{tc.id}] {_trunc_str(tc.label, 18)}"
-                            for tc in hidden))
+                + ", ".join(f"[{r.id}] {_trunc_str(r.label, 18)}"
+                            for r in hidden))
 
     def _on_units_mode_changed(self) -> None:
-        rows = getattr(self, "_last_result_rows", None)
-        blocks = getattr(self, "_last_coupling_blocks", None)
-        if not rows and not blocks:
+        run = self._last_run
+        if run is None or not (run.rows or run.blocks):
             return
         self._append_result(
             f"\n--- re-rendered with units={self.units_mode_var.get()} ---")
-        self._render_results(rows or [], getattr(self, "_last_fit_lines", []),
-                             blocks or [])
+        # The CURRENT run follows the visibility as it stands now -- `enabled`
+        # gates the results table as well as the plot, so a row for a curve
+        # that is no longer drawn would read as a duplicate of one that is.
+        # Every other field is frozen.  A PAST run is rendered as recorded.
+        self._last_run = run.with_visibility(self.traces)
+        self._render_results(self._last_run)
 
     def _build_termination(self, tc: TraceConfig,
                            nports: int | None = None) -> TerminationSet:

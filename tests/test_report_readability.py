@@ -56,7 +56,9 @@ from pkg_rlc_gui import (  # noqa: E402
     FOOTER_STRIP_CHARS,
     RESULTS_SWATCH,
     App,
+    CouplingSnapshot,
     FileEntry,
+    RowSnapshot,
     TraceConfig,
     _footer_strip_text,
     _format_coupling_block,
@@ -219,20 +221,18 @@ def _cres(pairs, names=("L1", "L2", "L3")) -> CouplingResult:
                           pairs=list(pairs), reciprocity_error=1e-9)
 
 
-class _TC:
-    id = 1
-    label = "osc"
-
-    def port_descriptor(self):
-        return "M6: 3 mports"
+def _snap(cres) -> CouplingSnapshot:
+    """The block renderer takes a frozen snapshot, never a live TraceConfig."""
+    return CouplingSnapshot(id=1, label="osc", port_desc="M6: 3 mports",
+                            enabled=True, color_idx=0,
+                            file_label="coil.s4p", cres=cres)
 
 
 class TestCouplingBlockRendering(unittest.TestCase):
     """Pure: what the ranked list looks like on the page."""
 
     def _block(self, pairs, names=("L1", "L2", "L3")):
-        return _format_coupling_block(_TC(), "coil.s4p", _cres(pairs, names),
-                                      "smart")
+        return _format_coupling_block(_snap(_cres(pairs, names)), "smart")
 
     def test_the_db_is_on_the_first_line_beside_M_and_k(self):
         """
@@ -299,8 +299,7 @@ class TestCouplingBlockRendering(unittest.TestCase):
         self.assertNotIn("below -60 dB", block)
 
     def test_a_single_measurement_port_still_says_so(self):
-        block = _format_coupling_block(_TC(), "coil.s4p", _cres([], ["L1"]),
-                                       "smart")
+        block = _format_coupling_block(_snap(_cres([], ["L1"])), "smart")
         self.assertIn("only one measurement port", block)
 
     def test_the_csv_really_contains_the_folded_pairs(self):
@@ -331,20 +330,15 @@ class TestCouplingBlockRendering(unittest.TestCase):
 # A3 -- the results-table swatch (pure half)
 # ============================================================================
 
-class _Row:
-    def __init__(self, i, label, color_idx):
-        self.id, self.label, self.color_idx = i, label, color_idx
-
-    def port_descriptor(self):
-        return "M1: 1 -> GND"
-
-
 class _Res:
     R_ohm, L_henry, C_farad, Q = 1.5, 2e-9, -1.2e-12, 0.84
 
 
 def _rows(n=2):
-    return [(_Row(i + 1, f"t{i + 1}", i), "f.s4p", _Res()) for i in range(n)]
+    return [RowSnapshot(id=i + 1, label=f"t{i + 1}", port_desc="M1: 1 -> GND",
+                        enabled=True, color_idx=i, file_label="f.s4p",
+                        res=_Res())
+            for i in range(n)]
 
 
 class TestResultsTableSwatch(unittest.TestCase):

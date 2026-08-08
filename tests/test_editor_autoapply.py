@@ -404,7 +404,7 @@ class TestPlotVisibility(_Case):
                       "the visible trace lost its row")
         # Collection is unchanged -- only the rendering filters -- so a units
         # re-render follows the visibility as it stands then.
-        self.assertEqual(len(self.app._last_result_rows), 2)
+        self.assertEqual(len(self.app._last_run.rows), 2)
 
     def test_a_hidden_trace_is_named_under_the_table(self):
         """
@@ -586,7 +586,7 @@ class TestCalculateOneTrace(_Case):
         self._settle()
         self.app._on_calculate_selected()
         self._settle()
-        self.assertEqual(len(self.app._last_result_rows), 2)
+        self.assertEqual(len(self.app._last_run.rows), 2)
 
     def test_it_keeps_the_cursors(self):
         """This is the fast iteration loop; the cursors are what it is for."""

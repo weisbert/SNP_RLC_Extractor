@@ -12,7 +12,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 |-------------------------|---------------------------------------------------------------------------------|
 | `pkg_rlc_core.py`       | Touchstone parser (+ `TouchstoneParseError` / `diagnose_touchstone` / `check_touchstone`), S<->Y, unified `TerminationSet` model + the Mode 5 DSL (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`), the connection-table row model (`MeasPortRow`, `ConnectionRow`, `rows_to_dsl_text`, `dsl_text_to_rows`, `build_terminations_rows`), `parse_mport_spec`, `resolve_meas_ports`, `compute_z_matrix` / `compute_z`, `extract_rlc_at_freq` / `extract_coupling_at_freq`, `fit_inductor` / `fit_capacitor` / `fit_auto`. |
 | `pkg_rlc_plot.py`       | Matplotlib plot panel: multi-subplot grid over R/L/C/\|Z\|/Re/Im/Q/**k**, draggable freq marker, M / V / Delete keys, fullscreen window. Quantities that cannot be derived from one `(freqs, Z)` pair (today only `k`) arrive via the optional `Trace.aux` dict. |
-| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), the frozen-trace snapshot (`_freeze_trace_config`, the Traces-list right-click menu), the File menu and the JSON session format (`session_to_dict` / `session_from_dict` / `SessionError` / `autosave_path`), the results pane (a `ttk.Notebook` whose tab 0 is the Log, with `log_tab_label` / `_append_result(severity)` / `_select_results_tab`). Re-exports the DSL helpers it no longer defines. |
+| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), the frozen-trace snapshot (`_freeze_trace_config`, the Traces-list right-click menu), the File menu and the JSON session format (`session_to_dict` / `session_from_dict` / `SessionError` / `autosave_path`), the results pane (a `ttk.Notebook` whose tab 0 is the Log, with `log_tab_label` / `_append_result(severity)` / `_select_results_tab`), and the immutable run record (`RowSnapshot` / `CouplingSnapshot` / `FitSnapshot` / `RunSnapshot`, `_snapshot_row` / `_snapshot_block` / `_snapshot_fit`) that `_render_results` consumes instead of live traces. Re-exports the DSL helpers it no longer defines. |
 | `pkg_rlc_gui.py` (cont.) | Plus the **Ports & Roles** window (`PortRolesWindow`, `_trace_role_rows`, `_role_warnings`, `_roles_header`, `apply_ports_as`), which is what `Show Ports` now opens. |
 | `pkg_rlc_help.py`       | In-app Help window content (`HELP_TOPICS`, `HelpWindow`, `HELP_WINDOW_WIDTH`). One tab per mode + syntax + save/load + worked examples. |
 | `pkg_rlc_extractor.py`  | Entry point: dispatches GUI vs CLI from argv. CLI `--mode gnd \| p2p \| coupling`, `--mport` repeatable. |
@@ -22,13 +22,15 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `tests/test_parse_diagnostics.py` | The robust-reading work: what a file says about itself (span, sweep description, DC / \|S\|>1 notes) and what happens when it cannot be read. Every refusal test pins the **verdict** and the **line number**, not just "raises ValueError" — that would have passed before any of it existed. Plus the recovery cases (UTF-16, BOM, commas, `D` exponents, extension tiebreak) and the two GUI affordances. |
 | `tests/test_session.py` | Save Config / Load Config / Restore Last Session. Pure round trip (no Tk) for the trace fields, the refusal verdicts, the hand-edit tolerance and the path precedence; Tk-driven for the App-level save→wipe→load, the missing-file path, the autosave, and that the File menu and its accelerators are reachable. Also the guard on the Help window's tab strip, which the tenth tab pushed past the old 950 px. |
 | `tests/test_results_notebook.py` | The Results pane's `ttk.Notebook`: that the Log is tab 0, selected and MAPPED at startup (both are mechanical preconditions of tests elsewhere), the width-stable badge measured in the tab strip's own font, the unseen-warning count, the ERROR claim on the pane and the severity routing of the real call sites, plus the measured proof that a 30-tab strip does not move the left panel. Every guard mutation-checked. |
-| `tests/`                | `unittest`-based suite (646 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/`                | `unittest`-based suite (771 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
 | `tests/test_editor_autoapply.py` | The commit-step removal: WHEN the editor writes into a `TraceConfig` and WHICH one it lands on (the deferral, the object capture, the flush-before-selection-change), the style picker's storage / reachability / honesty about multi-curve traces, and that hiding a curve neither recomputes it nor destroys the cursors. Every guard here was mutation-checked. |
 | `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see, and the reordering hazard that forces `_import_dsl_text`'s verbatim fallback. |
 | `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
 | `tests/test_mode5_editor.py` | Stage 3: the pure text<->rows import decision and both strip renderers, plus Tk-driven editor wiring, per-mode widget visibility, the text hatch, the CSV gate, wheel routing, and the LAYOUT numbers (`ismapped` / `reqwidth` / `xview` / `scrollregion` / `sashpos`) measured off a mapped window. |
 | `tests/test_freeze_trace.py` | "Freeze as new trace": the pure copy rules (config copied, lists element-wise, results REFERENCED), the two refusals (Calculate skips it, the editor cannot write it), that everything else still works (plot / show-hide / CSV / Remove), the right-click menu, and the session round trip that comes back without numbers and says so. Every guard mutation-checked. |
 | `tests/test_port_roles.py` | Port names put to work: the pure classifier (`port_roles`), the provenance map (`row_sources`), the run-collapser, the open-port name check with its false-alarm cases run against every real fixture, `_trace_role_rows` (any mode → rows), and the Tk-driven Ports & Roles window — filter, sort-on-the-raw-value, both Treeview hazards, the flagged rows and the collapsed-range write-back. Every guard mutation-checked. |
+| `tests/test_run_snapshot.py` | The immutable run snapshot: that the rendered page is byte-identical to `tests/fixtures/render_reference.json` (captured before the refactor), that a record does not move when its `TraceConfig` is relabelled / renumbered / re-ported, that no per-frequency array is reachable from a run, and the run number / frozen-visibility rules. Every guard mutation-checked. |
+| `tests/_render_capture.py` | Script + case registry that (re)generates `render_reference.json`, and the ONE place that knows the renderers' signatures. NOT auto-discovered (leading underscore). Regenerate ONLY in the same commit that justifies moving the reference. |
 | `tests/test_report_readability.py` | Four display-only changes, none of which touches a number: the ranked / floored coupling list (pure — the key, the two things never hidden, the sign invariant), the coloured trace Listbox, the tagged results-table swatch, and the editor's footer summary line (mapped window at the 1040x600 minsize). Every guard mutation-checked. |
 | `tests/generate_test_snp.py` | Builds synthetic fixtures with analytically known R/L/C/M; run as a script to (re)generate `tests/fixtures/`. The `COUPLED_*` module constants are the single source of truth for the coupled-coil fixtures. |
 | `tests/test_golden_regression.py` | Replays `tests/fixtures/golden_legacy.npz` through the current API and asserts `assert_array_equal`. This is the guard on every "stays bit-identical" claim below. |
@@ -422,10 +424,11 @@ claim below was mutation-checked — reverting the behaviour turns its test red.
   is still **computed** and cached, so showing it again costs no Calculate, and one line
   under the table names it (`hidden (measured, not plotted, not exported; …)`) — that line is
   now the ONLY place the report accounts for it, so do not drop it. **The filtering is in
-  `_render_results`, not at collection time** — `_last_result_rows` holds every trace so a
-  units-mode re-render follows the visibility as it stands then, and `Calculate This Trace`
-  still narrows the work rather than the report. `fit_lines` entries are therefore
-  `(tc, line)` tuples: a fit summary under a table with no such row is an orphan. Two empty
+  `_render_results`, not at collection time** — `run.rows` holds every trace so a units-mode
+  re-render follows the visibility as it stands then (via `RunSnapshot.with_visibility`, see
+  below), and `Calculate This Trace` still narrows the work rather than the report. A
+  `FitSnapshot` therefore carries its own `enabled`: a fit summary under a table with no such
+  row is an orphan. Two empty
   cases must stay distinguishable: with everything hidden the "plot is empty on purpose" note
   must not claim the numbers are above it, and `_on_export_csv` must say "every calculated
   trace is hidden" rather than "Run Calculate first" — the latter is wrong and unactionable
@@ -559,6 +562,59 @@ mutation-checked.
   bindings, ttk state does not cascade to children, and guarding `_choose` / `toggle`
   is the only thing that actually stops a click. `RowTable.add_row` re-applies the
   current flag, because `set_rows` runs before the editor knows the trace is frozen.
+
+### The run snapshot (what a finished Calculate leaves behind)
+
+`tests/test_run_snapshot.py` is the guard, and every claim below was
+mutation-checked.
+
+- **The render collections hold SNAPSHOTS, never the live `TraceConfig`.**
+  `_on_calculate` writes its results onto the live trace objects, and the
+  collections used to be `(tc, file_label, res)` — so anything that kept a run
+  and re-rendered it later printed the NEXT run's id, label and port descriptor
+  beside THIS run's numbers. Nothing raises and the numbers are real, which is
+  what makes it the worst kind of bug. `RowSnapshot` / `CouplingSnapshot` /
+  `FitSnapshot` resolve the blast radius — **`id`, `label`,
+  `port_descriptor()`, `enabled`, and `color_idx`** (what the swatch is tagged
+  from) — at snapshot time. Everything else was already immutable: `res` and
+  `cres` are FRESH objects per run, `file_label` is a `str`, the fit summaries
+  are already strings, and `_format_coupling_block` takes its matrix from
+  `cres.Z_matrix`, never from `tc.Zmat`.
+- **`port_desc` is a resolved STRING.** `port_descriptor()` is a method that
+  recomputes from the live spec fields, so storing the callable — or the trace
+  it is bound to — reopens the hazard in a form that is harder to see.
+- **A snapshot NEVER retains `Z` / `Zmat` / `fit_freqs` / `fit_Z` / `aux`.**
+  Measured envelope at 10 runs x 6 traces: text plus rows is ~0.43 MB, while
+  the arrays are **173 MB** for a mode-6 run at 5000 frequencies and 6
+  measurement ports, and **691 MB** at 20000. The one array a snapshot reaches
+  is `cres.Z_matrix`, the G x G matrix at the marker frequency, which is what
+  the block prints — and `extract_coupling_at_freq` **copies** it
+  (`np.array(Zmat[idx])`), so it is not a view keeping the whole base array
+  alive. The test states the property as "the reachable ndarray size is the
+  same at 200 frequencies as at 2000", which is the thing that actually
+  matters and which a fixed element cap would not catch.
+- **A run is identified by a monotonic counter, never by value.** Two runs of
+  an unchanged spec are equal in every field and are still two different runs:
+  no sets of runs, no value-keyed dicts. `App._run_counter` is bumped once per
+  `_on_calculate`; **freezing a trace joins the current run** (it measures
+  nothing) rather than starting one.
+- **An old run's `enabled` filter is FROZEN.** A run record is a record of what
+  was measured, so hiding a trace tomorrow must not retroactively rewrite it;
+  `_replot_from_cache` stays the owner of "what is on the plot now".
+  `RunSnapshot.with_visibility(traces)` is the ONE deliberate exception and it
+  is only ever applied to the **current** run, by `_on_units_mode_changed`:
+  `enabled` gates the results table as well as the plot, so a re-rendered row
+  for a curve that is no longer drawn would read as a duplicate of one that is.
+  It matches by **trace id**, refreshes nothing but the flag, and leaves a
+  record whose trace is gone with the flag it was taken with. A test that
+  renumbers the trace while checking "nothing else changed" passes with no
+  guard at all — nothing matches — so that precondition is asserted.
+- **`tests/fixtures/render_reference.json` is the proof that the page did not
+  move.** It was captured from the renderers as they stood BEFORE the snapshot
+  types existed, and `tests/_render_capture.py` is the single place that knows
+  the current signature (the same split as `_golden_capture.py` /
+  `test_golden_regression.py`). If it fails, the rendered report changed — fix
+  the change, do not regenerate the reference.
 
 - **Plot quantities that need more than one curve arrive via `Trace.aux`.** `k` needs three curves at once (`Z_ab`, `Z_aa`, `Z_bb`) and so cannot be derived from a single `(freqs, Z)` pair; the GUI precomputes it and attaches it. `trace_y_values` must return an all-NaN array (draw nothing) for a trace with no matching `aux` entry, never raise — self curves share the subplot grid with mutual ones. New derived quantities go in `AUX_PLOT_TYPES` the same way.
 
