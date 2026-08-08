@@ -22,13 +22,14 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `tests/test_parse_diagnostics.py` | The robust-reading work: what a file says about itself (span, sweep description, DC / \|S\|>1 notes) and what happens when it cannot be read. Every refusal test pins the **verdict** and the **line number**, not just "raises ValueError" — that would have passed before any of it existed. Plus the recovery cases (UTF-16, BOM, commas, `D` exponents, extension tiebreak) and the two GUI affordances. |
 | `tests/test_session.py` | Save Config / Load Config / Restore Last Session. Pure round trip (no Tk) for the trace fields, the refusal verdicts, the hand-edit tolerance and the path precedence; Tk-driven for the App-level save→wipe→load, the missing-file path, the autosave, and that the File menu and its accelerators are reachable. Also the guard on the Help window's tab strip, which the tenth tab pushed past the old 950 px. |
 | `tests/test_results_notebook.py` | The Results pane's `ttk.Notebook`: that the Log is tab 0, selected and MAPPED at startup (both are mechanical preconditions of tests elsewhere), the width-stable badge measured in the tab strip's own font, the unseen-warning count, the ERROR claim on the pane and the severity routing of the real call sites, plus the measured proof that a 30-tab strip does not move the left panel. Every guard mutation-checked. |
-| `tests/`                | `unittest`-based suite (771 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/`                | `unittest`-based suite (862 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
 | `tests/test_editor_autoapply.py` | The commit-step removal: WHEN the editor writes into a `TraceConfig` and WHICH one it lands on (the deferral, the object capture, the flush-before-selection-change), the style picker's storage / reachability / honesty about multi-curve traces, and that hiding a curve neither recomputes it nor destroys the cursors. Every guard here was mutation-checked. |
 | `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see, and the reordering hazard that forces `_import_dsl_text`'s verbatim fallback. |
 | `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
 | `tests/test_mode5_editor.py` | Stage 3: the pure text<->rows import decision and both strip renderers, plus Tk-driven editor wiring, per-mode widget visibility, the text hatch, the CSV gate, wheel routing, and the LAYOUT numbers (`ismapped` / `reqwidth` / `xview` / `scrollregion` / `sashpos`) measured off a mapped window. |
 | `tests/test_freeze_trace.py` | "Freeze as new trace": the pure copy rules (config copied, lists element-wise, results REFERENCED), the two refusals (Calculate skips it, the editor cannot write it), that everything else still works (plot / show-hide / CSV / Remove), the right-click menu, and the session round trip that comes back without numbers and says so. Every guard mutation-checked. |
 | `tests/test_port_roles.py` | Port names put to work: the pure classifier (`port_roles`), the provenance map (`row_sources`), the run-collapser, the open-port name check with its false-alarm cases run against every real fixture, `_trace_role_rows` (any mode → rows), and the Tk-driven Ports & Roles window — filter, sort-on-the-raw-value, both Treeview hazards, the flagged rows and the collapsed-range write-back. Every guard mutation-checked. |
+| `tests/test_run_history.py` | The run tabs: the width-stable label pair measured in the tab strip's own font, the three header lines, the named-signature diff (pinned one-for-one against `_config_signature`), and — Tk-driven — that eviction touches only the auto ring, that the kept cap bites at Keep time and the button says so, that the page being read survives as the SAME widget, the widget-count leak guard after a churn loop, the conditional auto-switch in both directions, the units re-render creating no tab, and that no run reaches the session file. Every guard mutation-checked. |
 | `tests/test_run_snapshot.py` | The immutable run snapshot: that the rendered page is byte-identical to `tests/fixtures/render_reference.json` (captured before the refactor), that a record does not move when its `TraceConfig` is relabelled / renumbered / re-ported, that no per-frequency array is reachable from a run, and the run number / frozen-visibility rules. Every guard mutation-checked. |
 | `tests/_render_capture.py` | Script + case registry that (re)generates `render_reference.json`, and the ONE place that knows the renderers' signatures. NOT auto-discovered (leading underscore). Regenerate ONLY in the same commit that justifies moving the reference. |
 | `tests/test_report_readability.py` | Four display-only changes, none of which touches a number: the ranked / floored coupling list (pure — the key, the two things never hidden, the sign invariant), the coloured trace Listbox, the tagged results-table swatch, and the editor's footer summary line (mapped window at the 1040x600 minsize). Every guard mutation-checked. |
@@ -754,9 +755,135 @@ mutation-checked.
   and the guard goes red.
 - **Tab labels are for LEGIBILITY, not layout.** In the 575 px pane at the
   minsize a tab strip clips from 13 tabs (100%) / 9 tabs (150%); at 30 tabs a
-  tab is 22 px, about three characters. A future run tab wants a short label
-  (`#1`) and a rolling cap, not a timestamp — a timestamped label is what drove
-  a 50-tab strip to a 8808 px requested width in the measurements.
+  tab is 22 px, about three characters. That is why the run tab's label is
+  `#7 10:42` and not a timestamp — a timestamped label is what drove a 50-tab
+  strip to a 8808 px requested width in the measurements — and why the caps
+  are what they are. See "Run history" below.
+
+### Run history (the run tabs after the Log)
+
+`tests/test_run_history.py` is the guard, and every claim below was
+mutation-checked.
+
+- **TWO DISJOINT SETS, and that is what makes the all-locked deadlock
+  UNREACHABLE BY CONSTRUCTION rather than handled.** The **auto ring**
+  (`_auto_run_tabs`, default `RUN_AUTO_DEFAULT = 3`) is the only set Calculate
+  ever touches: never kept, evicted oldest-first, silently. The **kept set** is
+  entered only by the user pressing Keep, is hard-capped, and is never evicted
+  by anything automatic. **Therefore Calculate can never block, never prompt,
+  and never destroy something the user asked to keep.** That sentence is the
+  invariant; a change that lets Calculate consider a kept tab, or lets the kept
+  cap be checked anywhere but at the moment of Keep, breaks it.
+- **The kept cap bites AT KEEP TIME, and by then the button already says why.**
+  `keep_button_label(..., "full")` renders `Keep (5/5) — close a kept run
+  first`, and `_keep_run_tab` refuses as a backstop. A disabled button with no
+  reason on it is a bug report. `_kept_cap() = _run_tabs_max - _run_auto_max`
+  and `_on_run_caps_changed` clamps the auto ring to `_run_tabs_max - 1`, so
+  the kept cap can never reach zero and leave the button permanently dead with
+  nothing to close.
+- **Eviction is `nb.forget(widget)` THEN `widget.destroy()`, in that order, in
+  ONE function (`_destroy_run_tab`).** Measured: `forget()` alone does **not**
+  destroy the child — 300 runs at a limit of 10 left 290 orphan widgets and
+  +21.5 MB, growing linearly. The guard is
+  `len(nb.winfo_children()) == len(nb.tabs())` after a churn loop; **never
+  assert on RSS**, the working set does not drop even on correct teardown.
+- **Tabs are tracked BY WIDGET, never by index.** Measured: evicting a lower
+  index renumbers the tabs after it but keeps the same widget selected and
+  preserves its scroll position, so a stored index silently starts pointing at
+  the neighbour. `RunTab` holds the frame; every lookup compares `str(frame)`.
+- **The SELECTED tab is implicitly protected from eviction, like a kept one —
+  and so is the page for the CURRENT run.** Evicting what the user is reading
+  raises no error at all (Tk silently selects a neighbour), which is worse than
+  an error. The second guard is not redundant: at an auto ring of 1 with the
+  reader parked on the older page, the oldest-first scan skips the page they
+  are on and takes the run that just finished. The ring is therefore allowed to
+  sit **one** over its size while a page is protected; the loop still evicts
+  the next-oldest, so it stays bounded.
+- **"Newest" means TWO different things and both are needed.** For the *banner*
+  it is `_current_run_number()` = `_last_run.number`, what the plot and Export
+  CSV are showing — closing the newest page does not un-plot its curves, so a
+  banner derived from the surviving tabs would quietly promote an older page to
+  "current" and stop warning about exactly the disagreement it exists for. For
+  the *auto-switch* it is the youngest page ON SCREEN, because
+  `_reader_is_at_the_newest_run` runs from `_add_run_tab`, by which point
+  `_last_run` is already the run being added — comparing against it answers
+  "am I at the newest?" with a flat no and the switch never happens again after
+  the first run.
+- **The auto-switch is CONDITIONAL: only if the reader was already on the
+  newest run, or on the Log.** Calculate is pressed constantly in the
+  edit/compute/read loop, and yanking a reader off a page they deliberately
+  kept is the opposite of what keeping means. The decision is taken **before**
+  the new page exists, or "am I at the newest?" answers itself. When the switch
+  does not happen the page is marked unseen instead, so nothing arrives
+  silently. An ERROR still wins with no extra rule: it claimed the pane before
+  the page existed and `_select_results_tab` declines to move off it.
+- **No focus handler here.** `nb.select()` does not steal focus and
+  `<<NotebookTabChanged>>` does not fire on re-selecting the current tab — both
+  measured, both load-bearing for the switch being safe.
+- **The unseen marker and the kept marker are WIDTH-STABLE GLYPH PAIRS: one of
+  each pair is emitted ALWAYS, never a conditional glyph.** A run tab that
+  changes width reflows every tab on a compressing strip. Measured in the tab
+  strip's own font (TkDefaultFont = Microsoft YaHei UI 9): `'!'` and `' '` are
+  both **4 px**; `'☑'` and `'☐'` are both **12 px**; `'🔒'` / `'🔓'` are both
+  16 px but emoji-font bound. The brief's leading `'*'` is **5 px against a
+  4 px space**, and **no** blank glyph in this font measures 5 px (checked
+  U+0020, 00A0, 2002, 2003, 2005–200A, 2007, 2008, 205F, 3000 — 2, 3, 4, 6, 8
+  and 12 px), so `'*'` cannot be made width-stable here and `'!'` already means
+  "unread" on the Log tab of this very notebook.
+- **Caps are set by LEGIBILITY, not by layout.** The vista notebook compresses
+  tabs and never wraps (`results_nb.winfo_reqheight()` is 172 px at 1 tab and
+  at 32), so a long strip cannot steal plot height, and it cannot reach the
+  outer sash either. What binds is that a tab is ~47 px up to 12 tabs and 22 px
+  at 30 (about three characters), and at 150% DPI clipping starts at 9. Hence
+  `RUN_TABS_DEFAULT = 8` and `RUN_TABS_HARD_CAP = 12`.
+- **`Runs ▾` is not a convenience.** Tk 8.6's `ttk.Notebook` has no tab-strip
+  scrolling and no overflow chevron, so a menu carrying each run's FULL
+  description is the only way a compressed tab stays identifiable. It is also
+  where the two caps live — the header has no room for two more spinboxes.
+- **Line 2 is WHAT CHANGED, and it is the real discriminator.** Time is not
+  one: nobody remembers what they were doing at 14:32 and twenty runs are all
+  at 5 GHz. `trace_signature_fields` is a NAMED `_config_signature` and must
+  stay one-for-one with it —
+  `TestSignatureFieldsCoverConfigSignature` mutates every field
+  `_config_signature` watches and demands the named version notices too, so a
+  tenth field added there cannot silently make a run page claim nothing
+  changed. The diff is computed at Calculate time, while both sides exist, and
+  stored **rendered** on the record.
+- **Line 3 (`! the plot and Export CSV show run #N, not this page`) is
+  MANDATORY on every page but the newest.** Without it three surfaces on one
+  screen disagree with nothing to explain it: the tab shows run #3, the plot
+  200 px below shows run #7, and Export CSV pressed while reading it writes
+  run #7. It is why `_render_all_run_tabs` rewrites every page on every run —
+  and why `_render_run_tab` restores `yview` rather than jumping a scrolled
+  reader back to the top.
+- **`_run_report_segments` is the ONE builder of a run's report**, consumed by
+  the Log (`_render_results`, with severity routing) and by the page
+  (`_write_run_report`, without — a run page is not the Log, and badging the
+  Log for a line the user is looking at elsewhere would be a lie). A second
+  copy would let the two disagree about a run's contents with nothing to tell
+  them apart.
+- **The units switch re-renders the newest page IN PLACE and creates no tab.**
+  A units switch measures nothing, so it is not a run. It still appends to the
+  Log — that is what a chronological log is for, and
+  `test_run_snapshot.py::test_a_units_re_render_follows_the_visibility_as_it_stands_then`
+  reads it back from there. An OLDER page is left exactly as recorded.
+- **Freezing a trace joins the CURRENT run and rewrites its page in place**,
+  for the same reason: the run number counts Calculates, and freezing measures
+  nothing.
+- **Run tabs are IN-MEMORY ONLY.** Run history is computed output and never
+  reaches the session file. No `TraceConfig` field was added, so
+  `test_session.py::TestFieldCoverage` is untouched; the guard on this side is
+  `TestRunHistoryIsNotSaved`.
+- **No `Z` / `Zmat` per tab** — the run snapshot already forbids it. Curve-level
+  comparison is what a frozen trace is for.
+- **No `Style.element_create` close button.** On the vista theme that means
+  replacing the layout that draws the native tab, hand-wiring hit-testing, and
+  a result that renders differently on the red-zone box with no test able to
+  see it. Right-click (`nb.index("@x,y")`, and `<Button-3>` is not a Notebook
+  class binding) does the job. `Close other runs` deliberately spares the kept
+  ones, so `Close this run` stays the ONLY route by which a kept page is
+  destroyed — which is exactly what the disabled Keep button tells the user to
+  press.
 
 ### Port names, roles, and the Ports & Roles window
 

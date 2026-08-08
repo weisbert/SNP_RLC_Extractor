@@ -1680,6 +1680,211 @@ def log_tab_label(unseen: int) -> str:
     return f"Log {'!' if n else ' '}{n:02d}"
 
 
+# ------------------------------------------------------- the run history tabs
+#
+# TWO DISJOINT SETS, and that is what makes the all-locked deadlock UNREACHABLE
+# rather than handled:
+#
+#   * the AUTO RING -- what Calculate writes into.  Never kept, evicted
+#     oldest-first, silently.  Calculate touches nothing else.
+#   * the KEPT SET  -- entered only by the user pressing Keep, hard-capped, and
+#     never evicted by anything automatic.
+#
+# So Calculate can never block, never prompt, and never destroy something the
+# user asked to keep.  The cap on the kept set is enforced AT THE MOMENT THE
+# USER PRESSES KEEP -- at the cap the button is already disabled and says why
+# -- which is the only place a refusal can be attached to an action the user
+# actually took.
+#
+# THE NUMBERS.  Measured on the vista theme: the notebook COMPRESSES tabs, it
+# never wraps, so the strip's requested height is constant and a long strip
+# cannot steal plot height (nb reqheight 172 px at 1 tab and at 32).  It also
+# cannot reach the outer sash -- the left panel is a fixed-width frame with
+# pack_propagate(False) and weight=0, measured unmoved at 50 tabs and 8808 px
+# of requested strip width.  What DOES bind is legibility: in the 575 px pane
+# at the 1040x600 minsize a tab is ~47 px up to 12 tabs and then collapses
+# (39 px at 16, 22 px at 30 -- about three characters), and at 150% DPI the
+# natural tab is 73 px so clipping starts at 9.  Hence the default total of 8
+# and the hard cap of 12, and hence the Runs menubutton: Tk 8.6's ttk.Notebook
+# has no tab-strip scrolling and no overflow chevron, so a menu listing the
+# full descriptions is the only way a compressed tab stays identifiable.
+RUN_AUTO_DEFAULT = 3            # auto ring size (user-settable)
+RUN_AUTO_MAX_UI = 6             # the largest auto ring the Runs menu offers
+RUN_TABS_DEFAULT = 8            # default total run tabs (auto + kept), no Log
+RUN_TABS_MIN = 2                # a total below this leaves no room to keep one
+RUN_TABS_HARD_CAP = 12          # measured: labels stop being readable past this
+
+# The unseen marker and the kept marker are WIDTH-STABLE GLYPH PAIRS: one of
+# each pair is emitted always, never a conditional glyph.  A run tab that
+# changes width reflows every tab on a compressing strip.
+#
+# Measured with tkinter.font in the tab strip's own font (TkDefaultFont =
+# Microsoft YaHei UI 9, what the vista theme's TNotebook.Tab uses):
+#     '!'  4 px   ' '  4 px      -> EQUAL   (the Log badge's own pair)
+#     '☑' 12 px   '☐' 12 px      -> EQUAL   (the Traces list's own pair)
+#     '🔒' 16 px  '🔓' 16 px      -> EQUAL but 16 px per tab and emoji-font bound
+#     '*'  5 px   ' '  4 px      -> DIFF by 1 px, and NO blank glyph in this
+#                                   font measures 5 px (checked U+0020, 00A0,
+#                                   2002, 2003, 2005..200A, 2007, 2008, 205F,
+#                                   3000 -- 2, 3, 4, 6, 8 and 12 px, never 5).
+# So the brief's leading '*' is not width-stable here and '!' is, in the same
+# notebook, already meaning "there is something here you have not read".
+RUN_MARK_NEW = "!"
+RUN_MARK_SEEN = " "
+RUN_KEPT_GLYPH = "☑"
+RUN_OPEN_GLYPH = "☐"
+
+# How many "what changed" items line 2 spells out before it stops counting.
+RUN_CHANGE_ITEMS = 4
+# How wide a single changed value is rendered before it is elided.
+RUN_CHANGE_VALUE_W = 22
+
+
+def run_tab_label(number: int, when, kept: bool, unseen: bool) -> str:
+    """
+    A run tab's text: short, and the same width in every state.
+
+    Identity is the RUN NUMBER, not the clock -- nobody remembers what they
+    were doing at 14:32 and twenty runs are all at 5 GHz.  The time is on the
+    label only as a rough "how long ago"; the full description lives in the
+    Runs menu and on line 1 inside the tab.
+    """
+    hhmm = when.strftime("%H:%M") if when is not None else "--:--"
+    return (f"{RUN_MARK_NEW if unseen else RUN_MARK_SEEN}"
+            f"{RUN_KEPT_GLYPH if kept else RUN_OPEN_GLYPH}"
+            f"#{int(number)} {hhmm}")
+
+
+def _run_marker_text(hz: float) -> str:
+    if hz is None or not math.isfinite(hz):
+        return "no marker"
+    return f"@ {hz / 1e9:.3f} GHz"
+
+
+def run_trace_ids(run: "RunSnapshot") -> list[int]:
+    """The trace ids this run produced numbers for, in order, without repeats."""
+    out: list[int] = []
+    for rec in tuple(run.rows) + tuple(run.blocks):
+        if rec.id not in out:
+            out.append(rec.id)
+    return sorted(out)
+
+
+def run_headline(run: "RunSnapshot") -> str:
+    """Line 1 inside a run tab, and the Runs menu's entry for it."""
+    ids = run_trace_ids(run)
+    when = run.when.strftime("%H:%M:%S") if run.when is not None else "--:--:--"
+    plural = "trace" if len(ids) == 1 else "traces"
+    return (f"Run #{run.number} · {when} · {_run_marker_text(run.marker_freq_hz)}"
+            f" · {len(ids)} {plural} [{','.join(str(i) for i in ids)}]")
+
+
+def run_stale_banner(newest_number: int) -> str:
+    """
+    Line 3, on every tab that is not the newest.
+
+    Mandatory.  Without it three surfaces on one screen disagree with nothing
+    to explain it: the tab shows run #3, the plot 200 px below it shows run #7,
+    and Export CSV pressed while reading this page writes run #7.
+    """
+    return (f"! the plot and Export CSV show run #{newest_number}, "
+            f"not this page")
+
+
+def keep_button_label(kept: int, cap: int, state: str) -> str:
+    """
+    The Keep button's text.  `state` is one of:
+
+      'none' -- the Log is on screen, so there is no run to keep
+      'kept' -- the run on screen is already kept
+      'free' -- it can be kept
+      'full' -- the kept set is at its cap, and the label has to say so,
+                because a disabled button with no reason is a bug report
+    """
+    if state == "none":
+        return "Keep run"
+    if state == "kept":
+        return f"Kept ({kept}/{cap})"
+    if state == "full":
+        return f"Keep ({kept}/{cap}) — close a kept run first"
+    return f"Keep run ({kept}/{cap})"
+
+
+# ------------------------------------------------- what changed between runs
+#
+# The real discriminator between two run tabs is not the clock, it is what the
+# user changed.  These render _config_signature's fields with a NAME each, so
+# a diff can say "[3] gnd 6-14 -> 6-16" instead of "something is different".
+#
+# The list mirrors _config_signature ONE FOR ONE and
+# tests/test_run_history.py::TestSignatureFieldsCoverConfigSignature pins that
+# -- a new field that changes the answer must show up here too, or a run tab
+# will claim nothing changed when the numbers did.
+_SIGNATURE_FIELDS: tuple = (
+    ("file", lambda tc: tc.file_label),
+    ("mode", lambda tc: tc.mode_name()),
+    ("port A", lambda tc: tc.port_a),
+    ("port B", lambda tc: tc.port_b),
+    ("short", lambda tc: tc.short_pairs),
+    ("gnd", lambda tc: tc.gnd_ports),
+    ("text", lambda tc: " / ".join(
+        ln for ln in (tc.extra_lines or "").splitlines() if ln.strip())),
+    ("mports", lambda tc: "; ".join(
+        f"{r.name}={r.plus}/{r.minus}" for r in tc.mports)),
+    ("connections", lambda tc: " | ".join(
+        " ".join(str(v) for v in astuple(r) if str(v)) for r in tc.conn_rows)),
+)
+
+
+def trace_signature_fields(tc: "TraceConfig") -> tuple:
+    """((label, rendered value), ...) for one trace -- a named _config_signature."""
+    return tuple((name, str(fn(tc) or "")) for name, fn in _SIGNATURE_FIELDS)
+
+
+def run_signatures(traces: Sequence) -> tuple:
+    """((trace_id, ((label, value), ...)), ...) for a whole run."""
+    return tuple((tc.id, trace_signature_fields(tc)) for tc in traces)
+
+
+def describe_run_change(prev: tuple, cur: tuple,
+                        max_items: int = RUN_CHANGE_ITEMS) -> list[str]:
+    """
+    What changed between two runs' signatures, as short human phrases.
+
+    A trace that appeared or went away is reported as such: "nothing changed"
+    beside a table that grew a row would be a false claim.
+    """
+    prev_map = dict(prev)
+    cur_map = dict(cur)
+    items: list[str] = []
+    for tid, fields_now in cur_map.items():
+        was = prev_map.get(tid)
+        if was is None:
+            items.append(f"[{tid}] added")
+            continue
+        for (name, new), (_, old) in zip(fields_now, was):
+            if new != old:
+                items.append(
+                    f"[{tid}] {name} "
+                    f"{_trunc_str(old, RUN_CHANGE_VALUE_W) or '(none)'} -> "
+                    f"{_trunc_str(new, RUN_CHANGE_VALUE_W) or '(none)'}")
+    for tid in prev_map:
+        if tid not in cur_map:
+            items.append(f"[{tid}] removed")
+    if len(items) > max_items:
+        extra = len(items) - max_items
+        items = items[:max_items] + [f"… +{extra} more"]
+    return items
+
+
+def run_change_line(prev_number: int, items: Sequence[str]) -> str:
+    """Line 2 inside a run tab. Empty when nothing changed -- the line is then
+    not printed at all, which is itself the message."""
+    if not items:
+        return ""
+    return f"changed since #{prev_number}:  " + ";  ".join(items)
+
+
 # ============================================================================
 # Run snapshots -- what one finished Calculate leaves behind
 # ============================================================================
@@ -1762,6 +1967,13 @@ class RunSnapshot:
     rows: tuple = ()
     blocks: tuple = ()
     fits: tuple = ()
+    # The named _config_signature of every trace as this run found it, and the
+    # diff against the run before it.  `signatures` is what the NEXT run diffs
+    # against; `changed` is the rendered answer, frozen at the moment it was
+    # true.  Both are tuples of strings, so a run record stays a record.
+    signatures: tuple = ()
+    prev_number: int = 0
+    changed: tuple = ()
 
     def with_visibility(self, traces) -> "RunSnapshot":
         """
@@ -1808,6 +2020,23 @@ def _snapshot_block(tc: "TraceConfig", file_label: str,
 
 def _snapshot_fit(tc: "TraceConfig", text: str) -> FitSnapshot:
     return FitSnapshot(id=tc.id, enabled=bool(tc.enabled), text=text)
+
+
+@dataclass
+class RunTab:
+    """One page of the Results notebook: a run record and the widgets showing it.
+
+    TRACKED BY WIDGET, NEVER BY INDEX.  Measured: evicting a lower index
+    renumbers every tab after it but keeps the same widget selected and
+    preserves its scroll position exactly -- so a list of records keyed on the
+    frame survives eviction, while any stored index silently starts pointing at
+    the neighbour.
+    """
+    run: RunSnapshot
+    frame: object                       # ttk.Frame, the notebook's child
+    text: object                        # the ScrolledText inside it
+    kept: bool = False
+    unseen: bool = False                # arrived while the reader was elsewhere
 
 
 def _format_results_table(rows: Sequence[RowSnapshot], units_mode: str) -> str:
@@ -1944,6 +2173,30 @@ def _format_results_table(rows: Sequence[RowSnapshot], units_mode: str) -> str:
 def _trunc_str(s: str, w: int) -> str:
     s = s or ""
     return s if len(s) <= w else s[: w - 1] + "…"
+
+
+def _tag_swatch_rows(txt, base_line: int, text: str,
+                     color_idxs: Sequence[int]) -> None:
+    """
+    Colour the leading swatch of each data row of `text`, already inserted
+    starting at line `base_line` of the Text widget `txt`.
+
+    Rows are found by their RESULTS_SWATCH prefix and consumed in order, so no
+    line-number arithmetic has to be kept in step with however many header
+    lines _format_results_table decides to emit (the file-alias line alone is
+    already conditional on the trace count).  Shared by the Log and by every
+    run page, so a row cannot be one colour on one and another on the other.
+    """
+    pending = iter(color_idxs)
+    for off, line in enumerate(text.split("\n")):
+        if not line.startswith(RESULTS_SWATCH):
+            continue
+        idx = next(pending, None)
+        if idx is None:
+            return              # more rows than colours: leave them plain
+        ln = base_line + off
+        txt.tag_add(f"c{idx % len(COLORS)}",
+                    f"{ln}.0", f"{ln}.{len(RESULTS_SWATCH)}")
 
 
 def _value_formatter(values, unit: str, units_mode: str):
@@ -3284,6 +3537,15 @@ class App(tk.Tk):
         # never print one run's numbers under another run's labels.
         self._run_counter = 0
         self._last_run: Optional[RunSnapshot] = None
+        # The run history tabs, NEWEST FIRST, tracked by widget.  Two disjoint
+        # sets live in this one list and `kept` is the discriminator: the auto
+        # ring (kept=False) is all Calculate ever touches, and the kept set is
+        # entered only by the Keep button.  See the comment on RUN_AUTO_DEFAULT.
+        self._run_tabs: list[RunTab] = []
+        self._run_auto_max = RUN_AUTO_DEFAULT
+        self._run_tabs_max = RUN_TABS_DEFAULT
+        self._run_auto_var = tk.IntVar(self, value=RUN_AUTO_DEFAULT)
+        self._run_tabs_var = tk.IntVar(self, value=RUN_TABS_DEFAULT)
 
         self._install_wheel_router()
         self._build_ui()
@@ -4001,6 +4263,21 @@ class App(tk.Tk):
         units_combo.pack(side=tk.LEFT)
         units_combo.bind("<<ComboboxSelected>>",
                          lambda _e: self._on_units_mode_changed())
+        # Tk 8.6's ttk.Notebook has no tab-strip scrolling and no overflow
+        # chevron, and past ~12 tabs a label is three characters wide.  The
+        # Runs menu is where a compressed tab stays identifiable: it carries
+        # the FULL description of every run, and it is also where the two caps
+        # are set.  Rebuilt on post, because the list changes on every run.
+        self._runs_menubutton = ttk.Menubutton(header, text="Runs ▾")
+        self._runs_menu = tk.Menu(self._runs_menubutton, tearoff=0)
+        self._runs_menubutton["menu"] = self._runs_menu
+        self._runs_menu.configure(postcommand=self._rebuild_runs_menu)
+        self._runs_menubutton.pack(side=tk.LEFT, padx=(12, 2))
+        # Keep is a BUTTON, not a menu entry, because its label is the only
+        # place the kept cap can be stated at the moment it bites.
+        self._keep_btn = ttk.Button(header, text=keep_button_label(0, 1, "none"),
+                                    command=self._on_keep_run)
+        self._keep_btn.pack(side=tk.LEFT, padx=2)
         # The Results pane is a ttk.Notebook and tab 0 is the Log, holding the
         # same ScrolledText it has always held.
         #
@@ -4043,6 +4320,23 @@ class App(tk.Tk):
         self.results_nb.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.results_nb.bind("<<NotebookTabChanged>>",
                              self._on_results_tab_changed, add="+")
+        # Right-click a tab for Keep / Close / Close others.  nb.index("@x,y")
+        # resolves the clicked tab at every tab count, and <Button-3> is not a
+        # Notebook class binding, so it is free.  (Deliberately NOT a per-tab
+        # close button: on the vista theme Style.element_create means replacing
+        # the layout that draws the native tab, hand-wiring hit-testing, and a
+        # result that renders differently on the red-zone box with no test able
+        # to see it.)
+        self._run_tab_menu = tk.Menu(self, tearoff=0)
+        self._run_tab_menu.add_command(label="Keep this run",
+                                       command=self._on_menu_keep_run)
+        self._run_tab_menu.add_command(label="Close this run",
+                                       command=self._on_menu_close_run)
+        self._run_tab_menu.add_command(
+            label="Close other runs (kept runs stay)",
+            command=self._on_menu_close_other_runs)
+        self._run_tab_menu_target: Optional[RunTab] = None
+        self.results_nb.bind("<Button-3>", self._on_run_tab_context_menu)
 
         self.plot = PlotPanel(plot_frame, on_marker_changed=self._on_marker_drag)
         self.plot.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
@@ -4503,6 +4797,12 @@ class App(tk.Tk):
                 _snapshot_row(tc, tc.file_label, tc.rlc),))
         self._last_run = run
         self._render_results(run)
+        # The run PAGE is rewritten in place for the same reason: freezing
+        # measures nothing, so it is not a new run and gets no new tab.
+        newest = self._newest_run_tab()
+        if newest is not None and newest.run.number == run.number:
+            newest.run = run
+            self._render_run_tab(newest)
         self._replot_from_cache()
 
     def _on_unfreeze_trace(self) -> None:
@@ -5300,11 +5600,24 @@ class App(tk.Tk):
             tc.fit_Z = fit_Z
 
         # Second pass: render the table, fit lines and coupling blocks.
+        #
+        # What CHANGED since the previous run is the real discriminator between
+        # two pages -- twenty runs are all at 5 GHz and nobody remembers what
+        # they were doing at 14:32 -- so it is computed here, while both sides
+        # of the comparison exist, and stored rendered.
+        prev = self._last_run
+        sigs = run_signatures(self.traces)
+        changed = (tuple(describe_run_change(prev.signatures, sigs))
+                   if prev is not None else ())
         self._last_run = RunSnapshot(
             number=self._run_counter, when=datetime.now(),
             marker_freq_hz=f_rlc_hz, rows=tuple(result_rows),
-            blocks=tuple(coupling_blocks), fits=tuple(fit_lines))
+            blocks=tuple(coupling_blocks), fits=tuple(fit_lines),
+            signatures=sigs,
+            prev_number=(prev.number if prev is not None else 0),
+            changed=changed)
         self._render_results(self._last_run)
+        self._add_run_tab(self._last_run)
 
         # Curves are built in ONE place, from the cache, so that Calculate and
         # a visibility toggle cannot drift apart in what they draw.  A full
@@ -5477,34 +5790,63 @@ class App(tk.Tk):
         the id, label and port descriptor beside a number have to be the ones
         that produced it.
         """
+        for text, colors, sev in self._run_report_segments(run):
+            if colors:
+                self._append_swatched(text, colors)
+            else:
+                self._append_result(text, sev)
+
+    def _run_report_segments(self, run: RunSnapshot) -> list:
+        """
+        One run's report as (text block, swatch colours, severity) segments.
+
+        The Log and the run page print the SAME report, so they are built once
+        here.  A second copy of this code would let the page the user reads and
+        the log they scroll back through disagree about a run's contents, with
+        nothing to tell them apart.
+        """
         units = self.units_mode_var.get()
         shown_rows = [r for r in run.rows if r.enabled]
         shown_blocks = [b for b in run.blocks if b.enabled]
         hidden = [r for r in run.rows if not r.enabled]
         hidden += [b for b in run.blocks if not b.enabled]
 
+        segs: list = []
         if shown_rows:
-            self._append_swatched(_format_results_table(shown_rows, units),
-                                  [r.color_idx for r in shown_rows])
+            segs.append((_format_results_table(shown_rows, units),
+                         tuple(r.color_idx for r in shown_rows), LOG_INFO))
             for f in run.fits:
                 if f.enabled:
                     # A fit that raised is reported on the same line as one
                     # that worked, so the severity has to come off the text.
-                    self._append_result(
-                        f.text, LOG_WARN if "ERROR" in f.text else LOG_INFO)
+                    segs.append((f.text, (),
+                                 LOG_WARN if "ERROR" in f.text else LOG_INFO))
         for block in shown_blocks:
-            self._append_result("")
-            self._append_result(_format_coupling_block(block, units))
+            segs.append(("", (), LOG_INFO))
+            segs.append((_format_coupling_block(block, units), (), LOG_INFO))
         if hidden:
             # Named, not silently dropped: Calculate still measured them, and
             # since they are in no other output either, this line is the only
             # place the report says where they went -- otherwise a trace is
             # simply missing from it.
-            self._append_result(
+            segs.append((
                 "  hidden (measured, not plotted, not exported; show it to "
                 "read or export it): "
                 + ", ".join(f"[{r.id}] {_trunc_str(r.label, 18)}"
-                            for r in hidden))
+                            for r in hidden), (), LOG_INFO))
+        return segs
+
+    def _write_run_report(self, txt, run: RunSnapshot) -> None:
+        """The same segments, written into a run page instead of the Log.
+
+        No severity routing here: a run page is not the Log, and badging the
+        Log for a line the user is looking at on another tab would be a lie.
+        """
+        for text, colors, _sev in self._run_report_segments(run):
+            base = int(txt.index("end-1c").split(".")[0])
+            txt.insert(tk.END, text + "\n")
+            if colors:
+                _tag_swatch_rows(txt, base, text, colors)
 
     def _on_units_mode_changed(self) -> None:
         run = self._last_run
@@ -5518,6 +5860,13 @@ class App(tk.Tk):
         # Every other field is frozen.  A PAST run is rendered as recorded.
         self._last_run = run.with_visibility(self.traces)
         self._render_results(self._last_run)
+        # The newest RUN PAGE is rewritten IN PLACE and no tab is created: a
+        # units switch measures nothing, so it is not a run.  (The Log is a
+        # chronological log and does append, which is what it is for.)
+        newest = self._newest_run_tab()
+        if newest is not None and newest.run.number == self._last_run.number:
+            newest.run = self._last_run
+            self._render_run_tab(newest)
 
     def _build_termination(self, tc: TraceConfig,
                            nports: int | None = None) -> TerminationSet:
@@ -5865,6 +6214,7 @@ class App(tk.Tk):
         )
         if not path:
             return
+        run = self._last_run
         try:
             with open(path, "w", newline="", encoding="utf-8") as fh:
                 w = csv.writer(fh)
@@ -5877,6 +6227,14 @@ class App(tk.Tk):
                     # file is one that was on the plot, so a CSV and a
                     # screenshot of the same session carry the same traces.
                     fh.write(f"# File: {fe.label}, Mode: {tc.mode_name()}\n")
+                    # WHICH RUN this is.  Export writes the CURRENT cached
+                    # state, which is the newest run -- not whatever page the
+                    # user happens to be reading -- so the file has to say so
+                    # in its own words, the same way the older pages do.
+                    if run is not None:
+                        fh.write(f"# Run: #{run.number} "
+                                 f"{_run_marker_text(run.marker_freq_hz)}, "
+                                 f"{run.when.strftime('%H:%M:%S')}\n")
                     # Gate on the DATA, not the mode -- _on_calculate routes on
                     # the measurement-port count, so a Mode 5 spec with two
                     # probes has a full Zmat too.  Gating on `mode == 6` used to
@@ -5903,7 +6261,8 @@ class App(tk.Tk):
                                     f"{r*1000:.6e}", f"{L:.6e}",
                                     f"{C:.6e}", f"{Q:.6e}"])
                     fh.write("\n")
-            self._append_result(f"Exported CSV: {path}")
+            which = "" if run is None else f" (run #{run.number})"
+            self._append_result(f"Exported CSV{which}: {path}")
         except Exception as e:
             messagebox.showerror("Export error", str(e))
 
@@ -6004,6 +6363,12 @@ class App(tk.Tk):
             self._render_log_badge()
         else:
             self._log_forced = False
+        # A run tab that is now on screen has been read, so its "!" goes.
+        rt = self._selected_run_tab()
+        if rt is not None and rt.unseen:
+            rt.unseen = False
+            self._render_run_tab_label(rt)
+        self._refresh_keep_button()
 
     def _select_log_tab(self) -> None:
         """
@@ -6036,6 +6401,414 @@ class App(tk.Tk):
         except Exception:                               # pragma: no cover
             return False
         return True
+
+    # ------------------------------------------------------- run history tabs
+
+    def _kept_run_tabs(self) -> list[RunTab]:
+        return [rt for rt in self._run_tabs if rt.kept]
+
+    def _auto_run_tabs(self) -> list[RunTab]:
+        """The auto ring, newest first.  This is the ONLY set Calculate touches."""
+        return [rt for rt in self._run_tabs if not rt.kept]
+
+    def _kept_cap(self) -> int:
+        """
+        How many runs may be kept at once.
+
+        Total budget minus the auto ring, so the two disjoint sets together can
+        never exceed the tab count the strip was measured to stay readable at.
+        """
+        return max(1, self._run_tabs_max - self._run_auto_max)
+
+    def _selected_run_tab(self) -> Optional[RunTab]:
+        try:
+            sel = self.results_nb.select()
+        except Exception:                               # pragma: no cover
+            return None
+        for rt in self._run_tabs:
+            if str(rt.frame) == sel:
+                return rt
+        return None
+
+    def _current_run_number(self) -> int:
+        """
+        The run the PLOT and Export CSV are showing.
+
+        Deliberately not "the highest number still on a tab": closing the
+        newest page does not un-plot its curves, and a banner derived from the
+        surviving tabs would then quietly promote an older page to "current"
+        and stop warning about exactly the disagreement it exists for.
+        """
+        return self._last_run.number if self._last_run is not None else 0
+
+    def _newest_run_tab(self) -> Optional[RunTab]:
+        """The tab holding the run the plot and Export CSV are showing, if it
+        still exists -- the user may have closed it."""
+        for rt in self._run_tabs:
+            if rt.run.number == self._current_run_number():
+                return rt
+        return None
+
+    def _make_results_text(self, parent):
+        """
+        A results page: the same ScrolledText the Log has always been.
+
+        height=10 on every one of them, so the notebook's requested height is
+        the same whichever page is on screen and the vertical sash cannot creep
+        as runs accumulate.
+        """
+        txt = ScrolledText(parent, height=10, wrap=tk.NONE,
+                           font=("Consolas", 9))
+        txt.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        txt.tag_configure("flag", foreground="#b04000")
+        txt.tag_configure("stale", foreground="#b04000")
+        for i, c in enumerate(COLORS):
+            txt.tag_configure(f"c{i}", foreground=c)
+        return txt
+
+    def _new_run_tab(self, run: RunSnapshot) -> RunTab:
+        """Add a page for `run` at the front of the run tabs and fill it in."""
+        frame = ttk.Frame(self.results_nb)
+        txt = self._make_results_text(frame)
+        rt = RunTab(run=run, frame=frame, text=txt)
+        # Newest first: index 1 is straight after the Log.  ttk's insert()
+        # refuses a position past the last existing tab ("Slave index 1 out of
+        # bounds"), so the very first run page is an add().
+        if len(self.results_nb.tabs()) > 1:
+            self.results_nb.insert(1, frame, text="")
+        else:
+            self.results_nb.add(frame, text="")
+        self._run_tabs.insert(0, rt)
+        self._render_run_tab_label(rt)
+        return rt
+
+    def _reader_is_at_the_newest_run(self) -> bool:
+        """
+        True when switching to the run that just finished is what the reader
+        was going to do anyway.
+
+        The Log counts: it is where the user watches a run happen.  A tab they
+        deliberately kept does not -- yanking them off it is the opposite of
+        what keeping means, and Calculate is pressed constantly in the
+        edit/compute/read loop.
+        """
+        if self._log_selected():
+            return True
+        rt = self._selected_run_tab()
+        if rt is None:                                  # pragma: no cover
+            return True
+        # Against the YOUNGEST PAGE ON SCREEN, not _current_run_number(): this
+        # is called from _add_run_tab, by which point _last_run is already the
+        # run being added, so "am I at the newest?" would answer itself with a
+        # flat no and the switch would never happen.  It is also the right
+        # frame of reference after the current run's page has been closed --
+        # the reader is then at the front of what is left.
+        return rt.run.number == max(t.run.number for t in self._run_tabs)
+
+    def _add_run_tab(self, run: RunSnapshot) -> RunTab:
+        """
+        Give the finished run a page, trim the auto ring, and switch to it --
+        CONDITIONALLY.
+
+        The decision is taken BEFORE the new page exists, or "am I at the
+        newest?" answers itself.  When the switch does not happen the page is
+        marked unseen instead, so nothing arrives silently.  An ERROR has
+        already claimed the pane by this point and _select_results_tab declines
+        to move off it, which is how "an error still wins" holds without a
+        second rule for it.
+        """
+        at_newest = self._reader_is_at_the_newest_run()
+        rt = self._new_run_tab(run)
+        self._evict_run_tabs()
+        # Every OTHER page's "not this page" banner is relative to this run.
+        self._render_all_run_tabs()
+        rt.unseen = not at_newest
+        self._render_run_tab_label(rt)
+        if at_newest and not self._select_results_tab(rt.frame):
+            rt.unseen = True
+            self._render_run_tab_label(rt)
+        self._refresh_keep_button()
+        return rt
+
+    def _destroy_run_tab(self, rt: RunTab) -> None:
+        """
+        The ONE teardown.  forget() THEN destroy(), in that order.
+
+        Measured: forget() alone does not destroy the child -- 300 runs at a
+        limit of 10 left 290 orphan widgets and +21.5 MB, growing linearly.
+        tests/test_run_history.py asserts len(nb.winfo_children()) ==
+        len(nb.tabs()) after a churn loop, which is the only honest form of
+        that check (the working set does not drop even on correct teardown, so
+        an RSS assertion would be measuring the allocator).
+        """
+        try:
+            self.results_nb.forget(rt.frame)
+        except Exception:                               # pragma: no cover
+            pass
+        try:
+            rt.frame.destroy()
+        except Exception:                               # pragma: no cover
+            pass
+        if rt in self._run_tabs:
+            self._run_tabs.remove(rt)
+
+    def _evict_run_tabs(self) -> None:
+        """
+        Trim the AUTO RING to its size, oldest first.  Nothing else is touched.
+
+        A kept run is not a candidate -- that is what keeping means -- and
+        neither is the tab that is ON SCREEN: evicting what the user is reading
+        raises no error at all, Tk silently selects a neighbour, which is worse
+        than an error.  Nor is the page for the CURRENT run, which is the one
+        the plot and Export CSV are showing: at an auto ring of 1, with the
+        reader parked on the older page, the oldest-first scan would otherwise
+        skip the page they are on and take the run that just finished.
+
+        So the ring is allowed to sit one over its size while a page is
+        protected; the next Calculate that finds the reader elsewhere trims it.
+        """
+        try:
+            sel = self.results_nb.select()
+        except Exception:                               # pragma: no cover
+            sel = ""
+        current = self._current_run_number()
+        autos = self._auto_run_tabs()
+        while len(autos) > self._run_auto_max:
+            victim = None
+            for rt in reversed(autos):          # oldest first
+                if str(rt.frame) != sel and rt.run.number != current:
+                    victim = rt
+                    break
+            if victim is None:
+                break
+            autos.remove(victim)
+            self._destroy_run_tab(victim)
+
+    def _render_run_tab_label(self, rt: RunTab) -> None:
+        try:
+            self.results_nb.tab(rt.frame,
+                                text=run_tab_label(rt.run.number, rt.run.when,
+                                                   rt.kept, rt.unseen))
+        except Exception:                               # pragma: no cover
+            pass
+
+    def _render_run_tab(self, rt: RunTab) -> None:
+        """
+        (Re)write one run page from its record.  In place -- never appended.
+
+        Three header lines, then exactly the report _render_results prints to
+        the Log.  Line 3 is mandatory on every page but the newest: without it
+        three surfaces on one screen disagree with nothing to explain it.
+        """
+        current = self._current_run_number()
+        is_newest = current == 0 or rt.run.number == current
+        txt = rt.text
+        try:
+            # Line 3 names the NEWEST run, so every other page is rewritten on
+            # every run -- and a reader scrolled halfway down an old page must
+            # not be thrown back to the top by that.  Empty means "first draw",
+            # where the top is where they want to be.
+            had_text = txt.index("end-1c") != "1.0"
+            where = txt.yview()[0]
+            txt.delete("1.0", tk.END)
+        except Exception:                               # pragma: no cover
+            return
+        head = [run_headline(rt.run)]
+        line2 = run_change_line(rt.run.prev_number, rt.run.changed)
+        if line2:
+            head.append(line2)
+        if not is_newest:
+            head.append(run_stale_banner(current))
+        for line in head:
+            txt.insert(tk.END, line + "\n")
+        if not is_newest:
+            ln = len(head)
+            txt.tag_add("stale", f"{ln}.0", f"{ln}.end")
+        txt.insert(tk.END, "\n")
+        self._write_run_report(txt, rt.run)
+        if had_text:
+            txt.yview_moveto(where)
+        else:
+            txt.see("1.0")
+
+    def _render_all_run_tabs(self) -> None:
+        """Re-render every page: the 'not this page' banner is relative to the
+        newest run, so a new run changes what every OTHER page has to say."""
+        for rt in list(self._run_tabs):
+            self._render_run_tab(rt)
+            self._render_run_tab_label(rt)
+
+    def _refresh_keep_button(self) -> None:
+        rt = self._selected_run_tab()
+        kept = len(self._kept_run_tabs())
+        cap = self._kept_cap()
+        if rt is None:
+            state = "none"
+        elif rt.kept:
+            state = "kept"
+        elif kept >= cap:
+            state = "full"
+        else:
+            state = "free"
+        try:
+            self._keep_btn.configure(text=keep_button_label(kept, cap, state))
+            if state == "free":
+                self._keep_btn.state(["!disabled"])
+            else:
+                self._keep_btn.state(["disabled"])
+        except Exception:                               # pragma: no cover
+            pass
+
+    def _keep_run_tab(self, rt: RunTab) -> bool:
+        """
+        Move one page out of the auto ring and into the kept set.
+
+        The cap bites HERE, on the action the user took -- and by then the
+        button is already disabled and already says why, so this is the
+        backstop, not the message.
+        """
+        if rt.kept:
+            return False
+        if len(self._kept_run_tabs()) >= self._kept_cap():
+            return False
+        rt.kept = True
+        self._render_run_tab_label(rt)
+        self._refresh_keep_button()
+        return True
+
+    def _on_keep_run(self) -> None:
+        rt = self._selected_run_tab()
+        if rt is None:
+            return
+        if self._keep_run_tab(rt):
+            self._append_result(
+                f"  Keeping run #{rt.run.number}: Calculate will not evict it "
+                f"({len(self._kept_run_tabs())}/{self._kept_cap()} kept).")
+
+    # -- the tab strip's right-click menu
+
+    def _run_tab_at(self, x: int, y: int) -> Optional[RunTab]:
+        try:
+            idx = self.results_nb.index(f"@{x},{y}")
+        except Exception:
+            return None
+        try:
+            name = self.results_nb.tabs()[idx]
+        except Exception:                               # pragma: no cover
+            return None
+        for rt in self._run_tabs:
+            if str(rt.frame) == name:
+                return rt
+        return None
+
+    def _on_run_tab_context_menu(self, event) -> None:
+        rt = self._run_tab_at(event.x, event.y)
+        if rt is None:
+            # The Log, or the empty strip to the right of the last tab.  The
+            # Log cannot be kept and cannot be closed, so there is no menu.
+            return
+        self._run_tab_menu_target = rt
+        kept = len(self._kept_run_tabs())
+        cap = self._kept_cap()
+        can_keep = (not rt.kept) and kept < cap
+        if rt.kept:
+            state = "kept"
+        elif can_keep:
+            state = "free"
+        else:
+            state = "full"
+        self._run_tab_menu.entryconfigure(
+            0, state=(tk.NORMAL if can_keep else tk.DISABLED),
+            label=keep_button_label(kept, cap, state))
+        self._run_tab_menu.entryconfigure(
+            2, state=(tk.NORMAL if len(self._run_tabs) > 1 else tk.DISABLED))
+        try:
+            self._run_tab_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._run_tab_menu.grab_release()
+
+    def _on_menu_keep_run(self) -> None:
+        rt = self._run_tab_menu_target
+        if rt is not None and self._keep_run_tab(rt):
+            self._append_result(
+                f"  Keeping run #{rt.run.number}: Calculate will not evict it "
+                f"({len(self._kept_run_tabs())}/{self._kept_cap()} kept).")
+
+    def _on_menu_close_run(self) -> None:
+        rt = self._run_tab_menu_target
+        if rt is None:
+            return
+        self._run_tab_menu_target = None
+        self._destroy_run_tab(rt)
+        self._render_all_run_tabs()
+        self._refresh_keep_button()
+
+    def _on_menu_close_other_runs(self) -> None:
+        """
+        Close every other run page -- except the kept ones.
+
+        "A kept run is destroyed only by Close THIS run" is the whole of the
+        rule, and a bulk command that quietly broke it is exactly the surprise
+        keeping exists to prevent.  The menu entry says so.
+        """
+        rt = self._run_tab_menu_target
+        if rt is None:
+            return
+        for other in list(self._run_tabs):
+            if other is not rt and not other.kept:
+                self._destroy_run_tab(other)
+        self._render_all_run_tabs()
+        self._refresh_keep_button()
+
+    # -- the Runs menubutton
+
+    def _rebuild_runs_menu(self) -> None:
+        m = self._runs_menu
+        m.delete(0, tk.END)
+        if not self._run_tabs:
+            m.add_command(label="(no runs yet — press Calculate)",
+                          state=tk.DISABLED)
+        else:
+            for rt in self._run_tabs:
+                mark = RUN_KEPT_GLYPH if rt.kept else RUN_OPEN_GLYPH
+                m.add_command(
+                    label=f"{mark} {run_headline(rt.run)}",
+                    command=lambda t=rt: self._select_results_tab(t.frame))
+        m.add_separator()
+        auto = tk.Menu(m, tearoff=0)
+        for n in range(1, RUN_AUTO_MAX_UI + 1):
+            auto.add_radiobutton(
+                label=str(n), value=n, variable=self._run_auto_var,
+                command=self._on_run_caps_changed)
+        m.add_cascade(label="Auto runs kept (evicted oldest first)", menu=auto)
+        total = tk.Menu(m, tearoff=0)
+        for n in range(RUN_TABS_MIN, RUN_TABS_HARD_CAP + 1):
+            total.add_radiobutton(
+                label=str(n), value=n, variable=self._run_tabs_var,
+                command=self._on_run_caps_changed)
+        m.add_cascade(label="Max run tabs (auto + kept)", menu=total)
+
+    def _on_run_caps_changed(self) -> None:
+        """
+        Apply the two caps from the Runs menu.
+
+        The auto ring is clamped to leave at least one kept slot, so the kept
+        cap can never reach zero and the Keep button can never be permanently
+        disabled with nothing to close.
+        """
+        try:
+            total = int(self._run_tabs_var.get())
+            auto = int(self._run_auto_var.get())
+        except Exception:                               # pragma: no cover
+            return
+        self._run_tabs_max = max(RUN_TABS_MIN,
+                                 min(total, RUN_TABS_HARD_CAP))
+        self._run_auto_max = max(1, min(auto, self._run_tabs_max - 1))
+        self._run_auto_var.set(self._run_auto_max)
+        self._run_tabs_var.set(self._run_tabs_max)
+        self._evict_run_tabs()
+        self._render_all_run_tabs()
+        self._refresh_keep_button()
 
     def _append_result(self, text: str, severity: str = LOG_INFO) -> None:
         """
@@ -6070,16 +6843,7 @@ class App(tk.Tk):
         """
         base = int(self.results_text.index("end-1c").split(".")[0])
         self._append_result(text)
-        pending = iter(color_idxs)
-        for off, line in enumerate(text.split("\n")):
-            if not line.startswith(RESULTS_SWATCH):
-                continue
-            idx = next(pending, None)
-            if idx is None:
-                return          # more rows than colours: leave them plain
-            ln = base + off
-            self.results_text.tag_add(f"c{idx % len(COLORS)}",
-                                      f"{ln}.0", f"{ln}.{len(RESULTS_SWATCH)}")
+        _tag_swatch_rows(self.results_text, base, text, color_idxs)
 
 
 def main() -> None:

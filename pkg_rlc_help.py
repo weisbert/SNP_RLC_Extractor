@@ -214,6 +214,45 @@ than quietly drawing nothing. Unfreeze it and Calculate to measure
 it again -- which reproduces the snapshot exactly if the file has
 not changed in the meantime.
 
+Run history: every Calculate keeps its page
+--------------------------------------------
+The Results pane is a set of tabs. "Log" is the running commentary
+it has always been; every Calculate adds a page beside it, newest
+first, labelled "#7 10:42".
+
+Each page carries the report that run produced, and above it:
+
+   Run #12 · 14:32:07 · @ 5.000 GHz · 4 traces [1,2,3,5]
+   changed since #11:  [3] gnd 6-14 -> 6-16
+
+The second line is the useful one -- twenty runs are all at 5 GHz
+and nobody remembers what they were doing at 14:32, but "I widened
+the ground group" is what tells two pages apart.
+
+Old pages are dropped automatically, OLDEST FIRST, three at a time
+by default. To stop one being dropped, press "Keep" (or right-click
+its tab). A kept page is never dropped by anything automatic; the
+only way it goes is right-click -> "Close this run". Because kept
+pages have their own budget, pressing Calculate can never be blocked
+by them and can never throw one away -- if the kept set is full the
+Keep button is already disabled and says so.
+
+Runs ▾ lists every page with its full description; that is where to
+look once the tabs are too narrow to read. It also sets the two
+limits (how many automatic pages, and how many tabs in total).
+
+One thing to watch, and every older page says it out loud:
+
+   ! the plot and Export CSV show run #12, not this page
+
+The plot and Export CSV always show the LATEST numbers. Reading an
+older page does not change what a Calculate or an export produces.
+To compare curves rather than tables, freeze a trace (above) --
+that is the tool for two curves on one plot.
+
+Run history is in memory only: Save Config carries the setup, never
+the results, so run pages do not survive a save/load.
+
 Broadband fit models
 --------------------
 Inductor model    : Z(f) = R_dc + R_ac * sqrt(f) + j * 2*pi*f * L
