@@ -78,7 +78,9 @@ from pkg_rlc_core import (
     dsl_text_to_rows,
     s_to_y,
     y_series_rlc,
+    diagnose_touchstone,
     format_si,
+    TouchstoneParseError,
 )
 from pkg_rlc_plot import (
     COLORS, LINESTYLES, MAX_LABEL_LEN, PlotPanel, Trace as PlotTrace,
@@ -112,9 +114,16 @@ class FileEntry:
         self.label = Path(ts.source_path).name
 
     def info_str(self) -> str:
+        # The frequency span is here because it is the first thing anyone
+        # checks against what they simulated, and the list line was the one
+        # place it could have been seen without being shown at all.  It goes
+        # ahead of M and Z0 on purpose: a Listbox has no horizontal scrollbar,
+        # so a long file name clips the TAIL of this line (measured: a 37-char
+        # name needs 476 px against a 444 px list), and of the four facts the
+        # span is the one worth keeping.
         return (f"{self.label}  "
-                f"(N={self.ts.nports}, M={len(self.ts.freqs)}, "
-                f"Z0={self.ts.z0:g}Ω)")
+                f"(N={self.ts.nports}, {self.ts.freq_span_str()}, "
+                f"M={len(self.ts.freqs)}, Z0={self.ts.z0:g}Ω)")
 
 
 @dataclass
@@ -1848,6 +1857,8 @@ class App(tk.Tk):
                    ).pack(side=tk.LEFT, padx=2, pady=2)
         ttk.Button(btn_row, text="Show Ports", command=self._on_show_ports
                    ).pack(side=tk.LEFT, padx=2, pady=2)
+        ttk.Button(btn_row, text="Check File", command=self._on_check_file
+                   ).pack(side=tk.LEFT, padx=2, pady=2)
         self.files_lb = tk.Listbox(files_frame, height=5, exportselection=False,
                                    activestyle="dotbox")
         self.files_lb.pack(side=tk.TOP, fill=tk.X, padx=2, pady=2)
@@ -2341,6 +2352,38 @@ class App(tk.Tk):
 
     # --------------------------------------------------------------- File ops
 
+    def _load_one_file(self, path: str) -> TouchstoneData | None:
+        """
+        Parse one file, reporting a failure in terms the user can act on.
+
+        `str(TouchstoneParseError)` is already the full report -- line number,
+        verdict, next step -- so the dialog just shows it.  When the parser
+        says the file could still be read by skipping the bad values, that is
+        offered as a button rather than buried in the text: a user who only
+        wants to look at a sweep should not have to find a CLI flag, and the
+        warnings the lenient read produces say loudly enough that the numbers
+        are suspect.
+        """
+        try:
+            return parse_touchstone(path)
+        except TouchstoneParseError as e:
+            if not e.retry_lenient:
+                messagebox.showerror("Cannot read file", str(e))
+                return None
+            if not messagebox.askyesno(
+                    "Cannot read file",
+                    f"{e}\n\nLoad it anyway, skipping the values that do not "
+                    f"parse?"):
+                return None
+            try:
+                return parse_touchstone(path, lenient=True)
+            except TouchstoneParseError as e2:
+                messagebox.showerror("Cannot read file", str(e2))
+                return None
+        except Exception as e:                          # pragma: no cover
+            messagebox.showerror("Cannot read file", f"{path}\n\n{e}")
+            return None
+
     def _on_add_file(self) -> None:
         paths = filedialog.askopenfilenames(
             title="Select Touchstone file(s)",
@@ -2348,16 +2391,14 @@ class App(tk.Tk):
                        ("All files", "*.*")],
         )
         for p in paths:
-            try:
-                ts = parse_touchstone(p)
-            except Exception as e:
-                messagebox.showerror("Parse error", f"{p}\n\n{e}")
+            ts = self._load_one_file(p)
+            if ts is None:
                 continue
             fe = FileEntry(ts)
             self.files.append(fe)
-            self._append_result(f"Loaded {fe.info_str()}")
-            for w in ts.parser_warnings:
-                self._append_result(f"  WARN: {w}")
+            self._append_result("")
+            for line in ts.summary_lines():
+                self._append_result(line)
             # Auto-create a default trace bound to this file
             tc = self._make_default_trace(fe)
             self.traces.append(tc)
@@ -2408,6 +2449,33 @@ class App(tk.Tk):
         self._append_result(f"\nPorts of {fe.label}:")
         for i, name in enumerate(fe.ts.port_names, 1):
             self._append_result(f"  {i:3d}: {name or '(unnamed)'}")
+
+    def _on_check_file(self) -> None:
+        """
+        Print the file-structure report for the selected file, or for one
+        picked from disk when nothing is selected.
+
+        This covers the case the error dialog cannot: the file LOADS, but the
+        numbers look wrong.  Then the question is whether the port count was
+        guessed, whether the sweep is what was simulated, and whether the
+        record grid actually lines up -- and none of that is visible anywhere
+        else.  It also reaches files that fail to load, since those never make
+        it into the list.
+        """
+        idx = self._sel_idx(self.files_lb)
+        fe = self.files[idx] if idx is not None else None
+        if fe is not None:
+            path = fe.ts.source_path
+        else:
+            path = filedialog.askopenfilename(
+                title="Check which Touchstone file?",
+                filetypes=[("Touchstone / text", "*.s*p *.txt *.dat"),
+                           ("All files", "*.*")])
+            if not path:
+                return
+        self._append_result("")
+        for line in diagnose_touchstone(path).splitlines():
+            self._append_result(line)
 
     def _on_file_selected(self) -> None:
         pass  # currently no-op

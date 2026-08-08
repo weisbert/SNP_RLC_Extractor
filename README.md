@@ -28,7 +28,7 @@ python pkg_rlc_extractor.py
 
 Basic flow:
 
-1. **Add File...** — load any Touchstone file. The parser content-sniffs the port count and ignores the file extension; `.s2p`, `.s45p`, `.txt`, `.dat`, or no extension all work.
+1. **Add File...** — load any Touchstone file. The parser content-sniffs the port count and ignores the file extension; `.s2p`, `.s45p`, `.txt`, `.dat`, or no extension all work. Each load prints a summary — port count, point count, `Z0`, the option line actually used, **the frequency span**, and `max |S|` — and the span is repeated on the file's line in the list. See [Reading files](#reading-files) for what a load failure tells you and what **Check File** is for.
 2. A default trace is auto-created against the loaded file. Select it in the **Traces** listbox to edit.
 3. In **Edit Selected Trace**, pick a measurement mode (Modes 1-3, `+/- Ports / Coupling`, or Custom) and fill in the relevant port fields. Modes 5 and 6 are filled in as **tables** with a `+ Add` button rather than typed as text: Mode 6 gets the measurement-port table, Mode 5 that table plus a connections table underneath, with a port-overview line and a validation line under both. Every port cell takes port **numbers**; **Show Ports** lists the file's port *names* in the Results pane, which is where to look on an unfamiliar package. R/L/C cells take one word with an SI suffix and no unit (`5m`, `0.5n`, `1u`) — the unit is in the column header, and a value with a space in it is rejected rather than silently truncated.
 4. Set **RLC Freq (GHz)** for single-point extraction, optionally enter a **Band Fit** range and model.
@@ -146,6 +146,23 @@ CLI flags:
 | `--fit`   | Band-fit model: `none` \| `auto` \| `inductor` \| `capacitor`            |
 | `--fmin`, `--fmax` | Band edges in GHz for `--fit`                                   |
 | `--csv`   | CSV output path (coupling mode: Re/Im of every `Z_ij` plus M and k)      |
+| `--force-nports` | Bypass content detection and force the port count                 |
+| `--diagnose` | Print the file-structure report and exit (`0` = nothing wrong, `1` = something is). Needs no `--cli` |
+| `--lenient` | Skip values that do not parse instead of refusing the file            |
+
+---
+
+## Reading files
+
+The port count comes from the **content**, never the extension. The file name is consulted for exactly two things, and says so in a warning when it is: breaking a tie when the numbers admit more than one port count (picking the smallest silently reads a 2-port file as a 1-port one), and rescuing a port count above the 256-port sniff cap — a `.s300p` package export, which content alone cannot resolve.
+
+Read: Touchstone 1.x in RI / MA / DB, any frequency unit, with or without an option line; UTF-8, UTF-8 + BOM, and UTF-16 with or without BOM; commas/semicolons between values and Fortran `D` exponents (`1.0D+09`) are accepted with a warning. Touchstone **2.0** (`[Version]`, `[Network Data]`) and compressed files are refused **by name** rather than misread — read as v1, a v2 file's `[Number of Ports] 4` injects a `4` into the data stream and shifts every value after it.
+
+Every load prints two kinds of extra line when they apply. `WARN:` means something was guessed or thrown away. `Note:` means the file is fine but there is something to know first — most usefully that the sweep starts at **DC**, where `L = Im(Z)/ω` and `C = -1/(ω·Im(Z))` are undefined and read as nan/inf.
+
+A file that will not load produces a report naming a line, the text of that line, and a **verdict**: `THE FILE is inconsistent` (truncated/corrupt — everything before the named line was read correctly), `THE FILE looks valid but…` (a real format not read here), `THE FILE could not be read` (missing, locked, out of memory), or `THE PARSER gave up` — which means the file's structure checks out and this is a bug here, reported with a traceback to send. If the only problem is a stray non-numeric token the GUI offers to load it anyway; the result is suspect, because dropping one number in a positional stream shifts every number after it.
+
+**Check File** (GUI) / `--diagnose` (CLI) runs the same structure report on demand: size, encoding, line counts, the option line, how many numbers each data line carries, and whether the data divides into whole records for each plausible port count. It exists for the case an error dialog cannot cover — the file *loads* but the numbers look wrong.
 
 ---
 

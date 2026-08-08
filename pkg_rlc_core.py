@@ -30,8 +30,12 @@ historical floating-point expressions so that existing modes stay bit-exact.
 from __future__ import annotations
 
 import array
+import bisect
+import codecs
 import math
 import re
+import textwrap
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Sequence, Union
@@ -305,6 +309,115 @@ def parse_kv_rlc_params(tokens: list[str]) -> dict:
 # Touchstone parser (universal content-based; ignores extension)
 # ============================================================================
 
+# Repetitive parse warnings (the old code emitted one per bad token) are
+# collapsed after this many examples.  A corrupt file can produce millions of
+# them: unbounded, that is both a memory hazard and an unreadable Results pane.
+# Same cap as the Schur-fallback and rank-deficiency warnings further down.
+PARSE_WARN_CAP = 3
+
+# Bytes read from the head of a file to pick its encoding and rule out binary.
+ENCODING_SNIFF_BYTES = 4096
+
+# Data lines whose (line_no, value offset) the diagnosis pass remembers, so a
+# value index can be turned back into a line number.  8 bytes each; the cap
+# stops a pathological 50M-line file from costing more than the parse did.
+DIAGNOSE_MAX_LINES = 2_000_000
+
+# Fault classes carried by TouchstoneParseError.  The whole point of the class
+# is that nobody should have to guess which one they are looking at: "is my
+# file bad, or is your tool bad?" is the question a parse failure has to answer
+# before anything else.
+FAULT_FILE = "file"                  # the content is inconsistent / corrupt
+FAULT_UNSUPPORTED = "unsupported"    # valid, but a format this tool cannot read
+FAULT_ACCESS = "access"              # could not be opened / read at all
+FAULT_INTERNAL = "internal"          # content looks fine -- this tool's bug
+FAULT_NONE = "none"                  # diagnosis only: nothing wrong found
+
+_VERDICT = {
+    FAULT_FILE:
+        "THE FILE is inconsistent. Everything before the point named above "
+        "was read correctly.",
+    FAULT_UNSUPPORTED:
+        "THE FILE looks valid, but it is in a format this tool does not read.",
+    FAULT_ACCESS:
+        "THE FILE could not be read at all; nothing was parsed.",
+    FAULT_INTERNAL:
+        "THE PARSER gave up on a file whose structure looks consistent. That "
+        "is a bug in this tool, not a bad file -- please report it with the "
+        "details above.",
+}
+
+
+def _clip(text: str, width: int = 72) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= width else text[:width - 3] + "..."
+
+
+class TouchstoneParseError(ValueError):
+    """
+    A parse failure that says whose fault it is.
+
+    `kind` is one of FAULT_FILE / FAULT_UNSUPPORTED / FAULT_ACCESS /
+    FAULT_INTERNAL and drives the "Verdict" line of the report: a user who
+    cannot open their file needs to know whether to re-export it, convert it,
+    or file a bug -- and no amount of "invalid literal for float()" tells them
+    that.  `str(e)` IS the full report, so every existing `except Exception as
+    e: show(e)` call site upgrades for free.
+
+    Subclasses ValueError because that is what the parser raised before this
+    existed, and callers (including the test suite) catch it that way.
+    """
+
+    def __init__(self, what: str, *, path, kind: str = FAULT_FILE,
+                 line_no: int | None = None, line_text: str | None = None,
+                 hint: str | None = None, context: Sequence[str] = (),
+                 retry_lenient: bool = False, traceback_text: str = "",
+                 verdict: str | None = None):
+        self.what = what
+        self.path = str(path)
+        self.kind = kind
+        self.line_no = line_no
+        self.line_text = line_text
+        self.hint = hint
+        self._verdict = verdict
+        self.context = list(context)
+        # True when `lenient=True` would get the file open anyway.  The GUI
+        # offers it as a button; anything else would be a dead end for a user
+        # who just wants to look at a file with one bad line in it.
+        self.retry_lenient = retry_lenient
+        self.traceback_text = traceback_text
+        super().__init__(self.report())
+
+    @property
+    def verdict(self) -> str:
+        return self._verdict or _VERDICT.get(self.kind, _VERDICT[FAULT_FILE])
+
+    def report(self) -> str:
+        rows = [("Path", self.path), ("Problem", self.what)]
+        if self.line_no is not None:
+            where = f"line {self.line_no}"
+            if self.line_text:
+                where += f":  {_clip(self.line_text)}"
+            rows.append(("Where", where))
+        rows.append(("Verdict", self.verdict))
+        if self.hint:
+            rows.append(("Try", self.hint))
+        w = max(len(k) for k, _ in rows)
+        out = [f"Cannot read {Path(self.path).name}"]
+        for key, value in rows:
+            out.append(textwrap.fill(
+                str(value), width=88,
+                initial_indent=f"  {key:<{w}} : ",
+                subsequent_indent=" " * (w + 5)))
+        if self.context:
+            out.append("")
+            out.extend(self.context)
+        if self.traceback_text:
+            out.append("")
+            out.append(self.traceback_text.rstrip())
+        return "\n".join(out)
+
+
 @dataclass
 class TouchstoneData:
     nports: int
@@ -314,15 +427,162 @@ class TouchstoneData:
     port_names: list[str]        # one per port; "" if none
     source_path: str
     parser_warnings: list[str] = field(default_factory=list)
+    # `parser_warnings` means "I had to guess, or I threw something away".
+    # `data_notes` means "the file is fine; here is what is in it that you want
+    # to know before reading the numbers" -- a DC point, |S| > 1, an irregular
+    # sweep.  Keeping the two apart is also what keeps every new descriptive
+    # check clear of tests/fixtures/golden_legacy.npz, which pins
+    # parser_warnings element-for-element.
+    data_notes: list[str] = field(default_factory=list)
+    freq_unit: str = "HZ"        # as declared in the option line
+    param_type: str = "S"
+    data_format: str = "MA"
+    option_line: str = ""        # normalised effective option line
+    freq_spacing: str = ""       # 'linear, step 25 MHz' / 'logarithmic' / ...
+    s_max: float = float("nan")  # max |S| over the whole file
+
+    # ------------------------------------------------------------- reporting
+
+    def freq_span_str(self) -> str:
+        """'1 MHz - 10 GHz', '1 GHz (single point)', '(no points)'."""
+        n = len(self.freqs)
+        if n == 0:
+            return "(no points)"
+        lo = format_freq(float(self.freqs[0]))
+        if n == 1:
+            return f"{lo} (single point)"
+        return f"{lo} - {format_freq(float(self.freqs[-1]))}"
+
+    def summary_lines(self) -> list[str]:
+        """
+        The block printed on load by both the GUI and the CLI.
+
+        Leads with the frequency span because that is the first thing anyone
+        checks against what they simulated, and it is the one property the
+        file list used to omit entirely.
+        """
+        plural = "" if self.nports == 1 else "s"
+        out = [
+            f"{Path(self.source_path).name}",
+            f"  {self.nports} port{plural}, {len(self.freqs)} points, "
+            f"Z0 = {self.z0:g}Ω, read as '# {self.option_line}'",
+        ]
+        span = f"  Frequency: {self.freq_span_str()}"
+        if self.freq_spacing:
+            span += f"  ({self.freq_spacing})"
+        out.append(span)
+        if math.isfinite(self.s_max):
+            out.append(f"  max |S| = {self.s_max:.4g}")
+        out.extend(f"  WARN: {w}" for w in self.parser_warnings)
+        out.extend(f"  Note: {n}" for n in self.data_notes)
+        return out
+
+    def summary(self) -> str:
+        return "\n".join(self.summary_lines())
 
 
 _PORT_NAME_RE = re.compile(r"!\s*[Pp]ort\s*\[?(\d+)\]?\s*[=:]\s*(.+?)\s*$")
 
+# A data line starting with '[' is a Touchstone 2.0 keyword: [Version],
+# [Number of Ports], [Network Data], [End], ...  v2 is a different grammar, not
+# a superset -- read as v1 the keyword words are skipped as unparseable tokens
+# and the numbers that follow them ('[Number of Ports] 4') are injected into
+# the data stream, shifting every later value by one slot.  Refused in lenient
+# mode too, because "skip the bad tokens" is precisely the wrong answer here.
+_V2_KEYWORD_RE = re.compile(r"^\[\s*[A-Za-z][A-Za-z0-9 _]*\s*\]")
 
-def _decode_options(opt_line: str) -> tuple[str, str, str, float]:
-    """Parse an option line body -> (freq_unit, ptype, fmt, z0)."""
+# '.s4p' -> 4.  Only the sniffer's tie-break/fallback and the diagnosis pass
+# use this.  The parser stays content-based on purpose (EDA tools rename these
+# files constantly), but when the content is ambiguous or exceeds
+# MAX_SNIFF_NPORTS, the name is the best evidence left about what the file was
+# meant to be -- and reporting "the name says 4 ports" is far more use than
+# "could not infer port count".
+_SNP_EXT_RE = re.compile(r"^\.s(\d+)p$", re.IGNORECASE)
+
+# Head-of-file signatures.  Every one of these used to read as a wall of
+# "Skipping unparseable token" warnings followed by a confusing token-count
+# error; a compressed or binary file deserves to be named as such.
+_BOMS = (
+    (codecs.BOM_UTF8, "utf-8-sig"),
+    (codecs.BOM_UTF32_LE, "utf-32"),
+    (codecs.BOM_UTF32_BE, "utf-32"),
+    (codecs.BOM_UTF16_LE, "utf-16"),
+    (codecs.BOM_UTF16_BE, "utf-16"),
+)
+_BINARY_MAGIC = (
+    (b"\x1f\x8b", "gzip-compressed", "gunzip it first"),
+    (b"PK\x03\x04", "a zip archive", "unzip it and load the .sNp inside"),
+    (b"BZh", "bzip2-compressed", "bunzip2 it first"),
+    (b"\xfd7zXZ", "xz-compressed", "unxz it first"),
+    (b"%PDF", "a PDF", "this is not a Touchstone file"),
+    (b"\x89PNG", "a PNG image", "this is not a Touchstone file"),
+)
+
+
+def _sniff_encoding(path: Path) -> str:
+    """
+    Decide the text encoding, or refuse the file as binary.
+
+    Opening everything as UTF-8 with errors='replace' (what this parser did)
+    turns a UTF-16 export -- which some EDA tools do write -- into a wall of
+    replacement characters, i.e. thousands of skipped tokens and a garbage
+    read.  A UTF-8 BOM was just as bad in a subtler way: the BOM glues itself
+    to the leading '#', the option line stops being recognised, and the file
+    silently parses as '# GHZ S MA R 50' no matter what it actually says.
+    """
+    with open(path, "rb") as fh:
+        head = fh.read(ENCODING_SNIFF_BYTES)
+    if not head:
+        raise TouchstoneParseError(
+            "the file is empty (0 bytes)", path=path, kind=FAULT_FILE,
+            verdict="THE FILE is empty; there is nothing to read.",
+            hint="check that the export actually wrote something")
+    for magic, what, fix in _BINARY_MAGIC:
+        if head.startswith(magic):
+            raise TouchstoneParseError(
+                f"the file is {what}, not text", path=path,
+                kind=FAULT_UNSUPPORTED, hint=fix)
+    for bom, enc in _BOMS:
+        if head.startswith(bom):
+            return enc
+    if b"\x00" in head:
+        # UTF-16 with no BOM writes ASCII as 'x\x00' (LE) or '\x00x' (BE).
+        half = max(1, len(head) // 2)
+        if head[1::2].count(0) > 0.8 * half:
+            return "utf-16-le"
+        if head[0::2].count(0) > 0.8 * half:
+            return "utf-16-be"
+        raise TouchstoneParseError(
+            "the file contains NUL bytes, so it is binary, not text",
+            path=path, kind=FAULT_FILE,
+            hint="check that this is the file you meant, and that the export "
+                 "completed")
+    return "utf-8"
+
+
+def _ext_nports(path: Path) -> int | None:
+    """Port count implied by a '.sNp' extension, or None."""
+    m = _SNP_EXT_RE.match(path.suffix)
+    if not m:
+        return None
+    try:
+        n = int(m.group(1))
+    except ValueError:
+        return None
+    return n if n >= 1 else None
+
+
+def _decode_options(opt_line: str) -> tuple[str, str, str, float, list[str]]:
+    """
+    Parse an option line body -> (freq_unit, ptype, fmt, z0, unknown_tokens).
+
+    Unrecognised tokens are returned rather than dropped.  A misspelt format
+    keyword used to fall back to the MA default in silence, which reads RI data
+    as magnitude/angle and yields a well-formed, completely wrong file.
+    """
     tokens = opt_line.upper().split()
     freq_unit, ptype, fmt, z0 = "GHZ", "S", "MA", DEFAULT_Z0
+    unknown: list[str] = []
     i = 0
     while i < len(tokens):
         t = tokens[i]
@@ -337,17 +597,34 @@ def _decode_options(opt_line: str) -> tuple[str, str, str, float]:
                 z0 = float(tokens[i + 1])
                 i += 1
             except ValueError:
-                pass
+                unknown.append(tokens[i + 1])
+                i += 1
+        else:
+            unknown.append(t)
         i += 1
-    return freq_unit, ptype, fmt, z0
+    return freq_unit, ptype, fmt, z0, unknown
 
 
 def parse_touchstone(filepath: str | Path,
-                     force_nports: int | None = None) -> TouchstoneData:
+                     force_nports: int | None = None,
+                     *, lenient: bool = False) -> TouchstoneData:
     """
     Parse a Touchstone file regardless of extension.
 
     Port count is inferred from file content unless `force_nports` is given.
+
+    Every failure comes out as a `TouchstoneParseError` (a ValueError) whose
+    report names a line, a verdict and a next step; nothing escapes as a bare
+    traceback, and an unexpected internal failure says so instead of looking
+    like a bad file.
+
+    `lenient=True` restores the historical behaviour for a data line that does
+    not parse: drop the offending token and carry on.  It is NOT the default,
+    because Touchstone is a positional stream -- dropping one number shifts
+    every number after it by one slot, so the frequency column starts reading
+    S-parameters and the file either fails a divisibility check with a
+    meaningless message or, worse, still divides evenly and yields a plausible
+    wrong answer.  Refusing is the only response that cannot be silently wrong.
 
     Memory: the file is streamed line by line and the numbers land in an
     `array.array('d')` (8 bytes per value) fed by a small bounded staging list;
@@ -363,10 +640,46 @@ def parse_touchstone(filepath: str | Path,
     bad token.  Don't switch to it.
     """
     path = Path(filepath)
+    try:
+        return _parse_touchstone(path, force_nports, lenient)
+    except TouchstoneParseError:
+        raise
+    except MemoryError:
+        raise TouchstoneParseError(
+            "ran out of memory while reading the file", path=path,
+            kind=FAULT_ACCESS,
+            hint="shrink it first with reduce_snp.py on a machine that can "
+                 "hold it, or close other applications") from None
+    except OSError as e:
+        raise TouchstoneParseError(
+            f"cannot open the file ({e.strerror or e})", path=path,
+            kind=FAULT_ACCESS,
+            hint="check the path, and that the file is not open in another "
+                 "tool that locks it") from e
+    except Exception as e:
+        # Anything that reaches here is unexpected.  Run the diagnosis pass
+        # before blaming either side: if it finds a real defect in the file,
+        # say so; if the file looks consistent, this is our bug and the report
+        # says that in as many words, with a traceback to paste into the issue.
+        diag = _safe_diagnose(path, force_nports)
+        kind = (diag.kind if diag.kind in (FAULT_FILE, FAULT_UNSUPPORTED)
+                else FAULT_INTERNAL)
+        raise TouchstoneParseError(
+            f"unexpected {type(e).__name__} inside the parser: {e}",
+            path=path, kind=kind, context=diag.lines,
+            traceback_text=traceback.format_exc()) from e
 
+
+def _parse_touchstone(path: Path, force_nports: int | None,
+                      lenient: bool) -> TouchstoneData:
     opt_line: str | None = None
+    opt_line_no: int | None = None
+    extra_opt_lines: list[int] = []
     port_names: dict[int, str] = {}
     warnings_out: list[str] = []
+    # Error-path state for _recover_data_line: examples kept, total skipped,
+    # and the one-shot notes about separator / exponent spellings.
+    rec_state: dict = {"examples": [], "skipped": 0, "notes": []}
 
     store = array.array("d")
     staging: list[float] = []
@@ -377,8 +690,10 @@ def parse_touchstone(filepath: str | Path,
     # `for raw in fh` with no per-line splitlines() cost.
     pending: list[str] = []
 
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+    encoding = _sniff_encoding(path)
+    with open(path, "r", encoding=encoding, errors="replace") as fh:
         line_iter = iter(fh)
+        line_no = 0
         while True:
             if pending:
                 line = pending.pop().strip()
@@ -386,6 +701,7 @@ def parse_touchstone(filepath: str | Path,
                 raw = next(line_iter, None)
                 if raw is None:
                     break
+                line_no += 1
                 line = raw.strip()
             if not line:
                 continue
@@ -406,6 +722,9 @@ def parse_touchstone(filepath: str | Path,
                 if line.startswith("#"):
                     if opt_line is None:
                         opt_line = line[1:].strip()
+                        opt_line_no = line_no
+                    else:
+                        extra_opt_lines.append(line_no)
                     continue
                 m = _PORT_NAME_RE.match(line)
                 if m:
@@ -419,15 +738,12 @@ def parse_touchstone(filepath: str | Path,
             toks = line.split()
             try:
                 # The comprehension is fully evaluated before anything is
-                # staged, so the token-by-token retry below cannot double-count
-                # the values that preceded the bad token.
+                # staged, so the recovery path below cannot double-count the
+                # values that preceded the bad token.
                 stage([float(t) for t in toks])
             except ValueError:
-                for tok in toks:
-                    try:
-                        staging.append(float(tok))
-                    except ValueError:
-                        warnings_out.append(f"Skipping unparseable token '{tok}'")
+                stage(_recover_data_line(line, toks, path, line_no,
+                                         lenient, rec_state))
             if len(staging) >= PARSE_FLUSH_VALUES:
                 store.fromlist(staging)
                 del staging[:]
@@ -439,34 +755,102 @@ def parse_touchstone(filepath: str | Path,
     # `store` must not be appended to past this point.
     data_values = np.frombuffer(store, dtype=np.float64)
 
+    warnings_out.extend(rec_state["notes"])
+    if rec_state["skipped"]:
+        warnings_out.extend(rec_state["examples"])
+        left = rec_state["skipped"] - len(rec_state["examples"])
+        if left > 0:
+            warnings_out.append(f"... and {left} more unparseable tokens skipped.")
+        warnings_out.append(
+            "Every skipped token shifts all following values by one slot: "
+            "treat this result as suspect until you have checked the file.")
+    if extra_opt_lines:
+        shown = ", ".join(str(n) for n in extra_opt_lines[:PARSE_WARN_CAP])
+        more = "" if len(extra_opt_lines) <= PARSE_WARN_CAP else ", ..."
+        warnings_out.append(
+            f"Touchstone v1 allows one option line; the one at line "
+            f"{opt_line_no} was used and {len(extra_opt_lines)} later "
+            f"'#' line(s) (line {shown}{more}) were ignored.")
+
     if opt_line is None:
         warnings_out.append("No option line ('#') found; assuming '# GHZ S MA R 50'")
         freq_unit, ptype, fmt, z0 = "GHZ", "S", "MA", DEFAULT_Z0
     else:
-        freq_unit, ptype, fmt, z0 = _decode_options(opt_line)
+        freq_unit, ptype, fmt, z0, unknown_opts = _decode_options(opt_line)
+        if unknown_opts:
+            warnings_out.append(
+                f"Option line token(s) {', '.join(repr(t) for t in unknown_opts)} "
+                f"not recognised and ignored; the file is being read as "
+                f"'# {freq_unit} {ptype} {fmt} R {z0:g}'. Expected a frequency "
+                f"unit (HZ/KHZ/MHZ/GHZ/THZ), S/Y/Z/H/G, RI/MA/DB, or 'R <z0>'.")
 
     if ptype != "S":
         warnings_out.append(
             f"Parameter type '{ptype}' is not S; treating data as S-parameters anyway."
         )
 
-    nports = force_nports if force_nports is not None else _sniff_nports(data_values, warnings_out)
-    record_size = 1 + 2 * nports * nports
+    if fmt not in ("RI", "MA", "DB"):
+        raise TouchstoneParseError(
+            f"the option line declares data format '{fmt}', which is not one "
+            f"of RI / MA / DB", path=path, kind=FAULT_FILE,
+            line_no=opt_line_no, line_text=f"# {opt_line}",
+            hint="fix the option line, or delete it to fall back on "
+                 "'# GHZ S MA R 50'")
+
     n_values = int(data_values.size)
+    if n_values == 0:
+        raise TouchstoneParseError(
+            "the file has no numeric data at all -- every line is blank, a "
+            "comment, or the option line", path=path, kind=FAULT_FILE,
+            context=_safe_diagnose(path, force_nports).lines,
+            hint="check that the export wrote its data section, and that this "
+                 "is not just a header file")
+
+    if force_nports is not None:
+        nports = int(force_nports)
+        if nports < 1:
+            raise TouchstoneParseError(
+                f"forced port count {force_nports} is not >= 1", path=path,
+                kind=FAULT_ACCESS, hint="drop the setting to let the port "
+                                        "count be detected from the content")
+    else:
+        try:
+            nports = _sniff_nports(data_values, warnings_out, path)
+        except ValueError as e:
+            # "Could not infer port count" is true but usually not the point:
+            # the commonest cause by far is a file truncated mid-record, and
+            # sending the user off to force a port count they already have
+            # right wastes their afternoon.  The diagnosis pass has looked at
+            # the line numbers, so let it write the headline.
+            diag = _safe_diagnose(path, None)
+            raise TouchstoneParseError(
+                diag.headline or str(e), path=path,
+                kind=(diag.kind if diag.kind in (FAULT_FILE, FAULT_UNSUPPORTED,
+                                                 FAULT_ACCESS)
+                      else FAULT_FILE),
+                context=diag.lines,
+                hint=diag.hint or ("if you know the port count, force it "
+                                   "(--force-nports N on the CLI)")) from e
+
+    record_size = 1 + 2 * nports * nports
     if n_values % record_size != 0:
-        raise ValueError(
-            f"Token count {n_values} not divisible by record size "
-            f"{record_size} (for N={nports}); file likely corrupt or wrong N."
-        )
+        q, r = divmod(n_values, record_size)
+        src = ("forced" if force_nports is not None
+               else "detected from the content")
+        raise TouchstoneParseError(
+            f"the data does not divide into whole records: {n_values} numbers "
+            f"is {q} complete records of {record_size} plus {r} left over "
+            f"(N={nports}, {src})",
+            path=path, kind=FAULT_FILE,
+            context=_safe_diagnose(path, nports).lines,
+            hint="the file is usually truncated -- re-export it; if the port "
+                 "count above is wrong, force the right one instead")
 
     arr = data_values.reshape(-1, record_size)
     freqs_raw = arr[:, 0]
     # Stays a strided view: splitting the trailing axis of a row-contiguous
     # slice never needs a copy.
     body = arr[:, 1:].reshape(-1, nports, nports, 2)
-
-    if fmt not in ("RI", "MA", "DB"):
-        raise ValueError(f"Unknown data format: {fmt}")
 
     # Fill s.real / s.imag in place.  `body[..., 0] + 1j * body[..., 1]` is
     # shorter but allocates two full-size complex temporaries, which doubles
@@ -517,6 +901,11 @@ def parse_touchstone(filepath: str | Path,
 
     pn_list = [port_names.get(i + 1, "") for i in range(nports)]
 
+    notes: list[str] = []
+    spacing = _check_freq_axis(freqs, freq_unit, warnings_out, notes,
+                               forced=force_nports is not None)
+    s_max = _check_s_values(s, warnings_out, notes)
+
     return TouchstoneData(
         nports=nports,
         freqs=freqs,
@@ -525,14 +914,203 @@ def parse_touchstone(filepath: str | Path,
         port_names=pn_list,
         source_path=str(path),
         parser_warnings=warnings_out,
+        data_notes=notes,
+        freq_unit=freq_unit,
+        param_type=ptype,
+        data_format=fmt,
+        option_line=f"{freq_unit} {ptype} {fmt} R {z0:g}",
+        freq_spacing=spacing,
+        s_max=s_max,
     )
 
 
-def _sniff_nports(values: np.ndarray, warnings_out: list[str]) -> int:
-    """Find smallest N such that token-count fits and freqs are strictly increasing."""
+def _recover_data_line(line: str, toks: list[str], path: Path, line_no: int,
+                       lenient: bool, state: dict) -> list[float]:
+    """
+    Error path for a data line that did not parse as plain floats.
+
+    Never runs on a healthy file, so it can afford to be thorough: it names
+    Touchstone 2.0 keyword lines for what they are, retries the two separator /
+    exponent spellings real tools emit, and only then gives up.
+
+    Returns the line's values.  Raises unless `lenient`, in which case it falls
+    back to the historical token-by-token skip -- see parse_touchstone on why
+    that is not the default.
+    """
+    if _V2_KEYWORD_RE.match(line):
+        raise TouchstoneParseError(
+            "this is a Touchstone 2.0 file (keyword lines in [brackets]); "
+            "this tool reads Touchstone 1.x", path=path,
+            kind=FAULT_UNSUPPORTED, line_no=line_no, line_text=line,
+            hint="re-export as Touchstone 1.x (.sNp). Reading a v2 file as v1 "
+                 "would inject the keywords' own numbers into the data, so "
+                 "skipping the bad tokens is not an option here")
+
+    # Commas or semicolons used as separators ('1e9, 0.5, -0.5').
+    if "," in line or ";" in line:
+        vals = _floats_or_none(line.replace(",", " ").replace(";", " ").split())
+        if vals is not None:
+            if "comma" not in state:
+                state["comma"] = True
+                state["notes"].append(
+                    "Commas/semicolons in data lines were treated as value "
+                    "separators.")
+            return vals
+
+    # Fortran-style D exponents ('1.0D+09'), still emitted by older tools.
+    if "d" in line or "D" in line:
+        vals = _floats_or_none([t.replace("D", "E").replace("d", "e")
+                                for t in toks])
+        if vals is not None:
+            if "dexp" not in state:
+                state["dexp"] = True
+                state["notes"].append(
+                    "Fortran-style 'D' exponents were read as 'E' exponents.")
+            return vals
+
+    bad = next((t for t in toks if _to_float(t) is None), toks[0] if toks else "")
+    if not lenient:
+        raise TouchstoneParseError(
+            f"'{_clip(bad, 30)}' is not a number, and a Touchstone data line "
+            f"is nothing but numbers", path=path, kind=FAULT_FILE,
+            line_no=line_no, line_text=line, retry_lenient=True,
+            hint="if the rest of the file is known good, load it again with "
+                 "'skip bad values' (--lenient) -- but check the result: "
+                 "dropping one number shifts every number after it by one slot")
+
+    out: list[float] = []
+    for tok in toks:
+        val = _to_float(tok)
+        if val is None:
+            state["skipped"] += 1
+            if len(state["examples"]) < PARSE_WARN_CAP:
+                state["examples"].append(
+                    f"Skipping unparseable token '{_clip(tok, 30)}' "
+                    f"(line {line_no})")
+        else:
+            out.append(val)
+    return out
+
+
+def _to_float(token: str) -> float | None:
+    try:
+        return float(token)
+    except ValueError:
+        return None
+
+
+def _floats_or_none(tokens: Sequence[str]) -> list[float] | None:
+    """All-or-nothing float conversion: a partial success is not a success."""
+    out = []
+    for t in tokens:
+        try:
+            out.append(float(t))
+        except ValueError:
+            return None
+    return out
+
+
+def _check_freq_axis(freqs: np.ndarray, freq_unit: str,
+                     warnings_out: list[str], notes: list[str],
+                     forced: bool) -> str:
+    """
+    Describe the frequency axis and flag what will bite downstream.
+
+    Returns the spacing description for the file summary.  The monotonicity
+    check matters only when the port count was forced -- when it is sniffed,
+    strictly-increasing frequencies are one of the two conditions the sniffer
+    selects on, so it cannot fail here.  A forced port count skips that
+    entirely, and a wrong one shows up first as a frequency column that jumps
+    around.
+    """
+    n = freqs.size
+    if n == 0:
+        return ""
+    if n == 1:
+        spacing = "single point"
+    else:
+        d = np.diff(freqs)
+        bad = int(np.count_nonzero(d <= 0))
+        if bad:
+            first = int(np.argmax(d <= 0))
+            warnings_out.append(
+                f"Frequencies are not strictly increasing: point {first + 2} "
+                f"({format_freq(float(freqs[first + 1]))}) does not exceed "
+                f"point {first + 1} ({format_freq(float(freqs[first]))}), and "
+                f"{bad} step(s) in total go backwards or repeat."
+                + (" A forced port count that is wrong looks exactly like "
+                   "this." if forced else ""))
+            spacing = "NOT monotonic"
+        elif np.allclose(d, d[0], rtol=1e-6, atol=0.0):
+            spacing = f"linear, step {format_freq(float(d[0]))}"
+        elif freqs[0] > 0 and np.allclose(freqs[1:] / freqs[:-1],
+                                          freqs[1] / freqs[0], rtol=1e-6):
+            per_dec = math.log(10.0) / math.log(float(freqs[1] / freqs[0]))
+            spacing = f"logarithmic, {per_dec:.0f} points/decade"
+        else:
+            spacing = "irregular spacing"
+
+    if freqs[0] == 0.0:
+        notes.append(
+            "The sweep starts at DC (0 Hz). L = Im(Z)/ω, C = -1/(ω·Im(Z)) and "
+            "Q are undefined at that point and will read as nan/inf; pick any "
+            "other frequency for the R/L/C extraction.")
+    return spacing
+
+
+def _check_s_values(s: np.ndarray, warnings_out: list[str],
+                    notes: list[str]) -> float:
+    """
+    max |S| over the file, plus a flag for the two ways S data goes wrong.
+
+    Chunked over frequency for the same reason as the linear algebra: np.abs
+    on a whole (5000, 153, 153) array allocates a ~1 GB float temporary.
+    """
+    if s.size == 0:
+        return float("nan")
+    batch = _freq_batch(s.shape[-1])
+    s_max = 0.0
+    n_bad = 0
+    for start in range(0, s.shape[0], batch):
+        chunk = s[start:start + batch]
+        mag = np.abs(chunk)
+        finite = np.isfinite(mag)
+        if not finite.all():
+            n_bad += int(finite.size - np.count_nonzero(finite))
+            mag = np.where(finite, mag, 0.0)
+        if mag.size:
+            s_max = max(s_max, float(mag.max()))
+    if n_bad:
+        warnings_out.append(
+            f"{n_bad} S-parameter entries are nan or inf; every result at "
+            f"those frequencies will be nan.")
+    if s_max > 1.05:
+        notes.append(
+            f"max |S| = {s_max:.4g} > 1. That is correct for an active or "
+            f"gain structure, but on a passive one it usually means the "
+            f"option line's format (RI / MA / DB) does not match how the "
+            f"numbers were actually written.")
+    return s_max
+
+
+def _sniff_nports(values: np.ndarray, warnings_out: list[str],
+                  path: Path | None = None) -> int:
+    """
+    Find the smallest N whose record size fits and whose frequencies increase.
+
+    Content first, always: EDA tools rename these files constantly, so the
+    extension is not evidence of anything on its own.  It IS the tiebreak when
+    the content admits several answers (picking the smallest silently is how a
+    2-port file gets read as a 1-port one), and the last resort when the
+    content admits none -- which, since the loop applies exactly the same two
+    tests to every N up to MAX_SNIFF_NPORTS, can only mean the port count is
+    above that cap.  A package export with 300+ ports is the normal case this
+    tool exists for, and "could not infer port count" was a dead end for it.
+    """
     T = int(values.size)
     if T == 0:
         raise ValueError("No data tokens found in file")
+    ext_n = _ext_nports(path) if path is not None else None
     candidates: list[int] = []
     for n in range(1, MAX_SNIFF_NPORTS + 1):
         rec = 1 + 2 * n * n
@@ -545,15 +1123,360 @@ def _sniff_nports(values: np.ndarray, warnings_out: list[str]) -> int:
             if len(candidates) >= 3:
                 break
     if not candidates:
+        if ext_n is not None and _nports_fits(values, ext_n):
+            warnings_out.append(
+                f"Port count could not be detected from the content "
+                f"(nothing up to N={MAX_SNIFF_NPORTS} fits {T} numbers); the "
+                f"file name says N={ext_n}, which does fit, so that is what "
+                f"was used.")
+            return ext_n
         raise ValueError(
             f"Could not infer port count from {T} tokens. "
             "Pass force_nports if you know it."
         )
     if len(candidates) > 1:
+        if ext_n in candidates:
+            warnings_out.append(
+                f"Port count ambiguous: candidates {candidates}. The file "
+                f"name says N={ext_n}, which is one of them, so that is what "
+                f"was used.")
+            return ext_n
         warnings_out.append(
             f"Port count ambiguous: candidates {candidates}. Using N={candidates[0]}."
         )
     return candidates[0]
+
+
+def _nports_fits(values: np.ndarray, n: int) -> bool:
+    """The two tests _sniff_nports selects on, for one candidate N."""
+    rec = 1 + 2 * n * n
+    if int(values.size) % rec != 0:
+        return False
+    freqs = values[0::rec]
+    return freqs.size < 2 or bool(np.all(np.diff(freqs) > 0))
+
+
+# ============================================================================
+# File diagnosis -- the slow second pass, run only when something is wrong
+# ============================================================================
+#
+# The fast path above is written for a multi-GB file: it streams, it stages
+# into an array('d'), it keeps no per-line state.  That is exactly why its
+# errors could only ever be global ("token count 8241 not divisible by 33"),
+# which tells a user nothing about whether their file is truncated, their port
+# count is wrong, or this tool is broken.
+#
+# So the bookkeeping lives here instead, in a second pass that runs ONLY after
+# a failure (or when the user asks for it).  It can afford a line number per
+# data line and a token count per line, and it is what turns "not divisible"
+# into "the file ends mid-record at line 4831".  Nothing here is on the hot
+# path; nothing here may raise.
+
+@dataclass
+class _Diagnosis:
+    kind: str
+    lines: list[str]
+    # One-line statement of what is actually wrong, for a caller that has a
+    # worse headline of its own.  The sniffer, for instance, can only ever
+    # report "could not infer port count" -- true, but on a truncated file it
+    # points the user at the wrong thing entirely.
+    headline: str | None = None
+    hint: str | None = None
+
+
+@dataclass
+class _LineScan:
+    encoding: str = "utf-8"
+    n_lines: int = 0
+    n_comment: int = 0
+    n_data: int = 0
+    option_lines: list[tuple[int, str]] = field(default_factory=list)
+    v2_keywords: list[tuple[int, str]] = field(default_factory=list)
+    bad_tokens: list[tuple[int, str, str]] = field(default_factory=list)
+    n_bad: int = 0
+    counts: dict[int, int] = field(default_factory=dict)
+    first_of_count: dict[int, int] = field(default_factory=dict)
+    values: array.array = field(default_factory=lambda: array.array("d"))
+    # Parallel arrays: value offset at the start of each data line, and that
+    # line's number.  bisect over `starts` maps a value index back to a line.
+    starts: array.array = field(default_factory=lambda: array.array("q"))
+    dlines: array.array = field(default_factory=lambda: array.array("q"))
+    truncated: bool = False
+
+
+def _scan_lines(path: Path, encoding: str) -> _LineScan:
+    """Line-by-line scan with the bookkeeping the fast path cannot afford."""
+    scan = _LineScan(encoding=encoding)
+    pending: list[str] = []
+    with open(path, "r", encoding=encoding, errors="replace") as fh:
+        line_iter = iter(fh)
+        line_no = 0
+        while True:
+            if pending:
+                line = pending.pop().strip()
+            else:
+                raw = next(line_iter, None)
+                if raw is None:
+                    break
+                line_no += 1
+                scan.n_lines += 1
+                line = raw.strip()
+            if not line:
+                continue
+            # Same exotic-line-break rule as the parser, so the report
+            # describes what the parser actually saw.
+            if line[0] in "#!":
+                head, *tail = line.splitlines()
+                if tail:
+                    pending.extend(reversed(tail))
+                    line = head
+                scan.n_comment += 1
+                if line.startswith("#"):
+                    scan.option_lines.append((line_no, line))
+                continue
+            if "!" in line:
+                line, _, comment = line.partition("!")
+                rest = comment.splitlines()
+                if len(rest) > 1:
+                    pending.extend(reversed(rest[1:]))
+                line = line.strip()
+                if not line:
+                    continue
+            if _V2_KEYWORD_RE.match(line):
+                scan.v2_keywords.append((line_no, line))
+                continue
+            toks = line.split()
+            if not toks:
+                continue
+            scan.n_data += 1
+            if len(scan.dlines) < DIAGNOSE_MAX_LINES:
+                scan.starts.append(len(scan.values))
+                scan.dlines.append(line_no)
+            else:
+                scan.truncated = True
+            good = 0
+            for tok in toks:
+                val = _to_float(tok)
+                if val is None:
+                    scan.n_bad += 1
+                    if len(scan.bad_tokens) < PARSE_WARN_CAP:
+                        scan.bad_tokens.append((line_no, tok, line))
+                else:
+                    scan.values.append(val)
+                    good += 1
+            scan.counts[good] = scan.counts.get(good, 0) + 1
+            scan.first_of_count.setdefault(good, line_no)
+    return scan
+
+
+def _value_line(scan: _LineScan, index: int) -> int | None:
+    """Physical line number holding value `index`, or None if not recorded."""
+    if not scan.dlines or index < 0:
+        return None
+    i = bisect.bisect_right(scan.starts, index) - 1
+    if i < 0 or i >= len(scan.dlines):
+        return None
+    return int(scan.dlines[i])
+
+
+def _nports_from_record(n_values: int) -> int | None:
+    """N such that 1 + 2N^2 == n_values, if that N is a whole number."""
+    if n_values < 3 or n_values % 2 != 1:
+        return None
+    sq = (n_values - 1) // 2
+    n = int(round(math.sqrt(sq)))
+    return n if n >= 1 and n * n == sq else None
+
+
+def _diag_candidate(scan: _LineScan, values: np.ndarray, n: int, source: str,
+                    out: list[str]) -> bool:
+    """Report how candidate port count `n` fits the data. True == consistent."""
+    rec = 1 + 2 * n * n
+    total = int(values.size)
+    q, r = divmod(total, rec)
+    head = f"  N={n} ({source}): {rec} numbers per record"
+    if r:
+        out.append(head)
+        out.append(f"      {total} numbers = {q} whole records + {r} left over")
+        line = _value_line(scan, q * rec)
+        if line is not None:
+            out.append(f"      the leftover starts at line {line} -- the file "
+                       f"ends mid-record there")
+        return False
+    freqs = values[0::rec] if rec <= total else values[:0]
+    if freqs.size >= 2:
+        d = np.diff(freqs)
+        bad = np.nonzero(d <= 0)[0]
+        if bad.size:
+            k = int(bad[0]) + 1
+            line = _value_line(scan, k * rec)
+            where = f" (line {line})" if line is not None else ""
+            out.append(head)
+            out.append(f"      {q} whole records, but record {k + 1}{where} "
+                       f"has frequency {freqs[k]:.6g}, which does not exceed "
+                       f"record {k}'s {freqs[k - 1]:.6g}")
+            return False
+    out.append(f"{head} -> {q} whole records, frequencies strictly "
+               f"increasing: CONSISTENT")
+    return True
+
+
+def _diagnose(path: Path, force_nports: int | None = None) -> _Diagnosis:
+    out = [f"File check: {path}"]
+    try:
+        out.append(f"  size       : {path.stat().st_size:,} bytes")
+    except OSError as e:
+        return _Diagnosis(FAULT_ACCESS, out + [f"  cannot stat the file: {e}"])
+    try:
+        encoding = _sniff_encoding(path)
+    except TouchstoneParseError as e:
+        return _Diagnosis(e.kind, out + [f"  encoding   : {e.what}"])
+    out.append(f"  encoding   : {encoding}")
+
+    scan = _scan_lines(path, encoding)
+    out.append(f"  lines      : {scan.n_lines} total, {scan.n_comment} "
+               f"comment/option, {scan.n_data} data")
+    if scan.option_lines:
+        ln, text = scan.option_lines[0]
+        out.append(f"  option line: line {ln}: {_clip(text)}")
+        if len(scan.option_lines) > 1:
+            out.append(f"               plus {len(scan.option_lines) - 1} "
+                       f"later '#' line(s), which v1 ignores")
+    else:
+        out.append("  option line: MISSING -- '# GHZ S MA R 50' assumed")
+
+    if scan.counts:
+        ranked = sorted(scan.counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        modal, how_many = ranked[0]
+        out.append(f"  data lines : {how_many} line(s) carry {modal} numbers")
+        for cnt, lines_with in ranked[1:1 + PARSE_WARN_CAP]:
+            out.append(f"               {lines_with} line(s) carry {cnt} "
+                       f"(first at line {scan.first_of_count.get(cnt, 0)})")
+    if scan.truncated:
+        out.append(f"  (line numbers past the first {DIAGNOSE_MAX_LINES} data "
+                   f"lines were not recorded)")
+
+    for ln, text in scan.v2_keywords[:PARSE_WARN_CAP]:
+        out.append(f"  v2 keyword : line {ln}: {_clip(text)}")
+    for ln, tok, text in scan.bad_tokens:
+        out.append(f"  not a number: line {ln}: '{_clip(tok, 30)}' in "
+                   f"{_clip(text, 56)}")
+    if scan.n_bad > len(scan.bad_tokens):
+        out.append(f"                ... and {scan.n_bad - len(scan.bad_tokens)} "
+                   f"more")
+
+    total = len(scan.values)
+    out.append(f"  numbers    : {total}")
+
+    candidates: list[tuple[int, str]] = []
+
+    def _add(n: int | None, source: str) -> None:
+        if n and all(n != c for c, _ in candidates):
+            candidates.append((n, source))
+
+    _add(force_nports, "forced")
+    _add(_ext_nports(path), f"the file name '{path.suffix}'")
+    if scan.counts:
+        modal = max(scan.counts.items(), key=lambda kv: kv[1])[0]
+        _add(_nports_from_record(modal), "one record per line")
+    values = (np.frombuffer(scan.values, dtype=np.float64) if total
+              else np.zeros(0))
+    if total:
+        try:
+            _add(_sniff_nports(values, [], path), "content sniffing")
+        except ValueError:
+            out.append(f"  port count : nothing from N=1 to "
+                       f"N={MAX_SNIFF_NPORTS} fits {total} numbers with an "
+                       f"increasing frequency column")
+
+    consistent = [n for n, src in candidates
+                  if _diag_candidate(scan, values, n, src, out)]
+
+    headline: str | None = None
+    hint: str | None = None
+    if scan.v2_keywords:
+        kind = FAULT_UNSUPPORTED
+        ln = scan.v2_keywords[0][0]
+        headline = (f"this is a Touchstone 2.0 file (keyword lines in "
+                    f"[brackets], first at line {ln}); this tool reads "
+                    f"Touchstone 1.x")
+        hint = "re-export as Touchstone 1.x (.sNp)"
+        out.append("  VERDICT    : this is a Touchstone 2.0 file (keyword "
+                   "lines in [brackets]). This tool reads Touchstone 1.x -- "
+                   "re-export as .sNp.")
+    elif scan.n_bad:
+        kind = FAULT_FILE
+        ln, tok, _text = scan.bad_tokens[0]
+        headline = (f"the data section contains non-numeric text "
+                    f"('{_clip(tok, 30)}' at line {ln}, {scan.n_bad} token(s) "
+                    f"in total)")
+        out.append("  VERDICT    : THE FILE contains non-numeric text in its "
+                   "data section, at the lines named above.")
+    elif total == 0:
+        kind = FAULT_FILE
+        headline = "the file has no numeric data at all"
+        out.append("  VERDICT    : THE FILE has no numeric data at all. If it "
+                   "is not empty, it is not a Touchstone file.")
+    elif consistent:
+        kind = FAULT_NONE
+        out.append(f"  VERDICT    : no inconsistency found -- the data reads "
+                   f"cleanly as N={consistent[0]}. If this tool still refuses "
+                   f"the file, or the numbers look wrong, that is a PARSER "
+                   f"problem, not a file problem: please report it with this "
+                   f"block.")
+    elif candidates:
+        kind = FAULT_FILE
+        n, src = candidates[0]
+        rec = 1 + 2 * n * n
+        left = total % rec
+        headline = (f"the data does not divide into whole records for any "
+                    f"plausible port count -- at N={n} ({src}) it is "
+                    f"{total // rec} records of {rec} plus {left} left over")
+        hint = ("the file is usually truncated -- re-export it; if the port "
+                "count above is wrong, force the right one instead")
+        out.append("  VERDICT    : THE FILE does not divide into whole "
+                   "records for any plausible port count -- see above. It is "
+                   "usually truncated.")
+    else:
+        kind = FAULT_FILE
+        headline = (f"the port count could not be established: no N from 1 to "
+                    f"{MAX_SNIFF_NPORTS} divides {total} numbers into whole "
+                    f"records with an increasing frequency column")
+        out.append("  VERDICT    : THE FILE's port count could not be "
+                   "established at all. Force it if you know it.")
+    return _Diagnosis(kind, out, headline, hint)
+
+
+def _safe_diagnose(path: Path, force_nports: int | None = None) -> _Diagnosis:
+    """_diagnose, guaranteed not to raise -- it runs inside error paths."""
+    try:
+        return _diagnose(path, force_nports)
+    except Exception as e:                                  # pragma: no cover
+        return _Diagnosis(FAULT_INTERNAL,
+                          [f"File check failed: {type(e).__name__}: {e}"])
+
+
+def check_touchstone(filepath: str | Path,
+                     force_nports: int | None = None) -> tuple[str, str]:
+    """
+    (fault_kind, report) for a Touchstone file.  Never raises.
+
+    `fault_kind` is FAULT_NONE when nothing is wrong with the file; the CLI
+    turns it into an exit code, which is what makes --diagnose usable from a
+    script.
+    """
+    diag = _safe_diagnose(Path(filepath), force_nports)
+    return diag.kind, "\n".join(diag.lines)
+
+
+def diagnose_touchstone(filepath: str | Path,
+                        force_nports: int | None = None) -> str:
+    """
+    Human-readable report on what a Touchstone file contains and whether it
+    hangs together.  Never raises; the last line is always a VERDICT naming
+    the file or this tool as the problem.
+    """
+    return check_touchstone(filepath, force_nports)[1]
 
 
 # ============================================================================
@@ -2418,3 +3341,15 @@ def format_si(value: float, unit: str = "", sig: int = 3) -> str:
     text = f"{scaled:.{sig}g}"
     suffix = pfx + unit
     return f"{text} {suffix}" if suffix else text
+
+
+def format_freq(value: float, sig: int = 3) -> str:
+    """'0 Hz', '1 MHz', '2.44 GHz' -- format_si with a Hz unit.
+
+    DC is special-cased so a sweep starting at zero reads '0 Hz' and not
+    '0.00 Hz'; it is the one frequency people read as a label rather than as a
+    measurement.
+    """
+    if value == 0.0:
+        return "0 Hz"
+    return format_si(value, "Hz", sig)

@@ -42,8 +42,11 @@ from pathlib import Path
 import numpy as np
 
 from pkg_rlc_core import (
+    FAULT_NONE,
     RECIPROCITY_WARN,
+    TouchstoneParseError,
     build_terminations_coupling,
+    check_touchstone,
     build_terminations_mode1,
     build_terminations_mode2,
     build_terminations_mode3,
@@ -114,6 +117,16 @@ def _make_arg_parser() -> argparse.ArgumentParser:
                         "(coupling mode: Re/Im of every Z_ij plus M and k)")
     p.add_argument("--force-nports", type=int, default=None,
                    help="Bypass content-based detection and force the port count")
+    p.add_argument("--diagnose", action="store_true",
+                   help="Report what the file contains and whether it hangs "
+                        "together (size, encoding, option line, sweep, record "
+                        "grid), then exit. Works on files that fail to load; "
+                        "needs no other flag")
+    p.add_argument("--lenient", action="store_true",
+                   help="Skip values that do not parse instead of refusing "
+                        "the file. Off by default: Touchstone is a positional "
+                        "stream, so a dropped value shifts every value after "
+                        "it. Check the result")
     return p
 
 
@@ -371,11 +384,18 @@ def _run_cli(args: argparse.Namespace) -> int:
         print("ERROR: --cli requires a file argument", file=sys.stderr)
         return 2
 
-    ts = parse_touchstone(args.file, force_nports=args.force_nports)
-    print(f"Loaded {ts.source_path}: N={ts.nports}, M={len(ts.freqs)}, "
-          f"Z0={ts.z0:g}Ω")
-    for w in ts.parser_warnings:
-        print(f"  WARN: {w}")
+    try:
+        ts = parse_touchstone(args.file, force_nports=args.force_nports,
+                              lenient=args.lenient)
+    except TouchstoneParseError as e:
+        # The report already names a line, a verdict and a next step; printing
+        # it beats the bare traceback this used to raise, which told nobody
+        # whether the file or this tool was at fault.
+        print(str(e), file=sys.stderr)
+        return 1
+    print(f"Loaded {ts.source_path}")
+    for line in ts.summary_lines()[1:]:
+        print(line)
     Y = s_to_y(ts.s, ts.z0)
 
     a = parse_port_range(args.porta)
@@ -538,6 +558,18 @@ def _run_cli(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = _make_arg_parser()
     args = parser.parse_args(argv)
+
+    if args.diagnose:
+        # Deliberately not gated on --cli: someone whose file will not open
+        # reaches for this first, and making them also remember --cli is a
+        # pointless second failure.
+        if not args.file:
+            print("ERROR: --diagnose needs a file argument", file=sys.stderr)
+            return 2
+        kind, report = check_touchstone(args.file,
+                                        force_nports=args.force_nports)
+        print(report)
+        return 0 if kind == FAULT_NONE else 1
 
     if args.cli:
         return _run_cli(args)

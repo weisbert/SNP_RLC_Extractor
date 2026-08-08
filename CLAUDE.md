@@ -10,7 +10,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 
 | File                    | Responsibility                                                                  |
 |-------------------------|---------------------------------------------------------------------------------|
-| `pkg_rlc_core.py`       | Touchstone parser, S<->Y, unified `TerminationSet` model + the Mode 5 DSL (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`), the connection-table row model (`MeasPortRow`, `ConnectionRow`, `rows_to_dsl_text`, `dsl_text_to_rows`, `build_terminations_rows`), `parse_mport_spec`, `resolve_meas_ports`, `compute_z_matrix` / `compute_z`, `extract_rlc_at_freq` / `extract_coupling_at_freq`, `fit_inductor` / `fit_capacitor` / `fit_auto`. |
+| `pkg_rlc_core.py`       | Touchstone parser (+ `TouchstoneParseError` / `diagnose_touchstone` / `check_touchstone`), S<->Y, unified `TerminationSet` model + the Mode 5 DSL (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`), the connection-table row model (`MeasPortRow`, `ConnectionRow`, `rows_to_dsl_text`, `dsl_text_to_rows`, `build_terminations_rows`), `parse_mport_spec`, `resolve_meas_ports`, `compute_z_matrix` / `compute_z`, `extract_rlc_at_freq` / `extract_coupling_at_freq`, `fit_inductor` / `fit_capacitor` / `fit_auto`. |
 | `pkg_rlc_plot.py`       | Matplotlib plot panel: multi-subplot grid over R/L/C/\|Z\|/Re/Im/Q/**k**, draggable freq marker, M / V / Delete keys, fullscreen window. Quantities that cannot be derived from one `(freqs, Z)` pair (today only `k`) arrive via the optional `Trace.aux` dict. |
 | `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), results pane. Re-exports the DSL helpers it no longer defines. |
 | `pkg_rlc_help.py`       | In-app Help window content (`HELP_TOPICS`, `HelpWindow`). One tab per mode + syntax + worked examples. |
@@ -18,7 +18,8 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `reduce_snp.py`         | **Standalone** CLI: shrinks a big `.sNp` to a few ports (KEEP / GND-short / open-or-matched elimination). Deliberately imports nothing from this repo — it gets copied to simulation servers on its own. |
 | `deploy.sh`             | **Top level on purpose.** Red-zone update entry point: `cd <install> && bash deploy.sh` auto-detects the uploaded tarball. The operator's cross-project convention is `<install>/deploy.sh` — do not move it back under `deploy/`. |
 | `deploy/`               | Rest of the air-gapped ("red zone") pipeline: `pack.ps1` (Windows, `git archive`), `doctor.sh` + `_env_check.py` (what can this box run?). No network, no pip, no venv on the far side. |
-| `tests/`                | `unittest`-based suite (334 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/test_parse_diagnostics.py` | The robust-reading work: what a file says about itself (span, sweep description, DC / \|S\|>1 notes) and what happens when it cannot be read. Every refusal test pins the **verdict** and the **line number**, not just "raises ValueError" — that would have passed before any of it existed. Plus the recovery cases (UTF-16, BOM, commas, `D` exponents, extension tiebreak) and the two GUI affordances. |
+| `tests/`                | `unittest`-based suite (384 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
 | `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see, and the reordering hazard that forces `_import_dsl_text`'s verbatim fallback. |
 | `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
 | `tests/test_mode5_editor.py` | Stage 3: the pure text<->rows import decision and both strip renderers, plus Tk-driven editor wiring, per-mode widget visibility, the text hatch, the CSV gate, wheel routing, and the LAYOUT numbers (`ismapped` / `reqwidth` / `xview` / `scrollregion` / `sashpos`) measured off a mapped window. |
@@ -44,6 +45,77 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 - **The parser must split comment / option lines on the exotic line breaks too.** `str.splitlines()` — what the parser used before it streamed the file — breaks on `  -     `; iterating a text-mode file object breaks only on `
 `. A header page-broken with a form feed would otherwise swallow the data record that follows it, silently dropping frequency points. Only `#`/`!` lines (and the tail of a mid-line `!` comment) need the check — every one of those characters is whitespace to `str.split()`, so data lines tokenise correctly either way. That is also why the hot path stays free of a per-line `splitlines()`.
 - **The RI fill normalises signed zeros.** `np.add(body[...,0], 0.0, out=s.real)` rather than a plain assignment: real EDA exports write `-0.000000e+00`, and the historical `body[...,0] + 1j*body[...,1]` turned those into `+0.0`. `assert_array_equal` cannot see the difference (`-0.0 == 0.0`), so the golden reference does not guard it — `tests/test_core.py:TestParserSignedZero` does. Measured cost of the fused add: +2%.
+### Reading files (robustness, diagnosis, refusal)
+
+- **A non-numeric token in a data line is a HARD ERROR, not a skipped token.**
+  The old parser dropped it and warned. Touchstone is a positional stream, so a
+  dropped value shifts every later value by one slot: the frequency column
+  starts reading S-parameters, and the file either fails the divisibility check
+  with a meaningless message or — worse — still divides evenly and yields a
+  plausible wrong answer. `lenient=True` (`--lenient`, and a button on the GUI
+  error dialog) restores the old behaviour for people who know what they are
+  doing; it is not the default and its warnings say the result is suspect.
+- **Every failure is a `TouchstoneParseError` carrying a `kind`.** FAULT_FILE /
+  FAULT_UNSUPPORTED / FAULT_ACCESS / FAULT_INTERNAL, rendered as a **verdict**
+  line. That is the whole point of the class: "is my file bad or is your tool
+  bad?" is the first question a parse failure has to answer. It subclasses
+  `ValueError` (what the parser raised before) and `str(e)` IS the full report,
+  so existing `except Exception as e: show(e)` call sites upgrade for free.
+  Nothing escapes `parse_touchstone` as a bare traceback — an unexpected
+  internal exception becomes FAULT_INTERNAL *with the diagnosis attached*, and
+  only after the diagnosis agrees the file is consistent.
+- **The bookkeeping for good error messages lives in a SECOND PASS, never on
+  the hot path.** `_diagnose` re-reads the file with a line number and token
+  count per data line and is what turns "token count 3603 not divisible by 9"
+  into "the file ends mid-record at line 408". It runs only on failure or when
+  the user asks (`Check File` / `--diagnose`), it must never raise
+  (`_safe_diagnose`), and its `headline` overrides the caller's when the caller
+  has a worse one — the sniffer can only ever say "could not infer port count",
+  which on a truncated file sends the user to force a port count that was never
+  wrong.
+- **`FAULT_NONE` means the diagnosis found nothing wrong**, and it is what
+  `--diagnose` turns into exit code 0. Do not fold it into FAULT_INTERNAL: the
+  parse path maps NONE -> INTERNAL itself, because "the file is fine and we
+  still failed" is our bug, but a standalone check needs to be able to say
+  "fine" without accusing anyone.
+- **`data_notes` is not `parser_warnings`.** Warnings mean "I guessed, or I
+  threw something away"; notes mean "the file is fine, here is what is in it"
+  (DC point, `max |S| > 1`, irregular sweep). The split is also load-bearing
+  for the golden reference, which pins `parser_warnings` element-for-element —
+  a new descriptive check in that list would force regenerating
+  `golden_legacy.npz`, which is exactly what must not happen.
+- **The encoding is sniffed; the file is no longer opened blind as UTF-8.**
+  `errors="replace"` turned a UTF-16 export (real EDA tools write them) into a
+  wall of skipped tokens, and a UTF-8 BOM glued itself to the leading `#` so
+  the option line was never recognised and the file silently parsed as
+  `# GHZ S MA R 50`. Compressed/binary files are refused by magic number rather
+  than misread. Measured cost: 24 µs.
+- **Descriptive checks (`_check_freq_axis`, `_check_s_values`) are below the
+  noise floor** — the `|S|` scan is 0.6 ms of a 120 ms parse on a 16 MB file,
+  and it is chunked by `_freq_batch` because `np.abs` on a whole
+  (5000, 153, 153) array allocates ~1 GB. Keep it chunked.
+- **The extension is a TIEBREAK and a LAST RESORT, never the primary source.**
+  Content-sniffing stays first (EDA tools rename these files constantly), but
+  picking the smallest of several candidates silently read a 2-port file as a
+  1-port one, and nothing above `MAX_SNIFF_NPORTS = 256` could be opened at all
+  — a `.s300p` package export is the normal case this tool exists for. Both
+  uses emit a warning naming what happened.
+- **Touchstone 2.0 is refused, in lenient mode too.** Read as v1, the numbers
+  inside `[Number of Ports] 4` land in the data stream and shift everything
+  after them. "Skip the bad tokens" is precisely the wrong answer here, so
+  `_recover_data_line` checks `_V2_KEYWORD_RE` before anything else.
+- **`_decode_options` returns its unrecognised tokens.** A misspelt format
+  keyword used to fall through to the `MA` default in silence, which reads RI
+  data as magnitude/angle and produces a well-formed, completely wrong file.
+- **`Check File` is the FOURTH button in the Files row** — and `pack` unmaps
+  from the end, so that is not free. Measured at the 1040x600 minsize: the row
+  needs 364 px and has 448. `tests/test_parse_diagnostics.py::
+  TestGuiFileChecking::test_check_file_button_is_on_screen_at_minsize` asserts
+  `winfo_ismapped()` on all four; re-measure before adding a fifth.
+- **`FileEntry.info_str` puts the frequency span BEFORE M and Z0.** A Listbox
+  has no horizontal scrollbar, so a long file name clips the tail of that line
+  (measured: a 37-char name needs 476 px against a 444 px list). Of the four
+  facts on it the span is the one worth keeping.
 - **Touchstone v1 quirk for n=2.** The 2-port column order is `S11 S21 S12 S22` (column-major), but n>=3 is row-major. `parse_touchstone` transposes only when `nports == 2`. `tests/generate_test_snp.py:write_touchstone` writes the matching column order on output. Don't "fix" either side without fixing the other.
 - **Capacitor fit needs `_scaled_lstsq`.** The Im(Z) design columns `omega` and `-1/omega` differ by ~1e20 in magnitude; raw `np.linalg.lstsq` kills the small singular value and reports `C=1e41`. The column-rescaling helper in `pkg_rlc_core.py` is load-bearing -- don't remove it.
 - **SI suffix `M` is Mega (1e6), not milli.** Milli is lowercase `m`. Used in Custom Mode lumped-value parsing and exposed in Help → Input syntax.
