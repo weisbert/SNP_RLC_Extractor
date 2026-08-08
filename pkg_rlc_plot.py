@@ -28,9 +28,16 @@ import matplotlib
 
 matplotlib.use("TkAgg")
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D                # noqa: E402
 from matplotlib.backends.backend_tkagg import (  # noqa: E402
     FigureCanvasTkAgg, NavigationToolbar2Tk,
 )
+
+# The readout must print engineering units ("300 pH", not "0.3 nH"), and the
+# repo already has exactly one implementation of that rule.  Duplicating it
+# here would give the plot and the results pane two ways to render the same
+# number.  pkg_rlc_core imports nothing from this module, so this is acyclic.
+from pkg_rlc_core import format_si                 # noqa: E402
 
 
 # ============================================================================
@@ -52,6 +59,49 @@ COLORS = [
 LINESTYLES = ["-", "--", "-.", ":"]
 MAX_LABEL_LEN = 30
 MARKER_PIXEL_TOLERANCE = 8
+
+# ---- cursor readout -------------------------------------------------------
+# The physical unit each plot type's y values are already expressed in, as
+# (unit, scale-to-SI).  R(mOhm) values are milliohms, so 1500 -> 1.5 Ohm.
+READOUT_UNITS: dict[str, tuple[str, float]] = {
+    "R(mOhm)": ("Ω", 1e-3),
+    "L(nH)": ("H", 1e-9),
+    "C(pF)": ("F", 1e-12),
+    "|Z|(Ohm)": ("Ω", 1.0),
+    "Re(Z)": ("Ω", 1.0),
+    "Im(Z)": ("Ω", 1.0),
+    "Q": ("", 1.0),
+    "k": ("", 1.0),
+}
+READOUT_MAX_ROWS = 10          # beyond this the box would eat the subplot
+READOUT_NAME_LEN = 18          # hard ceiling; the real budget is measured
+READOUT_NAME_MIN = 8           # floor: below this the rows stop being distinct
+READOUT_FONT = "DejaVu Sans Mono"   # values only line up in a monospace face
+READOUT_FONT_SIZE = 6.5
+# The box must fit the subplot it sits in, and a 4-column grid gives each axes
+# ~210 px at the default window size against ~320 px at 3 columns -- so the
+# name column is a measured budget, not a constant.  Both numbers below are
+# in em of the readout font, which keeps them right at any DPI:
+#   0.60  advance width of DejaVu Sans Mono
+#   2.70  legend chrome (handlelength 1.5 + handletextpad 0.5 + 2x borderpad)
+READOUT_MAX_WIDTH_FRAC = 0.62
+READOUT_CHAR_EM = 0.60
+READOUT_CHROME_EM = 2.70
+# Corner scoring samples the curves rather than the rendered pixels: the score
+# must not depend on the readout's own text, or the box hops corners while the
+# user drags the marker and the value strings change width.
+# The two centre slots matter more than they look: a coupling plot puts the
+# self curves at the top and the mutual ones near zero, so all four CORNERS
+# hold data while the middle band is empty.  They are listed last so they win
+# only on a strictly lower score, not on a tie.
+READOUT_CORNERS = {
+    "upper right": (0.5, 1.0, 0.5, 1.0),
+    "upper left": (0.0, 0.5, 0.5, 1.0),
+    "lower left": (0.0, 0.5, 0.0, 0.5),
+    "lower right": (0.5, 1.0, 0.0, 0.5),
+    "center left": (0.0, 0.5, 0.25, 0.75),
+    "center right": (0.5, 1.0, 0.25, 0.75),
+}
 
 
 # ============================================================================
@@ -130,22 +180,68 @@ def trace_y_values(freqs: np.ndarray, Z: np.ndarray, plot_type: str,
     raise ValueError(f"Unknown plot type: {plot_type}")
 
 
+def _readout_value(v: float, plot_type: str) -> str:
+    """
+    One cell of the cursor readout, in engineering units.
+
+    The axis is labelled in a fixed prefix (nH, pF, mOhm) because that keeps
+    the tick labels comparable; the readout is what the user actually reads a
+    number off, so it picks the prefix per value: "300 pH", not "0.3 nH", and
+    "1.5 Ω", not the "1.5e+03 mΩ" that a plain %.3g produced.
+
+    Non-finite reads as "--": a self curve has no k, and a NaN there is the
+    honest answer rather than a gap that shifts every row below it.
+    """
+    if not np.isfinite(v):
+        return "--"
+    unit, scale = READOUT_UNITS.get(plot_type, ("", 1.0))
+    if not unit:
+        return f"{v:.3g}"
+    return format_si(v * scale, unit)
+
+
 def _format_value(v: float, plot_type: str) -> str:
+    """
+    Standalone value label, used by the 'M' key annotation, which names no
+    curve and so has to carry the quantity itself.
+    """
     if not np.isfinite(v):
         return "nan"
-    if plot_type in ("R(mOhm)",):
-        return f"{v:.3g} mΩ"
-    if plot_type == "L(nH)":
-        return f"{v:.3g} nH"
-    if plot_type == "C(pF)":
-        return f"{v:.3g} pF"
-    if plot_type in ("|Z|(Ohm)", "Re(Z)", "Im(Z)"):
-        return f"{v:.3g} Ω"
     if plot_type == "Q":
         return f"Q={v:.3g}"
     if plot_type == "k":
         return f"k={v:.3g}"
-    return f"{v:.3g}"
+    return _readout_value(v, plot_type)
+
+
+def _fit_names(names: list[str], budget: int) -> list[str]:
+    """
+    Clip readout row names to `budget` characters, keeping the TAIL.
+
+    'float4p_run2 : L1 x L2' has already lost its shared prefix by the time it
+    gets here, but two measurement ports called 'osc_primary' and
+    'osc_secondary' differ only at the end -- cutting the head is what keeps
+    the rows distinguishable.
+    """
+    if budget <= 0:
+        return list(names)
+    return [n if len(n) <= budget else "…" + n[-(budget - 1):] for n in names]
+
+
+def _strip_common_prefix(labels: list[str]) -> tuple[list[str], str]:
+    """
+    Drop the shared '<trace> : ' head from a set of curve labels.
+
+    One mode-6 trace expands into '<trace> : L1', '<trace> : L1 x L2', ... so
+    without this every readout row spends its width on the same prefix.
+    Returns (short_labels, prefix); prefix is "" when they do not all share one.
+    """
+    if len(labels) < 2 or " : " not in labels[0]:
+        return list(labels), ""
+    head = labels[0].split(" : ", 1)[0]
+    if not all(l.startswith(head + " : ") for l in labels):
+        return list(labels), ""
+    return [l.split(" : ", 1)[1] for l in labels], head
 
 
 # ============================================================================
@@ -171,12 +267,20 @@ class _PlotView:
         self.x_log = True
         self.y_log = False
         self.show_marker = True
+        self.show_readout = True
         self.marker_freq_hz: float = 1e9
 
         self.axes: list = []
         self._marker_lines: list = []
         self._marker_annots: list = []
-        self._anno_stack: list[list] = []  # LIFO: each entry is a list of artists
+        # LIFO: each entry is (kind, artists); kind "v" also owns one entry of
+        # _vline_freqs, so Delete has to pop both or the readout keeps a column
+        # for a line that is no longer drawn.
+        self._anno_stack: list[tuple[str, list]] = []
+        self._vline_freqs: list[float] = []
+        # Chosen corner per axes, decided from the DATA only and frozen until
+        # the next redraw -- see READOUT_CORNERS.
+        self._readout_loc: dict[int, str] = {}
         self._dragging = False
 
         # Cache axes-type pairs for hit-testing
@@ -192,6 +296,7 @@ class _PlotView:
     def set_traces(self, traces: list[Trace]) -> None:
         self.traces = list(traces)
         self._anno_stack = []
+        self._vline_freqs = []
         self.redraw()
 
     def set_marker_freq(self, freq_hz: float) -> None:
@@ -202,8 +307,10 @@ class _PlotView:
     def redraw(self) -> None:
         self.figure.clear()
         self._anno_stack = []      # axes go away with figure.clear()
+        self._vline_freqs = []
         self._marker_lines = []
         self._marker_annots = []
+        self._readout_loc = {}
         active = self.get_active_types()
         if not active:
             self.canvas.draw_idle()
@@ -218,19 +325,170 @@ class _PlotView:
             self.axes.append(ax)
             self._axes_types.append((ax, t))
             self._draw_axes(ax, t)
-        # Single legend on first axes
-        if self.axes and self.traces:
-            first = self.axes[0]
-            handles, labels = first.get_legend_handles_labels()
-            if handles:
-                first.legend(loc="best", fontsize=7)
         try:
             self.figure.tight_layout()
         except Exception:
             pass
+        # The readout box carries a colour/linestyle swatch and the curve name,
+        # so where it is drawn it IS the legend.  A separate legend would be
+        # the same names twice, competing for the same empty corner.
+        # _refresh_marker falls back to the plain legend when there is no
+        # cursor to read -- going through it here keeps the marker line drawn
+        # even with the readout switched off.
         if self.show_marker:
             self._refresh_marker()
+        else:
+            self._draw_plain_legend()
         self.canvas.draw_idle()
+
+    # -------- Legend / readout --------
+
+    def _cursor_freqs(self) -> list[float]:
+        """Every vertical cursor currently on the plot, marker first."""
+        if not self.axes or not self.traces or not self.show_readout:
+            return []
+        out = [self.marker_freq_hz] if self.show_marker else []
+        out.extend(self._vline_freqs)
+        return out
+
+    def _draw_plain_legend(self) -> None:
+        """Names-only legend on the first axes -- the pre-readout behaviour,
+        used when there is no cursor to read values off."""
+        if not self.axes or not self.traces:
+            return
+        handles, labels = self.axes[0].get_legend_handles_labels()
+        if handles:
+            self.axes[0].legend(loc="best", fontsize=7)
+
+    def _pick_readout_loc(self, ax, plot_type: str) -> str:
+        """
+        Corner with the least data in it, in axes fraction.
+
+        Deliberately scored from the curves and not from the rendered legend:
+        matplotlib's own loc="best" also weighs the legend's size, so a value
+        going from "2 nH" to "2.05 nH" during a drag can flip the box to
+        another corner.  A cursor readout that hops while you drag the cursor
+        is worse than one sitting in a slightly busier corner.
+        """
+        key = id(ax)
+        if key in self._readout_loc:
+            return self._readout_loc[key]
+        counts = {name: 0 for name in READOUT_CORNERS}
+        try:
+            inv = ax.transAxes.inverted()
+            for tr in self.traces:
+                y = trace_y_values(tr.freqs, tr.Z, plot_type, tr.aux)
+                m = np.isfinite(y)
+                if not m.any():
+                    continue
+                xs, ys = tr.freqs[m], y[m]
+                if len(xs) > 200:              # scoring needs shape, not detail
+                    step = len(xs) // 200 + 1
+                    xs, ys = xs[::step], ys[::step]
+                pts = inv.transform(ax.transData.transform(
+                    np.column_stack([xs, ys])))
+                for name, (x0, x1, y0, y1) in READOUT_CORNERS.items():
+                    inside = ((pts[:, 0] >= x0) & (pts[:, 0] <= x1) &
+                              (pts[:, 1] >= y0) & (pts[:, 1] <= y1))
+                    counts[name] += int(inside.sum())
+        except Exception:
+            self._readout_loc[key] = "best"
+            return "best"
+        # Ties resolve by READOUT_CORNERS order, which is the conventional
+        # preference: top-right first.
+        loc = min(READOUT_CORNERS, key=lambda nm: counts[nm])
+        self._readout_loc[key] = loc
+        return loc
+
+    def _name_budget(self, ax, wcol: list[int]) -> int:
+        """
+        How many characters the name column may use in THIS axes.
+
+        Measured from the axes width, not fixed: a 4-column grid gives each
+        subplot about a third less width than a 3-column one, and a box that
+        is wider than its subplot sticks out over the neighbour -- which is
+        the failure the readout exists to remove.
+        """
+        em_px = READOUT_FONT_SIZE * float(ax.figure.dpi) / 72.0
+        try:
+            avail = ax.get_window_extent().width * READOUT_MAX_WIDTH_FRAC
+        except Exception:
+            return READOUT_NAME_LEN
+        chars = (avail - READOUT_CHROME_EM * em_px) / (READOUT_CHAR_EM * em_px)
+        values = sum(wcol) + len(wcol)      # value columns plus one space each
+        # READOUT_NAME_MIN is a floor, not a target: past it the rows stop
+        # telling curves apart, and a box slightly wider than the budget beats
+        # ten rows that all read the same.  That corner (many curves x several
+        # cursors x a 4-column grid) is what the Readout toggle and Fullscreen
+        # are for.
+        return max(READOUT_NAME_MIN, min(READOUT_NAME_LEN, int(chars) - values))
+
+    def _readout_rows(self, ax, plot_type: str, freqs: list[float],
+                      names: list[str]) -> tuple[list, list[str], str]:
+        """
+        Build (handles, row texts, title) for one axes' readout box.
+
+        One row per trace, one value column per cursor.  Columns are padded to
+        a common width and drawn in a monospace face, which is the only way a
+        matplotlib legend entry can hold an aligned number column.
+        """
+        cols: list[list[str]] = []
+        for f_hz in freqs:
+            col = []
+            for tr in self.traces:
+                if len(tr.freqs) == 0:
+                    col.append("--")
+                    continue
+                y = trace_y_values(tr.freqs, tr.Z, plot_type, tr.aux)
+                i = int(np.argmin(np.abs(tr.freqs - f_hz)))
+                col.append(_readout_value(float(y[i]), plot_type))
+            cols.append(col)
+
+        shown = min(len(self.traces), READOUT_MAX_ROWS)
+        heads = [format_si(f, "Hz") for f in freqs] if len(freqs) > 1 else []
+        # A column is as wide as its widest cell OR its header -- sizing on the
+        # values alone put a 7-char "5.1 GHz" over a 5-char column and threw
+        # every heading one place to the left of the numbers it names.
+        wcol = [max([len(c[r]) for r in range(shown)] + ([len(h)] if h else []))
+                for c, h in zip(cols, heads or [""] * len(cols))]
+        names = _fit_names(names[:shown], self._name_budget(ax, wcol))
+        wname = max((len(n) for n in names), default=0)
+
+        handles, rows = [], []
+        if heads:
+            # Column header, on an invisible handle so it lines up with the
+            # rows through the same legend layout rather than by guesswork.
+            head = " ".join(f"{h:>{w}}" for h, w in zip(heads, wcol))
+            handles.append(Line2D([], [], color="none"))
+            rows.append(f"{'':<{wname}} {head}")
+        for r in range(shown):
+            tr = self.traces[r]
+            handles.append(Line2D(
+                [], [], color=COLORS[tr.color_idx % len(COLORS)],
+                linestyle=LINESTYLES[tr.ls_idx % len(LINESTYLES)],
+                linewidth=1.2))
+            cells = " ".join(f"{c[r]:>{w}}" for c, w in zip(cols, wcol))
+            rows.append(f"{names[r]:<{wname}} {cells}")
+        if len(self.traces) > shown:
+            handles.append(Line2D([], [], color="none"))
+            rows.append(f"… +{len(self.traces) - shown} more (see Results)")
+
+        title = (f"@ {format_si(freqs[0], 'Hz')}" if len(freqs) == 1
+                 else "cursors")
+        return handles, rows, title
+
+    def _draw_readout(self, ax, plot_type: str, freqs: list[float],
+                      names: list[str]) -> None:
+        handles, rows, title = self._readout_rows(ax, plot_type, freqs, names)
+        if not rows:
+            return
+        ax.legend(handles, rows, title=title,
+                  loc=self._pick_readout_loc(ax, plot_type),
+                  framealpha=0.85, fancybox=False, borderpad=0.35,
+                  labelspacing=0.28, handlelength=1.5, handletextpad=0.5,
+                  borderaxespad=0.4,
+                  prop={"family": READOUT_FONT, "size": READOUT_FONT_SIZE},
+                  title_fontsize=READOUT_FONT_SIZE)
 
     # -------- Drawing helpers --------
 
@@ -270,28 +528,50 @@ class _PlotView:
                 pass
         self._marker_lines = []
         self._marker_annots = []
-        if not self.show_marker or not self.axes:
+        if not self.axes:
             return
+        if self.show_marker:
+            for ax, _t in self._axes_types:
+                self._marker_lines.append(
+                    ax.axvline(self.marker_freq_hz, color="red",
+                               linestyle="--", linewidth=1.0, alpha=0.7))
+
+        freqs = self._cursor_freqs()
+        if not freqs:
+            # No cursor to read: fall back to the plain names-only legend, or
+            # the plot would lose its legend along with the readout.
+            self._draw_plain_legend()
+            return
+
+        # Strip the shared prefix off the FULL labels: MAX_LABEL_LEN cuts the
+        # head, and two measurement ports that differ only near the end
+        # ('osc_primary_coil_00/01') would arrive here already identical.  The
+        # readout has its own measured width budget and does not need that cap.
+        names, _prefix = _strip_common_prefix(
+            [(tr.label or "") for tr in self.traces])
+        # Clipping to width happens per axes in _fit_names -- the budget
+        # depends on how wide that subplot is.
+        names = [n.replace(" x ", "×") for n in names]
         for ax, t in self._axes_types:
-            ln = ax.axvline(self.marker_freq_hz, color="red", linestyle="--",
-                            linewidth=1.0, alpha=0.7)
-            self._marker_lines.append(ln)
-            for tr in self.traces:
-                y_arr = trace_y_values(tr.freqs, tr.Z, t, tr.aux)
-                if len(tr.freqs) == 0:
-                    continue
-                idx = int(np.argmin(np.abs(tr.freqs - self.marker_freq_hz)))
-                v = float(y_arr[idx])
-                if not np.isfinite(v):
-                    continue
-                color = COLORS[tr.color_idx % len(COLORS)]
-                txt = f"{tr.freqs[idx]/1e9:.4g}G\n{_format_value(v, t)}"
-                an = ax.annotate(
-                    txt, xy=(tr.freqs[idx], v),
-                    xytext=(6, 4), textcoords="offset points",
-                    fontsize=7, color=color,
-                )
-                self._marker_annots.append(an)
+            # A dot per curve per cursor: the readout box says which value
+            # belongs to which curve by colour, and the dot is where that
+            # colour is on the plot.
+            for f_hz in freqs:
+                for tr in self.traces:
+                    if len(tr.freqs) == 0:
+                        continue
+                    y_arr = trace_y_values(tr.freqs, tr.Z, t, tr.aux)
+                    i = int(np.argmin(np.abs(tr.freqs - f_hz)))
+                    v = float(y_arr[i])
+                    if not np.isfinite(v):
+                        continue
+                    dot, = ax.plot(
+                        [tr.freqs[i]], [v], marker="o", markersize=4,
+                        color=COLORS[tr.color_idx % len(COLORS)],
+                        markeredgecolor="white", markeredgewidth=0.6,
+                        zorder=5)
+                    self._marker_lines.append(dot)
+            self._draw_readout(ax, t, freqs, names)
 
     # -------- Event handlers --------
 
@@ -348,48 +628,44 @@ class _PlotView:
             bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8,
                       edgecolor=color),
         )
-        self._anno_stack.append([m_artist, an])
+        self._anno_stack.append(("m", [m_artist, an]))
         self.canvas.draw_idle()
 
     def _add_v_line(self, event) -> None:
+        """
+        Add a persistent cursor at the clicked frequency.
+
+        The values go into the readout box as one more column rather than as a
+        label per curve: a V line has exactly the same one-cursor-many-curves
+        shape as the marker, so per-curve labels stack on top of each other the
+        same way -- and you can place several V lines.
+        """
         ax = event.inaxes
         if ax is None or event.xdata is None:
             return
         x_freq = float(event.xdata)
         artists = []
         for a, t in self._axes_types:
-            ln = a.axvline(x_freq, color="gray", linestyle=":", linewidth=0.8, alpha=0.7)
-            artists.append(ln)
-            for tr in self.traces:
-                if len(tr.freqs) == 0:
-                    continue
-                y_arr = trace_y_values(tr.freqs, tr.Z, t, tr.aux)
-                idx = int(np.argmin(np.abs(tr.freqs - x_freq)))
-                yv = float(y_arr[idx])
-                if not np.isfinite(yv):
-                    continue
-                color = COLORS[tr.color_idx % len(COLORS)]
-                m, = a.plot([tr.freqs[idx]], [yv], marker="D", markersize=6,
-                            color=color, markerfacecolor="none", markeredgewidth=1.2)
-                artists.append(m)
-                an = a.annotate(
-                    f"{tr.freqs[idx]/1e9:.4g}G\n{_format_value(yv, t)}",
-                    xy=(tr.freqs[idx], yv), xytext=(5, 5), textcoords="offset points",
-                    fontsize=7, color=color,
-                )
-                artists.append(an)
-        self._anno_stack.append(artists)
+            artists.append(a.axvline(x_freq, color="gray", linestyle=":",
+                                     linewidth=0.8, alpha=0.7))
+        self._vline_freqs.append(x_freq)
+        self._anno_stack.append(("v", artists))
+        self._refresh_marker()      # rebuilds every box with the new column
         self.canvas.draw_idle()
 
     def _delete_last(self) -> None:
         if not self._anno_stack:
             return
-        artists = self._anno_stack.pop()
+        kind, artists = self._anno_stack.pop()
         for a in artists:
             try:
                 a.remove()
             except Exception:
                 pass
+        if kind == "v":
+            if self._vline_freqs:
+                self._vline_freqs.pop()
+            self._refresh_marker()  # drop that cursor's readout column too
         self.canvas.draw_idle()
 
     def _on_press(self, event) -> None:
@@ -445,6 +721,7 @@ class PlotPanel(tk.Frame):
         self.view.x_log = self.x_log_var.get()
         self.view.y_log = self.y_log_var.get()
         self.view.show_marker = self.show_marker_var.get()
+        self.view.show_readout = self.show_readout_var.get()
         self.view.redraw()
 
     # -------- Public API (used by GUI) --------
@@ -464,6 +741,7 @@ class PlotPanel(tk.Frame):
         self.x_log_var = tk.BooleanVar(value=True)
         self.y_log_var = tk.BooleanVar(value=False)
         self.show_marker_var = tk.BooleanVar(value=True)
+        self.show_readout_var = tk.BooleanVar(value=True)
 
         ttk.Checkbutton(ctrl, text="X log", variable=self.x_log_var,
                         command=self._on_log_changed).pack(side=tk.LEFT, padx=2)
@@ -471,6 +749,8 @@ class PlotPanel(tk.Frame):
                         command=self._on_log_changed).pack(side=tk.LEFT, padx=2)
         ttk.Checkbutton(ctrl, text="Marker", variable=self.show_marker_var,
                         command=self._on_marker_show_changed).pack(side=tk.LEFT, padx=6)
+        ttk.Checkbutton(ctrl, text="Readout", variable=self.show_readout_var,
+                        command=self._on_readout_changed).pack(side=tk.LEFT, padx=2)
 
         ttk.Separator(ctrl, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=4)
 
@@ -520,6 +800,10 @@ class PlotPanel(tk.Frame):
         self.view.show_marker = self.show_marker_var.get()
         self.view.redraw()
 
+    def _on_readout_changed(self) -> None:
+        self.view.show_readout = self.show_readout_var.get()
+        self.view.redraw()
+
     def _on_marker_changed(self, freq_hz: float) -> None:
         # Bubble to the GUI controller (e.g., update RLC freq entry)
         self._on_marker_changed_cb(freq_hz)
@@ -533,6 +817,7 @@ class PlotPanel(tk.Frame):
             x_log=self.view.x_log,
             y_log=self.view.y_log,
             show_marker=self.view.show_marker,
+            show_readout=self.view.show_readout,
         )
 
 
@@ -543,7 +828,7 @@ class PlotPanel(tk.Frame):
 class FullscreenPlotWindow(tk.Toplevel):
     def __init__(self, master, plot_type: str, traces: list[Trace],
                  marker_freq_hz: float, x_log: bool, y_log: bool,
-                 show_marker: bool):
+                 show_marker: bool, show_readout: bool = True):
         super().__init__(master)
         self.title(f"Fullscreen: {plot_type}")
         self.geometry("1200x700")
@@ -561,6 +846,7 @@ class FullscreenPlotWindow(tk.Toplevel):
         self.view.x_log = x_log
         self.view.y_log = y_log
         self.view.show_marker = show_marker
+        self.view.show_readout = show_readout
         self.view.marker_freq_hz = marker_freq_hz
         self.view.set_traces(traces)
         widget = self.canvas.get_tk_widget()
