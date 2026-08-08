@@ -19,7 +19,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `deploy.sh`             | **Top level on purpose.** Red-zone update entry point: `cd <install> && bash deploy.sh` auto-detects the uploaded tarball. The operator's cross-project convention is `<install>/deploy.sh` — do not move it back under `deploy/`. |
 | `deploy/`               | Rest of the air-gapped ("red zone") pipeline: `pack.ps1` (Windows, `git archive`), `doctor.sh` + `_env_check.py` (what can this box run?). No network, no pip, no venv on the far side. |
 | `tests/test_parse_diagnostics.py` | The robust-reading work: what a file says about itself (span, sweep description, DC / \|S\|>1 notes) and what happens when it cannot be read. Every refusal test pins the **verdict** and the **line number**, not just "raises ValueError" — that would have passed before any of it existed. Plus the recovery cases (UTF-16, BOM, commas, `D` exponents, extension tiebreak) and the two GUI affordances. |
-| `tests/`                | `unittest`-based suite (466 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/`                | `unittest`-based suite (468 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
 | `tests/test_editor_autoapply.py` | The commit-step removal: WHEN the editor writes into a `TraceConfig` and WHICH one it lands on (the deferral, the object capture, the flush-before-selection-change), the style picker's storage / reachability / honesty about multi-curve traces, and that hiding a curve neither recomputes it nor destroys the cursors. Every guard here was mutation-checked. |
 | `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see, and the reordering hazard that forces `_import_dsl_text`'s verbatim fallback. |
 | `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
@@ -402,11 +402,20 @@ claim below was mutation-checked — reverting the behaviour turns its test red.
   `_place_vline`; M markers are deliberately NOT restored, each being anchored to one data
   point of one trace that may no longer be drawn. A **full** Calculate still clears them —
   its numbers are new.
-- **`enabled` gates the PLOT only.** A hidden trace stays in the results table (marked `·`
-  after the id) and in the CSV (`# … Plotted: no`). Losing numbers because a curve was
-  decluttered is a worse surprise than a busy plot. The editor owns the *selected* trace, so
-  poking `tc.enabled` directly on it is overwritten by the next sync — go through
-  `_on_toggle_trace` or `ed_enabled_var`.
+- **`enabled` gates the PLOT and the REPORT; the CSV keeps everything.** A hidden trace
+  leaves the results table too — the table is read as "what is on the plot", and a row for
+  an undrawn curve reads as a *duplicate* of the drawn one, which is exactly how a hidden
+  trace normally arises (Duplicate, then hide the copy: two near-identical rows). It is not
+  silently dropped: it is still computed (so re-showing it needs no Calculate), named on one
+  line under the table (`hidden (measured, not plotted, still in Export CSV): …`), and still
+  written to the CSV with `# … Plotted: no`. **The filtering is in `_render_results`, not at
+  collection time** — `_last_result_rows` holds every trace so a units-mode re-render follows
+  the visibility as it stands then, and `Calculate This Trace` still narrows the work rather
+  than the report. `fit_lines` entries are therefore `(tc, line)` tuples: a fit summary under
+  a table with no such row is an orphan. With *everything* hidden the table is empty, so the
+  "plot is empty on purpose" note must not also claim the numbers are above it. The editor
+  owns the *selected* trace, so poking `tc.enabled` directly on it is overwritten by the next
+  sync — go through `_on_toggle_trace` or `ed_enabled_var`.
 - **The style picker stores INDICES and expands IN PLACE.** Indices keep `pkg_rlc_plot`,
   `test_plot_readout` and `golden_legacy.npz` out of this change, and keep
   `_coupling_plot_traces` able to derive sibling colours as `(color_idx + n) % len(COLORS)`

@@ -139,7 +139,7 @@ Calculate clears it.
 the selected trace. With several traces over a large package file
 that is the difference between iterating on one port spec and
 re-reducing everything on every pass. The results table still shows
-every trace; only the WORK is narrowed.
+every trace that is on the plot; only the WORK is narrowed.
 
 Choosing a colour and a line style
 ----------------------------------
@@ -172,10 +172,16 @@ cursors you have placed stay where they are. This is how to compare
 two traces out of five without deleting the other three and typing
 them in again.
 
-A hidden trace is still MEASURED. Its row stays in the results table
-(marked "·" after the id) and it is still written to Export CSV,
-with "Plotted: no" on its header line. The checkbox governs the
-picture, not the measurement.
+A hidden trace is still MEASURED, but it leaves the results table
+with the curve: the table reads as "what is on the plot", and a row
+for a curve that is not drawn looks like a duplicate of the one that
+is. It is named on one line under the table instead --
+
+   hidden (measured, not plotted, still in Export CSV): [2] t2
+
+-- it keeps its numbers in memory, so showing it again costs no
+Calculate, and Export CSV still writes it out in full with
+"Plotted: no" on its header line.
 
 Broadband fit models
 --------------------

@@ -15,10 +15,12 @@ trace it lands on, not about what it writes.
     (so pkg_rlc_plot and the golden reference are untouched), it is reachable
     from the keyboard, and it tells the truth about a coupling trace expanding
     into several curves.
-  * VISIBILITY.  A hidden trace must stay measured -- in the results table and
-    in the CSV -- and toggling must NOT re-run the reduction or destroy the
-    cursors the user placed.  The recompute test counts real calls into
-    pkg_rlc_core; the cursor test reads the artists off the figure.
+  * VISIBILITY.  A hidden trace leaves the plot AND the results table (a row
+    for an undrawn curve reads as a duplicate of the drawn one), but it stays
+    measured: named on one line under the table and still written to the CSV.
+    Toggling must NOT re-run the reduction or destroy the cursors the user
+    placed.  The recompute test counts real calls into pkg_rlc_core; the
+    cursor test reads the artists off the figure.
 """
 
 from __future__ import annotations
@@ -377,11 +379,12 @@ class TestPlotVisibility(_Case):
         self.app._on_toggle_trace_key()
         self.assertFalse(self.tc.enabled)
 
-    def test_a_hidden_trace_is_off_the_plot_but_still_in_the_table(self):
+    def test_a_hidden_trace_is_off_the_plot_and_off_the_table(self):
         """
-        Hiding gates the PLOT only.  The numbers are what the tool is for, and
-        losing a row because a curve was decluttered would be a worse surprise
-        than a busy plot.
+        The table is read as "what is on the plot".  A row for a curve that is
+        not drawn reads as a duplicate of the one that is -- which is exactly
+        how a hidden trace normally comes about (Duplicate, then hide the
+        copy), so the two rows really are near-identical.
         """
         self.app._on_calculate()
         self._settle()
@@ -390,19 +393,43 @@ class TestPlotVisibility(_Case):
         # one, so Calculate's pre-sync would write its checkbox back over a
         # field poked directly here.
         self.tc2.enabled = False
+        mark = self.app.results_text.index(tk.END)
         self.app._on_calculate()
         self._settle()
         self.assertEqual(len(self.app.plot.view.traces), n_all - 1)
-        rows = self.app._last_result_rows
-        self.assertEqual(len(rows), 2, "the hidden trace left the table")
-        table = pkg_rlc_gui._format_results_table(rows, "smart")
-        # Assert on the ROW, not on the table: the legend line explaining the
-        # marker also contains it, so `assertIn("·", table)` passes even with
-        # the marker removed from every row.  (Caught by mutation.)
-        self.assertIn(f"[{self.tc2.id:>2}]·", table,
-                      "the hidden row is not marked")
-        self.assertIn(f"[{self.tc.id:>2}] ", table,
-                      "the visible row is marked as hidden")
+        body = self.app.results_text.get(mark, tk.END)
+        self.assertNotIn(f"[{self.tc2.id:>2}] {self.tc2.label}", body,
+                         "the hidden trace still has a table row")
+        self.assertIn(f"[{self.tc.id:>2}] {self.tc.label}", body,
+                      "the visible trace lost its row")
+        # Collection is unchanged -- only the rendering filters -- so a units
+        # re-render follows the visibility as it stands then.
+        self.assertEqual(len(self.app._last_result_rows), 2)
+
+    def test_a_hidden_trace_is_named_under_the_table(self):
+        """
+        Not silently dropped: it WAS measured and it IS in the CSV, so a report
+        that just omits it leaves a trace missing with no explanation.
+        """
+        self.tc2.enabled = False
+        mark = self.app.results_text.index(tk.END)
+        self.app._on_calculate()
+        self._settle()
+        body = self.app.results_text.get(mark, tk.END)
+        self.assertIn("hidden (measured, not plotted", body)
+        self.assertIn(f"[{self.tc2.id}] {self.tc2.label}", body)
+
+    def test_a_hidden_trace_takes_its_fit_summary_with_it(self):
+        """A fit line under a table that has no such row is an orphan."""
+        self.app.fit_model_var.set("inductor")
+        self.tc2.enabled = False
+        mark = self.app.results_text.index(tk.END)
+        self.app._on_calculate()
+        self._settle()
+        body = self.app.results_text.get(mark, tk.END)
+        self.assertIn(f"fit[{self.tc.id} ", body, "the visible fit is missing")
+        self.assertNotIn(f"fit[{self.tc2.id} ", body,
+                         "the hidden trace still printed a fit summary")
 
     def test_hiding_replots_without_recomputing(self):
         """

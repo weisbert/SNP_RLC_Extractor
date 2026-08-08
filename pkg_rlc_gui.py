@@ -1116,11 +1116,13 @@ def _format_results_table(rows, units_mode: str) -> str:
             q_str = "nan" if not math.isfinite(res.Q) else f"{res.Q:.3g}"
 
         row_parts = [
-            # The flag column says the trace was measured but is not on the
-            # plot.  Hiding gates the PLOT only, so the table keeps the row --
-            # and then has to say so, or the table and the plot disagree with
-            # no explanation.
-            f"[{tc.id:>2}]{' ' if tc.enabled else '·'}",
+            # Every row here IS on the plot: _render_results filters the hidden
+            # traces out before calling, and names them on one line under the
+            # table instead.  A row for a curve that is not drawn reads as a
+            # duplicate of the one that is -- which on two similar traces (the
+            # normal way a hidden one comes about, via Duplicate) is exactly
+            # what it looks like.
+            f"[{tc.id:>2}] ",
             f"{_trunc(tc.label, LABEL_W):<{LABEL_W}}  ",
         ]
         if multi_file:
@@ -1138,8 +1140,6 @@ def _format_results_table(rows, units_mode: str) -> str:
         "cap = Im(Z)<0 (capacitive; past SRF for an inductor) | "
         "R<0 = non-passive"
     )
-    if any(not tc.enabled for tc, _fl, _res in rows):
-        lines.append("          · after [id] = measured but not plotted")
     return "\n".join(lines)
 
 
@@ -3422,7 +3422,10 @@ class App(tk.Tk):
 
         # First pass: compute Z and per-freq RLC; collect rows + fit_lines.
         result_rows: list[tuple] = []   # (tc, file_label, res)
-        fit_lines: list[str] = []       # post-table fit summaries
+        # (tc, line): post-table fit summaries.  The trace travels with the
+        # line because _render_results drops the hidden ones, and a fit summary
+        # for a row that is not in the table is an orphan.
+        fit_lines: list[tuple] = []
         coupling_blocks: list[tuple] = []   # (tc, file_label, CouplingResult)
         for tc in self.traces:
             fe = self._file_by_label(tc.file_label)
@@ -3501,9 +3504,10 @@ class App(tk.Tk):
                     continue
                 coupling_blocks.append((tc, fe.label, cres))
                 if do_fit:
-                    fit_lines.append(
+                    fit_lines.append((
+                        tc,
                         f"  fit[{tc.id}]: skipped -- a band fit applies to one Z "
-                        "curve, and a +/- coupling trace expands into several.")
+                        "curve, and a +/- coupling trace expands into several."))
                 continue
 
             try:
@@ -3536,26 +3540,28 @@ class App(tk.Tk):
                                             & (fe.ts.freqs <= fmax_hz)]
                     if which == "inductor":
                         fit_Z = eval_inductor_model(fit, fit_freqs)
-                        fit_lines.append(
+                        fit_lines.append((
+                            tc,
                             f"  fit[{tc.id} {which}]: "
                             f"L={format_si(fit.L_henry, 'H')}, "
                             f"R_dc={format_si(fit.R_dc_ohm, 'Ω')}, "
                             f"R_ac={fit.R_ac_ohm_per_sqrtHz:.3g}Ω/√Hz, "
                             f"Q@center={fit.Q_at_center:.3g}, "
-                            f"RMSE={format_si(fit.rmse_ohm, 'Ω')}")
+                            f"RMSE={format_si(fit.rmse_ohm, 'Ω')}"))
                     else:
                         fit_Z = eval_capacitor_model(fit, fit_freqs)
                         srf_str = ("nan" if math.isnan(fit.SRF_hz)
                                    else format_si(fit.SRF_hz, 'Hz'))
-                        fit_lines.append(
+                        fit_lines.append((
+                            tc,
                             f"  fit[{tc.id} {which}]: "
                             f"C={format_si(fit.C_farad, 'F')}, "
                             f"R_esr={format_si(fit.R_esr_ohm, 'Ω')}, "
                             f"L_esl={format_si(fit.L_esl_henry, 'H')}, "
                             f"SRF={srf_str}, "
-                            f"RMSE={format_si(fit.rmse_ohm, 'Ω')}")
+                            f"RMSE={format_si(fit.rmse_ohm, 'Ω')}"))
                 except Exception as e:
-                    fit_lines.append(f"  fit[{tc.id}] ERROR: {e}")
+                    fit_lines.append((tc, f"  fit[{tc.id}] ERROR: {e}"))
 
             tc.fit_freqs = fit_freqs
             tc.fit_Z = fit_Z
@@ -3575,9 +3581,13 @@ class App(tk.Tk):
         self._replot_from_cache(keep_cursors=only is not None)
         self.plot.set_marker_freq(f_rlc_hz)
         if self.traces and not any(tc.enabled for tc in self.traces):
+            # The table lists plotted traces only, so with everything hidden it
+            # is empty too -- do not claim "the numbers above are still
+            # current" when there are no numbers above.
             self._append_result(
                 "  (every trace has 'Plot: this trace' unchecked -- the plot is "
-                "empty on purpose; the numbers above are still current)")
+                "empty on purpose, and so is the table; they were measured, "
+                "show one again or use Export CSV to read the numbers)")
 
     def _replot_from_cache(self, keep_cursors: bool = True) -> None:
         """
@@ -3709,15 +3719,40 @@ class App(tk.Tk):
         return out
 
     def _render_results(self, rows, fit_lines, coupling_blocks) -> None:
+        """
+        Print the table, the fit summaries and the coupling blocks -- for the
+        traces that are ON THE PLOT.
+
+        A hidden trace is filtered out here rather than at collection time, so
+        `_last_result_rows` still holds everything and a units-mode re-render
+        follows the visibility as it stands then.  Its numbers are not lost:
+        they stay cached on the trace (re-showing it needs no Calculate), the
+        line under the table names it, and Export CSV still writes it out with
+        a `Plotted: no` comment.
+        """
         units = self.units_mode_var.get()
-        if rows:
-            self._append_result(_format_results_table(rows, units))
-            for fl in fit_lines:
-                self._append_result(fl)
-        for tc, file_label, cres in coupling_blocks:
+        shown_rows = [r for r in rows if r[0].enabled]
+        shown_blocks = [b for b in coupling_blocks if b[0].enabled]
+        hidden = [r[0] for r in rows if not r[0].enabled]
+        hidden += [b[0] for b in coupling_blocks if not b[0].enabled]
+
+        if shown_rows:
+            self._append_result(_format_results_table(shown_rows, units))
+            for tc, fl in fit_lines:
+                if tc.enabled:
+                    self._append_result(fl)
+        for tc, file_label, cres in shown_blocks:
             self._append_result("")
             self._append_result(
                 _format_coupling_block(tc, file_label, cres, units))
+        if hidden:
+            # Named, not silently dropped: Calculate still measured them, and
+            # the CSV still carries them, so the report has to say where they
+            # went -- otherwise re-reading it later, a trace is simply missing.
+            self._append_result(
+                "  hidden (measured, not plotted, still in Export CSV): "
+                + ", ".join(f"[{tc.id}] {_trunc_str(tc.label, 18)}"
+                            for tc in hidden))
 
     def _on_units_mode_changed(self) -> None:
         rows = getattr(self, "_last_result_rows", None)

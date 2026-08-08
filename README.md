@@ -37,7 +37,7 @@ Basic flow:
 
 **Edits apply as you type.** There is no *Apply* step: whatever is in the editor is what the selected trace holds, and the Traces list updates live. A trace whose spec has changed since it was last computed carries a trailing `*` in that list.
 
-**Showing and hiding curves.** Every trace has a `☑` / `☐` in the Traces list. Toggle it with the **Show/Hide** button, with the space bar on the list, or with **Plot: this trace** in the editor — a hidden trace comes off the plot immediately, without recomputing anything and without disturbing the `V` cursors you have placed. It is still measured: its row stays in the results table (marked `·`) and in the CSV export. This is the way to compare two of five traces without deleting the other three.
+**Showing and hiding curves.** Every trace has a `☑` / `☐` in the Traces list. Toggle it with the **Show/Hide** button, with the space bar on the list, or with **Plot: this trace** in the editor — a hidden trace comes off the plot immediately, without recomputing anything and without disturbing the `V` cursors you have placed. It comes off the results table too — the table says what is on the plot, and a row for a curve that is not drawn reads as a duplicate of the one that is — but it is still measured: one line under the table names it, showing it again costs no Calculate, and the CSV export still carries it in full (with `Plotted: no` on its header line). This is the way to compare two of five traces without deleting the other three.
 
 Use **Export CSV** to dump per-trace `Freq, Re(Z), Im(Z), |Z|, R, L, C, Q` tables.
 
