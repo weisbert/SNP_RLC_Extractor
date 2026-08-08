@@ -2275,6 +2275,97 @@ def build_terminations_rows(mport_rows: Sequence[MeasPortRow] = (),
     return ts
 
 
+def inert_lumped_messages(terminations: TerminationSet) -> list[str]:
+    """
+    Lumped elements that are in the set but contribute EXACTLY nothing.
+
+    compute_z_matrix stamps every lumped element onto Y and only THEN merges
+    shorted ports and drops grounded ones.  Both of those later steps can
+    annihilate a stamp completely:
+
+      * a LumpedBetween whose two ports land on the same merged node.  The
+        stamp is +y, +y, -y, -y over that node's 2x2 block, so summing the
+        rows and columns cancels it to zero.  Measured on a real spec:
+        `5 short_to 6` next to `5 lumped_between 6 R=...` gave answers for
+        R=20 and R=2000 differing by 5e-12 relative -- i.e. roundoff, with
+        the ideal-short answer reported both times;
+      * a LumpedBetween with BOTH ends grounded, or a LumpedToGnd on a port
+        that a short ties to a grounded one: the row and column carrying the
+        stamp are deleted outright (measured: bit-identical, 0.0 relative).
+
+    Neither case raises and neither changes the number on screen, so the only
+    symptom is that editing R/L/C does nothing -- which reads as "the tool
+    ignores my resistor" rather than "my spec shorts it out".  Worse, the
+    validation strip used to show `✓ port 5 → 6: 20 Ω` for exactly this, a
+    green tick asserting the element was applied.
+
+    A pure function of the TerminationSet, so the GUI strip, Calculate and the
+    CLI can all report the same thing.  Messages are 1-BASED, empty when every
+    lumped element contributes something.
+
+    The Union-Find here duplicates compute_z_matrix's -- deliberately.  That
+    one is inside the bit-exact reduction path and is fused with the index
+    plan it builds; factoring it out to share it would mean editing the one
+    function the golden regression exists to pin, to buy 8 lines.
+    """
+    parent: dict[int, int] = {}
+
+    def find(x: int) -> int:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for cpl in terminations.couplings:
+        if isinstance(cpl, ShortPair):
+            union(cpl.port_i, cpl.port_j)
+
+    members: dict[int, list[int]] = {}
+    for p in set(parent) | set(terminations.per_port):
+        members.setdefault(find(p), []).append(p)
+
+    def node_is_ground(port: int) -> bool:
+        """Does this port's MERGED node evaluate to ground? Mirrors merge_terms."""
+        grp = members.get(find(port), [port])
+        terms = [terminations.termination_of(p) for p in grp]
+        if any(isinstance(t, Signal) for t in terms):
+            return False        # a probe on the node wins over ground
+        return any(isinstance(t, (Ground, Vdd)) for t in terms)
+
+    msgs: list[str] = []
+    for cpl in terminations.couplings:
+        if not isinstance(cpl, LumpedBetween):
+            continue
+        i, j = cpl.port_i + 1, cpl.port_j + 1
+        if find(cpl.port_i) == find(cpl.port_j):
+            msgs.append(
+                f"⚠ the R/L/C element between ports {i} and {j} is SHORTED OUT "
+                f"-- a short ties those ports together, so its value has no "
+                f"effect at all (changing it will not change the answer). "
+                f"Delete the short, or delete the element."
+            )
+        elif node_is_ground(cpl.port_i) and node_is_ground(cpl.port_j):
+            msgs.append(
+                f"⚠ the R/L/C element between ports {i} and {j} has BOTH ends "
+                f"grounded, so its value has no effect at all."
+            )
+    for port in sorted(terminations.per_port):
+        if (isinstance(terminations.termination_of(port), LumpedToGnd)
+                and node_is_ground(port)):
+            msgs.append(
+                f"⚠ the R/L/C element from port {port + 1} to ground sits on a "
+                f"node that a short already ties to ground, so its value has "
+                f"no effect at all."
+            )
+    return msgs
+
+
 # ============================================================================
 # Z computation: unified termination -> Z(f)
 # ============================================================================

@@ -19,7 +19,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `deploy.sh`             | **Top level on purpose.** Red-zone update entry point: `cd <install> && bash deploy.sh` auto-detects the uploaded tarball. The operator's cross-project convention is `<install>/deploy.sh` — do not move it back under `deploy/`. |
 | `deploy/`               | Rest of the air-gapped ("red zone") pipeline: `pack.ps1` (Windows, `git archive`), `doctor.sh` + `_env_check.py` (what can this box run?). No network, no pip, no venv on the far side. |
 | `tests/test_parse_diagnostics.py` | The robust-reading work: what a file says about itself (span, sweep description, DC / \|S\|>1 notes) and what happens when it cannot be read. Every refusal test pins the **verdict** and the **line number**, not just "raises ValueError" — that would have passed before any of it existed. Plus the recovery cases (UTF-16, BOM, commas, `D` exponents, extension tiebreak) and the two GUI affordances. |
-| `tests/`                | `unittest`-based suite (384 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/`                | `unittest`-based suite (391 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
 | `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see, and the reordering hazard that forces `_import_dsl_text`'s verbatim fallback. |
 | `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
 | `tests/test_mode5_editor.py` | Stage 3: the pure text<->rows import decision and both strip renderers, plus Tk-driven editor wiring, per-mode widget visibility, the text hatch, the CSV gate, wheel routing, and the LAYOUT numbers (`ismapped` / `reqwidth` / `xview` / `scrollregion` / `sashpos`) measured off a mapped window. |
@@ -325,6 +325,22 @@ looking at the screen.
 - **The Mode 5 table lets ground win over a probe; Mode 6's builder raises on the same
   overlap.** Both are pinned and intended. The validation strip is where Mode 5 makes the
   overlap visible — it must report it, not raise, and not "fix" it.
+- **A lumped element the reduction ANNIHILATES must be reported, not echoed.**
+  `compute_z_matrix` stamps every lumped element onto Y and only then merges shorted
+  ports and drops grounded ones, so a `lumped_between` whose two ports land on the same
+  merged node has its `+y, +y, -y, -y` block summed to exactly zero, and one with both
+  ends grounded (or a `lumped_to_gnd` shorted to a grounded port) has its row and column
+  deleted. Nothing raises and the number on screen does not move: measured on the
+  reported case, `5 short_to 6` next to `5 lumped_between 6 R=…` answered identically
+  for R=20 and R=2000 (5e-12 relative, i.e. roundoff), and the strip affirmed
+  `✓ port 5 → 6: 20 Ω` beside it. `inert_lumped_messages` in core is the guard and it
+  runs BEFORE the `✓` echoes so the green tick is suppressed, not merely outranked.
+  Its Union-Find deliberately duplicates `compute_z_matrix`'s rather than refactoring
+  the one function the golden reference exists to pin. It must mirror `merge_terms`'s
+  precedence — a Signal on the merged node beats a Ground, so that case is NOT inert —
+  and must not fire when only ONE end is grounded, which is the ordinary way to spell a
+  shunt element. `tests/test_mode5_editor.py::TestValidationMessages` pins both the
+  four positives and the two false-alarm cases.
 - **Mode 5 passes `nports` to `build_terminations_rows`.** It used to pass none, so a
   one-digit typo (`3 / 5` on a 4-port file) became a plausible wrong number until
   `compute_z_matrix`'s backstop. Likewise the CSV exporter gates the coupling block on

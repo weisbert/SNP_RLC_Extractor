@@ -323,6 +323,74 @@ class TestValidationMessages(unittest.TestCase):
                                  [ConnectionRow(kind="ground", ports="3")]),
             ["✓ no problems found"])
 
+    def test_an_element_shorted_out_by_a_short_row_is_reported(self):
+        """
+        The reported bug: a leftover `short` row next to an rlc_between row on
+        the SAME pair. compute_z_matrix stamps the element and then the merge
+        cancels it to zero, so R=20 and R=2000 give the same answer -- and the
+        strip used to affirm '✓ port 5 → 6: 20 Ω' next to it.
+        """
+        rows = [ConnectionRow(kind="short", ports="5", to="6"),
+                ConnectionRow(kind="rlc_between", ports="5", to="6", R="20")]
+        msgs = _validation_messages([MeasPortRow("m1", "1", "2")], rows, "", 6)
+        self.assertTrue(any("SHORTED OUT" in m for m in msgs), msgs)
+        self.assertTrue(any("5" in m and "6" in m for m in msgs), msgs)
+        # The misleading echo must be gone, not merely outranked.
+        self.assertNotIn("✓", " ".join(msgs))
+
+    def test_the_same_element_without_the_short_row_is_fine(self):
+        """The guard must not fire on the spec the user actually wanted."""
+        msgs = _validation_messages(
+            [MeasPortRow("m1", "1", "2")],
+            [ConnectionRow(kind="rlc_between", ports="5", to="6", R="20")],
+            "", 6)
+        self.assertEqual(msgs, ["✓ port 5 → 6: 20 Ω"])
+
+    def test_a_chained_short_group_also_shorts_an_element_out(self):
+        """`5-6-7` is one node, so 5<->6 is annihilated the same way."""
+        rows = [ConnectionRow(kind="short", ports="5", to="6,7"),
+                ConnectionRow(kind="rlc_between", ports="5", to="7", R="20")]
+        msgs = _validation_messages([MeasPortRow("m1", "1", "2")], rows, "", 7)
+        self.assertTrue(any("SHORTED OUT" in m for m in msgs), msgs)
+
+    def test_an_element_with_both_ends_grounded_is_reported(self):
+        rows = [ConnectionRow(kind="ground", ports="5"),
+                ConnectionRow(kind="ground", ports="6"),
+                ConnectionRow(kind="rlc_between", ports="5", to="6", R="20")]
+        msgs = _validation_messages([MeasPortRow("m1", "1", "2")], rows, "", 6)
+        self.assertTrue(any("BOTH ends" in m for m in msgs), msgs)
+
+    def test_one_end_grounded_is_NOT_reported(self):
+        """
+        Grounding ONE end is the ordinary way to write a shunt element: the
+        ground drop leaves +y on the surviving diagonal, which is exactly
+        'y from port 6 to ground'. Warning here would be a false alarm.
+        """
+        rows = [ConnectionRow(kind="ground", ports="5"),
+                ConnectionRow(kind="rlc_between", ports="5", to="6", R="20")]
+        msgs = _validation_messages([MeasPortRow("m1", "1", "2")], rows, "", 6)
+        self.assertEqual(msgs, ["✓ port 5 → 6: 20 Ω"])
+
+    def test_a_shunt_element_shorted_to_a_grounded_port_is_reported(self):
+        rows = [ConnectionRow(kind="ground", ports="6"),
+                ConnectionRow(kind="short", ports="5", to="6"),
+                ConnectionRow(kind="rlc_gnd", ports="5", C="1p")]
+        msgs = _validation_messages([MeasPortRow("m1", "1", "2")], rows, "", 6)
+        self.assertTrue(any("to ground" in m and "no effect" in m
+                            for m in msgs), msgs)
+
+    def test_a_probe_on_the_node_outranks_ground_so_no_false_alarm(self):
+        """
+        merge_terms lets a Signal win over a Ground on the same merged node, so
+        the element is NOT dropped and must not be reported. Mirroring that
+        precedence is the whole reason node_is_ground checks the group.
+        """
+        rows = [ConnectionRow(kind="ground", ports="5"),
+                ConnectionRow(kind="short", ports="5", to="2"),
+                ConnectionRow(kind="rlc_gnd", ports="5", C="1p")]
+        msgs = _validation_messages([MeasPortRow("m1", "1", "2")], rows, "", 6)
+        self.assertFalse(any("no effect" in m for m in msgs), msgs)
+
     def test_is_capped_at_two_lines(self):
         """Measured uncapped: 140 px at 8 lines, 41% of the editor canvas."""
         rows = [ConnectionRow(kind="rlc_gnd", ports="", R="50")

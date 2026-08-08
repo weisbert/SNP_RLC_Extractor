@@ -66,6 +66,7 @@ from pkg_rlc_core import (
     fit_auto,
     fit_capacitor,
     fit_inductor,
+    inert_lumped_messages,
     parse_custom_termination_text,
     parse_kv_rlc_params,
     parse_mport_spec,
@@ -655,6 +656,12 @@ def _validation_messages(mport_rows: Sequence, conn_rows: Sequence,
         # port defined', so naming the cause above the consequence.
         msgs.extend(_probe_ground_messages(mport_rows, term))
         msgs.extend(_measured_port_messages(mport_rows, term, nports))
+        # An element the reduction annihilates (shorted out / both ends
+        # grounded). Without this the strip showed the ✓ ECHO for it -- a green
+        # tick reading '✓ port 5 → 6: 20 Ω' next to an answer that does not
+        # depend on the 20 at all. The echoes below are only reached when msgs
+        # is empty, so appending here is what suppresses that.
+        msgs.extend(inert_lumped_messages(term))
 
     if msgs:
         return msgs
