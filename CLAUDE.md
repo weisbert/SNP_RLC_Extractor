@@ -12,7 +12,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 |-------------------------|---------------------------------------------------------------------------------|
 | `pkg_rlc_core.py`       | Touchstone parser (+ `TouchstoneParseError` / `diagnose_touchstone` / `check_touchstone`), S<->Y, unified `TerminationSet` model + the Mode 5 DSL (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`), the connection-table row model (`MeasPortRow`, `ConnectionRow`, `rows_to_dsl_text`, `dsl_text_to_rows`, `build_terminations_rows`), `parse_mport_spec`, `resolve_meas_ports`, `compute_z_matrix` / `compute_z`, `extract_rlc_at_freq` / `extract_coupling_at_freq`, `fit_inductor` / `fit_capacitor` / `fit_auto`. |
 | `pkg_rlc_plot.py`       | Matplotlib plot panel: multi-subplot grid over R/L/C/\|Z\|/Re/Im/Q/**k**, draggable freq marker, M / V / Delete keys, fullscreen window. Quantities that cannot be derived from one `(freqs, Z)` pair (today only `k`) arrive via the optional `Trace.aux` dict. |
-| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), the File menu and the JSON session format (`session_to_dict` / `session_from_dict` / `SessionError` / `autosave_path`), results pane. Re-exports the DSL helpers it no longer defines. |
+| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), the File menu and the JSON session format (`session_to_dict` / `session_from_dict` / `SessionError` / `autosave_path`), the results pane (a `ttk.Notebook` whose tab 0 is the Log, with `log_tab_label` / `_append_result(severity)` / `_select_results_tab`). Re-exports the DSL helpers it no longer defines. |
 | `pkg_rlc_help.py`       | In-app Help window content (`HELP_TOPICS`, `HelpWindow`, `HELP_WINDOW_WIDTH`). One tab per mode + syntax + save/load + worked examples. |
 | `pkg_rlc_extractor.py`  | Entry point: dispatches GUI vs CLI from argv. CLI `--mode gnd \| p2p \| coupling`, `--mport` repeatable. |
 | `reduce_snp.py`         | **Standalone** CLI: shrinks a big `.sNp` to a few ports (KEEP / GND-short / open-or-matched elimination). Deliberately imports nothing from this repo — it gets copied to simulation servers on its own. |
@@ -20,7 +20,8 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `deploy/`               | Rest of the air-gapped ("red zone") pipeline: `pack.ps1` (Windows, `git archive`), `doctor.sh` + `_env_check.py` (what can this box run?). No network, no pip, no venv on the far side. |
 | `tests/test_parse_diagnostics.py` | The robust-reading work: what a file says about itself (span, sweep description, DC / \|S\|>1 notes) and what happens when it cannot be read. Every refusal test pins the **verdict** and the **line number**, not just "raises ValueError" — that would have passed before any of it existed. Plus the recovery cases (UTF-16, BOM, commas, `D` exponents, extension tiebreak) and the two GUI affordances. |
 | `tests/test_session.py` | Save Config / Load Config / Restore Last Session. Pure round trip (no Tk) for the trace fields, the refusal verdicts, the hand-edit tolerance and the path precedence; Tk-driven for the App-level save→wipe→load, the missing-file path, the autosave, and that the File menu and its accelerators are reachable. Also the guard on the Help window's tab strip, which the tenth tab pushed past the old 950 px. |
-| `tests/`                | `unittest`-based suite (563 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/test_results_notebook.py` | The Results pane's `ttk.Notebook`: that the Log is tab 0, selected and MAPPED at startup (both are mechanical preconditions of tests elsewhere), the width-stable badge measured in the tab strip's own font, the unseen-warning count, the ERROR claim on the pane and the severity routing of the real call sites, plus the measured proof that a 30-tab strip does not move the left panel. Every guard mutation-checked. |
+| `tests/`                | `unittest`-based suite (597 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
 | `tests/test_editor_autoapply.py` | The commit-step removal: WHEN the editor writes into a `TraceConfig` and WHICH one it lands on (the deferral, the object capture, the flush-before-selection-change), the style picker's storage / reachability / honesty about multi-curve traces, and that hiding a curve neither recomputes it nor destroys the cursors. Every guard here was mutation-checked. |
 | `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see, and the reordering hazard that forces `_import_dsl_text`'s verbatim fallback. |
 | `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
@@ -562,6 +563,75 @@ claim below was mutation-checked — reverting the behaviour turns its test red.
   Help window's nine tabs needed 891 px and the tenth took it to 968, past the
   historical 950. `HELP_WINDOW_WIDTH` is now 1010, i.e. **42 px of headroom, not
   enough for an eleventh tab**; `TestHelpTabsAllFit` re-measures it.
+
+### The Results pane notebook (the Log tab and its badge)
+
+`tests/test_results_notebook.py` is the guard, and every claim below was
+mutation-checked.
+
+- **`results_text` is a REAL, PERSISTENT widget attribute — never a property
+  resolving to whichever tab is active.** Six tests take `index(END)`, run
+  Calculate and read back from that mark; a fresh widget answers a stale mark
+  with `""`, so a property turns all six into empty-string assertions that read
+  like formatting bugs. `_append_result` still writes to it and nothing else.
+- **The Log is tab 0 and it is SELECTED at startup; there is no run tab.**
+  `focus_set` and `event_generate` are **no-ops on an unmapped widget**, and a
+  non-selected tab's widget is unmapped — so
+  `test_session.py::test_control_o_does_not_also_scribble_in_the_results_pane`,
+  which focuses `results_text` and synthesises Ctrl+O, proves nothing at all if
+  the Log is not on screen. Pre-creating an empty run tab is the "tidy up" that
+  moves the failure to a test whose name points at the menubar.
+- **No `<<NotebookTabChanged>>` → `canvas.focus_set()` handler on this
+  notebook.** Measured: `nb.select()` does not steal focus, and that is exactly
+  what makes an automatic switch safe. Wiring one here would invent a focus
+  steal on every Calculate that does not exist today. (That handler belongs to a
+  PLOT notebook, which this is not.)
+- **A hidden tab still accepts `insert` / `get` / `see`, so warnings must
+  announce themselves.** `_append_result` takes a `severity` defaulting to
+  `LOG_INFO` (byte-for-byte the old behaviour). `LOG_WARN` increments
+  `_log_unseen` **only while the Log is not the selected tab** — a warning read
+  as it is written is not unseen — and the count is cleared by *looking* at the
+  Log, i.e. from the tab-changed handler, not by any other action. `LOG_ERROR`
+  does not badge at all: it pulls the Log to the front instead.
+- **The badge is WIDTH-STABLE, and that is why the count is always shown,
+  zero-padded to two digits.** The Log is the leftmost tab, so a label that
+  changes width reflows every tab to its right. Measured in TkDefaultFont
+  (Microsoft YaHei UI 9, what the vista theme's `TNotebook.Tab` uses): `' '` and
+  `'!'` are both 4 px and every digit is 7 px, so `"Log  00"`, `"Log !03"` and
+  `"Log !99"` all measure **44 px**. A digit-free `"Log"` is 22 px and **cannot**
+  be padded to match with spaces — `22 + 4a == 37 + 4b` has no integer solution
+  — which is the whole reason the zero is on screen. `LOG_BADGE_CAP = 99` is not
+  cosmetic either: a third digit is a third width.
+- **An ERROR claims the pane, and `_select_results_tab` is how a later automatic
+  switch respects that.** `_log_forced` is set *after* `select()` so the
+  `<<NotebookTabChanged>>` that `select()` generates cannot clear the flag it
+  just set (delivery order is not something to depend on). The claim is released
+  by the user moving off the Log, and by the start of the next Calculate — not
+  by anything in between, or every later run would stay pinned to the Log.
+- **Severity routing follows what the line MEANS, not where it is printed.**
+  Parser `WARN:` lines, Schur/pinv warnings, `file … not loaded`, legacy-config
+  migrations, session load notes and a failed fit are `LOG_WARN`; `ERROR` lines,
+  their tracebacks and the two "this IS an error in the port setup" annotations
+  are `LOG_ERROR`; the results table, the descriptive half of a file summary,
+  Show Ports, Check File and the **rank-deficiency** annotation are `LOG_INFO` —
+  that last one exists to say the warning above it is not a fault, so badging it
+  again would contradict it. The mode-5 "spec notes" block counts the messages
+  that do **not** start with `✓`, the same rule `_footer_strip_text` counts by.
+- **The tab strip costs 28 px of PLOT height and nothing horizontally.**
+  Measured at the 1040x600 minsize: the right paned's sash goes 167 → 195 and
+  the plot pane 428 → 400 (`results_nb.winfo_reqheight()` = 172, one visual
+  row); it is the strip's height and is constant in the tab count. Horizontally
+  there is no cost at any tab count — `outer.sashpos(0)`, the left panel's width
+  and `_ed_canvas.winfo_width()` read **460 / 460 / 431** in mode 5 with 1 tab
+  and with 30 fat tabs. Two existing properties are what make that structural:
+  `left` is `ttk.Frame(outer, width=460)` with `pack_propagate(False)` and
+  `weight=0`, and the results pane is populated **before** `add()`. Break either
+  and the guard goes red.
+- **Tab labels are for LEGIBILITY, not layout.** In the 575 px pane at the
+  minsize a tab strip clips from 13 tabs (100%) / 9 tabs (150%); at 30 tabs a
+  tab is 22 px, about three characters. A future run tab wants a short label
+  (`#1`) and a rolling cap, not a timestamp — a timestamped label is what drove
+  a 50-tab strip to a 8808 px requested width in the measurements.
 
 ### Cursor readout (the plot's marker / V-line labels)
 

@@ -1431,6 +1431,40 @@ RESULTS_SWATCH = "█"
 _SWATCH_PAD = " " * len(RESULTS_SWATCH)
 
 
+# --------------------------------------------------------- the Log tab badge
+#
+# Severity of a line written to the Results pane.  INFO is what every call
+# site had before the pane became a notebook, so the default keeps the old
+# behaviour exactly; WARN counts towards the Log tab's badge and ERROR also
+# brings the Log tab to the front.
+LOG_INFO = "info"
+LOG_WARN = "warn"
+LOG_ERROR = "error"
+
+# The badge counts unseen warnings, and it stops counting at 99.  The cap is
+# not cosmetic: the number of DIGITS decides the label's width, and a label
+# that changes width on the LEFTMOST tab reflows every tab to its right.
+LOG_BADGE_CAP = 99
+
+
+def log_tab_label(unseen: int) -> str:
+    """
+    The Log tab's text, at a width that never changes.
+
+    Measured with tkinter.font in the tab strip's own font (TkDefaultFont =
+    Microsoft YaHei UI 9, the vista theme's TNotebook.Tab font): ' ' and '!'
+    are both 4 px and every digit is 7 px, so "Log  00", "Log !03" and
+    "Log !99" all measure 44 px.  That is the whole reason the count is
+    zero-padded to two digits and shown even when it is zero: 'Log' with no
+    digits at all cannot be padded to the same width, because a space is 4 px
+    and the widths differ by 15 px, which is not a multiple of 4.  (Checked:
+    22 + 4a == 37 + 4b has no integer solution.)  The marker character, not
+    the presence of a number, is what says there is something to read.
+    """
+    n = max(0, min(int(unseen), LOG_BADGE_CAP))
+    return f"Log {'!' if n else ' '}{n:02d}"
+
+
 def _format_results_table(rows, units_mode: str) -> str:
     """
     rows: list of (tc, file_label, res). Returns a multi-line aligned table.
@@ -2542,6 +2576,20 @@ class App(tk.Tk):
         # (rendered line, colour index) per trace -- see _refresh_trace_list.
         self._trace_list_shown: list[tuple[str, int]] = []
         self._scrollables: dict[str, object] = {}
+        # Results-pane notebook state.  Set BEFORE _build_ui: adding the first
+        # tab fires <<NotebookTabChanged>> straight away, and the handler reads
+        # both of these.
+        #
+        # _log_unseen counts warnings written while the Log tab was NOT on
+        # screen -- a tab that is not selected has winfo_ismapped() == 0 while
+        # insert/get/see all keep working, so without the badge a parser
+        # warning, a rank-deficiency note or a traceback would be written and
+        # never seen, with no test failing.
+        self._log_unseen = 0
+        # _log_forced: an ERROR line has pulled the Log tab to the front, and
+        # an automatic switch to some other tab must not undo it.  See
+        # _select_results_tab.
+        self._log_forced = False
 
         self._install_wheel_router()
         self._build_ui()
@@ -3206,8 +3254,33 @@ class App(tk.Tk):
         units_combo.pack(side=tk.LEFT)
         units_combo.bind("<<ComboboxSelected>>",
                          lambda _e: self._on_units_mode_changed())
-        self.results_text = ScrolledText(results_frame, height=10, wrap=tk.NONE,
-                                         font=("Consolas", 9))
+        # The Results pane is a ttk.Notebook and tab 0 is the Log, holding the
+        # same ScrolledText it has always held.
+        #
+        # results_text stays a REAL, PERSISTENT widget attribute -- never a
+        # property resolving to whichever tab is active.  Six tests take an
+        # index(END) mark, run Calculate and read back from that mark; a fresh
+        # widget returns '' for a stale mark, so a property turns all six into
+        # empty-string assertions that read like formatting bugs.
+        #
+        # There is deliberately NO second tab, and the Log is the SELECTED tab
+        # at startup.  focus_set() and event_generate() are no-ops on an
+        # unmapped widget, and a non-selected tab's widget is unmapped -- so
+        # test_session.py::test_control_o_does_not_also_scribble_in_the_results
+        # _pane, which focuses results_text and synthesises Ctrl+O, proves
+        # nothing whatsoever if the Log is not on screen.  "Tidying up" by
+        # pre-creating an empty run tab here moves the failure to a test whose
+        # name points at the menubar.
+        #
+        # No <<NotebookTabChanged>> -> canvas.focus_set() handler either.
+        # Measured: nb.select() does not steal focus, and that property is what
+        # makes a later auto-switch safe.  Wiring a focus_set here would invent
+        # a focus steal on every Calculate that does not exist today.  (That
+        # handler belongs to a PLOT notebook, which is not what this is.)
+        self.results_nb = ttk.Notebook(results_frame)
+        self._log_tab = ttk.Frame(self.results_nb)
+        self.results_text = ScrolledText(self._log_tab, height=10,
+                                         wrap=tk.NONE, font=("Consolas", 9))
         self.results_text.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         # Tag for highlighting non-empty Sign flags. Configured once.
         self.results_text.tag_configure("flag", foreground="#b04000")
@@ -3219,6 +3292,10 @@ class App(tk.Tk):
         # the text clips under DPI scaling.
         for _i, _c in enumerate(COLORS):
             self.results_text.tag_configure(f"c{_i}", foreground=_c)
+        self.results_nb.add(self._log_tab, text=log_tab_label(0))
+        self.results_nb.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.results_nb.bind("<<NotebookTabChanged>>",
+                             self._on_results_tab_changed, add="+")
 
         self.plot = PlotPanel(plot_frame, on_marker_changed=self._on_marker_drag)
         self.plot.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
@@ -3302,7 +3379,13 @@ class App(tk.Tk):
             self.files.append(fe)
             self._append_result("")
             for line in ts.summary_lines():
-                self._append_result(line)
+                # The summary is a description of the file (info), except for
+                # the parser's own WARN lines -- "I guessed" / "I threw
+                # something away" is the one part of it that must announce
+                # itself when the Log is not the tab on screen.
+                self._append_result(
+                    line,
+                    LOG_WARN if line.lstrip().startswith("WARN:") else LOG_INFO)
             # Auto-create a default trace bound to this file
             tc = self._make_default_trace(fe)
             self.traces.append(tc)
@@ -3517,13 +3600,13 @@ class App(tk.Tk):
             self._append_result(
                 f"  [{tc.id}] {tc.label}: mode 4 (A↔B + VDD/GND) is retired; "
                 f"migrated to mode 2 with VDD folded into GND "
-                f"(GND = {tc.gnd_ports or '(none)'})")
+                f"(GND = {tc.gnd_ports or '(none)'})", LOG_WARN)
             self._refresh_trace_list()
         if tc.migrate_legacy_mports():
             self._append_result(
                 f"  [{tc.id}] {tc.label}: the Port 1 / Port 2 / 'More ports' "
                 f"fields are retired; migrated to {len(tc.mports)} row(s) of "
-                "the measurement-port table")
+                "the measurement-port table", LOG_WARN)
             self._refresh_trace_list()
         legacy_custom = tc.custom_text
         if tc.migrate_legacy_custom_text():
@@ -3536,12 +3619,14 @@ class App(tk.Tk):
                     f"  [{tc.id}] {tc.label}: the free-text Custom spec is kept "
                     "verbatim -- moving it into the table would have changed "
                     "which port wins (a 'signal' line follows a 'ground' on the "
-                    "same port). Open 'Edit as text…' to convert it by hand.")
+                    "same port). Open 'Edit as text…' to convert it by hand.",
+                    LOG_WARN)
             else:
                 self._append_result(
                     f"  [{tc.id}] {tc.label}: the free-text Custom spec is "
                     f"retired; imported into {len(tc.mports)} measurement "
-                    f"port(s) and {len(tc.conn_rows)} connection row(s)")
+                    f"port(s) and {len(tc.conn_rows)} connection row(s)",
+                    LOG_WARN)
             self._refresh_trace_list()
 
     def _on_mode_changed(self) -> None:
@@ -4010,6 +4095,9 @@ class App(tk.Tk):
                 messagebox.showerror("Bad fit band", str(e))
                 return
 
+        # A new run releases the claim the PREVIOUS run's error put on the
+        # Results pane; this run's own errors put it back.
+        self._log_forced = False
         scope = "" if only is None else f" [{only.id}] {only.label} only"
         self._append_result("\n=== Calculate @ {:.4g} GHz{} ==="
                             .format(f_rlc_hz / 1e9, scope))
@@ -4024,7 +4112,9 @@ class App(tk.Tk):
         for tc in self.traces:
             fe = self._file_by_label(tc.file_label)
             if fe is None:
-                self._append_result(f"  [{tc.id}] {tc.label}: file '{tc.file_label}' not loaded")
+                self._append_result(
+                    f"  [{tc.id}] {tc.label}: file '{tc.file_label}' not loaded",
+                    LOG_WARN)
                 continue
 
             if only is not None and tc is not only:
@@ -4057,7 +4147,13 @@ class App(tk.Tk):
                 notes = _validation_messages(tc.mports, tc.conn_rows,
                                              tc.extra_lines, fe.ts.nports)
                 if len(notes) > VALIDATION_STRIP_LINES:
-                    self._append_result(f"  [{tc.id}] {tc.label}: spec notes")
+                    # Only the ones that are NOT a '✓' echo make this a
+                    # warning; a long spec that is entirely fine must not
+                    # badge the Log, the same rule _footer_strip_text counts by.
+                    sev = (LOG_WARN if any(not n.startswith("✓") for n in notes)
+                           else LOG_INFO)
+                    self._append_result(f"  [{tc.id}] {tc.label}: spec notes",
+                                        sev)
                     for note in notes:
                         self._append_result(f"      {note}")
 
@@ -4066,8 +4162,9 @@ class App(tk.Tk):
                 n_mports = len(resolve_meas_ports(term, fe.ts.nports))
             except Exception as e:
                 tc.Z = None
-                self._append_result(f"  [{tc.id}] {tc.label}: ERROR {e}")
-                self._append_result(traceback.format_exc())
+                self._append_result(
+                    f"  [{tc.id}] {tc.label}: ERROR {e}", LOG_ERROR)
+                self._append_result(traceback.format_exc(), LOG_ERROR)
                 continue
 
             # Mode 6 -- and ANY spec that defines more than one measurement
@@ -4087,14 +4184,15 @@ class App(tk.Tk):
                     self._append_result(
                         f"    [{tc.id}] {n_mports} measurement ports defined -- "
                         "reporting the full coupling matrix (M, k), same as "
-                        "Mode 6.")
+                        "Mode 6.", LOG_WARN)
                 try:
                     cres = self._calculate_coupling_trace(
                         tc, fe, f_rlc_hz, term=term)
                 except Exception as e:
                     tc.Z = None
-                    self._append_result(f"  [{tc.id}] {tc.label}: ERROR {e}")
-                    self._append_result(traceback.format_exc())
+                    self._append_result(
+                        f"  [{tc.id}] {tc.label}: ERROR {e}", LOG_ERROR)
+                    self._append_result(traceback.format_exc(), LOG_ERROR)
                     continue
                 coupling_blocks.append((tc, fe.label, cres))
                 if do_fit:
@@ -4107,11 +4205,14 @@ class App(tk.Tk):
             try:
                 Z, warns = compute_z(fe.Y, fe.ts.freqs, term)
             except Exception as e:
-                self._append_result(f"  [{tc.id}] {tc.label}: ERROR {e}")
-                self._append_result(traceback.format_exc())
+                self._append_result(
+                    f"  [{tc.id}] {tc.label}: ERROR {e}", LOG_ERROR)
+                self._append_result(traceback.format_exc(), LOG_ERROR)
                 continue
             for w in warns:
-                self._append_result(f"    [{tc.id}] {w}")
+                # Schur fallback / pathological-condition notes: the reduction
+                # took a different route than usual and said so.
+                self._append_result(f"    [{tc.id}] {w}", LOG_WARN)
             tc.Z = Z
             res = extract_rlc_at_freq(fe.ts.freqs, Z, f_rlc_hz)
             tc.rlc = res
@@ -4238,8 +4339,10 @@ class App(tk.Tk):
             term = self._build_termination(tc, nports=fe.ts.nports)
         Zmat, names, warns = compute_z_matrix(fe.Y, fe.ts.freqs, term)
         for w in warns:
-            self._append_result(f"    [{tc.id}] {w}")
+            self._append_result(f"    [{tc.id}] {w}", LOG_WARN)
         if any("Rank-deficient" in w for w in warns):
+            # INFO on purpose: this annotation exists to say the warning above
+            # it is not a fault, so badging it again would contradict it.
             self._append_result(
                 f"    [{tc.id}] (informational, not an error: a fully floating "
                 "+/- structure is rank-deficient at every frequency and pinv "
@@ -4249,12 +4352,12 @@ class App(tk.Tk):
                 f"    [{tc.id}] (this one IS an error in the port setup: the "
                 "named measurement ports read nan because their probe current "
                 "has nowhere to return. Give the port a '-' side, or add the "
-                "ground ports the structure needs.)")
+                "ground ports the structure needs.)", LOG_ERROR)
         if any("cancelled to roundoff" in w for w in warns):
             self._append_result(
                 f"    [{tc.id}] (also an error in the port setup: the numbers "
                 "below are shown but they are roundoff noise, not a "
-                "measurement. Fix the ports before reading them.)")
+                "measurement. Fix the ports before reading them.)", LOG_ERROR)
 
         tc.Zmat = Zmat
         tc.mport_names = list(names)
@@ -4273,7 +4376,7 @@ class App(tk.Tk):
         if not (tc.plot_self or (tc.plot_mutual and len(names) >= 2)):
             self._append_result(
                 f"    [{tc.id}] both 'self' and 'mutual' are unchecked -- "
-                "nothing plotted for this trace")
+                "nothing plotted for this trace", LOG_WARN)
         return cres
 
     def _coupling_plot_traces(self, tc: TraceConfig, fe: FileEntry,
@@ -4335,7 +4438,10 @@ class App(tk.Tk):
                                   [r[0].color_idx for r in shown_rows])
             for tc, fl in fit_lines:
                 if tc.enabled:
-                    self._append_result(fl)
+                    # A fit that raised is reported on the same line as one
+                    # that worked, so the severity has to come off the text.
+                    self._append_result(
+                        fl, LOG_WARN if "ERROR" in fl else LOG_INFO)
         for tc, file_label, cres in shown_blocks:
             self._append_result("")
             self._append_result(
@@ -4526,7 +4632,9 @@ class App(tk.Tk):
         self._trace_list_shown = []
         self._append_result(f"\n=== {origin} ===")
         for note in sess.warnings:
-            self._append_result(f"  note: {note}")
+            # A dropped key or a coerced value: the file did not load as
+            # written, which is exactly what must not pass unseen.
+            self._append_result(f"  note: {note}", LOG_WARN)
 
         missing: list[tuple[str, str]] = []
         for label, path, found in sess.files:
@@ -4549,7 +4657,7 @@ class App(tk.Tk):
                         tc.file_label = fe.label
                 self._append_result(
                     f"  '{label}' resolved to {fe.label}; its traces were "
-                    f"re-bound to the new name")
+                    f"re-bound to the new name", LOG_WARN)
             self.files.append(fe)
 
         self.traces = list(sess.traces)
@@ -4583,7 +4691,8 @@ class App(tk.Tk):
             f"(a config carries the setup, not the results).")
         for label, path in missing:
             self._append_result(
-                f"  MISSING: '{label}' — looked for {path or '(no path)'}")
+                f"  MISSING: '{label}' — looked for {path or '(no path)'}",
+                LOG_WARN)
         if missing:
             self._append_result(
                 "  Traces bound to a missing file are still listed and still "
@@ -4787,9 +4896,87 @@ class App(tk.Tk):
             return None
         return int(sel[0])
 
-    def _append_result(self, text: str) -> None:
+    # ------------------------------------------------- the Results notebook
+
+    def _log_selected(self) -> bool:
+        """True when the Log tab is the one on screen."""
+        try:
+            return self.results_nb.select() == str(self._log_tab)
+        except Exception:                               # pragma: no cover
+            return False
+
+    def _render_log_badge(self) -> None:
+        """Repaint the Log tab's label. Never raises -- it runs from a trace."""
+        try:
+            self.results_nb.tab(self._log_tab,
+                                text=log_tab_label(self._log_unseen))
+        except Exception:                               # pragma: no cover
+            pass
+
+    def _on_results_tab_changed(self, _event=None) -> None:
+        """
+        The badge is cleared by LOOKING at the Log, not by any other action.
+
+        Selecting some other tab is the user (or a later automatic switch)
+        deliberately moving on, which is what releases the claim an ERROR line
+        put on the pane.
+        """
+        if self._log_selected():
+            self._log_unseen = 0
+            self._render_log_badge()
+        else:
+            self._log_forced = False
+
+    def _select_log_tab(self) -> None:
+        """
+        Bring the Log to the front and keep it there.
+
+        The flag is set AFTER select() so it cannot be cleared by the
+        <<NotebookTabChanged>> that select() generates, whose delivery order
+        relative to this line is not something to depend on.
+        """
+        try:
+            self.results_nb.select(self._log_tab)
+        except Exception:                               # pragma: no cover
+            return
+        self._log_forced = True
+
+    def _select_results_tab(self, tab) -> bool:
+        """
+        Switch the Results notebook to `tab` -- unless an error owns it.
+
+        This is the polite switch, and it is the one an automatic
+        "show the run that just finished" must use: an ERROR line already
+        pulled the Log to the front and moving off it would hide the only
+        explanation of why the numbers are missing.  Returns True when the
+        switch happened.
+        """
+        if self._log_forced:
+            return False
+        try:
+            self.results_nb.select(tab)
+        except Exception:                               # pragma: no cover
+            return False
+        return True
+
+    def _append_result(self, text: str, severity: str = LOG_INFO) -> None:
+        """
+        Write one line to the Log.
+
+        `severity` defaults to LOG_INFO, which is exactly what every call site
+        did before the Results pane became a notebook.  LOG_WARN counts
+        towards the Log tab's badge while the Log is not on screen; LOG_ERROR
+        brings the Log to the front instead, because an error the user never
+        sees is worse than a tab switch they did not ask for.
+        """
         self.results_text.insert(tk.END, text + "\n")
         self.results_text.see(tk.END)
+        if severity == LOG_ERROR:
+            # No badge: the log is now on screen, so nothing about it is unseen.
+            self._select_log_tab()
+        elif severity == LOG_WARN and not self._log_selected():
+            self._log_unseen += 1
+            self._render_log_badge()
 
     def _append_swatched(self, text: str, color_idxs: Sequence[int]) -> None:
         """
