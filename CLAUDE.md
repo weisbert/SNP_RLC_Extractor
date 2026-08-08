@@ -350,6 +350,56 @@ looking at the screen.
 
 - **Plot quantities that need more than one curve arrive via `Trace.aux`.** `k` needs three curves at once (`Z_ab`, `Z_aa`, `Z_bb`) and so cannot be derived from a single `(freqs, Z)` pair; the GUI precomputes it and attaches it. `trace_y_values` must return an all-NaN array (draw nothing) for a trace with no matching `aux` entry, never raise — self curves share the subplot grid with mutual ones. New derived quantities go in `AUX_PLOT_TYPES` the same way.
 
+### Cursor readout (the plot's marker / V-line labels)
+
+- **One cursor gets ONE readout, never one label per curve.** A vertical cursor
+  crossing N curves used to draw N annotations, all anchored at the same x with
+  the same fixed `(6, 4)` pt offset and no collision or boundary check. That is
+  fine at N=1 and unreadable on a coupling plot, which is the normal case, not a
+  corner: one mode-6 trace with 3 measurement ports expands to 3 self + 3 mutual
+  curves and the mutual ones all sit near zero. Measured over 4 subplots: 21
+  labels, **19 overlapping pairs, 20 of 21 crossing into the neighbouring
+  subplot**, and the frequency printed 21 times for one cursor.
+  `tests/test_plot_readout.py` is the guard and asserts the two structural
+  properties directly off the rendered text — no two texts overlap, no text
+  leaves its axes. It is the first coverage `pkg_rlc_plot` has ever had.
+- **The readout box IS the legend.** It carries the colour/linestyle swatch and
+  the curve name, so drawing a separate legend next to it is the same names
+  twice competing for the same empty corner. When there is no cursor to read
+  (`show_marker` off, or the `Readout` toggle off) `_draw_plain_legend` restores
+  the old names-only legend on the first axes — do not let both exist at once.
+- **The readout's corner is scored from the CURVE DATA and frozen until the next
+  redraw.** matplotlib's `loc="best"` also weighs the legend's own size, so a
+  value going from `2 nH` to `2.05 nH` flips the box to another corner while the
+  user is dragging the cursor. `_pick_readout_loc` caches per axes and `redraw`
+  clears the cache. The candidate set deliberately includes `center left` /
+  `center right`: on a coupling plot the self curves sit at the top and the
+  mutual ones near zero, so all four *corners* hold data and the middle band is
+  the only empty space.
+- **The name column is a measured budget, not a constant.** 4 subplots give each
+  axes ~210 px against ~320 px at 3, and a box wider than its subplot is exactly
+  the failure being fixed. `_name_budget` derives it from `ax.get_window_extent()`
+  in em of the readout font (so it holds at any DPI), with `READOUT_NAME_MIN = 8`
+  as a floor — rows that cannot be told apart are worse than a slightly wide box,
+  and that corner is what the `Readout` toggle and Fullscreen are for. `_fit_names`
+  keeps the **tail**: `osc_primary_coil_00` / `_01` differ only at the end, and
+  `MAX_LABEL_LEN` (a legend-width rule) must not be applied before the shared
+  trace prefix is stripped or they arrive already identical.
+- **A value column is as wide as its widest cell OR its header.** Sizing on the
+  values alone put a 7-char `5.1 GHz` over a 5-char column and threw every
+  multi-cursor heading one place off the numbers it names.
+- **V lines are cursors, so they are columns in the same box** — they had the
+  identical per-curve-label bug and can be stacked several deep. `_anno_stack`
+  entries are `(kind, artists)` and a `"v"` entry also owns one element of
+  `_vline_freqs`; Delete must pop both or the readout keeps a column for a line
+  that is no longer drawn.
+- **The readout prints engineering units** (`_readout_value` → `format_si`):
+  `300 pH`, not `0.3 nH`; `1.5 Ω`, not the `1.5e+03 mΩ` a plain `%.3g` produced.
+  Non-finite reads `--` and the row **stays** — dropping it shifts every row
+  below and the swatches stop lining up with the curves. This is why
+  `pkg_rlc_plot` imports `pkg_rlc_core` (acyclic: core imports nothing back);
+  a second copy of the rule would let the plot and the results pane disagree.
+
 ### `reduce_snp.py` specifics
 
 - **Standalone, no repo imports.** It runs from a scratch directory on a sim server. numpy + stdlib only. Duplicating the Touchstone parser here is intentional, not an oversight — keep the n=2 column-order quirk mirrored on both sides.
