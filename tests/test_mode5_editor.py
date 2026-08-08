@@ -539,13 +539,16 @@ class TestMode5EditorWiring(_EditorCase):
         """
         'Show Ports' is the ONLY route to the file's port names -- the Port /
         To dropdowns carry bare numbers. With nothing selected in the Files
-        listbox it used to return silently.
+        listbox it used to return silently. It now opens the Ports & Roles
+        window (tests/test_port_roles.py) instead of printing into the
+        scrollback, but the fallback is the same rule and still has to hold.
         """
         self.app.files_lb.selection_clear(0, tk.END)
-        self.app.results_text.delete("1.0", tk.END)
         self.app._on_show_ports()
-        body = self.app.results_text.get("1.0", tk.END)
-        self.assertIn(f"Ports of {self.fe.label}", body)
+        self._settle()
+        win = self.app._port_roles_win
+        self.assertIsNotNone(win)
+        self.assertIn(self.fe.label, win.header.cget("text"))
 
     def test_calculate_writes_the_capped_off_validation_lines_to_results(self):
         """

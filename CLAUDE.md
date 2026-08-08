@@ -13,6 +13,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `pkg_rlc_core.py`       | Touchstone parser (+ `TouchstoneParseError` / `diagnose_touchstone` / `check_touchstone`), S<->Y, unified `TerminationSet` model + the Mode 5 DSL (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`), the connection-table row model (`MeasPortRow`, `ConnectionRow`, `rows_to_dsl_text`, `dsl_text_to_rows`, `build_terminations_rows`), `parse_mport_spec`, `resolve_meas_ports`, `compute_z_matrix` / `compute_z`, `extract_rlc_at_freq` / `extract_coupling_at_freq`, `fit_inductor` / `fit_capacitor` / `fit_auto`. |
 | `pkg_rlc_plot.py`       | Matplotlib plot panel: multi-subplot grid over R/L/C/\|Z\|/Re/Im/Q/**k**, draggable freq marker, M / V / Delete keys, fullscreen window. Quantities that cannot be derived from one `(freqs, Z)` pair (today only `k`) arrive via the optional `Trace.aux` dict. |
 | `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), the frozen-trace snapshot (`_freeze_trace_config`, the Traces-list right-click menu), the File menu and the JSON session format (`session_to_dict` / `session_from_dict` / `SessionError` / `autosave_path`), the results pane (a `ttk.Notebook` whose tab 0 is the Log, with `log_tab_label` / `_append_result(severity)` / `_select_results_tab`). Re-exports the DSL helpers it no longer defines. |
+| `pkg_rlc_gui.py` (cont.) | Plus the **Ports & Roles** window (`PortRolesWindow`, `_trace_role_rows`, `_role_warnings`, `_roles_header`, `apply_ports_as`), which is what `Show Ports` now opens. |
 | `pkg_rlc_help.py`       | In-app Help window content (`HELP_TOPICS`, `HelpWindow`, `HELP_WINDOW_WIDTH`). One tab per mode + syntax + save/load + worked examples. |
 | `pkg_rlc_extractor.py`  | Entry point: dispatches GUI vs CLI from argv. CLI `--mode gnd \| p2p \| coupling`, `--mport` repeatable. |
 | `reduce_snp.py`         | **Standalone** CLI: shrinks a big `.sNp` to a few ports (KEEP / GND-short / open-or-matched elimination). Deliberately imports nothing from this repo — it gets copied to simulation servers on its own. |
@@ -27,6 +28,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
 | `tests/test_mode5_editor.py` | Stage 3: the pure text<->rows import decision and both strip renderers, plus Tk-driven editor wiring, per-mode widget visibility, the text hatch, the CSV gate, wheel routing, and the LAYOUT numbers (`ismapped` / `reqwidth` / `xview` / `scrollregion` / `sashpos`) measured off a mapped window. |
 | `tests/test_freeze_trace.py` | "Freeze as new trace": the pure copy rules (config copied, lists element-wise, results REFERENCED), the two refusals (Calculate skips it, the editor cannot write it), that everything else still works (plot / show-hide / CSV / Remove), the right-click menu, and the session round trip that comes back without numbers and says so. Every guard mutation-checked. |
+| `tests/test_port_roles.py` | Port names put to work: the pure classifier (`port_roles`), the provenance map (`row_sources`), the run-collapser, the open-port name check with its false-alarm cases run against every real fixture, `_trace_role_rows` (any mode → rows), and the Tk-driven Ports & Roles window — filter, sort-on-the-raw-value, both Treeview hazards, the flagged rows and the collapsed-range write-back. Every guard mutation-checked. |
 | `tests/test_report_readability.py` | Four display-only changes, none of which touches a number: the ranked / floored coupling list (pure — the key, the two things never hidden, the sign invariant), the coloured trace Listbox, the tagged results-table swatch, and the editor's footer summary line (mapped window at the 1040x600 minsize). Every guard mutation-checked. |
 | `tests/generate_test_snp.py` | Builds synthetic fixtures with analytically known R/L/C/M; run as a script to (re)generate `tests/fixtures/`. The `COUPLED_*` module constants are the single source of truth for the coupled-coil fixtures. |
 | `tests/test_golden_regression.py` | Replays `tests/fixtures/golden_legacy.npz` through the current API and asserts `assert_array_equal`. This is the guard on every "stays bit-identical" claim below. |
@@ -236,11 +238,14 @@ looking at the screen.
 - **Port cells take NUMBERS; `Show Ports` is the only route to the file's port names.**
   A name-bearing dropdown does not fit the editor width (design note §5a — a ttk popdown
   is only as wide as the widget, and 15 chars ≈ 105 px the 431 px viewport does not have),
-  so it is deferred to stage 4. Until then the substitute has to be *findable*: it is named
-  in both table hints, in Help → Mode 5 and Help → Input syntax, and in the README, and
-  `_on_show_ports` falls back to the editor's file rather than silently doing nothing when
-  the Files listbox has no selection. If the dropdown ever carries names, delete those five
-  pointers together.
+  so it is deferred to stage 4. `Show Ports` is no longer a *substitute* for it — it opens
+  the **Ports & Roles** window, which carries the name, the role and the source per port
+  and writes a selection back as a collapsed range, i.e. strictly more than a 105 px
+  popdown could. It still has to be *findable*: it is named in both table hints, in
+  Help → Mode 5 and Help → Input syntax, and in the README, and `_on_show_ports` falls back
+  to the editor's file rather than silently doing nothing when the Files listbox has no
+  selection. If the dropdown ever carries names it is an ADDITION and those five pointers
+  stay.
 - **`TraceConfig.custom_text` is retired-but-loading, exactly like `mp1_*`.** `conn_rows`
   + `extra_lines` are the storage; the DSL text is a DERIVED view (`_editor_dsl_text()`).
   `migrate_legacy_custom_text` folds an old free-text spec in on load and
@@ -677,7 +682,7 @@ mutation-checked.
   migrations, session load notes and a failed fit are `LOG_WARN`; `ERROR` lines,
   their tracebacks and the two "this IS an error in the port setup" annotations
   are `LOG_ERROR`; the results table, the descriptive half of a file summary,
-  Show Ports, Check File and the **rank-deficiency** annotation are `LOG_INFO` —
+  Check File and the **rank-deficiency** annotation are `LOG_INFO` —
   that last one exists to say the warning above it is not a fault, so badging it
   again would contradict it. The mode-5 "spec notes" block counts the messages
   that do **not** start with `✓`, the same rule `_footer_strip_text` counts by.
@@ -696,6 +701,94 @@ mutation-checked.
   tab is 22 px, about three characters. A future run tab wants a short label
   (`#1`) and a rolling cap, not a timestamp — a timestamped label is what drove
   a 50-tab strip to a 8808 px requested width in the measurements.
+
+### Port names, roles, and the Ports & Roles window
+
+`tests/test_port_roles.py` is the guard, and every claim below was
+mutation-checked.
+
+- **`port_roles` in `pkg_rlc_core` is the ONE classifier.** The port-overview
+  strip, the footer summary and the window all count off the same records —
+  `_port_bucket` no longer exists in the GUI. A role is finer than a bucket
+  (`probe +` / `probe −` collapse into one `probe` count via `ROLE_TO_BUCKET`)
+  because the strip has to stay short while the window has to say which probe
+  touched the port. With `nports=None` it still drops every `open` record,
+  including an explicit `open` row: an open port is one the FILE has and the
+  spec did not name, so without the file it is unknowable, and a count derived
+  from the largest port typed would look authoritative and be wrong.
+- **A `TerminationSet` carries no provenance, so `row_sources` is separate and
+  is passed IN.** It walks the rows in exactly the order `rows_to_dsl_text`
+  emits them (measurement ports, connections, then the kept text) and keeps the
+  LAST writer, because the DSL is last-assignment-wins — that is the same rule
+  that makes a `ground` row beat a probe, so the "From" column and the answer
+  cannot disagree. It never raises: a half-typed range contributes nothing,
+  exactly as it contributes nothing to the spec.
+- **`_trace_role_rows` renders EVERY mode through the rows path, and that is
+  deliberately the permissive one.** Modes 1/2/3/6 have no connections table
+  but every one of them is expressible as one (that is the premise of the Mode
+  5 DSL), so one rendering covers all five instead of five that can drift. It
+  is also why the window can show a mode-6 probe-and-ground overlap that
+  `build_terminations_coupling` REFUSES: refusing is right for Calculate and
+  exactly wrong for a window whose job is to show what was typed. The synthetic
+  rows are relabelled to the FIELD the user typed into (`GND / VDD`, `Port B`,
+  `Short Pairs`) — telling a mode-1 user their port came from "probe row 1 (+)"
+  names a row that exists nowhere on their screen.
+- **`collapse_ports` must never emit a space.** The DSL is whitespace-tokenised
+  and the port field is `parts[0]`, so `1-3, 7` parses as the port field `1-3,`
+  with a stray `7` where the keyword belongs. `1-3,7` round-trips through
+  `parse_port_range`. This is what makes the write-back safe, not a formatting
+  preference. Same rule for `_append_port_spec`, which APPENDS — replacing
+  would throw away the only copy of what the field already said.
+- **The open-port name check is a REMNANT check, and its thresholds are
+  calibrated against real fixtures, not taste.** `name_prefix` strips only a
+  TRAILING run of digits (and then the separators in front of it): stripping
+  digits anywhere makes `c1_p` and `c2_p` one family and every use of
+  `coupled_4port_float.s4p` raises a warning. `OPEN_CLUSTER_MIN_FAMILY = 4`
+  keeps `coil1`/`coil2` out — probing one coil and floating the other is the
+  ordinary way to use `coupled_2port_gndref.s2p`.
+  `OPEN_CLUSTER_MAX_OPEN_FRACTION = 0.25` is what makes it a remnant: grounding
+  5 of 10 is a decision, leaving 3 of 54 is a typo, and it is also what keeps a
+  file whose ports are all `port1..port153` silent. A file with NO names is
+  silent by construction (every prefix is `""`). The false-alarm tests run
+  against every fixture in the repo under the config that fixture exists for.
+- **`_validation_messages` gained `port_names` and still must not raise.** The
+  new check is wrapped in its own `except` for that reason. It is the only
+  message there that reads the FILE rather than the spec — everything else says
+  "your spec is inconsistent", this one says "your spec is consistent and
+  probably not what you meant", which is the failure that survives review.
+- **A read-only `ttk.Treeview` is the RIGHT widget here and the repo's ban does
+  not apply.** The ban is about the EDITABLE connection table, which needs cell
+  editors Treeview does not have. Two hazards are handled and both fail
+  SILENTLY otherwise: row height is frozen at 20 px whatever `tk scaling` and
+  whatever font the style carries, so it is set from the font's metrics on a
+  DERIVED style name (`PortRoles.Treeview`) — never by reconfiguring the global
+  `Treeview`, which would reach every Treeview in the process; and tag colours
+  are ignored on Tk builds whose `Style().map("Treeview", …)` carries
+  `('!disabled', '!selected')` specs, which match every ordinary row and
+  outrank the tag. `_fixed_map_filter` is applied unconditionally and is pure,
+  so the rule itself is testable without a display.
+- **Sorting is on the RAW record, never the rendered string.** `#` is an int
+  and a string sort puts port 10 between 1 and 2 — the classic Treeview bug.
+- **The Treeview is NOT registered with the wheel router.** `"Treeview"` is in
+  `App._WHEEL_OWNERS`, so `_route_wheel` bails out over it and Tk's own class
+  binding scrolls it; a registered handler would be dead code, and taking
+  Treeview out of the set to reach one would break every other Treeview.
+- **The window is modeless and refreshes from `_apply_editor_strips`.** Same
+  contract: `after_idle`-coalesced, never raises, writes to nothing but its own
+  widgets, never writes a `TraceConfig`, guards on `winfo_exists()`. Its
+  refresh sits OUTSIDE that function's try/except so a window failure cannot
+  blank the strips and a strip failure cannot leave the window stale.
+  `_strips_wanted()` is why the strips now run outside mode 5 at all — without
+  it the window froze the moment a mode-1 user edited the GND field, which is
+  the edit it exists to check. No `grab_set`: a modal Toplevel that outlives
+  its opener blocks event delivery and hangs `update()` (the documented style
+  picker / scrollbar failure).
+- **The write-back goes through the widgets, never into the `TraceConfig`.**
+  `RowTable.add_row` / `PlaceholderEntry.set_value` plus
+  `_schedule_editor_sync`, so auto-apply, the strips and the stale marker
+  follow exactly as they do for a keystroke — poking the trace directly is
+  overwritten by the next sync. A frozen trace refuses the write, by name, for
+  the same reason `_sync_editor_to_trace` does.
 
 ### Cursor readout (the plot's marker / V-line labels)
 

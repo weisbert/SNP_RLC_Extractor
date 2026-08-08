@@ -30,7 +30,7 @@ Basic flow:
 
 1. **Add File...** — load any Touchstone file. The parser content-sniffs the port count and ignores the file extension; `.s2p`, `.s45p`, `.txt`, `.dat`, or no extension all work. Each load prints a summary — port count, point count, `Z0`, the option line actually used, **the frequency span**, and `max |S|` — and the span is repeated on the file's line in the list. See [Reading files](#reading-files) for what a load failure tells you and what **Check File** is for.
 2. A default trace is auto-created against the loaded file. Select it in the **Traces** listbox to edit.
-3. In **Edit Selected Trace**, pick a measurement mode (Modes 1-3, `+/- Ports / Coupling`, or Custom) and fill in the relevant port fields. Modes 5 and 6 are filled in as **tables** with a `+ Add` button rather than typed as text: Mode 6 gets the measurement-port table, Mode 5 that table plus a connections table underneath, with a port-overview line and a validation line under both. Every port cell takes port **numbers**; **Show Ports** lists the file's port *names* in the Results pane, which is where to look on an unfamiliar package. R/L/C cells take one word with an SI suffix and no unit (`5m`, `0.5n`, `1u`) — the unit is in the column header, and a value with a space in it is rejected rather than silently truncated.
+3. In **Edit Selected Trace**, pick a measurement mode (Modes 1-3, `+/- Ports / Coupling`, or Custom) and fill in the relevant port fields. Modes 5 and 6 are filled in as **tables** with a `+ Add` button rather than typed as text: Mode 6 gets the measurement-port table, Mode 5 that table plus a connections table underneath, with a port-overview line and a validation line under both. Every port cell takes port **numbers**; **Show Ports** opens the **Ports & Roles** window, which is where to look on an unfamiliar package — see [Ports & Roles](#ports--roles). R/L/C cells take one word with an SI suffix and no unit (`5m`, `0.5n`, `1u`) — the unit is in the column header, and a value with a space in it is rejected rather than silently truncated.
 4. Pick the curve's **Style** — click the line preview to open a palette of the 12 colours and 4 line styles, drawn as they will be drawn on the plot. On a coupling trace the preview also shows the run of colours the trace's expanded curves will occupy, and `×n` for how many.
 5. Set **RLC Freq (GHz)** for single-point extraction, optionally enter a **Band Fit** range and model.
 6. Click **Calculate All & Plot**. Results appear in the right pane and overlay on the multi-subplot view. **Calculate This Trace**, in the editor's footer, recomputes only the selected trace — the fast path when you are iterating on one port spec with several traces loaded.
@@ -172,6 +172,28 @@ Every load prints two kinds of extra line when they apply. `WARN:` means somethi
 A file that will not load produces a report naming a line, the text of that line, and a **verdict**: `THE FILE is inconsistent` (truncated/corrupt — everything before the named line was read correctly), `THE FILE looks valid but…` (a real format not read here), `THE FILE could not be read` (missing, locked, out of memory), or `THE PARSER gave up` — which means the file's structure checks out and this is a bug here, reported with a traceback to send. If the only problem is a stray non-numeric token the GUI offers to load it anyway; the result is suspect, because dropping one number in a positional stream shifts every number after it.
 
 **Check File** (GUI) / `--diagnose` (CLI) runs the same structure report on demand: size, encoding, line counts, the option line, how many numbers each data line carries, and whether the data divides into whole records for each plausible port count. It exists for the case an error dialog cannot cover — the file *loads* but the numbers look wrong.
+
+---
+
+## Ports & Roles
+
+**Show Ports**, at the top of the left panel, opens a modeless window that answers the one question a 153-port package export makes hard: *what is my spec doing with every ball?*
+
+```
+pkg.s153p — 153 ports · 4 probe · 54 ground · 1 element · 94 open
+  #    Name           Role       From
+  1    VSS_ball_1     ground     conn row 1
+  ...
+ 52    VSS_ball_52    open       —                  <- flagged
+ 61    sig_in         probe +    probe row 1 (+)
+```
+
+* One row per port of the file, with the **name** the file carries (`! Port[12] = VDD_ball_2`), the **role** your spec gives it — `probe +` / `probe −` / `ground` / `vdd` / `element` / `shorted` / `open` — and the row or kept-as-text line that decided it. It works in every mode: modes 1/2/3 name the field (`GND / VDD`, `Port A`) rather than a table row.
+* Filter by name, hide the open ports, click any heading to sort. Sorting is on the value, so port 10 sorts after port 9.
+* Rows are flagged when they deserve a second look: an **open** port whose name matches a set you grounded or probed (this is the one that catches "I grounded 51 of the 54 ground balls"), a port claimed by both a probe row and a ground row — legal, and the ground row wins — and a port assigned by the *kept as text* block rather than by a table row.
+* Select rows and press **Set as ground** or **Set as probe +**: the ports are written into the editor as a **collapsed range**, so a 54-ball ground group becomes one row (`6-14,20-59`) instead of 54. The write goes through the editor, so it applies as you type, marks the trace stale and shows up in the strips exactly like a keystroke.
+
+The window follows what you type. The open-port check also appears on the validation strip under the tables, so it reaches you without opening anything.
 
 ---
 

@@ -88,6 +88,13 @@ afterwards without redoing the analysis:
   Help → Input syntax, and in the README, and which falls back to the editor's
   file instead of silently doing nothing when the Files listbox has no
   selection. A deferral nobody is told about is just a missing feature.)
+  (**Superseded**: `Show Ports` is no longer a substitute, it is the answer.
+  It opens the **Ports & Roles** window — every port with its name, the role
+  the spec gives it, the row that decided it, and a write-back that turns a
+  selection into a collapsed range in the table. That is strictly more than a
+  dropdown could carry in 105 px, and it is what the five pointers now point
+  at. If stage 4 ever puts names *in* the dropdown, it is an addition, not a
+  replacement, and the pointers stay.)
 - **Units live in the column headers** (`R Ω`, `L H`, `C F`); the cell holds
   `5m`. The string `R=` never appears in the UI again.
 - **Each element row echoes its parsed value** (`5 mΩ + 0.5 nH + 1 µF series`).
@@ -199,7 +206,10 @@ Four decisions taken during stage 3, each for a measured reason:
   a 7-char Port cell shows `12: VDD_bal…` truncated in the list as well as in
   the cell. A name-bearing dropdown needs ≥15 chars ≈ 105 px, which the 431 px
   editor viewport does not have. Revisit in stage 4, when the rail can be
-  re-proportioned; the names stay reachable through **Show Ports**.
+  re-proportioned; the names are reachable through **Show Ports**, which now
+  opens the **Ports & Roles** window (name + role + source per port, with a
+  collapsed-range write-back into these tables) rather than printing a list
+  into the Results pane.
 - **The per-row parsed-value echo moved into the validation strip.** A dedicated
   static column needs ~20 chars ≈ 140 px. The strip costs nothing and catches
   the same error (`✓ port 13 → GND: 5 mΩ + 500 pH + 1 uF`). It emits **one line

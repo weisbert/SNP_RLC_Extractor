@@ -510,9 +510,12 @@ CONNECTIONS -- Type / Port / To / R / L / C:
      fields.)
    * The Port / To dropdowns list port NUMBERS, not names. To see
      which ball is which on an unfamiliar file, click "Show Ports"
-     at the top of the left panel; the names go to the Results
-     pane. (A name-bearing dropdown does not fit the editor's
-     width; it is planned, not forgotten.)
+     at the top of the left panel: it opens the "Ports & Roles"
+     window, which lists every port with its name, the role your
+     spec gives it, and which row said so -- and can write a
+     selection back into these tables as a collapsed range. (A
+     name-bearing dropdown does not fit the editor's width; it is
+     planned, not forgotten.)
    * "To" is ignored by ground / vdd / open / rlc_gnd, which are
      always to ground. rlc_between takes exactly ONE partner port
      (an N-to-M lumped element is ambiguous -- star? mesh?).
@@ -1168,7 +1171,32 @@ Where the file's port names are
 -------------------------------
 Every port cell and dropdown in this tool takes port NUMBERS. To
 see the names the file carries ("! Port[12] = VDD_ball_2"), select
-the file and click "Show Ports"; the list goes to the Results pane.
+the file and click "Show Ports". That opens the "Ports & Roles"
+window:
+
+   #    Name           Role       From
+   1    VSS_ball_1     ground     conn row 1
+   ...
+   8    VSS_ball_8     open       --            <- flagged
+   9    sig_in         probe +    probe row 1 (+)
+
+   * One line per port of the file, with the role your spec gives
+     it (probe + / probe - / ground / vdd / element / shorted /
+     open) and the row or kept-as-text line that decided it.
+   * Filter by name, hide the open ports, and click any heading to
+     sort (on the value, so port 10 sorts after port 9).
+   * Rows are flagged in orange when they need a second look: an
+     OPEN port whose name matches a set you grounded or probed, a
+     port claimed by both a probe row and a ground row (the ground
+     row wins), and a port assigned by the "kept as text" block
+     rather than by a table row.
+   * Select rows and press "Set as ground" or "Set as probe +" and
+     they are written into the editor as a COLLAPSED RANGE, so a
+     54-ball ground group is one row ("6-14,20-59") instead of 54.
+
+The window stays open while you edit and follows what you type. The
+same open-port check also appears on the validation strip under the
+tables, so you see it without opening anything.
 """
 
 

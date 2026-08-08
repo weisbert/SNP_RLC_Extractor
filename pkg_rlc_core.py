@@ -2367,6 +2367,311 @@ def inert_lumped_messages(terminations: TerminationSet) -> list[str]:
 
 
 # ============================================================================
+# Port roles (what every port of the file is actually doing)
+# ============================================================================
+#
+# The tool already harvests "! Port[12] = VDD_ball_2" into TouchstoneData.
+# port_names and then does almost nothing with it.  On a 153-port package
+# export nobody has memorised the ball map, and the failure that costs real
+# time is not a crash -- it is "I grounded 51 of the 54 ground balls, the
+# number was plausible, and I found out three weeks later".  Everything below
+# is pure so the GUI's overview strip, its validation strip and the Ports &
+# Roles window can never disagree about what a port is doing.
+
+ROLE_PROBE_PLUS = "probe +"
+ROLE_PROBE_MINUS = "probe −"
+ROLE_GROUND = "ground"
+ROLE_VDD = "vdd"
+ROLE_ELEMENT = "element"
+ROLE_SHORTED = "shorted"
+ROLE_OPEN = "open"
+
+# Display order of the overview buckets.  A role is finer-grained than a bucket
+# (the two probe sides collapse into one "probe" count) because the strip has
+# to stay short while the window has to say which probe touched the port.
+OVERVIEW_BUCKETS = ("probe", "ground", "vdd", "element", "shorted", "open")
+
+ROLE_TO_BUCKET = {
+    ROLE_PROBE_PLUS: "probe",
+    ROLE_PROBE_MINUS: "probe",
+    ROLE_GROUND: "ground",
+    ROLE_VDD: "vdd",
+    ROLE_ELEMENT: "element",
+    ROLE_SHORTED: "shorted",
+    ROLE_OPEN: "open",
+}
+
+
+@dataclass(frozen=True)
+class PortRole:
+    """What one port of the file is doing under a given TerminationSet."""
+    index: int          # 1-BASED, the number the user types
+    name: str           # from the file's "! Port[n] = ..." comments, "" if none
+    role: str           # one of the ROLE_* constants
+    source: str = ""    # which row / kept-as-text line put it there ("" = none)
+    group: str = ""     # measurement-port name, for the two probe roles
+
+    @property
+    def bucket(self) -> str:
+        return ROLE_TO_BUCKET[self.role]
+
+
+def _role_of(term: TerminationSet, port0: int,
+             elem_ports: set, short_ports: set) -> tuple[str, str]:
+    """(role, measurement-port name) for one 0-based port."""
+    t = term.termination_of(port0)
+    if isinstance(t, Signal):
+        group, sign = _normalize_signal(t)
+        return (ROLE_PROBE_PLUS if sign > 0 else ROLE_PROBE_MINUS), group
+    if isinstance(t, Vdd):
+        return ROLE_VDD, ""
+    if isinstance(t, Ground):
+        return ROLE_GROUND, ""
+    if isinstance(t, LumpedToGnd) or port0 in elem_ports:
+        return ROLE_ELEMENT, ""
+    if port0 in short_ports:
+        return ROLE_SHORTED, ""
+    return ROLE_OPEN, ""
+
+
+def port_roles(term: TerminationSet | None,
+               nports: int | None = None,
+               port_names: Sequence[str] | None = None,
+               sources: dict | None = None) -> list[PortRole]:
+    """
+    One record per port, in port order.  THE single classifier.
+
+    `nports` is the file's port count.  With it, every port of the file gets a
+    record and the ones the spec never mentioned come back as `open` -- which is
+    the whole point, because an unmentioned port is exactly the one nobody
+    checked.  WITHOUT it (no file selected) the open ports are not merely
+    unknown in number, they are unknowable: only the ports the rows mention are
+    listed, and an explicit `open` row is dropped too, so a caller can never
+    render an "open" count that was invented from the largest port typed.
+
+    `sources` maps a 1-BASED port to the row that last assigned it (see
+    row_sources).  It is passed in rather than derived here because a
+    TerminationSet carries no provenance -- by design; it is what the reduction
+    consumes, and the rows are one of several ways to build one.
+    """
+    if term is None:
+        return []
+    elem_ports: set = set()
+    short_ports: set = set()
+    for cpl in term.couplings:
+        target = elem_ports if isinstance(cpl, LumpedBetween) else short_ports
+        target.add(cpl.port_i)
+        target.add(cpl.port_j)
+
+    if nports is not None:
+        scan: Sequence[int] = range(int(nports))
+    else:
+        scan = sorted(set(term.per_port) | elem_ports | short_ports)
+
+    names = list(port_names or [])
+    src = sources or {}
+    out: list[PortRole] = []
+    for i in scan:
+        role, group = _role_of(term, i, elem_ports, short_ports)
+        if nports is None and role == ROLE_OPEN:
+            continue
+        out.append(PortRole(index=i + 1,
+                            name=names[i] if i < len(names) else "",
+                            role=role,
+                            source=src.get(i + 1, ""),
+                            group=group))
+    return out
+
+
+def row_sources(mport_rows: Sequence[MeasPortRow] = (),
+                conn_rows: Sequence[ConnectionRow] = (),
+                extra_lines: str = "") -> dict[int, str]:
+    """
+    1-based port -> the row that LAST assigned it.
+
+    Walked in exactly the order rows_to_dsl_text emits (every measurement port,
+    then every connection, then the kept-as-text block), because the DSL is
+    last-assignment-wins: the row that decides a port is the last one to name
+    it, which is the same rule that makes a `ground` row beat a probe.
+
+    Never raises -- a half-typed range simply contributes nothing, the same way
+    it contributes nothing to the spec.
+    """
+    src: dict[int, str] = {}
+
+    def mark(spec: str, label: str) -> None:
+        try:
+            ports = parse_port_range(spec)
+        except Exception:
+            return
+        for p in ports:
+            src[p] = label
+
+    for i, row in enumerate(mport_rows, start=1):
+        if row.is_blank():
+            continue
+        if row.plus.strip():
+            mark(row.plus, f"probe row {i} (+)")
+        if row.minus.strip():
+            mark(row.minus, f"probe row {i} (−)")
+
+    for i, row in enumerate(conn_rows, start=1):
+        if row.is_blank() or not row.ports.strip():
+            continue
+        mark(row.ports, f"conn row {i}")
+        # The partner side of a short / rlc_between is assigned by the same row.
+        if row.kind in ("short", "rlc_between") and row.to.strip():
+            mark(row.to, f"conn row {i}")
+
+    for n, raw in enumerate((extra_lines or "").splitlines(), start=1):
+        body = raw.split("#", 1)[0].strip()
+        parts = body.split()
+        if len(parts) < 2:
+            continue
+        mark(parts[0], f"text line {n}")
+        if parts[1].lower() in ("short_to", "lumped_between") and len(parts) > 2:
+            mark(parts[2], f"text line {n}")
+    return src
+
+
+def collapse_ports(ports: Sequence[int]) -> str:
+    """
+    [1, 2, 3, 7] -> '1-3,7'.
+
+    NO SPACES, ever.  The DSL is whitespace-tokenised and the leading port
+    field is parts[0], so '1-3, 7' would parse as the port field '1-3,' with a
+    stray '7' where the keyword belongs.  parse_port_range accepts the comma
+    form, so this round-trips.
+    """
+    vals = sorted({int(p) for p in ports})
+    if not vals:
+        return ""
+    runs: list[str] = []
+    start = prev = vals[0]
+    for p in list(vals[1:]) + [None]:
+        if p == prev + 1:
+            prev = p
+            continue
+        runs.append(str(start) if start == prev else f"{start}-{prev}")
+        start = prev = p
+    return ",".join(runs)
+
+
+# ---- open ports that look like they were meant to be terminated ------------
+#
+# A family is a set of ports whose names share a prefix once a trailing ball
+# NUMBER is stripped: VSS_ball_31 / VSS_ball_44 belong to 'VSS_ball'.  The check
+# fires when a family is overwhelmingly terminated and a small remnant is not.
+#
+# The thresholds exist to stop it crying wolf, and each was picked against a
+# real fixture rather than by taste:
+#   * MIN_FAMILY = 4 keeps 'coil1' / 'coil2' out (tests/fixtures/
+#     coupled_2port_gndref.s2p).  Probing one coil and leaving the other open is
+#     the ordinary way to use that file, and a 2-member family is not evidence
+#     of anything;
+#   * MIN_TERMINATED = 3 means "a set", not "the one next to it";
+#   * MAX_OPEN_FRACTION = 0.25 is what makes this a REMNANT check.  Grounding 5
+#     of a 10-ball family and leaving 5 open is a deliberate split; grounding 54
+#     and leaving 3 is a typo.  It is also what keeps a file whose ports are all
+#     named port1..port153 silent -- one family, most of it open.
+OPEN_CLUSTER_MIN_FAMILY = 4
+OPEN_CLUSTER_MIN_TERMINATED = 3
+OPEN_CLUSTER_MAX_OPEN_FRACTION = 0.25
+
+# How many of the offending names the message spells out before it says "…".
+OPEN_CLUSTER_NAMES_SHOWN = 3
+
+_TERMINATED_ROLES = (ROLE_GROUND, ROLE_VDD, ROLE_PROBE_PLUS, ROLE_PROBE_MINUS)
+
+
+def name_prefix(name: str) -> str:
+    """
+    'VSS_ball_31' -> 'VSS_ball'; 'coil1' -> 'coil'; 'in_p' -> 'in_p'; '' -> ''.
+
+    Only a TRAILING run of digits is stripped, and only then are the separators
+    in front of it.  Stripping digits anywhere would make 'c1_p' and 'c2_p'
+    (tests/fixtures/coupled_4port_float.s4p) one family, which is precisely the
+    false alarm this whole check has to avoid: those are two different coils.
+    A name that does not end in a digit is its own family of one.
+    """
+    s = (name or "").strip()
+    if not s:
+        return ""
+    i = len(s)
+    while i > 0 and s[i - 1].isdigit():
+        i -= 1
+    if i == len(s):
+        return s
+    while i > 0 and s[i - 1] in "_-.: []":
+        i -= 1
+    return s[:i]
+
+
+@dataclass(frozen=True)
+class OpenNameCluster:
+    """A family of same-named ports that is mostly terminated and partly not."""
+    prefix: str
+    kind: str                    # "grounded" or "probed"
+    open_ports: tuple            # 1-based
+    open_names: tuple
+    terminated: int
+
+
+def open_name_clusters(roles: Sequence[PortRole]) -> list[OpenNameCluster]:
+    """
+    Open ports whose NAMES say they belong to a set the user terminated.
+
+    Pure, and silent on a file with no port names at all (every prefix is "",
+    which is skipped) -- that file has no evidence to offer and a warning
+    derived from nothing is worse than no warning.
+    """
+    fams: dict[str, list[PortRole]] = {}
+    for r in roles:
+        p = name_prefix(r.name)
+        if p:
+            fams.setdefault(p, []).append(r)
+
+    out: list[OpenNameCluster] = []
+    for prefix in sorted(fams):
+        members = fams[prefix]
+        if len(members) < OPEN_CLUSTER_MIN_FAMILY:
+            continue
+        opens = [m for m in members if m.role == ROLE_OPEN]
+        if not opens:
+            continue
+        if len(opens) > OPEN_CLUSTER_MAX_OPEN_FRACTION * len(members):
+            continue
+        term_roles = [m.role for m in members if m.role in _TERMINATED_ROLES]
+        if len(term_roles) < OPEN_CLUSTER_MIN_TERMINATED:
+            continue
+        grounded = sum(1 for r in term_roles if r in (ROLE_GROUND, ROLE_VDD))
+        kind = "grounded" if grounded * 2 >= len(term_roles) else "probed"
+        opens.sort(key=lambda m: m.index)
+        out.append(OpenNameCluster(
+            prefix=prefix, kind=kind,
+            open_ports=tuple(m.index for m in opens),
+            open_names=tuple(m.name for m in opens),
+            terminated=len(term_roles)))
+    return out
+
+
+def open_port_name_messages(roles: Sequence[PortRole]) -> list[str]:
+    """One '⚠ …' line per cluster, ready for the validation strip."""
+    msgs: list[str] = []
+    for c in open_name_clusters(roles):
+        n = len(c.open_ports)
+        shown = list(c.open_names[:OPEN_CLUSTER_NAMES_SHOWN])
+        if n > OPEN_CLUSTER_NAMES_SHOWN:
+            shown.append("…")
+        msgs.append(
+            f"⚠ {n} port{'' if n == 1 else 's'} left OPEN whose "
+            f"name{'' if n == 1 else 's'} match the {c.terminated} "
+            f"'{c.prefix}' ports you {c.kind} ({', '.join(shown)}). "
+            "Check 'Ports & Roles'.")
+    return msgs
+
+
+# ============================================================================
 # Z computation: unified termination -> Z(f)
 # ============================================================================
 

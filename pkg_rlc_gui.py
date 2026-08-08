@@ -50,6 +50,15 @@ from pkg_rlc_core import (
     LumpedToGnd,
     MeasPortRow,
     Open,
+    OVERVIEW_BUCKETS,
+    PortRole,
+    ROLE_ELEMENT,
+    ROLE_GROUND,
+    ROLE_OPEN,
+    ROLE_PROBE_MINUS,
+    ROLE_PROBE_PLUS,
+    ROLE_SHORTED,
+    ROLE_VDD,
     ShortPair,
     Signal,
     TerminationSet,
@@ -78,6 +87,11 @@ from pkg_rlc_core import (
     parse_short_pairs,
     parse_si,
     parse_touchstone,
+    collapse_ports,
+    open_name_clusters,
+    open_port_name_messages,
+    port_roles,
+    row_sources,
     resolve_meas_ports,
     rows_to_dsl_text,
     dsl_text_to_rows,
@@ -554,8 +568,10 @@ def _scan_count(term: TerminationSet, nports: Optional[int]) -> int:
     return (max(ports) + 1) if ports else 0
 
 
-# Bucket order in the port-overview strip.
-_OVERVIEW_BUCKETS = ("probe", "ground", "vdd", "element", "shorted", "open")
+# Bucket order in the port-overview strip.  Re-exported from core, where the
+# classifier now lives -- the strip and the Ports & Roles window must never be
+# able to disagree about what a port is doing.
+_OVERVIEW_BUCKETS = OVERVIEW_BUCKETS
 
 # Abbreviated bucket names for the one-line footer summary, where the whole
 # string has to fit a measured 303 px slot beside "Calculate This Trace".
@@ -563,21 +579,11 @@ _OVERVIEW_SHORT = {"probe": "probe", "ground": "gnd", "vdd": "vdd",
                    "element": "elem", "shorted": "short", "open": "open"}
 
 
-def _port_bucket(term: TerminationSet, port0: int,
-                 elem_ports: set, short_ports: set) -> str:
-    """Which overview bucket one 0-based port falls into."""
-    t = term.termination_of(port0)
-    if isinstance(t, Signal):
-        return "probe"
-    if isinstance(t, Vdd):
-        return "vdd"
-    if isinstance(t, Ground):
-        return "ground"
-    if isinstance(t, LumpedToGnd) or port0 in elem_ports:
-        return "element"
-    if port0 in short_ports:
-        return "shorted"
-    return "open"
+def _bucket_counts(roles: Sequence[PortRole]) -> dict:
+    counts = dict.fromkeys(_OVERVIEW_BUCKETS, 0)
+    for r in roles:
+        counts[r.bucket] += 1
+    return counts
 
 
 def _port_overview_text(term: Optional[TerminationSet],
@@ -585,11 +591,15 @@ def _port_overview_text(term: Optional[TerminationSet],
     """
     'Ports (45): 4 probe · 8 ground · 1 element · 32 open'.
 
+    Counted off core's `port_roles`, which is also what the Ports & Roles
+    window renders row by row -- ONE classifier, so the summary line and the
+    detailed list cannot drift apart.
+
     With no file loaded the port count is unknown, so only the ports the rows
-    mention are counted and the 'open' bucket is dropped entirely -- an open
-    port is one the file has and the spec did not name, which cannot be known
-    without the file.  Guessing nports from the largest port mentioned would
-    invent a number that looks authoritative.
+    mention are counted and the 'open' bucket is dropped entirely (port_roles
+    does the dropping) -- an open port is one the file has and the spec did not
+    name, which cannot be known without the file.  Guessing nports from the
+    largest port mentioned would invent a number that looks authoritative.
 
     `short=True` abbreviates the bucket names for the footer summary, which has
     a measured 303 px to fit both this and a validation verdict.  Nothing is
@@ -601,22 +611,7 @@ def _port_overview_text(term: Optional[TerminationSet],
     if term is None:
         return f"{header}: —"
 
-    elem_ports: set = set()
-    short_ports: set = set()
-    for cpl in term.couplings:
-        target = elem_ports if isinstance(cpl, LumpedBetween) else short_ports
-        target.add(cpl.port_i)
-        target.add(cpl.port_j)
-
-    n = _scan_count(term, nports)
-    scan = range(n) if nports is not None else sorted(
-        set(term.per_port) | elem_ports | short_ports)
-    counts = dict.fromkeys(_OVERVIEW_BUCKETS, 0)
-    for i in scan:
-        counts[_port_bucket(term, i, elem_ports, short_ports)] += 1
-    if nports is None:
-        counts["open"] = 0
-
+    counts = _bucket_counts(port_roles(term, nports))
     parts = [f"{counts[b]} {_OVERVIEW_SHORT[b] if short else b}"
              for b in _OVERVIEW_BUCKETS if counts[b]]
     return f"{header}: " + (" · ".join(parts) if parts else "(no rows yet)")
@@ -660,7 +655,8 @@ def _rlc_echo(row: ConnectionRow) -> str:
 
 def _validation_messages(mport_rows: Sequence, conn_rows: Sequence,
                          extra_lines: str = "",
-                         nports: Optional[int] = None) -> list[str]:
+                         nports: Optional[int] = None,
+                         port_names: Optional[Sequence[str]] = None) -> list[str]:
     """
     Everything worth saying about the two tables, worst first.
 
@@ -668,6 +664,10 @@ def _validation_messages(mport_rows: Sequence, conn_rows: Sequence,
     a raised exception does not reach a handler we control -- Tk prints it to
     stderr and the GUI carries on showing a stale, wrong strip.  Half-typed
     cells raise routinely: parse_port_range rejects '5:', '5:1:' and '-'.
+
+    `port_names` (the file's "! Port[n] = ..." names) enables the open-port
+    name check -- the one thing here that catches a spec which is internally
+    consistent and still wrong.  Omit it and that check simply does not run.
     """
     msgs: list[str] = []
     term: Optional[TerminationSet] = None
@@ -719,6 +719,17 @@ def _validation_messages(mport_rows: Sequence, conn_rows: Sequence,
         # depend on the 20 at all. The echoes below are only reached when msgs
         # is empty, so appending here is what suppresses that.
         msgs.extend(inert_lumped_messages(term))
+        # The one check that reads the FILE rather than the spec: ports whose
+        # names say they belong to a set the user terminated, left open. Every
+        # message above says "your spec is inconsistent"; this one says "your
+        # spec is consistent and probably not what you meant", which is the
+        # failure that survives review and costs three weeks.
+        if port_names and nports is not None:
+            try:
+                msgs.extend(open_port_name_messages(
+                    port_roles(term, nports, port_names)))
+            except Exception:       # pragma: no cover - see MUST NOT RAISE
+                pass
 
     if msgs:
         return msgs
@@ -824,6 +835,141 @@ def _extra_lines_indicator(extra_lines: str) -> str:
     if not n:
         return ""
     return f"(+{n} line{'' if n == 1 else 's'} kept as text)"
+
+
+# ---- Ports & Roles: turning ANY trace into rows the classifier understands --
+#
+# Modes 1/2/3/6 do not have a connections table, but every one of them is
+# expressible as one -- that is the whole premise of the Mode 5 DSL. Rendering
+# them through the same rows means the window shows the same roles, the same
+# "ground wins" precedence and the same source column in every mode, instead of
+# five renderings that can disagree.  It is also DELIBERATELY the permissive
+# path: build_terminations_coupling REFUSES a mode-6 probe that is also a ground
+# row, and refusing is exactly the wrong answer for a window whose job is to
+# show the user what they typed.  The overlap becomes a flagged row instead.
+
+# Which editor FIELD a named mode's synthetic row stands for. Without this the
+# window would tell a mode-1 user their port came from "probe row 1 (+)", a row
+# that exists nowhere on their screen.
+_NAMED_ROW_LABELS = {
+    1: {"probe row 1 (+)": "Signal / Port A"},
+    2: {"probe row 1 (+)": "Port A", "probe row 1 (−)": "Port B"},
+    3: {"probe row 1 (+)": "Port A", "probe row 1 (−)": "Port B"},
+}
+_GND_FIELD_LABEL = "GND / VDD"
+_SHORT_FIELD_LABEL = "Short Pairs"
+
+
+def _trace_role_rows(tc) -> tuple:
+    """
+    Any TraceConfig -> (mport_rows, conn_rows, extra_lines, sources).
+
+    `sources` is 1-based-port -> the row or field that last assigned it, with
+    the named modes' synthetic rows renamed to the field the user typed into.
+    Pure: no Tk, no file, no TerminationSet.
+    """
+    mode = getattr(tc, "mode", 1)
+    overrides: dict = {}
+    if mode == 5:
+        mports = list(tc.mports)
+        conn = list(tc.conn_rows)
+        extra = tc.extra_lines or ""
+    else:
+        conn = []
+        extra = ""
+        if mode == 6:
+            mports = list(tc.mports)
+        else:
+            plus = (tc.port_a or "").strip()
+            minus = (tc.port_b or "").strip() if mode in (2, 3) else ""
+            mports = ([MeasPortRow(name="A", plus=plus, minus=minus)]
+                      if (plus or minus) else [])
+            overrides.update(_NAMED_ROW_LABELS.get(mode, {}))
+        if (tc.gnd_ports or "").strip():
+            conn.append(ConnectionRow(kind="ground",
+                                      ports=tc.gnd_ports.strip()))
+            overrides[f"conn row {len(conn)}"] = _GND_FIELD_LABEL
+        if mode == 3:
+            try:
+                pairs = parse_short_pairs(tc.short_pairs or "")
+            except Exception:
+                pairs = []
+            for a, b in pairs:
+                conn.append(ConnectionRow(kind="short", ports=str(a),
+                                          to=str(b)))
+                overrides[f"conn row {len(conn)}"] = _SHORT_FIELD_LABEL
+    src = row_sources(mports, conn, extra)
+    if overrides:
+        src = {p: overrides.get(v, v) for p, v in src.items()}
+    return mports, conn, extra, src
+
+
+# The colour a flagged row takes in the Ports & Roles window. Same #b04000 as
+# the frozen-trace note and the results pane's "flag" tag -- one warning colour
+# in the application, not three.
+WARN_FG = "#b04000"
+
+WARN_OPEN_LOOKS_TERMINATED = "open, but its name matches a terminated set"
+WARN_PROBE_AND_GROUND = "probe row AND ground row — the ground row wins"
+WARN_FROM_KEPT_TEXT = "assigned by the kept-as-text block, not by a table row"
+
+
+def _role_warnings(roles: Sequence[PortRole],
+                   mport_rows: Sequence = ()) -> dict:
+    """
+    1-based port -> why its row is flagged, for the rows that are.
+
+    Three things earn a flag, and each is a way for a spec to look right and be
+    wrong: an open port whose NAME belongs to a terminated set; a port a probe
+    row claims that a ground row then takes (legal, pinned, and invisible); and
+    a port assigned by the kept-as-text block, which is emitted last and so
+    beats every table row while having no widget of its own.
+    """
+    warn: dict = {}
+    for r in roles:
+        if r.source.startswith("text line"):
+            warn[r.index] = WARN_FROM_KEPT_TEXT
+
+    probe_ports: set = set()
+    for row in mport_rows:
+        for spec in (getattr(row, "plus", ""), getattr(row, "minus", "")):
+            try:
+                probe_ports.update(parse_port_range(spec))
+            except Exception:
+                continue
+    for r in roles:
+        if r.index in probe_ports and r.role in (ROLE_GROUND, ROLE_VDD):
+            warn[r.index] = WARN_PROBE_AND_GROUND
+
+    for cluster in open_name_clusters(roles):
+        for p in cluster.open_ports:
+            warn[p] = WARN_OPEN_LOOKS_TERMINATED
+    return warn
+
+
+def _append_port_spec(existing: str, added: str) -> str:
+    """
+    '1,2' + '5-7' -> '1,2,5-7'.  APPENDS, never replaces.
+
+    Replacing would silently throw away whatever the field already said, and
+    the field is the one place that spec exists.  No space is introduced:
+    parse_port_range tolerates one, the DSL's port field does not.
+    """
+    existing = (existing or "").strip().strip(",")
+    if not existing:
+        return added
+    return f"{existing},{added}"
+
+
+def _roles_header(file_label: str, nports: Optional[int],
+                  roles: Sequence[PortRole]) -> str:
+    """'coil.s4p — 153 ports · 4 probe · 54 ground · 94 open'."""
+    if not file_label:
+        return "(no file selected)"
+    counts = _bucket_counts(roles)
+    parts = [f"{counts[b]} {b}" for b in _OVERVIEW_BUCKETS if counts[b]]
+    n = f"{nports} ports" if nports is not None else "? ports"
+    return f"{file_label} — " + " · ".join([n, *parts])
 
 
 # How many messages the strip shows before it defers to the Results pane.
@@ -2580,8 +2726,10 @@ MP_TABLE_HINT = (
     "tied together, and ranges work (5,7 or 5:1:8). Two or more rows give you "
     "the coupling (M, k) between them. Names are optional (P1, P2, … if blank) "
     "but 'A' and 'B' are reserved. Port NUMBERS are what these cells take -- "
-    "for the file's port names use 'Show Ports' at the top of this panel; it "
-    "lists them in the Results pane."
+    "for the file's port names use 'Show Ports' at the top of this panel. It "
+    "opens 'Ports & Roles': every port with its name, what your spec is doing "
+    "with it, and which row said so. Select rows there and 'Set as probe +' "
+    "fills a row in here for you, as a collapsed range."
 )
 
 
@@ -2672,7 +2820,9 @@ CONN_TABLE_HINT = (
     "circuit. 'To' is ignored by ground/vdd/open/rlc_gnd, which are always to "
     "ground; rlc_between takes exactly ONE partner port. The dropdowns list "
     "port NUMBERS; for the file's port names click 'Show Ports' at the top of "
-    "this panel and read them in the Results pane."
+    "this panel. It opens 'Ports & Roles', which lists every port with its "
+    "name and its role, flags the open ones whose names match a set you "
+    "grounded, and can write a selection back here as a collapsed range."
 )
 
 # What the "Edit as text…" dialog promises, verbatim. The round trip is
@@ -2686,6 +2836,263 @@ TEXT_DIALOG_NOTE = (
     "end-of-line comments are dropped; anything the table cannot represent is "
     "kept verbatim."
 )
+
+
+# ============================================================================
+# Ports & Roles window
+# ============================================================================
+#
+# A read-only ttk.Treeview, and the ban on Treeview elsewhere in this file does
+# NOT apply here.  That ban is about the EDITABLE connection table, which needs
+# cell editors -- Treeview has none, so it would mean floating Entry/Combobox
+# widgets over cells with hand-managed placement, tab order and scroll offset,
+# and those overlays misalign under Win11 DPI scaling.  Nothing here is edited
+# in place: this is a list you read, filter, sort and select from.
+#
+# Two Treeview hazards are handled below and both fail SILENTLY if they are not:
+#   * row height is frozen at 20 px whatever `tk scaling` and whatever font the
+#     style carries, so at 150% DPI the text clips.  It is set from the font's
+#     own metrics, on a DERIVED style name -- reconfiguring the global
+#     "Treeview" style would reach every other Treeview in the process;
+#   * tag foreground/background colours are ignored on Tk builds whose
+#     Style().map("Treeview", ...) contains negated ('!'-prefixed) state
+#     specs.  The standard fix is to drop those entries; it is applied
+#     unconditionally, because the symptom of not applying it is simply that
+#     the colours do not appear.
+
+PORT_ROLES_TITLE = "Ports & Roles"
+PORT_ROLES_STYLE = "PortRoles.Treeview"
+
+# (key, heading, width px, anchor).  Widths are a starting point -- the window
+# is resizable and every column is stretchable.
+PORT_ROLES_COLUMNS = (
+    ("index", "#", 44, "e"),
+    ("name", "Name", 210, "w"),
+    ("role", "Role", 90, "w"),
+    ("source", "From", 170, "w"),
+)
+
+# One colour per bucket, so a 153-row list can be skimmed rather than read.
+PORT_ROLE_FG = {
+    ROLE_PROBE_PLUS: "#1f5fb4",
+    ROLE_PROBE_MINUS: "#1f5fb4",
+    ROLE_GROUND: "#207020",
+    ROLE_VDD: "#207020",
+    ROLE_ELEMENT: "#7030a0",
+    ROLE_SHORTED: "#a06000",
+    ROLE_OPEN: "#808080",
+}
+
+PORT_ROLES_HINT = (
+    "Select rows, then send them to the editor. Ports are written back as a "
+    "collapsed range (1-3,7), so a 54-ball ground group stays one row."
+)
+
+
+def _fixed_map_filter(entries: Sequence) -> list:
+    """
+    Drop the ('!disabled', '!selected') state specs from a ttk style map.
+
+    This is the standard workaround for the Tk bug that makes a Treeview ignore
+    tag colours: those two negated states match every ordinary row, so the
+    style map wins over the tag and every row is painted the default colour.
+    Pure, so the rule itself is testable without a display.
+    """
+    return [e for e in entries if tuple(e[:2]) != ("!disabled", "!selected")]
+
+
+class PortRolesWindow(tk.Toplevel):
+    """
+    What every port of the file is actually doing, for the selected trace.
+
+    Modeless (no grab_set): the point is to read it WHILE editing, and a
+    grab_set Toplevel that outlives its opener blocks event delivery and hangs
+    update() -- the same failure documented for the style picker.
+    """
+
+    def __init__(self, app: "App"):
+        super().__init__(app)
+        self.app = app
+        self.title(PORT_ROLES_TITLE)
+        self.transient(app)
+        self.geometry("640x460")
+        self.minsize(430, 260)
+
+        self._roles: list = []
+        self._warn: dict = {}
+        self._sort_key = "index"
+        self._sort_rev = False
+
+        self.header = ttk.Label(self, anchor="w", justify=tk.LEFT)
+        self.header.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(8, 2))
+
+        # --- filter row ---
+        filt = ttk.Frame(self)
+        filt.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(0, 4))
+        # No Listbox anywhere in this window -- the list is a Treeview, whose
+        # selection is not the X selection, so the documented
+        # exportselection=False rule has nothing to apply to. Clicking this
+        # Entry therefore cannot clear the Traces listbox highlight that
+        # auto-apply resolves its target from (that listbox already sets
+        # exportselection=False, which is what makes it safe).
+        ttk.Label(filt, text="Filter name:").pack(side=tk.LEFT)
+        self.filter_var = tk.StringVar()
+        self.filter_entry = ttk.Entry(filt, textvariable=self.filter_var,
+                                      width=18)
+        self.filter_entry.pack(side=tk.LEFT, padx=(4, 10))
+        self.filter_var.trace_add("write", lambda *_a: self._repopulate())
+        self.hide_open_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(filt, text="hide open", variable=self.hide_open_var,
+                        command=self._repopulate).pack(side=tk.LEFT)
+        self.count_lbl = ttk.Label(filt, foreground=PLACEHOLDER_FG)
+        self.count_lbl.pack(side=tk.RIGHT)
+
+        # --- write-back and the detail line, PACKED BEFORE THE LIST ---
+        # pack allocates in call order and simply UNMAPS whatever no longer
+        # fits, starting from the end, so a fixed-height section packed after an
+        # expand=True sibling disappears outright once the window is dragged
+        # short. Same rule as Global Controls and the editor footer: claim the
+        # bottom first, and the buttons become unconditional.
+        foot = ttk.Frame(self)
+        foot.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=6)
+        ttk.Button(foot, text="Close", command=self.destroy
+                   ).pack(side=tk.RIGHT, padx=2)
+        self.probe_btn = ttk.Button(foot, text="Set as probe +",
+                                    command=lambda: self._send("probe+"))
+        self.probe_btn.pack(side=tk.RIGHT, padx=2)
+        self.gnd_btn = ttk.Button(foot, text="Set as ground",
+                                  command=lambda: self._send("ground"))
+        self.gnd_btn.pack(side=tk.RIGHT, padx=2)
+        # LAST in the row, so at a narrow width it is the hint that goes and
+        # never one of the three buttons.
+        ttk.Label(foot, text=PORT_ROLES_HINT, foreground=PLACEHOLDER_FG,
+                  wraplength=330, justify=tk.LEFT).pack(side=tk.LEFT)
+
+        self.detail = ttk.Label(self, anchor="w", justify=tk.LEFT,
+                                wraplength=600, foreground=WARN_FG)
+        self.detail.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(2, 0))
+
+        # --- the list ---
+        body = ttk.Frame(self)
+        body.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=8)
+        self._install_style()
+        vsb = ttk.Scrollbar(body, orient="vertical")
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree = ttk.Treeview(
+            body, style=PORT_ROLES_STYLE, selectmode="extended",
+            columns=[c[0] for c in PORT_ROLES_COLUMNS], show="headings",
+            yscrollcommand=vsb.set)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.configure(command=self.tree.yview)
+        for key, title, width, anchor in PORT_ROLES_COLUMNS:
+            self.tree.heading(key, text=title,
+                              command=lambda k=key: self._on_sort(k))
+            self.tree.column(key, width=width, anchor=anchor, stretch=True)
+        for role, colour in PORT_ROLE_FG.items():
+            self.tree.tag_configure(f"role_{role}", foreground=colour)
+        self.tree.tag_configure("warn", foreground=WARN_FG)
+        # NOT registered with the App's wheel router.  "Treeview" is in
+        # App._WHEEL_OWNERS, so _route_wheel bails out over it and lets Tk's own
+        # ttk::treeview class binding scroll it; registering a handler here
+        # would never be reached, and taking Treeview OUT of _WHEEL_OWNERS to
+        # reach it would break every other Treeview in the process.
+
+        self.tree.bind("<<TreeviewSelect>>", self._on_select)
+        self.bind("<Escape>", lambda _e: self.destroy())
+
+    # ------------------------------------------------------------- style
+
+    @staticmethod
+    def _install_style() -> None:
+        style = ttk.Style()
+        # A DERIVED name: dotted ttk style names inherit their parent's layout,
+        # so this is a full Treeview whose rowheight (and only its rowheight)
+        # differs.  Reconfiguring "Treeview" itself would follow every Treeview
+        # ttk ever builds in this interpreter.
+        font = tkfont.nametofont("TkDefaultFont")
+        style.configure(PORT_ROLES_STYLE,
+                        rowheight=font.metrics("linespace") + 4)
+        style.map(PORT_ROLES_STYLE,
+                  foreground=_fixed_map_filter(
+                      style.map("Treeview", query_opt="foreground")),
+                  background=_fixed_map_filter(
+                      style.map("Treeview", query_opt="background")))
+
+    # -------------------------------------------------------------- data
+
+    def refresh(self, header: str, roles: Sequence, warn: dict) -> None:
+        """Re-render from a fresh snapshot, keeping filter, sort and selection."""
+        self._roles = list(roles)
+        self._warn = dict(warn)
+        self.header.configure(text=header)
+        self._repopulate()
+
+    _SORT_KEYS = {
+        "index": lambda r: r.index,
+        "name": lambda r: (r.name == "", r.name.lower()),
+        "role": lambda r: (r.role, r.index),
+        "source": lambda r: (r.source == "", r.source.lower(), r.index),
+    }
+
+    def _on_sort(self, key: str) -> None:
+        if key == self._sort_key:
+            self._sort_rev = not self._sort_rev
+        else:
+            self._sort_key, self._sort_rev = key, False
+        self._repopulate()
+
+    def visible_roles(self) -> list:
+        """The records the list is showing, in the order it is showing them."""
+        needle = self.filter_var.get().strip().lower()
+        hide_open = bool(self.hide_open_var.get())
+        rows = [r for r in self._roles
+                if (not needle or needle in r.name.lower())
+                and not (hide_open and r.role == ROLE_OPEN)]
+        # Sorted on the RAW record, never on the rendered string: '#' is an int
+        # and a string sort puts port 10 between 1 and 2.
+        rows.sort(key=self._SORT_KEYS[self._sort_key], reverse=self._sort_rev)
+        return rows
+
+    def _repopulate(self) -> None:
+        keep = set(self.tree.selection())
+        self.tree.delete(*self.tree.get_children())
+        rows = self.visible_roles()
+        for r in rows:
+            tags = [f"role_{r.role}"]
+            if r.index in self._warn:
+                tags.append("warn")     # last tag wins for foreground
+            self.tree.insert("", "end", iid=str(r.index),
+                             values=(r.index, r.name or "(unnamed)",
+                                     r.role, r.source or "—"),
+                             tags=tuple(tags))
+        back = [i for i in keep if self.tree.exists(i)]
+        if back:
+            self.tree.selection_set(back)
+        self.count_lbl.configure(
+            text=(f"{len(rows)} of {len(self._roles)}"
+                  if len(rows) != len(self._roles) else f"{len(rows)} ports"))
+        self._on_select()
+
+    # ------------------------------------------------------------ actions
+
+    def selected_ports(self) -> list:
+        return sorted(int(i) for i in self.tree.selection())
+
+    def _on_select(self, _event=None) -> None:
+        ports = self.selected_ports()
+        notes = [f"port {p}: {self._warn[p]}" for p in ports if p in self._warn]
+        self.detail.configure(text=notes[0] if notes else "")
+        state = ["!disabled"] if ports else ["disabled"]
+        self.gnd_btn.state(state)
+        self.probe_btn.state(state)
+
+    def _send(self, role: str) -> None:
+        ports = self.selected_ports()
+        if not ports:
+            return
+        msg = self.app.apply_ports_as(role, ports)
+        if msg:
+            self.detail.configure(text=msg)
 
 
 # ============================================================================
@@ -2709,6 +3116,10 @@ class App(tk.Tk):
         # / apply cycle, so it lives here alongside the widgets.
         self._ed_extra_lines: str = ""
         self._ed_strips_pending = False
+        # The Ports & Roles window, while one is open. Modeless and at most
+        # one: a second copy of the same read-only list is only a second thing
+        # to keep in sync.
+        self._port_roles_win: Optional[PortRolesWindow] = None
         # Auto-apply state.  The target is the TraceConfig OBJECT, never a
         # Listbox index -- see _schedule_editor_sync.
         self._ed_sync_after: object = None
@@ -3622,25 +4033,131 @@ class App(tk.Tk):
 
     def _on_show_ports(self) -> None:
         """
-        List the selected file's port names in the Results pane.
+        Open (or raise) the Ports & Roles window.
 
-        This is the ONLY place the file's port names are reachable -- the Port
-        and To dropdowns carry bare numbers, for the measured width reason in
-        docs/design_connection_table.md §5a -- so it must not silently do
-        nothing.  With no selection in the Files list it falls back to the file
-        the editor is pointing at, which is the one the user is describing
-        ports for, and says so if there is no file at all.
+        This used to dump the port names into the Results pane, where they
+        scrolled away behind the next thing printed and said nothing about what
+        the spec was doing with them -- which is the question. This is still the
+        ONLY route to the file's port names (the Port / To dropdowns carry bare
+        numbers, for the measured width reason in
+        docs/design_connection_table.md §5a), so it must not silently do
+        nothing: with no selection in the Files list it falls back to the file
+        the editor is pointing at, which is the one the user is describing ports
+        for, and says so if there is no file at all.
+        """
+        if not self.files:
+            messagebox.showinfo("No file", "Add a file first.")
+            return
+        win = self._port_roles_win
+        if win is not None and win.winfo_exists():
+            win.deiconify()
+            win.lift()
+        else:
+            win = self._port_roles_win = PortRolesWindow(self)
+        self._refresh_port_roles_window()
+
+    def _port_roles_data(self) -> tuple:
+        """
+        (header, roles, warnings) for the Ports & Roles window.
+
+        Reads the SELECTED TRACE, not the editor widgets: auto-apply has
+        already written them there by the time the strips run, and going
+        through the trace is what makes this work in every mode rather than
+        only in the two with tables.
         """
         idx = self._sel_idx(self.files_lb)
         fe = self.files[idx] if idx is not None else None
         if fe is None:
             fe = self._file_by_label(self.ed_file_var.get())
-        if fe is None:
-            messagebox.showinfo("No file", "Add a file first.")
+        tidx = self._sel_idx(self.traces_lb)
+        tc = (self.traces[tidx] if tidx is not None and tidx < len(self.traces)
+              else None)
+        if fe is None or tc is None:
+            return ("(no file selected)" if fe is None
+                    else f"{fe.label} — no trace selected", [], {})
+        mports, conn, extra, src = _trace_role_rows(tc)
+        try:
+            term = build_terminations_rows(mports, conn, extra,
+                                           nports=fe.ts.nports)
+        except Exception:
+            term = None
+        roles = port_roles(term, fe.ts.nports, fe.ts.port_names, src)
+        header = _roles_header(fe.label, fe.ts.nports, roles)
+        if term is None:
+            header += "  (spec did not parse)"
+        return header, roles, _role_warnings(roles, mports)
+
+    def _refresh_port_roles_window(self) -> None:
+        """
+        Push a fresh snapshot into the window, if one is open.
+
+        Same contract as _apply_editor_strips, which is what calls it: never
+        raises, writes to nothing but the window's own widgets, and never
+        touches a TraceConfig.
+        """
+        win = self._port_roles_win
+        if win is None:
             return
-        self._append_result(f"\nPorts of {fe.label}:")
-        for i, name in enumerate(fe.ts.port_names, 1):
-            self._append_result(f"  {i:3d}: {name or '(unnamed)'}")
+        try:
+            if not win.winfo_exists():
+                self._port_roles_win = None
+                return
+            win.refresh(*self._port_roles_data())
+        except Exception:               # pragma: no cover - see the contract
+            pass
+
+    def apply_ports_as(self, role: str, ports: Sequence[int]) -> str:
+        """
+        Write the window's selected ports back into the editor. Returns a note.
+
+        Routed through the same widgets the user types into -- the RowTable's
+        add_row / the PlaceholderEntry's set_value -- so auto-apply, the strips
+        and the stale marker all follow exactly as they do for a keystroke.
+        Nothing here writes a TraceConfig directly.
+
+        The ports go in as a COLLAPSED RANGE, which is the whole point: a
+        54-ball ground group becomes one readable row instead of 54.
+        """
+        spec = collapse_ports(ports)
+        if not spec:
+            return ""
+        tidx = self._sel_idx(self.traces_lb)
+        tc = (self.traces[tidx] if tidx is not None and tidx < len(self.traces)
+              else None)
+        if tc is None:
+            return "Select a trace first."
+        if tc.frozen:
+            # Same refusal as the editor itself: a snapshot's spec has to keep
+            # describing the numbers printed beside it.
+            return "That trace is a frozen snapshot — unfreeze it first."
+        mode = int(self.ed_mode_var.get())
+        if role == "ground":
+            if mode == 5:
+                self.ed_conn_table.add_row({"kind": "ground", "ports": spec})
+                where = "a new connections row"
+            else:
+                self.ed_gnd.set_value(_append_port_spec(
+                    self.ed_gnd.get_value(), spec))
+                where = "the GND / VDD field"
+        elif role == "probe+":
+            if mode in (5, 6):
+                self.ed_mp_table.add_row({"plus": spec})
+                where = "a new measurement-port row"
+            else:
+                self.ed_porta.set_value(_append_port_spec(
+                    self.ed_porta.get_value(), spec))
+                where = "the Signal / Port A field"
+        else:                                           # pragma: no cover
+            return f"Unknown role '{role}'."
+        # No _schedule_editor_sync() here ON PURPOSE. RowTable.add_row notifies
+        # its on_change and PlaceholderEntry.set_value writes its variable, and
+        # both of those are already wired to the sync -- calling it again would
+        # be an unfalsifiable line that hides whether the write really went
+        # through the widgets. The strips are refreshed explicitly because they
+        # are only scheduled from the sync in some modes.
+        self._refresh_editor_strips()
+        self._refresh_editor_scrollregion(preserve=True)
+        return f"{spec} → {where}."
 
     def _on_check_file(self) -> None:
         """
@@ -3670,7 +4187,10 @@ class App(tk.Tk):
             self._append_result(line)
 
     def _on_file_selected(self) -> None:
-        pass  # currently no-op
+        # The Ports & Roles window resolves its file from the Files list first,
+        # so selecting a different file there has to re-render it.  Nothing
+        # else in the application reacts to this selection.
+        self._refresh_port_roles_window()
 
     # --------------------------------------------------------------- Trace ops
 
@@ -4023,7 +4543,7 @@ class App(tk.Tk):
         # inner frame's <Configure> does NOT cover this -- see the docstring.
         # preserve=False: a now-short form must not stay scrolled out of sight.
         self._refresh_editor_scrollregion(preserve=False)
-        if custom:
+        if self._strips_wanted():
             # The tables' on_change does not fire on set_rows, so the strips
             # would otherwise still show the previous mode's spec.
             self._refresh_editor_strips()
@@ -4049,9 +4569,22 @@ class App(tk.Tk):
         self.ed_conn_table.set_column_values("ports", values)
         self.ed_conn_table.set_column_values("to", values)
 
+    def _strips_wanted(self) -> bool:
+        """
+        Is a strip refresh worth an idle pass?
+
+        Mode 5 owns the two Labels, mode 6 needs the style preview's curve
+        span -- and an OPEN Ports & Roles window needs it in every mode, since
+        it is the same after_idle-coalesced pass that feeds it.  Without the
+        last clause the window would go stale the moment the user edited a
+        mode-1 GND field, which is precisely the edit it exists to check.
+        """
+        return (self.ed_mode_var.get() == 5
+                or self._port_roles_win is not None)
+
     def _on_editor_file_changed(self) -> None:
         self._refresh_port_choices()
-        if self.ed_mode_var.get() == 5:
+        if self._strips_wanted():
             self._refresh_editor_strips()
 
     def _on_editor_rows_changed(self) -> None:
@@ -4060,7 +4593,7 @@ class App(tk.Tk):
             return
         self._refresh_editor_scrollregion(preserve=True)
         self._schedule_editor_sync()    # also refreshes the strips
-        if self.ed_mode_var.get() == 6:
+        if self.ed_mode_var.get() == 6 or self._port_roles_win is not None:
             self._refresh_editor_strips()   # for the style preview's span
 
     def _refresh_editor_strips(self) -> None:
@@ -4095,7 +4628,8 @@ class App(tk.Tk):
                                                nports=nports)
             except Exception:
                 term = None
-            msgs = _validation_messages(mports, conn, extra, nports)
+            names = self._editor_port_names()
+            msgs = _validation_messages(mports, conn, extra, nports, names)
             self.ed_style.set_span(self._editor_curve_span(term))
             self.ed_overview.configure(
                 text=_port_overview_text(term, nports))
@@ -4113,6 +4647,15 @@ class App(tk.Tk):
             self.ed_overview.configure(text="")
             self.ed_validation.configure(text=f"⚠ {e}")
             self.ed_footer_strip.configure(text="⚠ 1 problem")
+        # Outside the try above, and with a swallow of its own: a window that
+        # fails to render must not blank the strips, and a strip failure must
+        # not leave the window showing the previous spec.
+        self._refresh_port_roles_window()
+
+    def _editor_port_names(self) -> Optional[Sequence[str]]:
+        """Port names of the file the editor points at, or None."""
+        fe = self._file_by_label(self.ed_file_var.get())
+        return fe.ts.port_names if fe is not None else None
 
     def _editor_curve_span(self, term) -> int:
         """
@@ -4336,7 +4879,7 @@ class App(tk.Tk):
         self._refresh_trace_list()
         if _draw_signature(tc) != before_draw:
             self._replot_from_cache()
-        if self.ed_mode_var.get() == 5:
+        if self._strips_wanted():
             self._refresh_editor_strips()
 
     def _on_style_changed(self) -> None:
@@ -4487,7 +5030,8 @@ class App(tk.Tk):
             # them for every clean trace would be noise.
             if tc.mode == 5:
                 notes = _validation_messages(tc.mports, tc.conn_rows,
-                                             tc.extra_lines, fe.ts.nports)
+                                             tc.extra_lines, fe.ts.nports,
+                                             fe.ts.port_names)
                 if len(notes) > VALIDATION_STRIP_LINES:
                     # Only the ones that are NOT a '✓' echo make this a
                     # warning; a long spec that is entirely fine must not

@@ -241,7 +241,7 @@ The strict-monotonic-frequency check is what disambiguates `.s2p` from `.s4p` fr
 #### 1. Loaded Files Section
 - **Add File...** button: opens file dialog, accepts `.s*p` and `.txt` files
 - **Remove** button: removes selected file and its traces
-- **Show Ports** button: displays port list in results area
+- **Show Ports** button: opens the **Ports & Roles** window (port number, name, the role the current spec gives it, the row that decided it; filter / sort / flagged rows; write a selection back into the editor as a collapsed range). It printed a plain port list into the results area originally.
 - Listbox showing loaded files with info: `filename (Np, Mf, Z0=50Ω)`
 - `exportselection=False` on all Listboxes (critical — prevents selection loss on focus change)
 
