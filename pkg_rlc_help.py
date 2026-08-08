@@ -880,6 +880,28 @@ reciprocity error -- a self-check, NOT a result
   Entries that are NaN (see "no return path" below) are left out of
   the metric rather than poisoning it.
 
+The pair list is ranked, and its tail is folded away
+----------------------------------------------------
+Six measurement ports make 15 unordered pairs. In the GUI results
+pane they are printed STRONGEST FIRST, ordered by the larger of the
+two coupling ratios, max(|M/L_a|, |M/L_b|) -- the budget number, so
+the pair at the top is the one to look at. That figure is repeated
+in dB on the same line as M and k.
+
+Pairs whose ratio is under -60 dB are folded into one line:
+
+      ... +7 pairs below -60 dB (see Export CSV)
+
+They are still MEASURED and still EXPORTED -- Export CSV writes a
+M_nH / k column for every unordered pair, with no floor at all. Two
+things are never folded away: the strongest pair (even when it is
+itself below -60 dB, so the block always answers "how much coupling
+is there"), and any pair whose ratio is undefined, which means a
+missing measurement rather than a small one.
+
+The ordering and the -60 dB test are the only places this tool takes
+a magnitude -- see the next section.
+
 Signs are physical and are never clipped
 ----------------------------------------
 M, k and C_c are reported with their sign, exactly like R/L/C/Q

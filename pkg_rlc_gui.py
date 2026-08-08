@@ -538,6 +538,11 @@ def _scan_count(term: TerminationSet, nports: Optional[int]) -> int:
 # Bucket order in the port-overview strip.
 _OVERVIEW_BUCKETS = ("probe", "ground", "vdd", "element", "shorted", "open")
 
+# Abbreviated bucket names for the one-line footer summary, where the whole
+# string has to fit a measured 303 px slot beside "Calculate This Trace".
+_OVERVIEW_SHORT = {"probe": "probe", "ground": "gnd", "vdd": "vdd",
+                   "element": "elem", "shorted": "short", "open": "open"}
+
 
 def _port_bucket(term: TerminationSet, port0: int,
                  elem_ports: set, short_ports: set) -> str:
@@ -557,7 +562,7 @@ def _port_bucket(term: TerminationSet, port0: int,
 
 
 def _port_overview_text(term: Optional[TerminationSet],
-                        nports: Optional[int]) -> str:
+                        nports: Optional[int], short: bool = False) -> str:
     """
     'Ports (45): 4 probe · 8 ground · 1 element · 32 open'.
 
@@ -566,9 +571,14 @@ def _port_overview_text(term: Optional[TerminationSet],
     port is one the file has and the spec did not name, which cannot be known
     without the file.  Guessing nports from the largest port mentioned would
     invent a number that looks authoritative.
+
+    `short=True` abbreviates the bucket names for the footer summary, which has
+    a measured 303 px to fit both this and a validation verdict.  Nothing is
+    dropped -- the same buckets in the same order, just shorter words -- so the
+    two renderings can never disagree about what the spec contains.
     """
-    header = (f"Ports ({nports})" if nports is not None
-              else "Ports (no file selected)")
+    header = (f"Ports ({nports})" if nports is not None else
+              ("Ports (no file)" if short else "Ports (no file selected)"))
     if term is None:
         return f"{header}: —"
 
@@ -588,7 +598,8 @@ def _port_overview_text(term: Optional[TerminationSet],
     if nports is None:
         counts["open"] = 0
 
-    parts = [f"{counts[b]} {b}" for b in _OVERVIEW_BUCKETS if counts[b]]
+    parts = [f"{counts[b]} {_OVERVIEW_SHORT[b] if short else b}"
+             for b in _OVERVIEW_BUCKETS if counts[b]]
     return f"{header}: " + (" · ".join(parts) if parts else "(no rows yet)")
 
 
@@ -814,6 +825,69 @@ def _validation_strip_text(msgs: Sequence[str],
         return "\n".join(msgs)
     return "\n".join(msgs[:limit]
                      + [f"… +{len(msgs) - limit} more (see Results)"])
+
+
+# ---- the footer summary line ----------------------------------------------
+#
+# The two strips above (the port overview and the validation list) live at the
+# BOTTOM of the scrollable editor form, and measured at the 1040x600 minsize a
+# mode-5 form is 516 px against a 45 px viewport: the overview sits 366 px below
+# the fold and the validation strip 387 px below it, i.e. 7.8% of the form is on
+# screen and _update_mode_visibility resets the scroll to the top on every mode
+# change.  In practice nobody ever saw either of them.
+#
+# They are SUMMARISED into the pinned footer, not moved into it.  Measured: the
+# footer's height is the "Calculate This Trace" button's 33 px, and a label
+# packed after the button shares that row -- so the FIRST line beside it is
+# free (+0 px in every mode at every size), a second costs 9 px, a third 26 and
+# a fourth 43.  At 43 px the editor canvas reports winfo_ismapped() == 0 in
+# modes 1/2/3/6 at the minsize: the whole form disappears.  VALIDATION_STRIP_LINES
+# is 2 and already renders up to 3 display lines, so moving both strips down
+# here verbatim IS that failure, plus a one-line overview.  Hence: one line, and
+# wraplength stays 0 so it clips rather than wraps (a wrapped second line costs
+# 26 px, not 9).
+#
+# 52 chars is the measured slot: 303 px for a fill=X label beside the button,
+# in Microsoft YaHei UI 9.  It is a budget, not a guarantee -- the label clips
+# and the detail is one scroll away -- but it is what keeps the verdict visible.
+FOOTER_STRIP_CHARS = 52
+
+
+def _footer_strip_text(term: Optional[TerminationSet],
+                       nports: Optional[int],
+                       msgs: Sequence[str],
+                       limit: int = FOOTER_STRIP_CHARS) -> str:
+    """
+    'Ports (153): 6 probe · 54 gnd · 3 elem  ⚠ 2 problems' -- always one line.
+
+    The verdict is never truncated and the port counts give up characters
+    first: a green tick has to mean "Calculate will work", and half a tick
+    means nothing.  The count, not the messages themselves -- the messages are
+    on the strip in the form and, in full, in the Results pane at Calculate;
+    what the footer adds is that you cannot fail to notice there are any.
+    """
+    # _validation_messages NEVER returns an empty list: with nothing to warn
+    # about it returns the '✓' echoes ('✓ port 5 → GND: 5 mΩ'), or
+    # '✓ no problems found'.  So what is counted here is the messages that are
+    # NOT affirmations -- len(msgs) would report a clean two-element spec as
+    # "2 problems", which is precisely the false alarm a permanently visible
+    # verdict must never raise.
+    n = sum(1 for m in msgs if not m.startswith("✓"))
+    status = ("✓ ok" if n == 0
+              else f"⚠ {n} problem{'' if n == 1 else 's'}")
+    if n == 0 and term is None:
+        # Unreachable through _apply_editor_strips -- _validation_messages
+        # appends the builder's own error, so a spec that does not build always
+        # arrives with at least one message.  It is here so that a tick beside
+        # a 'Ports (n): —' overview is a claim this function CANNOT make.
+        status = "⚠ spec did not parse"
+    ports = _port_overview_text(term, nports, short=True)
+    budget = limit - len(status) - 2
+    if budget < 1:
+        return status
+    if len(ports) > budget:
+        ports = ports[:budget - 1] + "…"
+    return f"{ports}  {status}"
 
 
 # ============================================================================
@@ -1342,10 +1416,31 @@ def _sign_flag(res) -> str:
     return ",".join(flags)
 
 
+# The swatch that heads every data row of the results table, coloured with a
+# Text tag to match the curve (see App._append_swatched).
+#
+# WIDTH-STABLE, measured with tkinter.font in the Results pane's own font
+# (Consolas 9, the only font this table is ever rendered in): '█' is 7 px
+# and so is ' ', 'M', 'X' and '0' -- i.e. exactly one monospace cell, so the
+# swatch column costs the same on a data row as on the header and legend rows
+# and nothing below it shifts.  Rejected on the same measurement: '▇'
+# (12 px) and '▰' (10 px), either of which would have knocked the header
+# out of line with the numbers under it.  Every state this column can take is
+# one of those two glyphs; there is no third.
+RESULTS_SWATCH = "█"
+_SWATCH_PAD = " " * len(RESULTS_SWATCH)
+
+
 def _format_results_table(rows, units_mode: str) -> str:
     """
     rows: list of (tc, file_label, res). Returns a multi-line aligned table.
     units_mode in {'smart', 'aligned'}.
+
+    Every data row starts with RESULTS_SWATCH and every other line starts with
+    an equally wide run of spaces; App._append_swatched finds the rows by that
+    prefix and colours them.  Nothing here knows the colours: this stays a
+    pure text function and the palette lookup stays in the one place that owns
+    a Text widget.
     """
     if not rows:
         return ""
@@ -1372,11 +1467,11 @@ def _format_results_table(rows, units_mode: str) -> str:
 
     lines = []
     if multi_file:
-        lines.append("  " + "  ".join(
+        lines.append(_SWATCH_PAD + " " + "  ".join(
             f"{file_alias[fl]}={fl}" for fl in file_labels_in_order
         ))
     else:
-        lines.append(f"  file: {file_labels_in_order[0]}")
+        lines.append(f"{_SWATCH_PAD} file: {file_labels_in_order[0]}")
 
     # Header
     if units_mode == "aligned":
@@ -1397,7 +1492,10 @@ def _format_results_table(rows, units_mode: str) -> str:
         col_R, col_L, col_C, col_Q = "R", "L", "C", "Q"
         NUM_W = 10
 
-    parts = ["ID  ", f"{'Label':<{LABEL_W}}  "]
+    # "ID   " is FIVE wide, matching "[{id:>2}] " on the data rows.  It was
+    # four, so the header sat one column left of everything under it -- barely
+    # visible with a ragged left edge, obvious now that a swatch squares it up.
+    parts = [_SWATCH_PAD + " ", "ID   ", f"{'Label':<{LABEL_W}}  "]
     if multi_file:
         parts.append(f"{'File':<{FILE_W}}  ")
     parts.append(f"{'Ports':<{PORT_W}}  ")
@@ -1427,7 +1525,9 @@ def _format_results_table(rows, units_mode: str) -> str:
             # table instead.  A row for a curve that is not drawn reads as a
             # duplicate of the one that is -- which on two similar traces (the
             # normal way a hidden one comes about, via Duplicate) is exactly
-            # what it looks like.
+            # what it looks like.  That is also what makes the swatch honest:
+            # every swatched row has a curve of that colour on the plot.
+            RESULTS_SWATCH + " ",
             f"[{tc.id:>2}] ",
             f"{_trunc(tc.label, LABEL_W):<{LABEL_W}}  ",
         ]
@@ -1442,7 +1542,7 @@ def _format_results_table(rows, units_mode: str) -> str:
         lines.append("".join(row_parts))
 
     lines.append(
-        "  legend: ind = Im(Z)>0 (inductive) | "
+        f"{_SWATCH_PAD} legend: ind = Im(Z)>0 (inductive) | "
         "cap = Im(Z)<0 (capacitive; past SRF for an inductor) | "
         "R<0 = non-passive"
     )
@@ -1481,6 +1581,85 @@ def _value_formatter(values, unit: str, units_mode: str):
 
 def _fmt_plain(value: float, sig: int = 4) -> str:
     return "nan" if not math.isfinite(value) else f"{value:.{sig}g}"
+
+
+# ---- ranking the coupling list -------------------------------------------
+#
+# Six measurement ports make 15 unordered pairs, and they used to be printed in
+# nested-loop (a, b) index order -- which says nothing at all about which of the
+# fifteen the user has to do something about.  They are now ranked, and the tail
+# is folded into one line.
+#
+# THE KEY IS max(|M/L_a|, |M/L_b|), the Norton injection ratio, because that is
+# the quantity a spur / pulling budget is written against.  |k| alone is the
+# wrong key: |k| = 0.02 between two 2 nH coils and |k| = 0.02 between a 2 nH
+# coil and a 500 pH one are different problems, and only the ratio separates
+# them (M is the same, the injection into the small coil is 4x).
+#
+# MAGNITUDE APPEARS HERE AND NOWHERE ELSE.  M, C_c and k keep their physical
+# sign in every printed cell, exactly as on the diagonal -- only the ordering
+# and the floor test take an abs(), the same way sorting a column by |x| does
+# not change what x is.
+COUPLING_FLOOR_DB = -60.0
+
+
+def _pair_strength(pair) -> float:
+    """
+    max(|M/L_a|, |M/L_b|) -- the rank key.  NaN when neither ratio is defined.
+
+    Linear, not read off the *_dB fields: `_ratio_db` maps an exactly-zero
+    ratio to NaN, and a pair with M = 0 is not undefined, it is the weakest
+    pair there is and has to sort and truncate as such.
+    """
+    vals = [abs(v) for v in (pair.M_over_La, pair.M_over_Lb)
+            if math.isfinite(v)]
+    return max(vals) if vals else float("nan")
+
+
+def _pair_strength_db(pair) -> float:
+    """20*log10 of the rank key; NaN when it is zero or undefined.
+
+    Same contract as pkg_rlc_core._ratio_db, which is what the per-port dB
+    columns on the detail line already use.
+    """
+    s = _pair_strength(pair)
+    if not math.isfinite(s) or s == 0.0:
+        return float("nan")
+    return 20.0 * math.log10(s)
+
+
+def rank_coupling_pairs(pairs, floor_db: Optional[float] = COUPLING_FLOOR_DB):
+    """
+    (shown, hidden): the pairs strongest first, split at `floor_db`.
+
+    Python's sort is stable, so pairs of equal strength keep the (a, b) index
+    order they arrived in.  Two rules that are easy to get wrong:
+
+      * a pair whose strength is UNDEFINED is never hidden.  The floor means
+        "too weak to matter", and NaN is not a small number -- it is a missing
+        measurement (a probe with no return path, a port past its SRF), which
+        is the one thing the reader most needs to see.  It sorts last, after
+        every finite pair, and prints.
+      * the strongest pair is never hidden either, even when it is below the
+        floor.  A coupling block whose entire content is "3 pairs were too
+        weak to list" answers no question; "how much coupling is there" has
+        an answer even when the answer is "none worth the name".
+    """
+    def key(p):
+        s = _pair_strength(p)
+        return -s if math.isfinite(s) else float("inf")
+
+    ordered = sorted(pairs, key=key)
+    if floor_db is None or not ordered:
+        return ordered, []
+    threshold = 10.0 ** (floor_db / 20.0)
+    shown, hidden = [], []
+    for p in ordered:
+        s = _pair_strength(p)
+        (hidden if (math.isfinite(s) and s < threshold) else shown).append(p)
+    if not shown:
+        shown.append(hidden.pop(0))     # hidden[0] is the strongest of them
+    return shown, hidden
 
 
 def _pair_flag(pair) -> str:
@@ -1553,17 +1732,23 @@ def _format_coupling_block(tc: "TraceConfig", file_label: str,
         lines.append("  coupling: (only one measurement port -- "
                      "add a second measurement-port row to get M and k)")
     else:
-        m_sfx, fmt_m = _value_formatter([p.M_henry for p in pairs], "H",
+        shown_pairs, weak_pairs = rank_coupling_pairs(pairs)
+        # Column prefixes come from the pairs that are PRINTED: in aligned mode
+        # a hidden pair setting the column's SI prefix would scale every cell
+        # to a value that is not on screen.
+        m_sfx, fmt_m = _value_formatter([p.M_henry for p in shown_pairs], "H",
                                         units_mode)
-        cc_sfx, fmt_cc = _value_formatter([p.C_c_farad for p in pairs], "F",
-                                          units_mode)
-        lines.append("  coupling (mutual, all other measurement ports open):")
-        for p in pairs:
+        cc_sfx, fmt_cc = _value_formatter([p.C_c_farad for p in shown_pairs],
+                                          "F", units_mode)
+        lines.append("  coupling (mutual, all other measurement ports open; "
+                     "strongest first by worst-case M/L):")
+        for p in shown_pairs:
             flag = _pair_flag(p)
             lines.append(
                 f"      {p.name_a} x {p.name_b}:  "
                 f"M{m_sfx} = {fmt_m(p.M_henry)}   "
                 f"k = {_fmt_plain(p.k)}   "
+                f"worst M/L = {_fmt_plain(_pair_strength_db(p))} dB   "
                 f"C_c{cc_sfx} = {fmt_cc(p.C_c_farad)}"
                 + (f"   [{flag}]" if flag else ""))
             lines.append(
@@ -1573,6 +1758,13 @@ def _format_coupling_block(tc: "TraceConfig", file_label: str,
                 f"({_fmt_plain(p.M_over_Lb_dB)} dB)")
             for note in p.notes:
                 lines.append(f"          note: {note}")
+        if weak_pairs:
+            # The pointer has to be TRUE: _write_coupling_csv enumerates every
+            # unordered pair from the Z matrix and knows nothing about this
+            # floor, so what is folded away here really is in the export.
+            noun = "pair" if len(weak_pairs) == 1 else "pairs"
+            lines.append(f"      … +{len(weak_pairs)} {noun} below "
+                         f"{COUPLING_FLOOR_DB:g} dB (see Export CSV)")
 
     # --- health check -----------------------------------------------------
     recip = cres.reciprocity_error
@@ -2347,7 +2539,8 @@ class App(tk.Tk):
         # Listbox index -- see _schedule_editor_sync.
         self._ed_sync_after: object = None
         self._ed_sync_target: Optional[TraceConfig] = None
-        self._trace_list_shown: list[str] = []
+        # (rendered line, colour index) per trace -- see _refresh_trace_list.
+        self._trace_list_shown: list[tuple[str, int]] = []
         self._scrollables: dict[str, object] = {}
 
         self._install_wheel_router()
@@ -2568,6 +2761,16 @@ class App(tk.Tk):
         ttk.Button(foot, text="Calculate This Trace",
                    command=self._on_calculate_selected
                    ).pack(side=tk.RIGHT, padx=6, pady=3)
+        # The one-line summary of the two below-the-fold strips (see
+        # FOOTER_STRIP_CHARS).  It shares the button's 33 px row, so it costs
+        # no vertical space at all -- and it is created here but NOT packed:
+        # _update_mode_visibility packs it, because it only has a meaning in
+        # mode 5.  Whenever it is packed it goes in AFTER the button, never
+        # before, since pack unmaps from the END: if the footer is ever
+        # squeezed it must be this label that goes, not Calculate This Trace.
+        self._ed_foot = foot
+        self.ed_footer_strip = ttk.Label(foot, anchor="w", wraplength=0,
+                                         foreground=PLACEHOLDER_FG)
 
         self._ed_body = body = ttk.Frame(parent)
         body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
@@ -3008,6 +3211,14 @@ class App(tk.Tk):
         self.results_text.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         # Tag for highlighting non-empty Sign flags. Configured once.
         self.results_text.tag_configure("flag", foreground="#b04000")
+        # One tag per palette slot, configured once, for the swatch at the head
+        # of each results row (_append_swatched).  Same precedent as "flag":
+        # a Text tag, not a Treeview -- a Treeview would take the 'aligned'
+        # units mode (one SI prefix per column, right-aligned) with it, lose
+        # select-drag-copy into a mail, and freeze its row height at 20 px so
+        # the text clips under DPI scaling.
+        for _i, _c in enumerate(COLORS):
+            self.results_text.tag_configure(f"c{_i}", foreground=_c)
 
         self.plot = PlotPanel(plot_frame, on_marker_changed=self._on_marker_drag)
         self.plot.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
@@ -3380,6 +3591,19 @@ class App(tk.Tk):
         show(self.ed_conn_hint, custom)
         show(self.ed_overview, custom)
         show(self.ed_validation, custom)
+        # The footer summary is pack-managed (it lives in the pinned footer,
+        # not in the gridded form), so it needs its own show/hide.  Gated on
+        # the same `custom` as the two strips it summarises: outside mode 5 the
+        # connections table is hidden but its rows still exist, and an overview
+        # built from them would count rows the running spec does not use.
+        # winfo_manager() rather than a re-pack: pack() on an already-managed
+        # widget keeps its slot, but asking first makes that independent of Tk.
+        if custom:
+            if not self.ed_footer_strip.winfo_manager():
+                self.ed_footer_strip.pack(side=tk.LEFT, fill=tk.X,
+                                          expand=True, padx=4)
+        else:
+            self.ed_footer_strip.pack_forget()
 
         # Update placeholders to match the active mode
         self.ed_porta.set_placeholder(
@@ -3470,11 +3694,16 @@ class App(tk.Tk):
                                                nports=nports)
             except Exception:
                 term = None
+            msgs = _validation_messages(mports, conn, extra, nports)
             self.ed_style.set_span(self._editor_curve_span(term))
             self.ed_overview.configure(
                 text=_port_overview_text(term, nports))
-            self.ed_validation.configure(text=_validation_strip_text(
-                _validation_messages(mports, conn, extra, nports)))
+            self.ed_validation.configure(text=_validation_strip_text(msgs))
+            # The same two facts, on one line, in the pinned footer -- because
+            # at the minsize the two Labels above are 366 and 387 px below the
+            # fold of a 45 px viewport.
+            self.ed_footer_strip.configure(
+                text=_footer_strip_text(term, nports, msgs))
             self.ed_extra_lbl.configure(text=_extra_lines_indicator(extra))
         except Exception as e:
             # Belt and braces: _validation_messages already swallows its own
@@ -3482,6 +3711,7 @@ class App(tk.Tk):
             # it can report a failure.
             self.ed_overview.configure(text="")
             self.ed_validation.configure(text=f"⚠ {e}")
+            self.ed_footer_strip.configure(text="⚠ 1 problem")
 
     def _editor_curve_span(self, term) -> int:
         """
@@ -4101,7 +4331,8 @@ class App(tk.Tk):
         hidden += [b[0] for b in coupling_blocks if not b[0].enabled]
 
         if shown_rows:
-            self._append_result(_format_results_table(shown_rows, units))
+            self._append_swatched(_format_results_table(shown_rows, units),
+                                  [r[0].color_idx for r in shown_rows])
             for tc, fl in fit_lines:
                 if tc.enabled:
                     self._append_result(fl)
@@ -4510,17 +4741,34 @@ class App(tk.Tk):
         _on_trace_selected and reload the editor mid-typing.)
         """
         lines = [tc.info_str() for tc in self.traces]
-        if lines == self._trace_list_shown:
+        # The cache key carries the COLOUR as well as the text.  info_str() has
+        # no colour in it -- deliberately, the ☑/☐ prefix is the only state it
+        # renders -- so picking a new palette slot leaves `lines` byte-identical
+        # and the early return would keep the old foreground on screen forever,
+        # with the plot already redrawn in the new one.
+        key = [(ln, tc.color_idx) for ln, tc in zip(lines, self.traces)]
+        if key == self._trace_list_shown:
             return
-        self._trace_list_shown = lines
+        self._trace_list_shown = key
         sel = self._sel_idx(self.traces_lb)
         self.traces_lb.delete(0, tk.END)
         for i, (tc, line) in enumerate(zip(self.traces, lines)):
             self.traces_lb.insert(tk.END, line)
-            if not tc.enabled:
-                # itemconfig does not survive delete(), so it is re-applied
-                # here every time rather than at the point of the toggle.
-                self.traces_lb.itemconfig(i, foreground="#909090")
+            # itemconfig does not survive delete(), so BOTH foregrounds are
+            # re-applied here every time rather than at the point of the
+            # toggle.  The colour is the only thing tying a name in this list
+            # to a curve on the plot -- without it four traces are four
+            # identical lines of black text and the reader has to open the
+            # editor on each one to find out which curve is which.  A hidden
+            # trace keeps the grey: it has no curve to be tied to, and grey
+            # is the state, not the style.
+            #
+            # A mode-6 trace expands into several curves taking consecutive
+            # palette slots (_coupling_plot_traces), so this is its FIRST
+            # colour -- the same one the style preview shows.
+            self.traces_lb.itemconfig(
+                i, foreground=("#909090" if not tc.enabled
+                               else COLORS[tc.color_idx % len(COLORS)]))
         if sel is not None and sel < len(self.traces):
             self.traces_lb.selection_set(sel)
 
@@ -4542,6 +4790,31 @@ class App(tk.Tk):
     def _append_result(self, text: str) -> None:
         self.results_text.insert(tk.END, text + "\n")
         self.results_text.see(tk.END)
+
+    def _append_swatched(self, text: str, color_idxs: Sequence[int]) -> None:
+        """
+        Append `text` and colour the leading swatch of each of its data rows.
+
+        Rows are found by their RESULTS_SWATCH prefix and consumed in order,
+        so no line-number arithmetic has to be kept in step with however many
+        header lines _format_results_table decides to emit (the file-alias
+        line alone is already conditional on the trace count).
+
+        Tk clamps an insert at END to just before the Text's trailing newline,
+        so the first line of `text` lands on the line `end-1c` names now.
+        """
+        base = int(self.results_text.index("end-1c").split(".")[0])
+        self._append_result(text)
+        pending = iter(color_idxs)
+        for off, line in enumerate(text.split("\n")):
+            if not line.startswith(RESULTS_SWATCH):
+                continue
+            idx = next(pending, None)
+            if idx is None:
+                return          # more rows than colours: leave them plain
+            ln = base + off
+            self.results_text.tag_add(f"c{idx % len(COLORS)}",
+                                      f"{ln}.0", f"{ln}.{len(RESULTS_SWATCH)}")
 
 
 def main() -> None:

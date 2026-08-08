@@ -20,11 +20,12 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `deploy/`               | Rest of the air-gapped ("red zone") pipeline: `pack.ps1` (Windows, `git archive`), `doctor.sh` + `_env_check.py` (what can this box run?). No network, no pip, no venv on the far side. |
 | `tests/test_parse_diagnostics.py` | The robust-reading work: what a file says about itself (span, sweep description, DC / \|S\|>1 notes) and what happens when it cannot be read. Every refusal test pins the **verdict** and the **line number**, not just "raises ValueError" — that would have passed before any of it existed. Plus the recovery cases (UTF-16, BOM, commas, `D` exponents, extension tiebreak) and the two GUI affordances. |
 | `tests/test_session.py` | Save Config / Load Config / Restore Last Session. Pure round trip (no Tk) for the trace fields, the refusal verdicts, the hand-edit tolerance and the path precedence; Tk-driven for the App-level save→wipe→load, the missing-file path, the autosave, and that the File menu and its accelerators are reachable. Also the guard on the Help window's tab strip, which the tenth tab pushed past the old 950 px. |
-| `tests/`                | `unittest`-based suite (516 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/`                | `unittest`-based suite (563 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
 | `tests/test_editor_autoapply.py` | The commit-step removal: WHEN the editor writes into a `TraceConfig` and WHICH one it lands on (the deferral, the object capture, the flush-before-selection-change), the style picker's storage / reachability / honesty about multi-curve traces, and that hiding a curve neither recomputes it nor destroys the cursors. Every guard here was mutation-checked. |
 | `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see, and the reordering hazard that forces `_import_dsl_text`'s verbatim fallback. |
 | `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
 | `tests/test_mode5_editor.py` | Stage 3: the pure text<->rows import decision and both strip renderers, plus Tk-driven editor wiring, per-mode widget visibility, the text hatch, the CSV gate, wheel routing, and the LAYOUT numbers (`ismapped` / `reqwidth` / `xview` / `scrollregion` / `sashpos`) measured off a mapped window. |
+| `tests/test_report_readability.py` | Four display-only changes, none of which touches a number: the ranked / floored coupling list (pure — the key, the two things never hidden, the sign invariant), the coloured trace Listbox, the tagged results-table swatch, and the editor's footer summary line (mapped window at the 1040x600 minsize). Every guard mutation-checked. |
 | `tests/generate_test_snp.py` | Builds synthetic fixtures with analytically known R/L/C/M; run as a script to (re)generate `tests/fixtures/`. The `COUPLED_*` module constants are the single source of truth for the coupled-coil fixtures. |
 | `tests/test_golden_regression.py` | Replays `tests/fixtures/golden_legacy.npz` through the current API and asserts `assert_array_equal`. This is the guard on every "stays bit-identical" claim below. |
 | `tests/_golden_capture.py` | Script + case registry that (re)generates `golden_legacy.npz`. NOT auto-discovered (leading underscore). Regenerate ONLY in the same commit that justifies moving the reference. |
@@ -142,6 +143,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 - **`compute_z` warns when `G > 1`.** It returns only measurement port 1. Only Mode 5 can get there (the named builders always produce `G == 1`), and Mode 5 is exactly the free-text mode where `signal V` instead of `signal B` silently defines a second measurement port and changes the answer by 37%.
 - **`RECIPROCITY_WARN = 1e-3` lives in `pkg_rlc_core`** and is imported by both `pkg_rlc_gui` and `pkg_rlc_extractor`. They used to disagree (1e-3 vs 1e-12), so the same file got opposite verdicts and the CLI cried wolf on every real EM file. The metric skips non-finite off-diagonal entries so one undefined measurement port cannot poison it.
 - **`M/L` is the Norton injection ratio, NOT the current-transfer ratio.** The exact ratio into a shorted port `a` is `I_a/I_b = -Z_ab/Z_aa`; `M/L_a` equals its magnitude only where `w*L_a >> R_a` (1098% apart at 10 MHz for `L=2n, R=1.5`). The label is "coupling ratio" everywhere — core docstring, CLI report, GUI legend, Help, README, theory.md. Keep the five in sync.
+- **The GUI's pair list is RANKED by `max(|M/L_a|, |M/L_b|)` and floored at `COUPLING_FLOOR_DB = -60`.** Six measurement ports make 15 pairs, and nested-loop `(a, b)` order carries no information about which of them matter. `|k|` alone is the wrong key: `|k| = 0.02` between two 2 nH coils and between a 2 nH and a 500 pH coil are different problems — same `M`, 4x the injection into the small one. `rank_coupling_pairs` is pure and mutation-checked, and **magnitude appears there and nowhere else** — every printed cell stays signed. Three rules are load-bearing: `_pair_strength` is computed **linearly**, not from the `*_dB` fields (`_ratio_db(0)` is NaN, and a pair with `M = 0` is the weakest there is, not an undefined one); a pair with an **undefined** ratio sorts last and is **never** folded away (NaN is a missing measurement, not a small number); and the **strongest** pair is never folded away either, or a block can consist of nothing but "3 pairs were too weak to list". The `(see Export CSV)` pointer is true because `_write_coupling_csv` enumerates every unordered pair straight off the Z matrix and has no floor — do not give it one.
 - **`compute_z` is a thin wrapper returning `Zmat[:, 0, 0]`** — the self impedance of the FIRST measurement port, and a strided **view**, not a fresh contiguous array. Copy before writing into it or before handing it to code that assumes C-contiguity (the GUI does `np.ascontiguousarray`).
 - **`tests/fixtures/golden_legacy.npz` is the guard for all of the above.** It pins `parse_touchstone -> s_to_y -> compute_z` bit-for-bit for every fixture and for representative Mode 1/2/3/4/5 cases. If it fails, the reduction path changed: fix the change, do not regenerate the reference to make the test pass.
 - **The Mode 5 DSL and its helpers live in `pkg_rlc_core.py`** (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`) — terminations belong to core. `pkg_rlc_gui.py` re-imports them so `from pkg_rlc_gui import parse_si` and friends keep resolving; keep that re-export list intact.
@@ -448,6 +450,41 @@ claim below was mutation-checked — reverting the behaviour turns its test red.
   entry goes 356 → 372 px. `Listbox.itemconfig` does not survive `delete()`, so the grey
   foreground for a hidden trace is re-applied inside `_refresh_trace_list`, not at the
   toggle.
+- **A trace list row wears its CURVE's colour, and the early-return cache key carries the
+  colour index.** `COLORS[tc.color_idx % len(COLORS)]` when the trace is enabled, the same
+  `#909090` grey when it is not (grey is the state; a hidden trace has no curve to be tied
+  to). Both are re-applied inside `_refresh_trace_list` for the `itemconfig`-does-not-survive-
+  `delete()` reason above. **`_trace_list_shown` is now `[(line, color_idx)]`, not `[line]`** —
+  `info_str()` renders no colour, so a style change alone left the rendered lines byte-identical,
+  the "unchanged → return early" optimisation fired, and the list kept the old foreground while
+  the plot was already redrawn in the new one.
+- **The results table's rows are headed by a width-stable colour swatch**, a Text tag
+  (`c0`..`c11`, the `"flag"` tag's precedent) — **not** a `ttk.Treeview`, which was reviewed
+  and rejected: it destroys the `aligned` units mode (one SI prefix per column, right-aligned,
+  which is what makes corner-to-corner comparison possible), loses select-drag-copy into a
+  mail, and freezes its row height at 20 px so text clips at 150% DPI. `RESULTS_SWATCH` is
+  `█`, measured in the pane's own font (Consolas 9) at 7 px — exactly one monospace cell, the
+  same as ` `, `0`, `M` and `X`, so the header's `_SWATCH_PAD` lines up with the rows under it.
+  Rejected on the same measurement: `▇` (12 px) and `▰` (10 px). `_format_results_table` stays
+  a pure text function; `_append_swatched` finds the rows by their `RESULTS_SWATCH` prefix and
+  consumes the colour list in order, so no line-number arithmetic has to track however many
+  header lines the table emits. Nothing else in the table may start with that character.
+- **The editor footer carries a ONE-LINE summary of the two below-the-fold strips, and one
+  line is the whole budget.** Measured at the 1040x600 minsize: the mode-5 form is 516 px
+  against a 45 px viewport, so `ed_overview` sits 366 px below the fold and `ed_validation`
+  387 px below it — 7.8% of the form is on screen and every mode change resets the scroll to
+  the top. Moving them into the footer verbatim is **not** the fix: the footer's height is the
+  button's 33 px and a label packed after it shares that row, so line 1 costs +0 px, line 2
+  +9, line 3 +26 and line 4 +43 — and at +43 the editor canvas reports `winfo_ismapped() == 0`
+  in modes 1/2/3/6, i.e. the whole form disappears. `VALIDATION_STRIP_LINES = 2` already
+  renders up to 3 display lines, so that is exactly what "just move them down" measures.
+  Hence `_footer_strip_text`: one line, `wraplength=0` so it **clips** (wrapping costs 26 px,
+  not 9), `FOOTER_STRIP_CHARS = 52` against a measured 303 px slot, the verdict never
+  truncated and the port counts giving up characters first. It counts the messages that do
+  **not** start with `✓` — `_validation_messages` never returns an empty list, so `len(msgs)`
+  reports a clean two-element spec as "2 problems". It is packed **after** the button (pack
+  unmaps from the end: the button must never be the one that goes) and `pack_forget`ed outside
+  mode 5, where the connections table is hidden but its rows still exist.
 - **`Calculate This Trace` narrows the WORK, not the report.** Traces it skips still
   contribute their last numbers to the results table; a table that shrank to one row would
   make the fast path look like it had discarded the others. It keeps the cursors (it is the
