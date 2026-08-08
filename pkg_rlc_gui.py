@@ -1009,9 +1009,17 @@ def _file_ref(fe: "FileEntry", base_dir: Optional[str]) -> dict:
     ref = {"label": fe.label, "path": ap.as_posix()}
     if base_dir:
         try:
-            ref["rel_path"] = Path(os.path.relpath(ap, base_dir)).as_posix()
+            rel = Path(os.path.relpath(ap, base_dir)).as_posix()
         except ValueError:
-            pass        # different drive on Windows: absolute is all there is
+            return ref      # different drive on Windows: absolute is all there is
+        # A relative path is worth writing when there is a tree that could be
+        # copied as a unit -- 'data/coil.s4p', or '../data/coil.s4p' from a
+        # configs/ subfolder.  A config saved somewhere unrelated to the data
+        # produces a ten-deep '../../..' chain that is longer than the absolute
+        # path and describes no such tree; it would still resolve on this
+        # machine and nowhere else, so it is only noise in the file.
+        if len(rel) < len(ref["path"]):
+            ref["rel_path"] = rel
     return ref
 
 
@@ -4291,6 +4299,10 @@ class App(tk.Tk):
 
         missing: list[tuple[str, str]] = []
         for label, path, found in sess.files:
+            # `found` first, so a file that is simply not there never reaches
+            # _load_one_file -- that one reports through a MODAL dialog, and a
+            # session whose folder has moved would open one per file before the
+            # user could read the single Results line that says the same thing.
             ts = self._load_one_file(path) if found else None
             if ts is None:
                 missing.append((label, path))

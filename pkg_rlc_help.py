@@ -1415,7 +1415,7 @@ not a session file, or is from a newer build, is refused by name.
 HELP_TOPICS = [
     ("Overview",        HELP_OVERVIEW),
     ("Reading files",   HELP_FILES),
-    ("Save / load setup", HELP_SESSION),
+    ("Save / Load",     HELP_SESSION),
     ("Mode 1 (->GND)",  HELP_MODE1),
     ("Mode 2 (A<->B)",  HELP_MODE2),
     ("Mode 3 (+Short)", HELP_MODE3),
@@ -1426,13 +1426,23 @@ HELP_TOPICS = [
 ]
 
 
+# 1010, not the historical 950.  A ttk.Notebook does NOT wrap or scroll its tab
+# strip -- it CLIPS it, so a tab that does not fit is simply unreachable, and
+# the one that goes is the LAST ("Worked examples") with nothing on screen to
+# say so.  Measured (Microsoft YaHei UI 9): nine tabs need 891 px and ten need
+# 968, so the tenth did not fit the old width at all.  Headroom now 42 px --
+# NOT enough for an eleventh.  tests/test_session.py::TestHelpTabsAllFit
+# re-measures it; add a tab and it tells you whether the window has to grow.
+HELP_WINDOW_WIDTH = 1010
+
+
 class HelpWindow(tk.Toplevel):
     """A tabbed reference window. One tab per topic."""
 
     def __init__(self, master):
         super().__init__(master)
         self.title("PKG RLC Extractor -- Help")
-        self.geometry("950x650")
+        self.geometry(f"{HELP_WINDOW_WIDTH}x650")
 
         nb = ttk.Notebook(self)
         nb.pack(side=tk.TOP, fill=tk.BOTH, expand=True)

@@ -41,6 +41,8 @@ Basic flow:
 
 Use **Export CSV** to dump per-trace `Freq, Re(Z), Im(Z), |Z|, R, L, C, Q` tables.
 
+**Saving the setup.** `File → Save Config...` (Ctrl+S) writes everything you typed — the loaded files, every trace's mode and port fields and tables, colour and style, the RLC frequency, the fit band and model, and the plot's checkbox row — to a few kB of readable JSON. `File → Load Config...` (Ctrl+O) brings it all back; press **Calculate All & Plot** and the numbers return. The file holds the *setup*, never the results: Export CSV remains the way to save those. Each file in it is recorded both relative to the config and absolutely, and loading tries the relative path first, so copying the whole folder to another machine (or to an offline one) just works; a file that has gone missing is named in the Results pane and the rest of the session still loads. The config is also written automatically on exit to `~/.pkg_rlc_extractor/last_session.json` — the Results pane says on startup what is in it, and `File → Restore Last Session` loads it on request rather than spending tens of seconds re-parsing package exports before you have asked for anything.
+
 A `+/- Ports / Coupling` trace expands into several curves: one self curve per measurement port plus one mutual curve per pair (the `self` / `mutual` checkboxes select which). A mutual curve is just another complex `Z(f)` array, so every subplot works on it — on a mutual curve the `L(nH)` subplot reads **M in nH** and `C(pF)` reads the coupling capacitance **C_c**. The `k` subplot is filled in for mutual curves only; self curves leave it blank.
 
 ---
@@ -393,7 +395,8 @@ SNP_RLC_Extractor/
                              compute_z / compute_z_matrix, RLC + coupling extraction, fits
   pkg_rlc_plot.py            Matplotlib plot panel with M / V / Delete / drag features
                              (R, L, C, |Z|, Re, Im, Q, k subplots)
-  pkg_rlc_gui.py             Tkinter GUI with file/trace management
+  pkg_rlc_gui.py             Tkinter GUI with file/trace management, and the
+                             JSON session format (Save / Load / Restore Config)
   pkg_rlc_help.py            In-app Help window (one tab per mode + syntax + examples)
   pkg_rlc_extractor.py       Entry point (GUI + CLI)
   reduce_snp.py              Standalone CLI: shrink a big .sNp to a few ports
@@ -405,6 +408,7 @@ SNP_RLC_Extractor/
     test_port_parser.py
     test_content_sniffer.py
     test_reduce_snp.py
+    test_session.py          Save / Load / Restore: round trip, refusals, paths
     generate_test_snp.py
     _golden_capture.py       Script (not a test) that (re)builds the golden .npz
   docs/

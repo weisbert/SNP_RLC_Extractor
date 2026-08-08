@@ -12,14 +12,15 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 |-------------------------|---------------------------------------------------------------------------------|
 | `pkg_rlc_core.py`       | Touchstone parser (+ `TouchstoneParseError` / `diagnose_touchstone` / `check_touchstone`), S<->Y, unified `TerminationSet` model + the Mode 5 DSL (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`), the connection-table row model (`MeasPortRow`, `ConnectionRow`, `rows_to_dsl_text`, `dsl_text_to_rows`, `build_terminations_rows`), `parse_mport_spec`, `resolve_meas_ports`, `compute_z_matrix` / `compute_z`, `extract_rlc_at_freq` / `extract_coupling_at_freq`, `fit_inductor` / `fit_capacitor` / `fit_auto`. |
 | `pkg_rlc_plot.py`       | Matplotlib plot panel: multi-subplot grid over R/L/C/\|Z\|/Re/Im/Q/**k**, draggable freq marker, M / V / Delete keys, fullscreen window. Quantities that cannot be derived from one `(freqs, Z)` pair (today only `k`) arrive via the optional `Trace.aux` dict. |
-| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), results pane. Re-exports the DSL helpers it no longer defines. |
-| `pkg_rlc_help.py`       | In-app Help window content (`HELP_TOPICS`, `HelpWindow`). One tab per mode + syntax + worked examples. |
+| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), the File menu and the JSON session format (`session_to_dict` / `session_from_dict` / `SessionError` / `autosave_path`), results pane. Re-exports the DSL helpers it no longer defines. |
+| `pkg_rlc_help.py`       | In-app Help window content (`HELP_TOPICS`, `HelpWindow`, `HELP_WINDOW_WIDTH`). One tab per mode + syntax + save/load + worked examples. |
 | `pkg_rlc_extractor.py`  | Entry point: dispatches GUI vs CLI from argv. CLI `--mode gnd \| p2p \| coupling`, `--mport` repeatable. |
 | `reduce_snp.py`         | **Standalone** CLI: shrinks a big `.sNp` to a few ports (KEEP / GND-short / open-or-matched elimination). Deliberately imports nothing from this repo — it gets copied to simulation servers on its own. |
 | `deploy.sh`             | **Top level on purpose.** Red-zone update entry point: `cd <install> && bash deploy.sh` auto-detects the uploaded tarball. The operator's cross-project convention is `<install>/deploy.sh` — do not move it back under `deploy/`. |
 | `deploy/`               | Rest of the air-gapped ("red zone") pipeline: `pack.ps1` (Windows, `git archive`), `doctor.sh` + `_env_check.py` (what can this box run?). No network, no pip, no venv on the far side. |
 | `tests/test_parse_diagnostics.py` | The robust-reading work: what a file says about itself (span, sweep description, DC / \|S\|>1 notes) and what happens when it cannot be read. Every refusal test pins the **verdict** and the **line number**, not just "raises ValueError" — that would have passed before any of it existed. Plus the recovery cases (UTF-16, BOM, commas, `D` exponents, extension tiebreak) and the two GUI affordances. |
-| `tests/`                | `unittest`-based suite (470 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/test_session.py` | Save Config / Load Config / Restore Last Session. Pure round trip (no Tk) for the trace fields, the refusal verdicts, the hand-edit tolerance and the path precedence; Tk-driven for the App-level save→wipe→load, the missing-file path, the autosave, and that the File menu and its accelerators are reachable. Also the guard on the Help window's tab strip, which the tenth tab pushed past the old 950 px. |
+| `tests/`                | `unittest`-based suite (516 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
 | `tests/test_editor_autoapply.py` | The commit-step removal: WHEN the editor writes into a `TraceConfig` and WHICH one it lands on (the deferral, the object capture, the flush-before-selection-change), the style picker's storage / reachability / honesty about multi-curve traces, and that hiding a curve neither recomputes it nor destroys the cursors. Every guard here was mutation-checked. |
 | `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see, and the reordering hazard that forces `_import_dsl_text`'s verbatim fallback. |
 | `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
@@ -453,6 +454,77 @@ claim below was mutation-checked — reverting the behaviour turns its test red.
   iteration loop) where the all-traces path does not.
 
 - **Plot quantities that need more than one curve arrive via `Trace.aux`.** `k` needs three curves at once (`Z_ab`, `Z_aa`, `Z_bb`) and so cannot be derived from a single `(freqs, Z)` pair; the GUI precomputes it and attaches it. `trace_y_values` must return an all-NaN array (draw nothing) for a trace with no matching `aux` entry, never raise — self curves share the subplot grid with mutual ones. New derived quantities go in `AUX_PLOT_TYPES` the same way.
+
+### The session file (Save Config / Load Config / autosave)
+
+`tests/test_session.py` is the guard, and every claim below was mutation-checked.
+
+- **A session file holds the CONFIG, never the results.** `_COMPUTED_TRACE_FIELDS`
+  is the blacklist and the saved set is *everything else*, so a new config field
+  round-trips without anyone remembering it. That trade is deliberate: a forgotten
+  config field silently stops saving and nothing catches it, while a forgotten
+  computed field fails loudly (`json.dump` on a numpy array).
+  `TestFieldCoverage::test_every_traceconfig_field_is_classified` pins that every
+  field of `TraceConfig` is in exactly one of the two sets.
+- **Retired fields are written only when non-empty.** A trace the user has never
+  selected still carries `custom_text` / `mp1_*` unmigrated, so dropping them
+  would lose a spec — but emitting eight empty strings per trace buries the ones
+  that matter. Migration happens on load, through the existing `_migrate_trace`.
+- **Every file is recorded twice and the RELATIVE path wins.** That is what makes
+  a session survive the folder being copied to another machine, which is the
+  normal way work reaches the red zone; the absolute path is the fallback for a
+  config file moved on its own. A test where only the relative path exists does
+  NOT pin the precedence — reversing the candidate order still passes it —
+  which is why `test_the_relative_path_wins_when_BOTH_exist` exists.
+- **`rel_path` is written only when it is shorter than the absolute path.** A
+  config saved somewhere unrelated to the data produces a ten-deep `../../..`
+  chain that describes no copyable tree, resolves on this machine and nowhere
+  else, and is pure noise in the file. `data/coil.s4p` and `../data/coil.s4p`
+  both survive the rule, which are the layouts the relative path exists for.
+- **A missing file is reported, not fatal.** The traces bound to it stay in the
+  list; `_on_calculate` already says `file '…' not loaded`. `_apply_session` also
+  re-binds traces when a resolved file's basename differs from the stored label,
+  which is the only route a hand-edited config has to re-point at moved data.
+  The `found` flag is checked BEFORE `_load_one_file`, which reports through a
+  **modal** dialog — a session whose folder moved would otherwise open one per
+  file (measured: the test does not fail, it hangs) before the user could read
+  the single Results line that says the same thing.
+- **`WM_DELETE_WINDOW` must point at `_on_close`, and the test checks the
+  handler NAME.** With nothing registered Tk reports its own built-in
+  `"…destroy"`, which is truthy — `assertTrue` on it passes in exactly the
+  broken state, where closing the window skips the autosave entirely.
+- **`_session_dict` flushes the editor first**, same rule and same reason as
+  Calculate: `Ctrl+S` in the same event burst as a keystroke would otherwise save
+  the value from before it.
+- **Loading CANCELS the queued editor sync rather than flushing it.** The target
+  trace is about to be discarded. `_cancel_editor_sync` is for that case only —
+  everywhere else the queued edit is the user's last keystroke and must land.
+- **A bad value costs its own field, never the file.** A session file is readable
+  text, so it will be hand-edited. Unknown keys, unparseable ints and malformed
+  rows are dropped with a note in the Results pane. `_coerce_bool` is not
+  `bool()`: `bool("false")` is `True`, which would silently invert a checkbox.
+  A combobox value outside its list is refused because both are `state="readonly"`
+  and there would be no way back through the UI.
+- **`SessionError` carries the whole verdict in `str(e)`**, the
+  `TouchstoneParseError` contract: not-ours, no version, and version-from-the-
+  future are three different messages, and the future one names both numbers.
+- **The autosave never raises and never writes an empty session.** It runs inside
+  `WM_DELETE_WINDOW`, where a raise is an application that cannot be closed; and
+  opening the tool, changing nothing and closing it must not erase what the
+  previous run left. Startup only *names* what is on disk — loading it would
+  re-parse every Touchstone file in it before the user has asked for anything.
+- **Save/Load are on a MENU BAR, not a button.** The Files and Traces rows are
+  both four buttons deep against a measured 448 px, and a fifth row in Global
+  Controls comes straight out of the editor viewport, which at the 1040x600
+  minsize is already down to tens of pixels. `unbind_class("Text", "<Control-o>")`
+  goes with the accelerators: Tk's Text binds it to "insert a newline" and a
+  `bind_all` handler runs *after* the class binding, so Ctrl+O would open the
+  dialog and scribble in the Results pane behind it.
+- **A `ttk.Notebook` CLIPS a tab strip it cannot fit** — no wrap, no scroll, and
+  the tab that vanishes is the LAST one. Measured (Microsoft YaHei UI 9): the
+  Help window's nine tabs needed 891 px and the tenth took it to 968, past the
+  historical 950. `HELP_WINDOW_WIDTH` is now 1010, i.e. **42 px of headroom, not
+  enough for an eleventh tab**; `TestHelpTabsAllFit` re-measures it.
 
 ### Cursor readout (the plot's marker / V-line labels)
 

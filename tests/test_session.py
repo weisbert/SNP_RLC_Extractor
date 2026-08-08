@@ -327,6 +327,28 @@ class TestPathResolution(unittest.TestCase):
         self.assertTrue(found)
         self.assertEqual(Path(path).resolve(), self.target.resolve())
 
+    def test_a_relative_path_is_written_only_when_it_describes_a_tree(self):
+        """
+        'data/coil.s4p' names a folder that can be copied as a unit.  A config
+        saved somewhere unrelated to the data gives a ten-deep '../../..' chain
+        that is longer than the absolute path, resolves on this machine and
+        nowhere else, and is only noise in the file.
+        """
+        class _FakeEntry:
+            def __init__(self, path):
+                self.label = os.path.basename(path)
+                self.ts = type("ts", (), {"source_path": path})()
+
+        near = pkg_rlc_gui._file_ref(_FakeEntry(str(self.target)),
+                                     str(self.root))
+        self.assertEqual(near["rel_path"], "data/coil.s4p")
+
+        far = pkg_rlc_gui._file_ref(
+            _FakeEntry(str(self.target)),
+            str(Path(self.root.anchor) / "a" / "b" / "c" / "d" / "e" / "f"))
+        self.assertNotIn("rel_path", far)
+        self.assertTrue(os.path.isabs(far["path"]))
+
     def test_a_file_that_is_gone_reports_where_it_looked(self):
         ref = {"label": "coil.s4p", "rel_path": "data/gone.s4p",
                "path": "/nowhere/coil.s4p"}
@@ -520,12 +542,21 @@ class TestSaveLoad(_AppCase):
         self.assertIn("saved_utc", data)
         self.assertIn("\n  ", text, "the file is not indented")
 
-    def test_the_file_records_both_paths(self):
+    def test_a_config_saved_beside_its_data_records_both_paths(self):
+        """The copy-the-whole-folder case, end to end through the real App."""
+        import shutil
+        data_dir = self.tmp / "data"
+        data_dir.mkdir()
+        local = data_dir / FIXTURE.name
+        shutil.copyfile(FIXTURE, local)
+        self.app.files = [FileEntry(parse_touchstone(str(local)))]
+        self.app._refresh_file_list()
+
         path = self._save()
         ref = json.loads(Path(path).read_text(encoding="utf-8"))["files"][0]
-        self.assertEqual(ref["label"], self.fe.label)
+        self.assertEqual(ref["label"], FIXTURE.name)
         self.assertTrue(os.path.isabs(ref["path"]), ref["path"])
-        self.assertIn("rel_path", ref)
+        self.assertEqual(ref["rel_path"], f"data/{FIXTURE.name}")
 
 
 @unittest.skipUnless(TK_OK, "no Tk display available")
@@ -639,6 +670,25 @@ class TestAutosave(_AppCase):
         self.app._announce_last_session()    # must not raise
         self.assertEqual(self._results().strip(), "")
 
+    def test_the_window_close_button_reaches_the_autosave(self):
+        """
+        The link the whole feature hangs on: without WM_DELETE_WINDOW wired to
+        _on_close, closing the window destroys the app directly and the
+        autosave never runs -- which is the original complaint, unchanged.
+        """
+        # Not `assertTrue`: with no handler registered Tk reports its own
+        # built-in "…destroy", which is truthy and is precisely the broken
+        # state.  The registered command name is what has to be checked.
+        self.assertIn("_on_close", self.app.protocol("WM_DELETE_WINDOW"))
+        target = self._redirect_autosave()
+        # _on_close ends in destroy(); tearDown must not destroy it twice.
+        self.app._on_close()
+        self.app = App()
+        self.app.withdraw()
+        self.assertTrue(target.is_file())
+        self.assertEqual(
+            len(json.loads(target.read_text(encoding="utf-8"))["traces"]), 2)
+
     def test_restore_reads_the_autosave(self):
         self._redirect_autosave()
         self.app._autosave_session()
@@ -699,6 +749,50 @@ class TestTheMenuIsReachable(_AppCase):
     def test_the_accelerators_are_bound(self):
         self.assertTrue(self.app.bind_all("<Control-s>"))
         self.assertTrue(self.app.bind_all("<Control-o>"))
+
+
+@unittest.skipUnless(TK_OK, "no Tk display available")
+class TestHelpTabsAllFit(unittest.TestCase):
+    """
+    The Help window grew a tenth tab, and a ttk.Notebook CLIPS a tab strip it
+    cannot fit -- no wrapping, no scrolling.  The tab that disappears is the
+    last one, "Worked examples", and nothing about the window says it is gone.
+    """
+
+    def test_the_tab_strip_fits_the_help_window(self):
+        import pkg_rlc_help
+        from tkinter import ttk
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            probe = ttk.Notebook(root)
+            for title, _text in pkg_rlc_help.HELP_TOPICS:
+                probe.add(ttk.Frame(probe, width=1, height=1), text=title)
+            probe.pack()
+            root.update_idletasks()
+            needed = probe.winfo_reqwidth()
+        finally:
+            root.destroy()
+        window = pkg_rlc_help.HELP_WINDOW_WIDTH
+        self.assertLessEqual(
+            needed, window,
+            f"the Help tab strip needs {needed} px and the window is "
+            f"{window} px wide, so the last tab is unreachable")
+
+    def test_the_window_really_opens_at_that_width(self):
+        """The measurement above only guards anything if it tracks reality."""
+        import pkg_rlc_help
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            win = pkg_rlc_help.HelpWindow(root)
+            win.update_idletasks()
+            geometry = win.geometry()
+        finally:
+            root.destroy()
+        self.assertTrue(
+            geometry.startswith(f"{pkg_rlc_help.HELP_WINDOW_WIDTH}x"), geometry)
 
 
 if __name__ == "__main__":
