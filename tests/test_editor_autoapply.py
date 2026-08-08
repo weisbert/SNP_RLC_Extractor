@@ -17,7 +17,9 @@ trace it lands on, not about what it writes.
     into several curves.
   * VISIBILITY.  A hidden trace leaves the plot AND the results table (a row
     for an undrawn curve reads as a duplicate of the drawn one), but it stays
-    measured: named on one line under the table and still written to the CSV.
+    measured: computed, cached, and named on one line under the table -- which
+    is the only place the report accounts for it, the CSV having dropped it
+    too.
     Toggling must NOT re-run the reduction or destroy the cursors the user
     placed.  The recompute test counts real calls into pkg_rlc_core; the
     cursor test reads the artists off the figure.

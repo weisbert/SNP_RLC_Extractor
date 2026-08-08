@@ -78,10 +78,10 @@ and C becomes positive (the parasitic capacitance dominates).
 Reading the results table
 -------------------------
 Each Calculate prints a single aligned table. Columns:
-   ID      trace id (in brackets), matches the Traces list. A "·"
-           right after the bracket means the trace was measured but
-           is not on the plot -- see "Showing and hiding curves"
-           below. Hiding never removes a row from this table.
+   ID      trace id (in brackets), matches the Traces list. Every
+           row here is a trace that is ON the plot: hiding one takes
+           it out of this table as well, and names it on one line
+           underneath instead -- see "Showing and hiding curves".
    Label   user-given trace label (truncated)
    File    only shown when traces span >1 file (alias F1, F2, ...)
    Ports   compact port-config descriptor:
@@ -558,6 +558,22 @@ CONNECTIONS -- Type / Port / To / R / L / C:
    * "To" is ignored by ground / vdd / open / rlc_gnd, which are
      always to ground. rlc_between takes exactly ONE partner port
      (an N-to-M lumped element is ambiguous -- star? mesh?).
+   * A range on an rlc_gnd row is ONE ELEMENT PER PORT, not one
+     element shared by them. "21:1:25" with L = 80p is five
+     separate 80 pH inductors, one from each of ports 21..25 to
+     ground -- the right model for five ground balls each with its
+     own ball inductance. (If those five ports are one net inside
+     the file, the five inductors end up in parallel there, so the
+     die sees ~16 pH.) For ONE shared 80 pH instead, take two rows:
+     "short 21:1:25 -> 21", then "rlc_gnd 21 L=80p".
+   * Two rlc_between rows on the SAME port pair are two elements in
+     PARALLEL -- their admittances add, which is how to write
+     R_on || C_ds for a switch. Two rlc_gnd rows on the same PORT
+     are NOT: a port carries one termination, so the row further
+     DOWN the table wins and the other is discarded. (Two rlc_gnd
+     rows on different ports that a short ties together do add,
+     because the merged node keeps both.) R, L and C within one
+     row are always a SERIES branch.
    * R / L / C hold the bare value; the unit is in the header.
      SI suffixes apply, and "5m" is 5 milli while "5M" is 5 Mega.
      The value must be ONE word: "5 m" and "1 uF" are REJECTED,
