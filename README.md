@@ -31,8 +31,13 @@ Basic flow:
 1. **Add File...** — load any Touchstone file. The parser content-sniffs the port count and ignores the file extension; `.s2p`, `.s45p`, `.txt`, `.dat`, or no extension all work. Each load prints a summary — port count, point count, `Z0`, the option line actually used, **the frequency span**, and `max |S|` — and the span is repeated on the file's line in the list. See [Reading files](#reading-files) for what a load failure tells you and what **Check File** is for.
 2. A default trace is auto-created against the loaded file. Select it in the **Traces** listbox to edit.
 3. In **Edit Selected Trace**, pick a measurement mode (Modes 1-3, `+/- Ports / Coupling`, or Custom) and fill in the relevant port fields. Modes 5 and 6 are filled in as **tables** with a `+ Add` button rather than typed as text: Mode 6 gets the measurement-port table, Mode 5 that table plus a connections table underneath, with a port-overview line and a validation line under both. Every port cell takes port **numbers**; **Show Ports** lists the file's port *names* in the Results pane, which is where to look on an unfamiliar package. R/L/C cells take one word with an SI suffix and no unit (`5m`, `0.5n`, `1u`) — the unit is in the column header, and a value with a space in it is rejected rather than silently truncated.
-4. Set **RLC Freq (GHz)** for single-point extraction, optionally enter a **Band Fit** range and model.
-5. Click **Calculate All & Plot**. Results appear in the right pane and overlay on the multi-subplot view.
+4. Pick the curve's **Style** — click the line preview to open a palette of the 12 colours and 4 line styles, drawn as they will be drawn on the plot. On a coupling trace the preview also shows the run of colours the trace's expanded curves will occupy, and `×n` for how many.
+5. Set **RLC Freq (GHz)** for single-point extraction, optionally enter a **Band Fit** range and model.
+6. Click **Calculate All & Plot**. Results appear in the right pane and overlay on the multi-subplot view. **Calculate This Trace**, in the editor's footer, recomputes only the selected trace — the fast path when you are iterating on one port spec with several traces loaded.
+
+**Edits apply as you type.** There is no *Apply* step: whatever is in the editor is what the selected trace holds, and the Traces list updates live. A trace whose spec has changed since it was last computed carries a trailing `*` in that list.
+
+**Showing and hiding curves.** Every trace has a `☑` / `☐` in the Traces list. Toggle it with the **Show/Hide** button, with the space bar on the list, or with **Plot: this trace** in the editor — a hidden trace comes off the plot immediately, without recomputing anything and without disturbing the `V` cursors you have placed. It is still measured: its row stays in the results table (marked `·`) and in the CSV export. This is the way to compare two of five traces without deleting the other three.
 
 Use **Export CSV** to dump per-trace `Freq, Re(Z), Im(Z), |Z|, R, L, C, Q` tables.
 

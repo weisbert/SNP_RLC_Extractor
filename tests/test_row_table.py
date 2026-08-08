@@ -303,8 +303,13 @@ class TestEveryModeKeepsItsFurniture(unittest.TestCase):
             app.update()
             gc = self._find(app, lambda w: w.winfo_class() == "TLabelframe"
                             and str(w.cget("text")) == "Global Controls")[0]
-            apply_btn = self._find(app, lambda w: w.winfo_class() == "TButton"
-                                   and str(w.cget("text")) == "Apply to Trace")[0]
+            # The editor footer's button ("Apply to Trace" before the editor
+            # started applying itself).  What is pinned here is the FOOTER --
+            # packed side=BOTTOM before the scrolling body -- so the button's
+            # job changed but the layout property under test did not.
+            foot_btn = self._find(app, lambda w: w.winfo_class() == "TButton"
+                                  and str(w.cget("text")) ==
+                                  "Calculate This Trace")[0]
             for geom in self.GEOMETRIES:
                 for mode in (1, 2, 3, 5, 6):
                     with self.subTest(geom=geom, mode=mode):
@@ -316,8 +321,8 @@ class TestEveryModeKeepsItsFurniture(unittest.TestCase):
                             app.update()
                         self.assertEqual(gc.winfo_ismapped(), 1,
                                          "Global Controls")
-                        self.assertEqual(apply_btn.winfo_ismapped(), 1,
-                                         "Apply to Trace")
+                        self.assertEqual(foot_btn.winfo_ismapped(), 1,
+                                         "editor footer button")
                         self.assertEqual(app.ed_mp_table.winfo_ismapped(),
                                          1 if mode in (5, 6) else 0,
                                          "measurement-port table")

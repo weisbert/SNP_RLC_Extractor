@@ -12,14 +12,15 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 |-------------------------|---------------------------------------------------------------------------------|
 | `pkg_rlc_core.py`       | Touchstone parser (+ `TouchstoneParseError` / `diagnose_touchstone` / `check_touchstone`), S<->Y, unified `TerminationSet` model + the Mode 5 DSL (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`), the connection-table row model (`MeasPortRow`, `ConnectionRow`, `rows_to_dsl_text`, `dsl_text_to_rows`, `build_terminations_rows`), `parse_mport_spec`, `resolve_meas_ports`, `compute_z_matrix` / `compute_z`, `extract_rlc_at_freq` / `extract_coupling_at_freq`, `fit_inductor` / `fit_capacitor` / `fit_auto`. |
 | `pkg_rlc_plot.py`       | Matplotlib plot panel: multi-subplot grid over R/L/C/\|Z\|/Re/Im/Q/**k**, draggable freq marker, M / V / Delete keys, fullscreen window. Quantities that cannot be derived from one `(freqs, Z)` pair (today only `k`) arrive via the optional `Trace.aux` dict. |
-| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), results pane. Re-exports the DSL helpers it no longer defines. |
+| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), results pane. Re-exports the DSL helpers it no longer defines. |
 | `pkg_rlc_help.py`       | In-app Help window content (`HELP_TOPICS`, `HelpWindow`). One tab per mode + syntax + worked examples. |
 | `pkg_rlc_extractor.py`  | Entry point: dispatches GUI vs CLI from argv. CLI `--mode gnd \| p2p \| coupling`, `--mport` repeatable. |
 | `reduce_snp.py`         | **Standalone** CLI: shrinks a big `.sNp` to a few ports (KEEP / GND-short / open-or-matched elimination). Deliberately imports nothing from this repo — it gets copied to simulation servers on its own. |
 | `deploy.sh`             | **Top level on purpose.** Red-zone update entry point: `cd <install> && bash deploy.sh` auto-detects the uploaded tarball. The operator's cross-project convention is `<install>/deploy.sh` — do not move it back under `deploy/`. |
 | `deploy/`               | Rest of the air-gapped ("red zone") pipeline: `pack.ps1` (Windows, `git archive`), `doctor.sh` + `_env_check.py` (what can this box run?). No network, no pip, no venv on the far side. |
 | `tests/test_parse_diagnostics.py` | The robust-reading work: what a file says about itself (span, sweep description, DC / \|S\|>1 notes) and what happens when it cannot be read. Every refusal test pins the **verdict** and the **line number**, not just "raises ValueError" — that would have passed before any of it existed. Plus the recovery cases (UTF-16, BOM, commas, `D` exponents, extension tiebreak) and the two GUI affordances. |
-| `tests/`                | `unittest`-based suite (391 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/`                | `unittest`-based suite (442 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/test_editor_autoapply.py` | The commit-step removal: WHEN the editor writes into a `TraceConfig` and WHICH one it lands on (the deferral, the object capture, the flush-before-selection-change), the style picker's storage / reachability / honesty about multi-curve traces, and that hiding a curve neither recomputes it nor destroys the cursors. Every guard here was mutation-checked. |
 | `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see, and the reordering hazard that forces `_import_dsl_text`'s verbatim fallback. |
 | `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
 | `tests/test_mode5_editor.py` | Stage 3: the pure text<->rows import decision and both strip renderers, plus Tk-driven editor wiring, per-mode widget visibility, the text hatch, the CSV gate, wheel routing, and the LAYOUT numbers (`ismapped` / `reqwidth` / `xview` / `scrollregion` / `sashpos`) measured off a mapped window. |
@@ -30,8 +31,8 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 
 ## Critical invariants (do not regress these)
 
-- **All Listboxes set `exportselection=False`.** Without it, clicking an Entry/Spinbox steals the X selection and clears the highlight — `Apply to Trace` then silently fails.
-- **Auto-sync editor on Calculate.** Before computing, silently push current editor fields into the selected trace; users routinely click Calculate without Apply.
+- **All Listboxes set `exportselection=False`.** Without it, clicking an Entry/Spinbox steals the X selection and clears the highlight. The editor resolves its auto-apply target from that selection, so a cleared highlight means every keystroke is silently discarded.
+- **Auto-sync editor on Calculate.** Before computing, flush any queued sync and push current editor fields into the selected trace. Auto-apply usually got there first, but a keystroke in the same event burst as the click is still in the idle queue.
 - **Truncate trace labels to 30 chars** in plot legends, or subplots squeeze.
 - **Log-scale drag tolerance.** The freq-marker drag detector must use log-space distance when the x-axis is log.
 - **Canvas focus.** After every `FigureCanvasTkAgg`, call `canvas.get_tk_widget().focus_set()` so M / V / Delete keys are received (also in the fullscreen `Toplevel`).
@@ -200,8 +201,10 @@ looking at the screen.
   mode 6 at 1500x900 the whole "Global Controls" frame was gone, i.e. **Calculate All &
   Plot / Export CSV / Help were not on screen**, while modes 1/2/3/5 looked fine — which is
   what made it read as flaky rather than broken. `Global Controls` is therefore packed
-  `side=BOTTOM` **before** the editor, and `Apply to Trace` is packed `side=BOTTOM` inside
-  the editor **before** the scrollable body. Do not reorder either.
+  `side=BOTTOM` **before** the editor, and the editor's footer (`Calculate This Trace`) is
+  packed `side=BOTTOM` inside the editor **before** the scrollable body. Do not reorder
+  either, and do not empty the footer — Tk does not reissue a geometry request when a
+  master's last slave is removed, so an emptied footer keeps its requested height forever.
 - **The editor form lives in a Canvas and must have its scrollregion refreshed on every
   mode change.** `_update_mode_visibility` uses `grid()`/`grid_remove()`, and the inner
   frame's `<Configure>` does NOT fire usefully for that: the scrollregion keeps its old
@@ -347,6 +350,92 @@ looking at the screen.
   `tc.Zmat is not None`, the same predicate `_on_calculate` routes on — gating on
   `tc.mode == 6` exported a two-probe Mode 5 trace as a well-formed scalar table with
   every M and every k silently absent.
+
+### Auto-apply, the style picker, plot visibility
+
+`tests/test_editor_autoapply.py` is the guard for this whole section, and every
+claim below was mutation-checked — reverting the behaviour turns its test red.
+
+- **The editor applies itself; there is no `Apply to Trace` button.** Three properties make
+  that safe and none is optional. **(a) The sync is DEFERRED to `after_idle`, never run
+  straight from the variable trace.** `PlaceholderEntry._show_if_empty()` sets the variable
+  *before* it sets `_showing`, and Tcl runs write traces synchronously inside `.set()`, so a
+  synchronous handler reads `get_value()` while the flag still says "not showing" and stores
+  the grey hint (`"e.g.  1  (signal port to drive)"`) as a port spec. That is the reason for
+  the deferral, not performance, and
+  `TestAutoApply::test_a_synchronous_reader_really_would_see_the_placeholder` demonstrates
+  the hazard rather than asserting it. **(b) It captures the `TraceConfig` OBJECT, not the
+  Listbox index, and `_flush_editor_sync` runs before any selection change** (`_on_trace_selected`,
+  `_on_duplicate_trace`, `_on_calculate`). Resolving the target when the callback runs lets
+  "type into A, click B" write B's freshly loaded editor content into B and drop the edit —
+  the exact loss auto-apply exists to remove, now rare instead of reliable. **(c) It never
+  raises and never opens a dialog**, same rule and same reason as `_apply_editor_strips`.
+  `_apply_editor_sync` uses `any(t is tc ...)`, not `tc in self.traces`: `TraceConfig` is an
+  `eq=True` dataclass holding numpy arrays, so `in` raises "truth value of an array is
+  ambiguous" as soon as it compares against a trace it does not match.
+- **`_update_mode_visibility()` is called INSIDE the `_suppress_editor_sync` guard.** It
+  calls `set_placeholder` on four `PlaceholderEntry`s, each of which writes its variable —
+  four unguarded syncs per selection. They usually write the same value back, but
+  `_sync_editor_to_trace` turns an empty Label into `trace_<id>`, so merely *looking* at a
+  trace could rename it.
+- **`_refresh_trace_list` returns early when the rendered lines are unchanged.** It now runs
+  on every keystroke, and rebuilding a Listbox resets `yview` — a user editing trace 9 of 12
+  would be yanked to the top on every character. (Programmatic `delete`/`insert`/
+  `selection_set` do *not* fire `<<ListboxSelect>>` on Tk 8.6, verified, so the rebuild
+  cannot re-enter `_on_trace_selected` and reload the editor mid-typing. Do not rely on that
+  for anything else.)
+- **`_config_signature` marks `stale`, `_draw_signature` triggers a replot.** Editing the
+  spec makes the drawn curve older than the trace that describes it (a trailing `*` in the
+  list); changing colour/linestyle/visibility changes the picture only. `label` is
+  deliberately in NEITHER — it reaches the plot as a legend name, and including it would
+  re-render every subplot on every keystroke of the Label field.
+- **`_replot_from_cache` is the ONLY place a computed trace becomes plot curves.** Calculate
+  fills `Z`/`Zmat`/`fit_freqs`/`fit_Z` and then calls it, so Calculate and a visibility
+  toggle cannot drift apart in what they draw. It reads colour, linestyle and self/mutual
+  fresh every time. Anything the plot needs must be cached on the `TraceConfig` — a value
+  only `_on_calculate` knows would silently vanish from the traces that stay.
+- **Toggling visibility must NOT recompute and must NOT drop the cursors.** Hiding a curve
+  through `_on_calculate` costs a Schur reduction of a 153-port file to produce numerically
+  identical results, and `set_traces` clears `_anno_stack` *and* `_vline_freqs` (twice —
+  `redraw` clears them again), so every tidy-up of the view would destroy the V lines the
+  comparison was set up to make. `set_traces(..., keep_cursors=True)` re-places them via
+  `_place_vline`; M markers are deliberately NOT restored, each being anchored to one data
+  point of one trace that may no longer be drawn. A **full** Calculate still clears them —
+  its numbers are new.
+- **`enabled` gates the PLOT only.** A hidden trace stays in the results table (marked `·`
+  after the id) and in the CSV (`# … Plotted: no`). Losing numbers because a curve was
+  decluttered is a worse surprise than a busy plot. The editor owns the *selected* trace, so
+  poking `tc.enabled` directly on it is overwritten by the next sync — go through
+  `_on_toggle_trace` or `ed_enabled_var`.
+- **The style picker stores INDICES and expands IN PLACE.** Indices keep `pkg_rlc_plot`,
+  `test_plot_readout` and `golden_legacy.npz` out of this change, and keep
+  `_coupling_plot_traces` able to derive sibling colours as `(color_idx + n) % len(COLORS)`
+  — an arbitrary RGB has no "next colour", so all six curves of a mode-6 trace would come
+  out identical. In place, not a popup: a `grab_set` Toplevel that outlives its opener
+  blocks event delivery and `update()` never returns, which is the documented scrollbar
+  limit-cycle failure again (GUI and test suite hang together). All sizes are in units of
+  the default font's linespace, never pixels.
+- **`_preview` sets `takefocus=True`.** A bare `tk.Canvas` has `takefocus=''` and Tk's
+  traversal heuristic skips a widget with no key bindings, so replacing two Spinboxes with a
+  Canvas would have dropped Style out of the Tab order the Spinboxes were in.
+- **`_editor_curve_span` counts mode-6 rows DIRECTLY, not through the DSL.**
+  `build_terminations_rows` goes via `rows_to_dsl_text`, where `b` is the legacy alias for
+  the minus side of `A`, so two measurement ports named `a`/`b` resolve to ONE and the
+  preview would claim a span of 1 for a trace Calculate refuses outright.
+- **`Show/Hide` is the FOURTH button in the Traces row.** Measured at the 1040x600 minsize:
+  the row is 448 px, three buttons ask 273 and four ask 364. Re-measure before a fifth. It
+  duplicates the editor's `Plot: this trace` checkbox on purpose — the checkbox needs the
+  trace selected first and the `<space>` route is invisible.
+- **The `☑`/`☐` prefix is width-stable.** Measured in Microsoft YaHei UI 9: both glyphs are
+  12 px, 16 px with the trailing space, so toggling does not shift the rest of the line
+  (`✓` vs a space would have jittered by 8 px). Cost against the 444 px list: a typical
+  entry goes 356 → 372 px. `Listbox.itemconfig` does not survive `delete()`, so the grey
+  foreground for a hidden trace is re-applied inside `_refresh_trace_list`, not at the
+  toggle.
+- **`Calculate This Trace` narrows the WORK, not the report.** Traces it skips still
+  contribute their last numbers to the results table; a table that shrank to one row would
+  make the fast path look like it had discarded the others. It keeps the cursors (it is the
+  iteration loop) where the all-traces path does not.
 
 - **Plot quantities that need more than one curve arrive via `Trace.aux`.** `k` needs three curves at once (`Z_ab`, `Z_aa`, `Z_bb`) and so cannot be derived from a single `(freqs, Z)` pair; the GUI precomputes it and attaches it. `trace_y_values` must return an all-NaN array (draw nothing) for a trace with no matching `aux` entry, never raise — self curves share the subplot grid with mutual ones. New derived quantities go in `AUX_PLOT_TYPES` the same way.
 

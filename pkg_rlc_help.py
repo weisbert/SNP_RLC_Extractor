@@ -78,7 +78,10 @@ and C becomes positive (the parasitic capacitance dominates).
 Reading the results table
 -------------------------
 Each Calculate prints a single aligned table. Columns:
-   ID      trace id (in brackets), matches the Traces list
+   ID      trace id (in brackets), matches the Traces list. A "·"
+           right after the bracket means the trace was measured but
+           is not on the plot -- see "Showing and hiding curves"
+           below. Hiding never removes a row from this table.
    Label   user-given trace label (truncated)
    File    only shown when traces span >1 file (alias F1, F2, ...)
    Ports   compact port-config descriptor:
@@ -119,6 +122,60 @@ Units modes (selectable from the dropdown above the results pane)
 
 Switching the units mode re-renders the most recent Calculate's table
 without recomputing -- the existing log entries are preserved above.
+
+Editing traces: there is no "Apply"
+-----------------------------------
+Whatever is in the editor IS what the selected trace holds. Type a
+port number and the trace has it; the Traces list updates as you
+type, and clicking another trace keeps the edit you just made rather
+than discarding it.
+
+A trailing "*" on a line in the Traces list means that trace's spec
+has changed since the curve on screen was computed -- the numbers
+you are looking at are older than the setup that describes them.
+Calculate clears it.
+
+"Calculate This Trace", at the bottom of the editor, recomputes only
+the selected trace. With several traces over a large package file
+that is the difference between iterating on one port spec and
+re-reducing everything on every pass. The results table still shows
+every trace; only the WORK is narrowed.
+
+Choosing a colour and a line style
+----------------------------------
+Click the line preview next to "Style:". It expands into the 12
+colours and the 4 line styles, each drawn the way the plot will draw
+it. Click a colour or a style to take it; click the preview again to
+fold the palette away. Tab reaches the preview and Enter, Space or
+Down opens it.
+
+A coupling trace is not one curve, so the preview does not pretend
+it is: with G measurement ports it draws G self curves plus one
+mutual curve per pair, each taking the NEXT colour in the palette.
+The preview shows the run of colours the trace will occupy and "xN"
+for how many. Two traces whose runs overlap will share colours --
+that strip is how to see it before you plot.
+
+Showing and hiding curves
+-------------------------
+Every line in the Traces list starts with a checkbox: [x] drawn,
+[ ] hidden (hidden lines are also greyed). Three ways to toggle the
+selected trace:
+
+   * the "Show/Hide" button above the list
+   * the space bar, with the list focused
+   * "Plot: this trace" in the editor
+
+Hiding takes effect immediately. Nothing is recomputed -- the curve
+is rebuilt from the numbers already in memory -- and the V-line
+cursors you have placed stay where they are. This is how to compare
+two traces out of five without deleting the other three and typing
+them in again.
+
+A hidden trace is still MEASURED. Its row stays in the results table
+(marked "·" after the id) and it is still written to Export CSV,
+with "Plotted: no" on its header line. The checkbox governs the
+picture, not the measurement.
 
 Broadband fit models
 --------------------

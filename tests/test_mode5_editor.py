@@ -663,18 +663,23 @@ class TestEditorLayout(_EditorCase):
             with self.subTest(geom=geom):
                 self._fits_or_scrolls(6, geom)
 
-    def test_global_controls_and_apply_stay_mapped_in_mode_5(self):
+    def test_global_controls_and_footer_stay_mapped_in_mode_5(self):
         """
         pack UNMAPS what does not fit, starting from the END. This is what left
         Calculate All & Plot / Export CSV / Help off screen in mode 6.
+
+        The editor footer holds "Calculate This Trace"; it held "Apply to
+        Trace" before the editor started applying itself.  The property under
+        test is the footer's placement, not what its button does.
         """
         gc = _by_text(self.app, "TLabelframe", "Global Controls")
-        apply_btn = _by_text(self.app, "TButton", "Apply to Trace")
+        foot_btn = _by_text(self.app, "TButton", "Calculate This Trace")
         for geom in ("1500x900", "1040x600"):
             with self.subTest(geom=geom):
                 self._mode(5, geom)
                 self.assertEqual(gc.winfo_ismapped(), 1, "Global Controls")
-                self.assertEqual(apply_btn.winfo_ismapped(), 1, "Apply to Trace")
+                self.assertEqual(foot_btn.winfo_ismapped(), 1,
+                                 "editor footer button")
 
     def test_nothing_invisible_reserves_height_under_the_canvas(self):
         """
@@ -944,17 +949,21 @@ class TestGroundReferencedProbeThroughTheEditor(_EditorCase):
 
     def _fill(self, mport, conns):
         """
-        Fill the cells the way a user does, then Apply.
+        Fill the cells the way a user does and let the editor apply itself.
 
         set_rows() deliberately does NOT notify -- that is what keeps loading a
         trace from re-running the strips once per row -- so the explicit
         _on_editor_rows_changed() is what a keystroke would have done.  The
         load path is covered separately by _load(), below.
+
+        There is no Apply button any more: _on_editor_rows_changed queues the
+        sync and _flush_editor_sync runs it now instead of at the next idle
+        moment, so the test does not depend on when Tk decides to be idle.
         """
         self.app.ed_mp_table.set_rows([mport])
         self.app.ed_conn_table.set_rows(conns)
         self.app._on_editor_rows_changed()
-        self.app._on_apply_editor()
+        self.app._flush_editor_sync()
         self._settle()
 
     def _load(self, mport, conns):
@@ -1102,9 +1111,10 @@ class TestListboxes(_EditorCase):
     def test_every_listbox_sets_exportselection_false(self):
         """
         Without exportselection=False, clicking an Entry steals the X selection
-        and clears the highlight, and 'Apply to Trace' then silently fails.
-        Stage 3 multiplies the number of Entry widgets clicked between selecting
-        a trace and applying, so the invariant finally gets a test.
+        and clears the highlight.  That used to make 'Apply to Trace' silently
+        fail; with auto-apply the failure is quieter still -- the editor
+        resolves its target from this selection, so a cleared highlight means
+        every keystroke is silently discarded.
         """
         boxes = _find(self.app, lambda w: isinstance(w, tk.Listbox))
         self.assertGreaterEqual(len(boxes), 2)

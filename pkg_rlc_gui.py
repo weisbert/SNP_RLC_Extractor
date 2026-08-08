@@ -24,11 +24,12 @@ from __future__ import annotations
 import csv
 import math
 import traceback
-from dataclasses import dataclass, field, replace
+from dataclasses import astuple, dataclass, field, replace
 from pathlib import Path
 from typing import Optional, Sequence
 
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
@@ -175,14 +176,29 @@ class TraceConfig:
     extra_lines: str = ""
     plot_self: bool = True
     plot_mutual: bool = True
+    # Drawn or not.  This gates the PLOT ONLY: a hidden trace is still
+    # computed, still in the results table and still in the CSV export -- the
+    # user asked to stop drawing it, not to stop measuring it.  Toggling it
+    # replots from the cached Z / Zmat below, without re-running the reduction.
+    enabled: bool = True
     label: str = ""
     color_idx: int = 0
     ls_idx: int = 0
     # Computed (filled in after Calculate)
+    # `stale` says the config has been edited since Z was computed, so the
+    # curve on screen is not what this row now describes.  Without it the
+    # replot-from-cache path would quietly redraw last run's numbers under the
+    # new port spec -- and with auto-apply, EVERY keystroke makes Z stale.
+    stale: bool = False
     Z: Optional[np.ndarray] = None
     rlc: Optional[object] = None
     fit_kind: str = ""
     fit: Optional[object] = None
+    # The evaluated fit overlay, cached so the curves can be rebuilt from this
+    # trace alone.  Everything the plot needs has to live here, or toggling
+    # visibility would silently drop the fit overlay off the traces that stay.
+    fit_freqs: Optional[np.ndarray] = None
+    fit_Z: Optional[np.ndarray] = None
     # Computed, mode 6 only
     Zmat: Optional[np.ndarray] = None          # (nfreqs, G, G) complex
     mport_names: Optional[list[str]] = None    # length G
@@ -192,8 +208,16 @@ class TraceConfig:
                   4: "A↔B+VDD (retired)", 5: "Custom", 6: "+/- Coupling"}
 
     def info_str(self) -> str:
-        return (f"[{self.id}] {self.label}  |  "
-                f"{self.file_label}  {self.MODE_NAMES.get(self.mode, '?')}")
+        # The ☑/☐ prefix is what makes visibility readable at a glance without
+        # selecting the trace.  Measured (Microsoft YaHei UI 9): both glyphs are
+        # 12 px, 16 px with the trailing space, so toggling does NOT shift the
+        # rest of the line -- '✓' vs a space would have jittered by 8 px.  Cost
+        # against the 444 px list: a typical entry goes 356 -> 372 px.
+        # A trailing '*' means the drawn curve is older than this spec.
+        return (f"{'☑' if self.enabled else '☐'} "
+                f"[{self.id}] {self.label}  |  "
+                f"{self.file_label}  {self.MODE_NAMES.get(self.mode, '?')}"
+                f"{' *' if self.stale else ''}")
 
     def port_descriptor(self) -> str:
         """Compact one-line port-config descriptor for the results table."""
@@ -809,8 +833,37 @@ def _duplicate_trace_config(src: "TraceConfig", new_id: int) -> "TraceConfig":
                           "mports": [replace(r) for r in src.mports],
                           "conn_rows": [replace(r) for r in src.conn_rows],
                           "Z": None, "rlc": None, "fit": None, "fit_kind": "",
+                          "fit_freqs": None, "fit_Z": None,
                           "Zmat": None, "mport_names": None,
-                          "coupling": None})
+                          "coupling": None, "stale": False})
+
+
+def _config_signature(tc: "TraceConfig") -> tuple:
+    """
+    Everything that feeds _build_termination, as a comparable value.
+
+    Auto-apply writes the editor into the trace on every keystroke, so "did
+    this edit invalidate the computed curve?" has to be answerable cheaply.
+    Only fields that change the ANSWER belong here -- colour, linestyle and the
+    plot checkboxes change the picture and are handled by _draw_signature,
+    which triggers a replot from cache rather than marking anything stale.
+    """
+    return (tc.file_label, tc.mode, tc.port_a, tc.port_b, tc.short_pairs,
+            tc.gnd_ports, tc.extra_lines,
+            tuple((r.name, r.plus, r.minus) for r in tc.mports),
+            tuple(astuple(r) for r in tc.conn_rows))
+
+
+def _draw_signature(tc: "TraceConfig") -> tuple:
+    """
+    What changes the picture without changing the numbers.
+
+    `label` is deliberately absent: it reaches the plot only as a legend name,
+    and including it would re-render every subplot on every keystroke of the
+    Label field.  These five all change discretely (a click), so a replot per
+    change is free.
+    """
+    return (tc.enabled, tc.color_idx, tc.ls_idx, tc.plot_self, tc.plot_mutual)
 
 
 def _collect_mports(tc: "TraceConfig") -> list[tuple[str, list[int], list[int]]]:
@@ -1063,7 +1116,11 @@ def _format_results_table(rows, units_mode: str) -> str:
             q_str = "nan" if not math.isfinite(res.Q) else f"{res.Q:.3g}"
 
         row_parts = [
-            f"[{tc.id:>2}] ",
+            # The flag column says the trace was measured but is not on the
+            # plot.  Hiding gates the PLOT only, so the table keeps the row --
+            # and then has to say so, or the table and the plot disagree with
+            # no explanation.
+            f"[{tc.id:>2}]{' ' if tc.enabled else '·'}",
             f"{_trunc(tc.label, LABEL_W):<{LABEL_W}}  ",
         ]
         if multi_file:
@@ -1081,6 +1138,8 @@ def _format_results_table(rows, units_mode: str) -> str:
         "cap = Im(Z)<0 (capacitive; past SRF for an inductor) | "
         "R<0 = non-passive"
     )
+    if any(not tc.enabled for tc, _fl, _res in rows):
+        lines.append("          · after [id] = measured but not plotted")
     return "\n".join(lines)
 
 
@@ -1293,6 +1352,23 @@ class PlaceholderEntry(ttk.Entry):
         elif not self._var.get():
             self._show_if_empty()
 
+    def on_change(self, callback) -> None:
+        """
+        Call `callback` whenever the contents change.
+
+        Deliberately a method and not a constructor argument: __init__ ends
+        with _show_if_empty(), which SETS the variable, so a callback attached
+        during construction fires once before the caller has finished building
+        itself.  Registering afterwards makes that impossible rather than
+        merely unlikely.
+
+        The callback still sees the placeholder being written and erased -- it
+        must read get_value(), never _var.get(), and must not act synchronously
+        on what it reads (_show_if_empty writes the variable BEFORE it sets
+        _showing, so a synchronous reader sees the hint as user input).
+        """
+        self._var.trace_add("write", lambda *_a: callback())
+
 
 class PlaceholderText(tk.Text):
     """tk.Text that shows greyed-out hint when empty and unfocused."""
@@ -1347,6 +1423,211 @@ class PlaceholderText(tk.Text):
             self._placeholder = placeholder
             if self._is_empty():
                 self._show_if_empty()
+
+
+# ============================================================================
+# StylePicker -- the colour / linestyle chooser
+# ============================================================================
+#
+# Replaces two integer Spinboxes ("Color idx: 7", "LS idx: 2") that gave the
+# user no way to know what 7 looked like.  Three design points:
+#
+#  * The palette EXPANDS IN PLACE, it is not a popup Toplevel.  A grab_set
+#    window that outlives its opener blocks event delivery, and update() then
+#    never returns -- the exact failure mode already recorded for the editor's
+#    scrollbar limit cycle, i.e. the GUI and the test suite hang together.
+#    Expanding in place reuses the form's existing Canvas scrolling instead
+#    (_refresh_editor_scrollregion(preserve=True)) and needs no grab, no
+#    focus_force, no off-screen placement clamp.
+#  * The stored value stays an INDEX into COLORS / LINESTYLES.  A free colour
+#    chooser looks like an upgrade but _coupling_plot_traces derives the colours
+#    of a mode-6 trace's expanded curves as (color_idx + n) % len(COLORS): an
+#    arbitrary RGB has no "next colour", so all six curves would come out the
+#    same.  This is a picker change only -- pkg_rlc_plot is untouched.
+#  * All sizes are in units of the default font's linespace, never in pixels.
+#    The editor's column budget is already documented as a 100%-font number
+#    that does not survive 150% DPI; a pixel-sized Canvas would repeat that.
+
+
+class StylePicker(ttk.Frame):
+    """
+    A line preview that expands into a 12-colour + 4-linestyle palette.
+
+    The preview draws the real colour and the real dash pattern, so what is on
+    the button is what the plot draws -- with one honest exception it labels
+    itself: a mode 5/6 trace with G measurement ports expands into several
+    curves consuming CONSECUTIVE palette slots, so `set_span(n)` makes the
+    preview show the whole run and the '×n'.  Without that, picking a
+    distinct-looking colour for a coupling trace tells you nothing about the
+    five curves either side of it, and two traces can collide invisibly.
+    """
+
+    def __init__(self, master, on_change=None, **kw):
+        super().__init__(master, **kw)
+        self._color_idx = 0
+        self._ls_idx = 0
+        self._span = 1
+        self._on_change = on_change
+        self._expanded = False
+        self._cells: dict = {}
+
+        u = self._u = max(12, tkfont.Font(font="TkDefaultFont")
+                          .metrics("linespace"))
+        head = ttk.Frame(self)
+        head.grid(row=0, column=0, sticky="w")
+        self._preview = tk.Canvas(head, width=5 * u, height=2 * u,
+                                  highlightthickness=1,
+                                  highlightbackground="#a0a0a0",
+                                  # A bare Canvas has takefocus='' and Tk's
+                                  # traversal heuristic skips a widget with no
+                                  # key bindings, so without this the style
+                                  # control drops out of the Tab order that the
+                                  # two Spinboxes were in.
+                                  takefocus=True)
+        self._preview.pack(side=tk.LEFT)
+        self._preview.bind("<Button-1>", lambda e: self.toggle())
+        self._preview.bind("<Return>", lambda e: self.toggle())
+        self._preview.bind("<space>", lambda e: self.toggle())
+        self._preview.bind("<Down>", lambda e: self.expand())
+        self._preview.bind("<Escape>", lambda e: self.collapse())
+        self._preview.bind("<FocusIn>", lambda e: self._preview.configure(
+            highlightbackground="#0078d7"))
+        self._preview.bind("<FocusOut>", lambda e: self._preview.configure(
+            highlightbackground="#a0a0a0"))
+        self._arrow = ttk.Label(head, text="▸")
+        self._arrow.pack(side=tk.LEFT, padx=(4, 0))
+        self._arrow.bind("<Button-1>", lambda e: self.toggle())
+
+        self._palette = ttk.Frame(self)
+        self._build_palette()
+        self._palette.grid(row=1, column=0, sticky="w", pady=(3, 0))
+        self._palette.grid_remove()
+        self._redraw_preview()
+
+    # -------- palette --------
+
+    def _build_palette(self) -> None:
+        u = self._u
+        colors = ttk.Frame(self._palette)
+        colors.grid(row=0, column=0, sticky="w")
+        # 2 rows of 6 rather than one row of 12: 12 x 2u would be ~390 px and
+        # the editor canvas viewport is 431 px before the label column.
+        for i, c in enumerate(COLORS):
+            cv = tk.Canvas(colors, width=2 * u, height=u, highlightthickness=1,
+                           highlightbackground="#d0d0d0", background=c,
+                           cursor="hand2")
+            cv.grid(row=i // 6, column=i % 6, padx=1, pady=1)
+            cv.bind("<Button-1>", lambda e, k=i: self._choose(color=k))
+            self._cells[("c", i)] = cv
+
+        styles = ttk.Frame(self._palette)
+        styles.grid(row=1, column=0, sticky="w", pady=(3, 0))
+        for i, ls in enumerate(LINESTYLES):
+            cv = tk.Canvas(styles, width=3 * u, height=u, highlightthickness=1,
+                           highlightbackground="#d0d0d0", background="white",
+                           cursor="hand2")
+            cv.grid(row=0, column=i, padx=1)
+            cv.create_line(3, u // 2, 3 * u - 3, u // 2, width=2, fill="black",
+                           dash=_tk_dash(ls, 2))
+            cv.bind("<Button-1>", lambda e, k=i: self._choose(ls=k))
+            self._cells[("l", i)] = cv
+
+    def _choose(self, color: int | None = None, ls: int | None = None) -> None:
+        if color is not None:
+            self._color_idx = color
+        if ls is not None:
+            self._ls_idx = ls
+        self._redraw_preview()
+        self._mark_selection()
+        if self._on_change is not None:
+            self._on_change()
+
+    def _mark_selection(self) -> None:
+        for (kind, i), cv in self._cells.items():
+            sel = (self._color_idx if kind == "c" else self._ls_idx) == i
+            cv.configure(highlightbackground="#000000" if sel else "#d0d0d0",
+                         highlightthickness=2 if sel else 1)
+
+    # -------- preview --------
+
+    def _redraw_preview(self) -> None:
+        u = self._u
+        cv = self._preview
+        cv.delete("all")
+        w = 5 * u
+        color = COLORS[self._color_idx % len(COLORS)]
+        dash = _tk_dash(LINESTYLES[self._ls_idx % len(LINESTYLES)], 2)
+        cv.create_line(4, u * 0.55, w - 4, u * 0.55, width=2, fill=color,
+                       dash=dash)
+        if self._span > 1:
+            # The consecutive slots this trace will actually occupy, so the
+            # preview cannot claim a coupling trace is one colour.
+            shown = min(self._span, 6)
+            cw = (w - 8) / shown
+            for j in range(shown):
+                x0 = 4 + j * cw
+                cv.create_rectangle(x0, u * 1.05, x0 + cw - 2, u * 1.55,
+                                    fill=COLORS[(self._color_idx + j)
+                                                % len(COLORS)],
+                                    outline="")
+            cv.create_text(w - 4, u * 1.75, anchor="se",
+                           text=f"×{self._span}", font=("TkDefaultFont", 7),
+                           fill="#606060")
+
+    # -------- public API --------
+
+    def set_span(self, n: int) -> None:
+        """How many curves this trace expands into (mode 5/6). 1 = plain."""
+        n = max(1, int(n))
+        if n != self._span:
+            self._span = n
+            self._redraw_preview()
+
+    def get(self) -> tuple[int, int]:
+        return self._color_idx, self._ls_idx
+
+    def set(self, color_idx: int, ls_idx: int) -> None:
+        self._color_idx = int(color_idx) % len(COLORS)
+        self._ls_idx = int(ls_idx) % len(LINESTYLES)
+        self._redraw_preview()
+        self._mark_selection()
+
+    def expand(self) -> None:
+        if not self._expanded:
+            self.toggle()
+
+    def collapse(self) -> None:
+        if self._expanded:
+            self.toggle()
+
+    def toggle(self) -> None:
+        self._expanded = not self._expanded
+        self._arrow.configure(text="▾" if self._expanded else "▸")
+        if self._expanded:
+            self._mark_selection()
+            self._palette.grid()
+        else:
+            self._palette.grid_remove()
+        # The form got taller or shorter; the editor's scrollregion is measured,
+        # not inferred, so it has to be told.  preserve=True -- collapsing must
+        # not scroll the user away from the row they just used.
+        app = self.winfo_toplevel()
+        refresh = getattr(app, "_refresh_editor_scrollregion", None)
+        if callable(refresh):
+            refresh(preserve=True)
+
+
+def _tk_dash(mpl_ls: str, width: int = 1):
+    """
+    A matplotlib linestyle as a Tk canvas dash pattern.
+
+    Approximate on purpose: Tk's Win32 dash rendering is not matplotlib's, and
+    the preview only has to make the four styles TELL APART, not match pixel
+    for pixel.  Scaled by line width because Tk multiplies dash segments by it.
+    """
+    w = max(1, int(width))
+    return {"-": (), "--": (6 * w, 3 * w), "-.": (6 * w, 2 * w, 1, 2 * w),
+            ":": (1, 3 * w)}.get(mpl_ls, ())
 
 
 # ============================================================================
@@ -1756,6 +2037,11 @@ class App(tk.Tk):
         # / apply cycle, so it lives here alongside the widgets.
         self._ed_extra_lines: str = ""
         self._ed_strips_pending = False
+        # Auto-apply state.  The target is the TraceConfig OBJECT, never a
+        # Listbox index -- see _schedule_editor_sync.
+        self._ed_sync_after: object = None
+        self._ed_sync_target: Optional[TraceConfig] = None
+        self._trace_list_shown: list[str] = []
         self._scrollables: dict[str, object] = {}
 
         self._install_wheel_router()
@@ -1881,6 +2167,14 @@ class App(tk.Tk):
                    ).pack(side=tk.LEFT, padx=2, pady=2)
         ttk.Button(tr_btn_row, text="Duplicate", command=self._on_duplicate_trace
                    ).pack(side=tk.LEFT, padx=2, pady=2)
+        # FOURTH button in this row, and pack unmaps from the end, so this was
+        # measured before it was added: at the 1040x600 minsize the row is
+        # 448 px and four buttons ask 364 (three ask 273).  Re-measure before a
+        # fifth.  It duplicates the editor's "Plot: this trace" checkbox on
+        # purpose -- the checkbox needs the trace selected first, and the
+        # keyboard route (space) is invisible.
+        ttk.Button(tr_btn_row, text="Show/Hide", command=self._on_toggle_trace
+                   ).pack(side=tk.LEFT, padx=2, pady=2)
         self.traces_lb = tk.Listbox(traces_frame, height=8, exportselection=False,
                                     activestyle="dotbox")
         self.traces_lb.pack(side=tk.TOP, fill=tk.X, padx=2, pady=2)
@@ -1907,14 +2201,25 @@ class App(tk.Tk):
         Editor = a pinned footer + a scrollable form.
 
         The form is mode-dependent and in mode 5 it is taller than any laptop
-        screen, so it lives in a Canvas.  "Apply to Trace" does NOT: it is
+        screen, so it lives in a Canvas.  The footer button does NOT: it is
         packed side=BOTTOM *first*, outside the scroll region, so the form can
         clip or scroll all it likes and the button stays reachable.  Packing it
         after the expanding body is what made it fall off the bottom.
+
+        That button used to be "Apply to Trace".  The editor now applies itself
+        as you type (see _schedule_editor_sync), so the slot went to the thing
+        this GUI had no way to do at all: recompute ONE trace.  The only compute
+        path was "Calculate All & Plot", which on four traces over a large
+        package file does four times the work the user asked for on every pass
+        of the edit / compute / read-the-cursor loop.  The footer is also not
+        allowed to be empty -- Tk does not reissue a geometry request when a
+        master's last slave is removed, so an emptied footer would keep its
+        requested height forever.
         """
         foot = ttk.Frame(parent)
         foot.pack(side=tk.BOTTOM, fill=tk.X)
-        ttk.Button(foot, text="Apply to Trace", command=self._on_apply_editor
+        ttk.Button(foot, text="Calculate This Trace",
+                   command=self._on_calculate_selected
                    ).pack(side=tk.RIGHT, padx=6, pady=3)
 
         self._ed_body = body = ttk.Frame(parent)
@@ -2175,18 +2480,33 @@ class App(tk.Tk):
                          padx=2, pady=1)
         row += 1
 
-        # Mode 6: which curves to plot
+        # What to plot.  "this trace" is the per-trace visibility switch and is
+        # shown in EVERY mode; "self" / "mutual" pick which of a coupling
+        # trace's expanded curves are drawn and stay gated to modes 5/6.  They
+        # share one row because they answer the same question at two scales,
+        # and because the row costs nothing: measured, adding "this trace"
+        # takes the frame from 113 px to 189 px against a 437 px row.
+        # The children are GRIDDED, not packed: grid_remove()/grid() puts a
+        # widget back in the same column, whereas re-packing appends it to the
+        # end and would silently reorder the row.
         self.ed_plot_lbl = ttk.Label(parent, text="Plot:")
         self.ed_plot_lbl.grid(row=row, column=0, sticky="e", padx=2, pady=1)
         self.ed_plot_frame = ttk.Frame(parent)
         self.ed_plot_frame.grid(row=row, column=1, columnspan=3, sticky="w",
                                 padx=2, pady=1)
+        self.ed_enabled_var = tk.BooleanVar(value=True)
         self.ed_plot_self_var = tk.BooleanVar(value=True)
         self.ed_plot_mutual_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(self.ed_plot_frame, text="self",
-                        variable=self.ed_plot_self_var).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Checkbutton(self.ed_plot_frame, text="mutual",
-                        variable=self.ed_plot_mutual_var).pack(side=tk.LEFT)
+        ttk.Checkbutton(self.ed_plot_frame, text="this trace",
+                        variable=self.ed_enabled_var,
+                        command=self._on_enabled_toggled
+                        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
+        self.ed_plot_self_cb = ttk.Checkbutton(
+            self.ed_plot_frame, text="self", variable=self.ed_plot_self_var)
+        self.ed_plot_self_cb.grid(row=0, column=1, sticky="w", padx=(0, 8))
+        self.ed_plot_mutual_cb = ttk.Checkbutton(
+            self.ed_plot_frame, text="mutual", variable=self.ed_plot_mutual_var)
+        self.ed_plot_mutual_cb.grid(row=0, column=2, sticky="w")
         row += 1
 
         self.ed_mutual_hint = _CollapsibleHint(parent, MUTUAL_CURVE_HINT_SHORT,
@@ -2256,21 +2576,24 @@ class App(tk.Tk):
                            padx=2, pady=1)
         row += 1
 
-        # Color / linestyle
-        ttk.Label(parent, text="Color idx:").grid(row=row, column=0, sticky="e",
-                                                  padx=2, pady=1)
-        self.ed_color_var = tk.IntVar(value=0)
-        tk.Spinbox(parent, from_=0, to=len(COLORS) - 1, textvariable=self.ed_color_var,
-                   width=5).grid(row=row, column=1, sticky="w", padx=2, pady=1)
-        ttk.Label(parent, text="LS idx:").grid(row=row, column=2, sticky="e",
+        # Colour / linestyle.  One preview that expands into a palette, in place
+        # of the two "Color idx / LS idx" Spinboxes -- an integer 0..11 told the
+        # user nothing about what would be drawn.  Dropping the two tk.IntVars
+        # also removes the only place _sync_editor_to_trace could raise, which
+        # matters now that it runs from a variable trace on every keystroke: an
+        # IntVar raises TclError on the empty string a normal select-all-retype
+        # passes through.
+        ttk.Label(parent, text="Style:").grid(row=row, column=0, sticky="ne",
                                               padx=2, pady=1)
-        self.ed_ls_var = tk.IntVar(value=0)
-        tk.Spinbox(parent, from_=0, to=len(LINESTYLES) - 1, textvariable=self.ed_ls_var,
-                   width=5).grid(row=row, column=3, sticky="w", padx=2, pady=1)
+        self.ed_style = StylePicker(parent, on_change=self._on_style_changed)
+        self.ed_style.grid(row=row, column=1, columnspan=3, sticky="w",
+                           padx=2, pady=1)
         row += 1
 
-        # "Apply to Trace" is NOT here -- it is pinned in the editor's footer,
-        # outside the scroll region, so it survives however long this form gets.
+        # No button here: the footer holds "Calculate This Trace", pinned
+        # outside the scroll region so it survives however long this form gets.
+        # And there is nothing to apply -- the editor writes itself into the
+        # selected trace as you type (see _schedule_editor_sync).
 
         parent.columnconfigure(1, weight=1)
         self._update_mode_visibility()
@@ -2356,6 +2679,22 @@ class App(tk.Tk):
         self.bind("<<HintToggled>>",
                   lambda e: self._refresh_editor_scrollregion(preserve=True),
                   add="+")
+        # Space toggles the selected trace's visibility -- the sweep gesture for
+        # "hide these four".  Returning "break" stops the Listbox class binding
+        # from also treating space as select-activate-item.
+        self.traces_lb.bind("<space>", self._on_toggle_trace_key)
+
+        # ---- auto-apply -------------------------------------------------
+        # Registered HERE, after _build_ui, and never in a widget constructor:
+        # PlaceholderEntry.__init__ ends with _show_if_empty(), which writes its
+        # variable, so a callback attached during construction would fire a sync
+        # before self.traces exists.
+        for pe in (self.ed_porta, self.ed_portb, self.ed_short, self.ed_gnd,
+                   self.ed_label):
+            pe.on_change(self._schedule_editor_sync)
+        for var in (self.ed_file_var, self.ed_mode_var, self.ed_plot_self_var,
+                    self.ed_plot_mutual_var):
+            var.trace_add("write", self._schedule_editor_sync)
 
     # --------------------------------------------------------------- File ops
 
@@ -2520,8 +2859,43 @@ class App(tk.Tk):
             return
         self.traces.pop(idx)
         self._refresh_trace_list()
+        self._replot_from_cache()
+
+    def _on_toggle_trace_key(self, _event=None) -> str:
+        self._on_toggle_trace()
+        return "break"      # or the Listbox also select-activates on space
+
+    def _on_toggle_trace(self) -> None:
+        """
+        Show / hide the selected trace without deleting it.
+
+        Replots from the cached Z instead of recomputing: the whole point is
+        that taking a curve off the plot should not cost a Schur reduction of a
+        153-port file to arrive at numbers that have not changed.
+        """
+        self._flush_editor_sync()
+        idx = self._sel_idx(self.traces_lb)
+        if idx is None:
+            return
+        tc = self.traces[idx]
+        tc.enabled = not tc.enabled
+        # The editor is showing this trace, so its checkbox has to follow --
+        # suppressed, or the write trace schedules a sync that would just write
+        # the same value back.
+        self._suppress_editor_sync = True
+        try:
+            self.ed_enabled_var.set(tc.enabled)
+        finally:
+            self._suppress_editor_sync = False
+        self._refresh_trace_list()
+        self.traces_lb.selection_set(idx)
+        self._replot_from_cache()
 
     def _on_duplicate_trace(self) -> None:
+        # Without the flush the copy is taken from the trace as it was BEFORE
+        # the edit still queued in the editor -- i.e. Duplicate would silently
+        # copy something the user cannot see any more.
+        self._flush_editor_sync()
         idx = self._sel_idx(self.traces_lb)
         if idx is None:
             return
@@ -2534,6 +2908,11 @@ class App(tk.Tk):
         self._on_trace_selected()
 
     def _on_trace_selected(self) -> None:
+        # Land any queued edit on the trace it was typed into, BEFORE the
+        # editor is reloaded from a different one.  Deferring the sync is what
+        # makes it safe (see _schedule_editor_sync); flushing here is what
+        # keeps it from landing on the wrong trace.
+        self._flush_editor_sync()
         idx = self._sel_idx(self.traces_lb)
         if idx is None:
             return
@@ -2548,17 +2927,24 @@ class App(tk.Tk):
             self.ed_short.set_value(tc.short_pairs)
             self.ed_gnd.set_value(tc.gnd_ports)
             self.ed_mp_table.set_rows(tc.mports)
+            self.ed_enabled_var.set(bool(tc.enabled))
             self.ed_plot_self_var.set(bool(tc.plot_self))
             self.ed_plot_mutual_var.set(bool(tc.plot_mutual))
             self.ed_label.set_value(tc.label)
-            self.ed_color_var.set(tc.color_idx)
-            self.ed_ls_var.set(tc.ls_idx)
+            self.ed_style.set(tc.color_idx, tc.ls_idx)
             self.ed_conn_table.set_rows(tc.conn_rows)
             self._ed_extra_lines = tc.extra_lines
             self._refresh_port_choices()
+            # INSIDE the guard.  _update_mode_visibility calls set_placeholder
+            # on four PlaceholderEntries, and each of those writes its variable
+            # -- four unguarded write traces per selection if it runs after the
+            # finally.  They usually write the same value back, but
+            # _sync_editor_to_trace turns an empty Label into 'trace_<id>', so a
+            # sync fired from there can rename a trace nobody touched.
+            self._update_mode_visibility()
         finally:
             self._suppress_editor_sync = False
-        self._update_mode_visibility()
+        self._refresh_editor_strips()
 
     def _migrate_trace(self, tc: TraceConfig) -> None:
         """
@@ -2632,13 +3018,15 @@ class App(tk.Tk):
         # ways to say the same thing is what the table is trying to remove.
         show(self.ed_gnd_lbl, ab_modes or coupling)
         show(self.ed_gnd, ab_modes or coupling)
-        # The plot checkboxes are shown in mode 5 too. _coupling_plot_traces
+        # The Plot row itself is unconditional -- "this trace" is the
+        # visibility switch and every mode has one.  Only the self/mutual pair
+        # is mode-gated. They are shown in mode 5 too: _coupling_plot_traces
         # already READS tc.plot_self / tc.plot_mutual for any trace routed to
         # the coupling path, mode 5 included, so hiding them left a Mode 5 user
         # unable to turn either off -- and never shown the hint explaining that
         # on a mutual curve L(nH) is M and C(pF) is C_c.
-        show(self.ed_plot_lbl, rows_mode)
-        show(self.ed_plot_frame, rows_mode)
+        show(self.ed_plot_self_cb, rows_mode)
+        show(self.ed_plot_mutual_cb, rows_mode)
         show(self.ed_mutual_hint, rows_mode)
         show(self.ed_conn_head, custom)
         show(self.ed_conn_table, custom)
@@ -2699,8 +3087,9 @@ class App(tk.Tk):
         if self._suppress_editor_sync:
             return
         self._refresh_editor_scrollregion(preserve=True)
-        if self.ed_mode_var.get() == 5:
-            self._refresh_editor_strips()
+        self._schedule_editor_sync()    # also refreshes the strips
+        if self.ed_mode_var.get() == 6:
+            self._refresh_editor_strips()   # for the style preview's span
 
     def _refresh_editor_strips(self) -> None:
         """Queue a strip refresh for the next idle moment, coalescing repeats."""
@@ -2711,14 +3100,15 @@ class App(tk.Tk):
 
     def _apply_editor_strips(self) -> None:
         """
-        Recompute the port-overview strip, the validation strip and the
-        kept-as-text indicator on the Connections caption.
+        Recompute the port-overview strip, the validation strip, the
+        kept-as-text indicator on the Connections caption, and the style
+        preview's curve-count.
 
-        Writes to nothing but those three Labels -- _sync_editor_to_trace stays
-        the only writer to a TraceConfig -- and never lets an exception escape.
-        This is reached from a Tcl variable trace, where a raised error does not
-        reach a handler we control: Tk prints it to stderr and the GUI carries
-        on showing a stale strip that says the spec is fine.
+        Writes to nothing but those Labels and the preview -- _sync_editor_to_trace
+        stays the only writer to a TraceConfig -- and never lets an exception
+        escape. This is reached from a Tcl variable trace, where a raised error
+        does not reach a handler we control: Tk prints it to stderr and the GUI
+        carries on showing a stale strip that says the spec is fine.
         """
         self._ed_strips_pending = False
         if not self.ed_overview.winfo_exists():
@@ -2733,6 +3123,7 @@ class App(tk.Tk):
                                                nports=nports)
             except Exception:
                 term = None
+            self.ed_style.set_span(self._editor_curve_span(term))
             self.ed_overview.configure(
                 text=_port_overview_text(term, nports))
             self.ed_validation.configure(text=_validation_strip_text(
@@ -2744,6 +3135,37 @@ class App(tk.Tk):
             # it can report a failure.
             self.ed_overview.configure(text="")
             self.ed_validation.configure(text=f"⚠ {e}")
+
+    def _editor_curve_span(self, term) -> int:
+        """
+        How many consecutive palette slots the trace being edited will use.
+
+        A coupling trace with G measurement ports draws G self curves and
+        G*(G-1)/2 mutual ones, each taking the NEXT colour
+        (_coupling_plot_traces), so the style preview would otherwise show one
+        line for something that arrives as six. Returns 1 whenever that cannot
+        be answered -- an unresolvable spec is not the preview's problem.
+        """
+        mode = self.ed_mode_var.get()
+        if mode == 6:
+            # Mode 6 is one measurement port per table row, so count the rows.
+            # NOT through build_terminations_rows: that goes via the DSL, where
+            # 'b' is the legacy alias for the minus side of 'A', so two rows
+            # named a/b resolve to ONE measurement port and the preview would
+            # show a span of 1 for a trace Calculate refuses outright.
+            G = len([r for r in self.ed_mp_table.get_rows()
+                     if r.plus.strip() or r.minus.strip()])
+        elif mode == 5 and term is not None:
+            try:
+                G = len(resolve_meas_ports(term, self._editor_nports() or 0))
+            except Exception:
+                return 1
+        else:
+            return 1
+        n = (G if self.ed_plot_self_var.get() else 0)
+        if self.ed_plot_mutual_var.get() and G >= 2:
+            n += G * (G - 1) // 2
+        return max(1, n)
 
     def _editor_dsl_text(self) -> str:
         """
@@ -2794,7 +3216,7 @@ class App(tk.Tk):
         # made both buttons winfo_ismapped() == 0 the moment the dialog was
         # dragged shorter than its natural height -- and with grab_set() and no
         # keyboard commit there was then no way to apply the edit at all.
-        # Same rule as Global Controls and Apply to Trace in the main window.
+        # Same rule as Global Controls and the editor footer in the main window.
         foot = ttk.Frame(dlg)
         foot.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=6)
         ttk.Button(foot, text="Cancel", command=dlg.destroy
@@ -2850,20 +3272,87 @@ class App(tk.Tk):
         self._refresh_editor_strips()
         self._refresh_editor_scrollregion(preserve=True)
 
-    def _on_apply_editor(self) -> None:
+    # ------------------------------------------------------------- auto-apply
+    #
+    # The editor writes itself into the selected trace as you type; there is no
+    # "Apply" step any more.  Three properties make that safe, and none of them
+    # is optional:
+    #
+    #  1. It is DEFERRED to after_idle, never run straight from the variable
+    #     trace.  PlaceholderEntry._show_if_empty() sets the variable BEFORE it
+    #     sets _showing (see that method), and Tcl runs write traces
+    #     synchronously inside .set() -- so a synchronous handler reads
+    #     get_value() while the flag still says "not showing" and stores the
+    #     grey hint text as if the user had typed it.  By the idle pass the flag
+    #     is right.  This is the reason for the deferral, not performance.
+    #  2. It captures the TraceConfig OBJECT, not the Listbox index, and any
+    #     pending sync is FLUSHED before the selection changes.  Resolving the
+    #     target when the callback finally runs would let "type in A, click B"
+    #     write B's freshly loaded editor content into A -- silently losing the
+    #     edit that scheduled the callback, which is the exact failure this
+    #     whole feature exists to remove.
+    #  3. It never raises and never opens a dialog.  It runs from a Tcl
+    #     variable trace, where an exception reaches no handler we control (Tk
+    #     prints it and carries on), and a modal messagebox raised while the
+    #     user is typing is a hang.  Calculate keeps its error dialog.
+
+    def _schedule_editor_sync(self, *_args) -> None:
+        """Queue a push of the editor into the selected trace."""
+        if self._suppress_editor_sync:
+            return
         idx = self._sel_idx(self.traces_lb)
-        if idx is None:
-            messagebox.showinfo("No trace", "Select a trace first.")
+        if idx is None or idx >= len(self.traces):
+            return
+        self._ed_sync_target = self.traces[idx]
+        if self._ed_sync_after is None:
+            self._ed_sync_after = self.after_idle(self._apply_editor_sync)
+
+    def _flush_editor_sync(self) -> None:
+        """Run any queued sync NOW, against the trace it was queued for."""
+        if self._ed_sync_after is None:
             return
         try:
-            self._sync_editor_to_trace(self.traces[idx])
-        except Exception as e:
-            messagebox.showerror("Editor error", str(e))
+            self.after_cancel(self._ed_sync_after)
+        except Exception:
+            pass
+        self._ed_sync_after = None
+        self._apply_editor_sync()
+
+    def _apply_editor_sync(self) -> None:
+        self._ed_sync_after = None
+        tc = self._ed_sync_target
+        self._ed_sync_target = None
+        # A trace deleted between scheduling and running is not an error.
+        # Identity, not `in`: TraceConfig is an eq=True dataclass holding numpy
+        # arrays, so `tc not in self.traces` compares field by field and raises
+        # "truth value of an array is ambiguous" the moment it reaches a Z that
+        # is not the same object.
+        if tc is None or not any(t is tc for t in self.traces):
             return
+        before_spec = _config_signature(tc)
+        before_draw = _draw_signature(tc)
+        try:
+            self._sync_editor_to_trace(tc)
+        except Exception:
+            return          # see (3) above -- Calculate will report it properly
+        if _config_signature(tc) != before_spec and tc.Z is not None:
+            # The curve on screen is older than the spec that now describes it.
+            tc.stale = True
         self._refresh_trace_list()
-        self.traces_lb.selection_set(idx)
+        if _draw_signature(tc) != before_draw:
+            self._replot_from_cache()
+        if self.ed_mode_var.get() == 5:
+            self._refresh_editor_strips()
+
+    def _on_style_changed(self) -> None:
+        self._schedule_editor_sync()
+
+    def _on_enabled_toggled(self) -> None:
+        self._schedule_editor_sync()
 
     def _sync_editor_to_trace(self, tc: TraceConfig) -> None:
+        tc.enabled = bool(self.ed_enabled_var.get())
+        tc.color_idx, tc.ls_idx = self.ed_style.get()
         tc.file_label = self.ed_file_var.get()
         tc.mode = int(self.ed_mode_var.get())
         tc.port_a = self.ed_porta.get_value()
@@ -2881,15 +3370,27 @@ class App(tk.Tk):
         tc.conn_rows = self.ed_conn_table.get_rows()
         tc.extra_lines = self._ed_extra_lines
         tc.label = self.ed_label.get_value() or f"trace_{tc.id}"
-        tc.color_idx = int(self.ed_color_var.get())
-        tc.ls_idx = int(self.ed_ls_var.get())
 
     # --------------------------------------------------------------- Calculate
 
-    def _on_calculate(self) -> None:
+    def _on_calculate_selected(self) -> None:
+        """Recompute only the selected trace (the editor footer's button)."""
+        idx = self._sel_idx(self.traces_lb)
+        if idx is None:
+            messagebox.showinfo("No trace", "Select a trace first.")
+            return
+        self._on_calculate(only=self.traces[idx])
+
+    def _on_calculate(self, only: Optional[TraceConfig] = None) -> None:
         # Auto-sync editor for the currently selected trace before calculating.
+        # Users routinely edit a field and press Calculate without applying;
+        # with auto-apply that edit is usually already in, but a keystroke in
+        # the same event burst as the click would still be sitting in the idle
+        # queue, so the flush is what makes "what I see is what is computed"
+        # unconditional.
         idx = self._sel_idx(self.traces_lb)
         if idx is not None:
+            self._flush_editor_sync()
             try:
                 self._sync_editor_to_trace(self.traces[idx])
             except Exception as e:
@@ -2915,9 +3416,9 @@ class App(tk.Tk):
                 messagebox.showerror("Bad fit band", str(e))
                 return
 
-        plot_traces: list[PlotTrace] = []
-        self._append_result("\n=== Calculate @ {:.4g} GHz ==="
-                            .format(f_rlc_hz / 1e9))
+        scope = "" if only is None else f" [{only.id}] {only.label} only"
+        self._append_result("\n=== Calculate @ {:.4g} GHz{} ==="
+                            .format(f_rlc_hz / 1e9, scope))
 
         # First pass: compute Z and per-freq RLC; collect rows + fit_lines.
         result_rows: list[tuple] = []   # (tc, file_label, res)
@@ -2929,11 +3430,27 @@ class App(tk.Tk):
                 self._append_result(f"  [{tc.id}] {tc.label}: file '{tc.file_label}' not loaded")
                 continue
 
+            if only is not None and tc is not only:
+                # Not recomputed -- but its last numbers still go in the table,
+                # so "Calculate This Trace" narrows the WORK, not the report.
+                # A table that shrank to one row would make the fast path look
+                # like it had thrown the other traces away.
+                if tc.coupling is not None:
+                    coupling_blocks.append((tc, fe.label, tc.coupling))
+                elif tc.rlc is not None:
+                    result_rows.append((tc, fe.label, tc.rlc))
+                continue
+
             # Drop last run's matrix so a failed or re-moded trace can never
             # export stale coupling data.
             tc.Zmat = None
             tc.mport_names = None
             tc.coupling = None
+            tc.fit_freqs = None
+            tc.fit_Z = None
+            # About to be recomputed from the current spec, so whatever the
+            # editor did since the last run is now accounted for.
+            tc.stale = False
 
             # The validation strip is capped at two lines and points here for
             # the rest; this is what makes that pointer true. Only the OVERFLOW
@@ -2976,7 +3493,7 @@ class App(tk.Tk):
                         "Mode 6.")
                 try:
                     cres = self._calculate_coupling_trace(
-                        tc, fe, f_rlc_hz, plot_traces, term=term)
+                        tc, fe, f_rlc_hz, term=term)
                 except Exception as e:
                     tc.Z = None
                     self._append_result(f"  [{tc.id}] {tc.label}: ERROR {e}")
@@ -3040,15 +3557,8 @@ class App(tk.Tk):
                 except Exception as e:
                     fit_lines.append(f"  fit[{tc.id}] ERROR: {e}")
 
-            plot_traces.append(PlotTrace(
-                label=tc.label,
-                freqs=fe.ts.freqs,
-                Z=Z,
-                color_idx=tc.color_idx,
-                ls_idx=tc.ls_idx,
-                fit_freqs=fit_freqs,
-                fit_Z=fit_Z,
-            ))
+            tc.fit_freqs = fit_freqs
+            tc.fit_Z = fit_Z
 
         # Second pass: render the table, fit lines and coupling blocks.
         self._last_result_rows = result_rows
@@ -3056,17 +3566,64 @@ class App(tk.Tk):
         self._last_coupling_blocks = coupling_blocks
         self._render_results(result_rows, fit_lines, coupling_blocks)
 
-        self.plot.set_traces(plot_traces)
+        # Curves are built in ONE place, from the cache, so that Calculate and
+        # a visibility toggle cannot drift apart in what they draw.  A full
+        # Calculate does not keep the cursors -- every number on the plot is
+        # new -- but a single-trace recompute does: that is the fast iteration
+        # loop, and throwing away the cursors the user is reading would undo
+        # most of what makes it fast.
+        self._replot_from_cache(keep_cursors=only is not None)
         self.plot.set_marker_freq(f_rlc_hz)
+        if self.traces and not any(tc.enabled for tc in self.traces):
+            self._append_result(
+                "  (every trace has 'Plot: this trace' unchecked -- the plot is "
+                "empty on purpose; the numbers above are still current)")
+
+    def _replot_from_cache(self, keep_cursors: bool = True) -> None:
+        """
+        Rebuild the plot from each trace's cached Z / Zmat.
+
+        This is what makes the visibility checkbox worth having: hiding a curve
+        must not re-run the reduction, which on a 153-port package file is
+        seconds of work to produce numerically identical results.  Colour,
+        linestyle and the self/mutual choice are read fresh every time, so they
+        follow the editor without a Calculate too.
+
+        `keep_cursors` is on by default: a toggle is a change of view, and the
+        V lines the user placed are part of what they were looking at.
+        """
+        plot_traces: list[PlotTrace] = []
+        for tc in self.traces:
+            if not tc.enabled:
+                continue
+            fe = self._file_by_label(tc.file_label)
+            if fe is None:
+                continue
+            if tc.Zmat is not None and tc.mport_names:
+                plot_traces.extend(
+                    self._coupling_plot_traces(tc, fe, tc.Zmat, tc.mport_names))
+            elif tc.Z is not None:
+                plot_traces.append(PlotTrace(
+                    label=tc.label,
+                    freqs=fe.ts.freqs,
+                    Z=tc.Z,
+                    color_idx=tc.color_idx,
+                    ls_idx=tc.ls_idx,
+                    fit_freqs=tc.fit_freqs,
+                    fit_Z=tc.fit_Z,
+                ))
+        self.plot.set_traces(plot_traces, keep_cursors=keep_cursors)
 
     def _calculate_coupling_trace(self, tc: TraceConfig, fe: FileEntry,
                                   f_rlc_hz: float,
-                                  plot_traces: list,
                                   term: TerminationSet | None = None) -> object:
         """
-        Reduce to the G x G measurement-port Z matrix, extract the coupling
-        result at the marker frequency, and append the expanded self / mutual
-        curves to `plot_traces`.  Returns the CouplingResult.
+        Reduce to the G x G measurement-port Z matrix and extract the coupling
+        result at the marker frequency.  Returns the CouplingResult.
+
+        Caches Zmat / mport_names on the trace; the curves themselves are built
+        later by _replot_from_cache, which is the single place that turns a
+        computed trace into plot curves.
 
         Used by Mode 6 and by any Mode 5 spec that defines more than one
         measurement port.  `term` may be passed in when the caller has already
@@ -3105,12 +3662,14 @@ class App(tk.Tk):
         cres = extract_coupling_at_freq(fe.ts.freqs, Zmat, names, f_rlc_hz)
         tc.coupling = cres
 
-        curves = self._coupling_plot_traces(tc, fe, Zmat, names)
-        if not curves:
+        # The emptiness CONDITION of _coupling_plot_traces, not a call to it:
+        # building the curves here just to test the list would recompute
+        # _coupling_k_array over every frequency for every pair, and then throw
+        # it away -- _replot_from_cache builds them for real a moment later.
+        if not (tc.plot_self or (tc.plot_mutual and len(names) >= 2)):
             self._append_result(
                 f"    [{tc.id}] both 'self' and 'mutual' are unchecked -- "
                 "nothing plotted for this trace")
-        plot_traces.extend(curves)
         return cres
 
     def _coupling_plot_traces(self, tc: TraceConfig, fe: FileEntry,
@@ -3228,7 +3787,13 @@ class App(tk.Tk):
                     if fe is None:
                         continue
                     fh.write(f"# Trace: {tc.label}\n")
-                    fh.write(f"# File: {fe.label}, Mode: {tc.mode_name()}\n")
+                    # Hidden traces ARE exported -- visibility gates the plot,
+                    # not the measurement -- so the file has to say which ones
+                    # were not on screen, or a CSV and a screenshot of the same
+                    # session disagree with nothing to explain it.
+                    hidden = "" if tc.enabled else ", Plotted: no"
+                    fh.write(f"# File: {fe.label}, Mode: {tc.mode_name()}"
+                             f"{hidden}\n")
                     # Gate on the DATA, not the mode -- _on_calculate routes on
                     # the measurement-port count, so a Mode 5 spec with two
                     # probes has a full Zmat too.  Gating on `mode == 6` used to
@@ -3267,10 +3832,30 @@ class App(tk.Tk):
             self.files_lb.insert(tk.END, fe.info_str())
 
     def _refresh_trace_list(self) -> None:
+        """
+        Re-render the trace list, but only when it would actually look
+        different.
+
+        Auto-apply calls this on every keystroke, and rebuilding a Listbox
+        resets its scroll position -- so a user editing trace 9 of 12 would be
+        yanked back to the top on each character.  Comparing the rendered
+        strings costs nothing and is what makes the live list usable.
+        (Programmatic delete / insert / selection_set do NOT fire
+        <<ListboxSelect>>, verified on Tk 8.6, so this cannot re-enter
+        _on_trace_selected and reload the editor mid-typing.)
+        """
+        lines = [tc.info_str() for tc in self.traces]
+        if lines == self._trace_list_shown:
+            return
+        self._trace_list_shown = lines
         sel = self._sel_idx(self.traces_lb)
         self.traces_lb.delete(0, tk.END)
-        for tc in self.traces:
-            self.traces_lb.insert(tk.END, tc.info_str())
+        for i, (tc, line) in enumerate(zip(self.traces, lines)):
+            self.traces_lb.insert(tk.END, line)
+            if not tc.enabled:
+                # itemconfig does not survive delete(), so it is re-applied
+                # here every time rather than at the point of the toggle.
+                self.traces_lb.itemconfig(i, foreground="#909090")
         if sel is not None and sel < len(self.traces):
             self.traces_lb.selection_set(sel)
 

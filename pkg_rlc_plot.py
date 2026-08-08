@@ -300,11 +300,30 @@ class _PlotView:
 
     # -------- Public API --------
 
-    def set_traces(self, traces: list[Trace]) -> None:
+    def set_traces(self, traces: list[Trace],
+                   keep_cursors: bool = False) -> None:
+        """
+        Replace the curves.  ``keep_cursors`` re-places the V lines afterwards.
+
+        Every V line is a cursor the user placed deliberately and is reading
+        values off, so a call that only changes WHICH curves are drawn must not
+        throw them away -- toggling a trace's visibility would otherwise wipe
+        the comparison the user set the toggle up to make.  Calculate still
+        clears them (its numbers are new), which is why this is opt-in.
+
+        M markers are NOT restored: each one is anchored to one data point of
+        one trace, and after a visibility toggle that trace may not be drawn.
+        """
+        keep = list(self._vline_freqs) if keep_cursors else []
         self.traces = list(traces)
         self._anno_stack = []
         self._vline_freqs = []
         self.redraw()
+        if keep:
+            for f in keep:
+                self._place_vline(f)
+            self._refresh_marker()      # once, not once per restored line
+            self.canvas.draw_idle()
 
     def set_marker_freq(self, freq_hz: float) -> None:
         self.marker_freq_hz = float(freq_hz)
@@ -706,15 +725,18 @@ class _PlotView:
         ax = event.inaxes
         if ax is None or event.xdata is None:
             return
-        x_freq = float(event.xdata)
-        artists = []
-        for a, t in self._axes_types:
-            artists.append(a.axvline(x_freq, color="gray", linestyle=":",
-                                     linewidth=0.8, alpha=0.7))
-        self._vline_freqs.append(x_freq)
-        self._anno_stack.append(("v", artists))
+        self._place_vline(float(event.xdata))
         self._refresh_marker()      # rebuilds every box with the new column
         self.canvas.draw_idle()
+
+    def _place_vline(self, x_freq: float) -> None:
+        """Draw one V cursor and push it onto both stacks.  Does NOT refresh
+        the readout -- the caller does, once, however many lines it places."""
+        artists = [a.axvline(x_freq, color="gray", linestyle=":",
+                             linewidth=0.8, alpha=0.7)
+                   for a, _t in self._axes_types]
+        self._vline_freqs.append(x_freq)
+        self._anno_stack.append(("v", artists))
 
     def _delete_last(self) -> None:
         if not self._anno_stack:
@@ -812,8 +834,9 @@ class PlotPanel(tk.Frame):
 
     # -------- Public API (used by GUI) --------
 
-    def set_traces(self, traces: list[Trace]) -> None:
-        self.view.set_traces(traces)
+    def set_traces(self, traces: list[Trace],
+                   keep_cursors: bool = False) -> None:
+        self.view.set_traces(traces, keep_cursors=keep_cursors)
 
     def set_marker_freq(self, freq_hz: float) -> None:
         self.view.set_marker_freq(freq_hz)

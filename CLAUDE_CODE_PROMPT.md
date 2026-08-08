@@ -264,9 +264,13 @@ The strict-monotonic-frequency check is what disambiguates `.s2p` from `.s4p` fr
 - **GND Ports**: Entry field
 - **VDD Ports**: Entry field (shown only for Mode 4, treated as AC ground internally)
 - **Label**: Entry field for trace legend name
-- **Color idx**: Spinbox 0-11
-- **Linestyle idx**: Spinbox 0-3 (solid, dashed, dash-dot, dotted)
-- **Apply to Trace** button
+- **Plot**: `this trace` checkbox (every mode — per-trace visibility) plus `self` / `mutual` (modes 5/6 only)
+- **Style**: a line preview that expands in place into a palette of the 12 colours and 4 linestyles, each drawn as it will be drawn on the plot. Stores the same two indices the Spinboxes it replaced did.
+- **Calculate This Trace** button (editor footer) — recomputes only the selected trace
+
+There is no *Apply* button: the editor writes itself into the selected trace as
+you type. See the auto-apply section of `CLAUDE.md` for the three properties
+that make that safe.
 
 Mode switching should show/hide relevant fields dynamically.
 
@@ -542,9 +546,9 @@ Why:     Measure driving-point impedance with realistic source/load termination.
 
 ## Critical Implementation Notes
 
-1. **Listbox `exportselection=False`**: ALL Listbox widgets MUST set this. Without it, clicking any Entry/Spinbox/Combobox steals the X selection and clears the Listbox highlight, making "Apply to Trace" always fail.
+1. **Listbox `exportselection=False`**: ALL Listbox widgets MUST set this. Without it, clicking any Entry/Spinbox/Combobox steals the X selection and clears the Listbox highlight. The editor resolves its auto-apply target from that selection, so a cleared highlight means every keystroke is silently discarded.
 
-2. **Auto-sync editor on Calculate**: Before calculating, silently sync the current editor fields to the selected trace. Users often edit fields and click Calculate without clicking Apply first.
+2. **Auto-sync editor on Calculate**: Before calculating, flush any queued sync and push the current editor fields into the selected trace. Auto-apply usually got there first, but a keystroke in the same event burst as the click is still in the idle queue.
 
 3. **Label truncation**: Truncate trace labels to 30 chars for plot legends to prevent subplot squeezing.
 
