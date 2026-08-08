@@ -14,12 +14,11 @@
       (all export-ignored in .gitattributes)
     * VERSION is stamped with the real commit hash + date via export-subst
 
-  Emits, under <OutDir>:
-    <Name>_<shorthash>.tar.gz              full package (code + tests + docs)
+  Emits exactly two files, under <OutDir>:
+    <Name>_<shorthash>.tar.gz              the whole package (code + tests + docs)
     <Name>_<shorthash>.tar.gz.sha256
-    reduce_snp_<shorthash>.py              standalone single-file fast lane
-    reduce_snp_<shorthash>.py.sha256
-  Sidecars are in GNU `sha256sum -c` format (LF, no BOM).
+  Upload both; that is the entire delivery. The sidecar is in GNU
+  `sha256sum -c` format (LF, no BOM).
 
   Requires only git + PowerShell (Get-FileHash). No Python, no external tar,
   no downloaded packages.
@@ -34,17 +33,13 @@
   Package root directory name, i.e. what you get after `tar -xzf`, and the name
   of the red-zone install dir. Default 'Snp_analyzer'.
 
-.PARAMETER NoSingleFile
-  Skip emitting the standalone reduce_snp_<hash>.py fast lane.
-
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File deploy\pack.ps1
 #>
 param(
     [string]$Ref    = 'HEAD',
     [string]$OutDir = (Join-Path $PSScriptRoot 'dist'),
-    [string]$Name   = 'Snp_analyzer',
-    [switch]$NoSingleFile
+    [string]$Name   = 'Snp_analyzer'
 )
 $ErrorActionPreference = 'Stop'
 
@@ -142,43 +137,16 @@ function Write-Sha256Sidecar([string]$FilePath) {
 }
 $hash = Write-Sha256Sidecar $tarPath
 
-# --- standalone single-file fast lane ----------------------------------------
-# reduce_snp.py imports nothing from this repo by design; it gets copied onto
-# simulation servers on its own. Emit it as a loose file too, so that use case
-# does not require unpacking the whole tarball.
-#
-# Extracted with `git cat-file blob` (raw bytes, no eol filtering) redirected by
-# cmd.exe -- PowerShell's own capture would re-encode the stream and could turn
-# LF into CRLF. This keeps the loose copy byte-identical to the one in the tar.
-$singleName = $null
-if (-not $NoSingleFile) {
-    $singleName = "reduce_snp_$short.py"
-    $singlePath = Join-Path $OutDir $singleName
-    if (Test-Path $singlePath) { Remove-Item -LiteralPath $singlePath -Force }
-    & $ComSpec /c "git cat-file blob ${Ref}:reduce_snp.py > `"$singlePath`""
-    if ($LASTEXITCODE -ne 0) { throw "git cat-file blob ${Ref}:reduce_snp.py failed" }
-    if (-not (Test-Path $singlePath) -or (Get-Item $singlePath).Length -eq 0) {
-        throw "extracted $singleName is empty"
-    }
-    $singleHash = Write-Sha256Sidecar $singlePath
-}
-
 # --- report ------------------------------------------------------------------
 $size = '{0:N1} KB' -f ((Get-Item $tarPath).Length / 1KB)
 Write-Host ""
 Write-Host "OK  package : $tarPath  ($size)"
 Write-Host "    sha256  : $hash"
-if ($singleName) {
-    $ssize = '{0:N1} KB' -f ((Get-Item (Join-Path $OutDir $singleName)).Length / 1KB)
-    Write-Host "    single  : $singleName  ($ssize)"
-    Write-Host "    sha256  : $singleHash"
-}
 Write-Host ""
 Write-Host "commit info:"
 & git --no-pager show -s --format='    %h  %cI  %s' $Ref
 Write-Host ""
-Write-Host "NEXT:"
-Write-Host "  A) UPDATE AN EXISTING INSTALL -- upload BOTH files into  .../$Prefix/ :"
+Write-Host "NEXT -- upload BOTH files into  .../$Prefix/ :"
 Write-Host "       $tarName"
 Write-Host "       $tarName.sha256"
 Write-Host "     then on the red zone (login shell is often tcsh -- use bash):"
@@ -187,9 +155,3 @@ Write-Host "       bash deploy.sh                    # picks up the tarball sitt
 Write-Host "       bash deploy/doctor.sh --test      # verify the box can run it"
 Write-Host ""
 Write-Host "     (first time only: tar -xzf $tarName  ->  ./$Prefix/ is the install)"
-if ($singleName) {
-    Write-Host ""
-    Write-Host "  B) JUST reduce_snp ON A SIM SERVER -- upload $singleName anywhere, then:"
-    Write-Host "       sha256sum -c $singleName.sha256"
-    Write-Host "       python3 $singleName --help"
-}

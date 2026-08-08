@@ -423,8 +423,10 @@ writes stays under `<install>/.deploy/` — never `/tmp` or anywhere else on the
 CLI need only `numpy`; the GUI additionally needs `matplotlib`, `tkinter` and
 `$DISPLAY`. Missing GUI dependencies are a degrade, not a failure.
 
-If you only need port reduction on a simulation server, `pack.ps1` also emits a
-standalone `reduce_snp_<short>.py` that runs on its own with nothing but `numpy`.
+`pack.ps1` emits exactly two files — the tarball and its `.sha256`. Upload both;
+that is the whole delivery. If you only need port reduction on a simulation
+server, copy `reduce_snp.py` out of the package and onto that box: it imports
+nothing from this repo and runs with nothing but `numpy`.
 
 Full procedure, rollback, and how to keep your own data across deploys:
 [deploy/README.md](deploy/README.md).

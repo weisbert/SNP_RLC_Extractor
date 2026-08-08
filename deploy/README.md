@@ -53,12 +53,15 @@ After committing (and ideally pushing):
 powershell -ExecutionPolicy Bypass -File deploy\pack.ps1
 ```
 
-Produces, under `deploy\dist\`:
+Produces exactly two files, under `deploy\dist\`:
 
 | file | for |
 |---|---|
-| `Snp_analyzer_<short>.tar.gz` + `.sha256` | full install (code + tests + docs) |
-| `reduce_snp_<short>.py` + `.sha256` | single-file fast lane, see §4 |
+| `Snp_analyzer_<short>.tar.gz` | the whole install (code + tests + docs) |
+| `Snp_analyzer_<short>.tar.gz.sha256` | integrity check on the far side |
+
+Upload both. That is the entire delivery — there is deliberately nothing else to
+copy and nothing to choose between.
 
 Use `-Name <dir>` to change the package root directory name (default
 `Snp_analyzer`, i.e. what you get after `tar -xzf`).
@@ -129,16 +132,21 @@ python3 reduce_snp.py --help
 python3 pkg_rlc_extractor.py --help
 ```
 
-## 4. Fast lane — just `reduce_snp.py` on a sim server
+## 4. Just `reduce_snp.py` on a sim server
 
-`reduce_snp.py` imports nothing from this repo by design; it is meant to be copied
-onto simulation servers on its own. `pack.ps1` therefore also emits it as a loose
-file, byte-identical to the copy inside the tarball, so this case needs no unpack:
+`reduce_snp.py` imports nothing from this repo by design, so it runs anywhere
+numpy does — including a simulation server that has no install of this tool.
+It ships inside the package like everything else; copy it out of an install, or
+straight out of the tarball:
 
 ```bash
-sha256sum -c reduce_snp_<short>.py.sha256
-python3 reduce_snp_<short>.py --help
+tar -xzf Snp_analyzer_<short>.tar.gz Snp_analyzer/reduce_snp.py
+scp Snp_analyzer/reduce_snp.py user@simserver:~/
 ```
+
+`pack.ps1` used to emit a second, hash-named loose copy for this. It did not
+earn the confusion of a `dist/` with four files in it — the delivery is one
+tarball.
 
 ## First-time bootstrap (no `deploy.sh` on the box yet)
 

@@ -284,9 +284,21 @@ looking at the screen.
   halves of that guard.
 - **`git archive`, never the working tree.** Packing from committed blobs is what
   makes the package immune to autocrlf, backslash paths, and lost exec bits.
-- **The single-file `reduce_snp_<hash>.py` is extracted via `cmd.exe` redirection
-  of `git cat-file blob`**, not PowerShell capture — PowerShell re-encodes the
-  stream and would turn LF into CRLF, desyncing it from the copy in the tarball.
+- **`pack.ps1` emits exactly two files: the tarball and its `.sha256`.** It also
+  emitted a loose, hash-named `reduce_snp_<short>.py` "fast lane" for copying
+  onto a sim server; that was removed because a `dist/` with four files in it
+  made the operator ask what the extra ones were, and the answer ("the same file
+  again, for a workflow you may not have") did not justify the question. The
+  sim-server case is `tar -xzf <pkg> Snp_analyzer/reduce_snp.py`. Do not
+  reintroduce a second delivery artifact without a use case that cannot be
+  served from inside the package.
+- **`cmd.exe` is resolved from `%ComSpec%`, not the PATH.** The remaining
+  `cmd.exe` call (the CR-byte preflight, which redirects `git archive` to a probe
+  tar) must not depend on `C:\Windows\System32` being on the PATH — a yellow-zone
+  box whose PATH had lost it failed with "The term 'cmd.exe' is not recognized",
+  which reads as a script bug rather than a broken environment. PowerShell's own
+  capture cannot replace the redirection: it re-encodes the stream and would turn
+  LF into CRLF.
 - **`deploy.sh` touches only the install dir**, never the parent. Preserves
   `.deploy/` plus anything in `.deploy/preserve.list`, and rolls back via an `ERR`
   trap if the swap fails halfway.
