@@ -12,7 +12,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 |-------------------------|---------------------------------------------------------------------------------|
 | `pkg_rlc_core.py`       | Touchstone parser (+ `TouchstoneParseError` / `diagnose_touchstone` / `check_touchstone`), S<->Y, unified `TerminationSet` model + the Mode 5 DSL (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`), the connection-table row model (`MeasPortRow`, `ConnectionRow`, `rows_to_dsl_text`, `dsl_text_to_rows`, `build_terminations_rows`), `parse_mport_spec`, `resolve_meas_ports`, `compute_z_matrix` / `compute_z`, `extract_rlc_at_freq` / `extract_coupling_at_freq`, `fit_inductor` / `fit_capacitor` / `fit_auto`. |
 | `pkg_rlc_plot.py`       | Matplotlib plot panel: multi-subplot grid over R/L/C/\|Z\|/Re/Im/Q/**k**, draggable freq marker, M / V / Delete keys, fullscreen window. Quantities that cannot be derived from one `(freqs, Z)` pair (today only `k`) arrive via the optional `Trace.aux` dict. |
-| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), the File menu and the JSON session format (`session_to_dict` / `session_from_dict` / `SessionError` / `autosave_path`), the results pane (a `ttk.Notebook` whose tab 0 is the Log, with `log_tab_label` / `_append_result(severity)` / `_select_results_tab`). Re-exports the DSL helpers it no longer defines. |
+| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), the frozen-trace snapshot (`_freeze_trace_config`, the Traces-list right-click menu), the File menu and the JSON session format (`session_to_dict` / `session_from_dict` / `SessionError` / `autosave_path`), the results pane (a `ttk.Notebook` whose tab 0 is the Log, with `log_tab_label` / `_append_result(severity)` / `_select_results_tab`). Re-exports the DSL helpers it no longer defines. |
 | `pkg_rlc_help.py`       | In-app Help window content (`HELP_TOPICS`, `HelpWindow`, `HELP_WINDOW_WIDTH`). One tab per mode + syntax + save/load + worked examples. |
 | `pkg_rlc_extractor.py`  | Entry point: dispatches GUI vs CLI from argv. CLI `--mode gnd \| p2p \| coupling`, `--mport` repeatable. |
 | `reduce_snp.py`         | **Standalone** CLI: shrinks a big `.sNp` to a few ports (KEEP / GND-short / open-or-matched elimination). Deliberately imports nothing from this repo — it gets copied to simulation servers on its own. |
@@ -21,11 +21,12 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `tests/test_parse_diagnostics.py` | The robust-reading work: what a file says about itself (span, sweep description, DC / \|S\|>1 notes) and what happens when it cannot be read. Every refusal test pins the **verdict** and the **line number**, not just "raises ValueError" — that would have passed before any of it existed. Plus the recovery cases (UTF-16, BOM, commas, `D` exponents, extension tiebreak) and the two GUI affordances. |
 | `tests/test_session.py` | Save Config / Load Config / Restore Last Session. Pure round trip (no Tk) for the trace fields, the refusal verdicts, the hand-edit tolerance and the path precedence; Tk-driven for the App-level save→wipe→load, the missing-file path, the autosave, and that the File menu and its accelerators are reachable. Also the guard on the Help window's tab strip, which the tenth tab pushed past the old 950 px. |
 | `tests/test_results_notebook.py` | The Results pane's `ttk.Notebook`: that the Log is tab 0, selected and MAPPED at startup (both are mechanical preconditions of tests elsewhere), the width-stable badge measured in the tab strip's own font, the unseen-warning count, the ERROR claim on the pane and the severity routing of the real call sites, plus the measured proof that a 30-tab strip does not move the left panel. Every guard mutation-checked. |
-| `tests/`                | `unittest`-based suite (597 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/`                | `unittest`-based suite (646 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
 | `tests/test_editor_autoapply.py` | The commit-step removal: WHEN the editor writes into a `TraceConfig` and WHICH one it lands on (the deferral, the object capture, the flush-before-selection-change), the style picker's storage / reachability / honesty about multi-curve traces, and that hiding a curve neither recomputes it nor destroys the cursors. Every guard here was mutation-checked. |
 | `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see, and the reordering hazard that forces `_import_dsl_text`'s verbatim fallback. |
 | `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
 | `tests/test_mode5_editor.py` | Stage 3: the pure text<->rows import decision and both strip renderers, plus Tk-driven editor wiring, per-mode widget visibility, the text hatch, the CSV gate, wheel routing, and the LAYOUT numbers (`ismapped` / `reqwidth` / `xview` / `scrollregion` / `sashpos`) measured off a mapped window. |
+| `tests/test_freeze_trace.py` | "Freeze as new trace": the pure copy rules (config copied, lists element-wise, results REFERENCED), the two refusals (Calculate skips it, the editor cannot write it), that everything else still works (plot / show-hide / CSV / Remove), the right-click menu, and the session round trip that comes back without numbers and says so. Every guard mutation-checked. |
 | `tests/test_report_readability.py` | Four display-only changes, none of which touches a number: the ranked / floored coupling list (pure — the key, the two things never hidden, the sign invariant), the coloured trace Listbox, the tagged results-table swatch, and the editor's footer summary line (mapped window at the 1040x600 minsize). Every guard mutation-checked. |
 | `tests/generate_test_snp.py` | Builds synthetic fixtures with analytically known R/L/C/M; run as a script to (re)generate `tests/fixtures/`. The `COUPLED_*` module constants are the single source of truth for the coupled-coil fixtures. |
 | `tests/test_golden_regression.py` | Replays `tests/fixtures/golden_legacy.npz` through the current API and asserts `assert_array_equal`. This is the guard on every "stays bit-identical" claim below. |
@@ -490,6 +491,69 @@ claim below was mutation-checked — reverting the behaviour turns its test red.
   contribute their last numbers to the results table; a table that shrank to one row would
   make the fast path look like it had discarded the others. It keeps the cursors (it is the
   iteration loop) where the all-traces path does not.
+
+### Freeze as trace (the before/after comparison)
+
+`tests/test_freeze_trace.py` is the guard, and every claim below was
+mutation-checked.
+
+- **A frozen trace is INERT, and two separate refusals make it so.** `_on_calculate`
+  skips it (before the `only is not None and tc is not only` branch, whose shape it
+  mirrors) and `_sync_editor_to_trace` returns immediately. The editor guard lives in
+  `_sync_editor_to_trace`, **not** at its four call sites (the deferred sync, the
+  flush, and both of Calculate's) — the one that forgot would relabel or re-port a
+  snapshot with whatever the editor happened to be showing. `_set_editor_editable`
+  greying the fields is belt and braces, not the mechanism: it stops the user typing
+  into a field that discards every keystroke in silence, which is the exact failure
+  auto-apply exists to remove.
+- **Calculate skips the WORK, not the REPORT.** A frozen trace still contributes its
+  cached `rlc` / `coupling` to the results table, same rule as `Calculate This Trace`
+  — a snapshot missing from the table it exists to be compared against is worse than
+  useless. `Calculate This Trace` aimed AT a frozen trace says so by name rather than
+  silently doing nothing.
+- **`_freeze_trace_config` copies config and REFERENCES results.** `mports` /
+  `conn_rows` element-wise (the documented Duplicate aliasing bug), but `Z` / `Zmat` /
+  `rlc` / `fit` / `fit_freqs` / `fit_Z` are the same objects: `_on_calculate` ASSIGNS
+  new arrays on every run instead of writing into the old ones, so nothing can move
+  the snapshot's numbers, and a deepcopy would carry megabytes (a 6x6 `Zmat` over 5000
+  frequencies is 2.88 MB). If a future Calculate ever writes in place, that assumption
+  breaks and this is where it breaks.
+- **Colour AND linestyle both advance (`+1`, modulo).** A snapshot drawn in its
+  source's exact colour and dash is indistinguishable from it, which defeats the one
+  picture the feature exists to produce; the linestyle carries the distinction where
+  the palette wraps onto a colour already in use.
+- **`_duplicate_trace_config` must clear `frozen`.** Duplicate drops the results, and
+  a frozen trace with no numbers is one Calculate will never fill in — a dead row.
+- **A frozen trace comes back from a session file WITHOUT its numbers, and says so
+  twice.** `frozen` is a config field (classified by `_config_trace_fields`, coerced
+  through `_TRACE_BOOL_FIELDS`), the results are not and cannot be (numpy arrays are
+  not JSON, and `test_computed_results_are_not_written` pins it). Dropping frozen
+  traces on save was the alternative and was rejected: the SPEC is still worth having,
+  because unfreeze + Calculate reproduces the snapshot exactly whenever the file has
+  not changed, which is the normal case (what is compared is usually two port configs
+  of one file). What is not acceptable either way is doing it quietly — `_apply_session`
+  names them in the Results pane and `info_str` renders `❄ no numbers` in the Traces
+  list.
+- **Freeze / Unfreeze are on a RIGHT-CLICK MENU, not a fifth button.** The Traces row
+  is measured at 448 px with four buttons asking 364, and a fifth row in Global
+  Controls comes straight out of an editor viewport already down to 45 px. The
+  right-click SELECTS the row under the pointer first — a menu acting on the previous
+  selection is how you freeze the wrong trace — and only the applicable entry is live.
+  A test that clicks it needs a MAPPED window: `Listbox.nearest()` reads pixel
+  geometry and on a withdrawn root every y answers row 0, which is precisely the
+  wrong answer being ruled out.
+- **The "frozen" note is row 0 of the editor FORM, never the footer.** The footer's
+  whole spare budget is one line and mode 5 already spends it (`_footer_strip_text`);
+  the form is in a Canvas that every mode change scrolls back to the top, so row 0 is
+  the one place in the editor that is always the first thing on screen.
+- **`RowTable.set_editable` / `StylePicker.set_editable` use ttk STATE FLAGS
+  (`state(["disabled"])` / `state(["!disabled"])`), not `configure(state=…)`.** Three
+  of the connections table's six columns are readonly combos, and reconstructing the
+  original state string by hand is what loses the readonly. `StylePicker` needs a
+  plain flag instead: its palette is twelve bare `tk.Canvas` cells with `<Button-1>`
+  bindings, ttk state does not cascade to children, and guarding `_choose` / `toggle`
+  is the only thing that actually stops a click. `RowTable.add_row` re-applies the
+  current flag, because `set_rows` runs before the editor knows the trace is frozen.
 
 - **Plot quantities that need more than one curve arrive via `Trace.aux`.** `k` needs three curves at once (`Z_ab`, `Z_aa`, `Z_bb`) and so cannot be derived from a single `(freqs, Z)` pair; the GUI precomputes it and attaches it. `trace_y_values` must return an all-NaN array (draw nothing) for a trace with no matching `aux` entry, never raise — self curves share the subplot grid with mutual ones. New derived quantities go in `AUX_PLOT_TYPES` the same way.
 

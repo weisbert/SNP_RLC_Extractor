@@ -186,6 +186,34 @@ It is still MEASURED, and it is named on one line under the table:
 Its numbers stay in memory, so showing it again costs no Calculate
 -- tick it back on and export again to get it into a file.
 
+Before and after: freezing a trace
+-----------------------------------
+Right-click a trace in the Traces list -> "Freeze as new trace".
+That takes a SNAPSHOT: a second trace holding exactly the numbers
+this one has now, drawn in the next colour and the next line style,
+labelled with the time it was taken ("tank <14:32>").
+
+Then change the original however you like and press Calculate. The
+snapshot does not move -- Calculate skips it and the editor refuses
+to write into it, so the two curves on the plot are genuinely the
+before and the after, over the whole sweep rather than at the marker
+frequency alone. Both are in the results table, both are in the
+cursor readout, both go into Export CSV.
+
+A frozen trace is marked with a snowflake in the Traces list, and
+selecting it greys the editor out with a note saying so. Everything
+else still works: show/hide, Remove, colour (via unfreeze), export.
+Right-click -> "Unfreeze" gives it back to Calculate -- the next run
+REPLACES the numbers it was holding.
+
+One limit, and it is deliberate: a config file carries the setup and
+never the results (see the "Save / Load" tab), so a frozen trace
+comes back from Save/Load with its spec and no numbers. It says so
+in the Results pane and reads "no numbers" in the Traces list rather
+than quietly drawing nothing. Unfreeze it and Calculate to measure
+it again -- which reproduces the snapshot exactly if the file has
+not changed in the meantime.
+
 Broadband fit models
 --------------------
 Inductor model    : Z(f) = R_dc + R_ac * sqrt(f) + j * 2*pi*f * L

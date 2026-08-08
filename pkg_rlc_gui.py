@@ -184,6 +184,15 @@ class TraceConfig:
     # user asked to stop drawing it, not to stop measuring it.  Toggling it
     # replots from the cached Z / Zmat below, without re-running the reduction.
     enabled: bool = True
+    # A FROZEN trace is a snapshot: it keeps the numbers it was computed with,
+    # Calculate never recomputes it and the editor never writes into it, so the
+    # curve on the plot and the spec beside it keep describing each other.  It
+    # is what makes a before/after comparison a comparison of CURVE SHAPES over
+    # the whole sweep rather than of two numbers in a log.  It is a CONFIG
+    # field (the user set it), so it round-trips through a session file -- but
+    # the numbers do NOT, and _apply_session says so rather than leaving a
+    # frozen trace that silently plots nothing.
+    frozen: bool = False
     label: str = ""
     color_idx: int = 0
     ls_idx: int = 0
@@ -217,10 +226,20 @@ class TraceConfig:
         # rest of the line -- '✓' vs a space would have jittered by 8 px.  Cost
         # against the 444 px list: a typical entry goes 356 -> 372 px.
         # A trailing '*' means the drawn curve is older than this spec.
+        #
+        # The ❄ is at the END, not in the prefix: it is not a toggling state
+        # the way ☑/☐ is, so it cannot jitter the line, and a frozen trace that
+        # came back from a session file WITHOUT its numbers has to say so here
+        # -- it is the one place a trace that plots nothing is visible before
+        # the next Calculate.
+        frozen = ""
+        if self.frozen:
+            frozen = ("  ❄" if (self.Z is not None or self.Zmat is not None)
+                      else "  ❄ no numbers")
         return (f"{'☑' if self.enabled else '☐'} "
                 f"[{self.id}] {self.label}  |  "
                 f"{self.file_label}  {self.MODE_NAMES.get(self.mode, '?')}"
-                f"{' *' if self.stale else ''}")
+                f"{' *' if self.stale else ''}{frozen}")
 
     def port_descriptor(self) -> str:
         """Compact one-line port-config descriptor for the results table."""
@@ -941,7 +960,8 @@ _LEGACY_TRACE_FIELDS = frozenset({
 
 _TRACE_ROW_CLASSES = {"mports": MeasPortRow, "conn_rows": ConnectionRow}
 _TRACE_INT_FIELDS = frozenset({"id", "mode", "color_idx", "ls_idx"})
-_TRACE_BOOL_FIELDS = frozenset({"plot_self", "plot_mutual", "enabled"})
+_TRACE_BOOL_FIELDS = frozenset({"plot_self", "plot_mutual", "enabled",
+                                "frozen"})
 
 # Global controls, and the values the two readonly comboboxes will accept.  A
 # combobox is state="readonly", so a value from outside its list would sit
@@ -1212,10 +1232,59 @@ def _duplicate_trace_config(src: "TraceConfig", new_id: int) -> "TraceConfig":
                           "label": src.label + "_copy",
                           "mports": [replace(r) for r in src.mports],
                           "conn_rows": [replace(r) for r in src.conn_rows],
+                          # Duplicating a frozen trace must NOT produce another
+                          # frozen one: the copy drops the results (below), and
+                          # a frozen trace with no numbers is one Calculate
+                          # will never fill in.  Duplicate means "carry on
+                          # editing from here", which is the opposite of frozen.
+                          "frozen": False,
                           "Z": None, "rlc": None, "fit": None, "fit_kind": "",
                           "fit_freqs": None, "fit_Z": None,
                           "Zmat": None, "mport_names": None,
                           "coupling": None, "stale": False})
+
+
+# Wall-clock stamp appended to a frozen trace's label.  Minutes, not seconds:
+# the label is read in a legend truncated to MAX_LABEL_LEN characters, and two
+# snapshots taken inside the same minute are told apart by their id anyway.
+FREEZE_STAMP_FMT = "%H:%M"
+
+
+def _freeze_trace_config(src: "TraceConfig", new_id: int,
+                         stamp: Optional[str] = None) -> "TraceConfig":
+    """
+    A read-only SNAPSHOT of a computed trace: same spec, same numbers, never
+    recomputed and never edited again.
+
+    Two copying rules, and they are opposites on purpose:
+
+      * CONFIG is copied, and the two list-valued fields (`mports`,
+        `conn_rows`) element-wise.  `TraceConfig(**src.__dict__)` is a shallow
+        splat and would hand both traces the same row list -- the documented
+        Duplicate aliasing bug, where editing one silently edits the other.
+      * RESULTS are REFERENCED, not deep-copied.  `_on_calculate` ASSIGNS new
+        objects to Z / Zmat / rlc / fit / fit_freqs / fit_Z on every run
+        instead of writing into the existing arrays, so nothing can change the
+        snapshot's numbers under it.  A deepcopy would carry megabytes for no
+        benefit (a 6x6 Zmat over 5000 frequencies is 2.88 MB).
+
+    Colour AND linestyle both move on.  A snapshot drawn in its source's exact
+    colour and dash is indistinguishable from it, which defeats the one picture
+    this whole feature exists to produce -- and the linestyle carries the
+    distinction even when the palette wraps back onto a colour already in use.
+    """
+    stamp = stamp or datetime.now().strftime(FREEZE_STAMP_FMT)
+    return TraceConfig(**{**src.__dict__,
+                          "id": new_id,
+                          "label": f"{src.label} <{stamp}>",
+                          "mports": [replace(r) for r in src.mports],
+                          "conn_rows": [replace(r) for r in src.conn_rows],
+                          "frozen": True,
+                          # Its numbers were computed from exactly this spec,
+                          # and nothing can edit either of them again.
+                          "stale": False,
+                          "color_idx": (src.color_idx + 1) % len(COLORS),
+                          "ls_idx": (src.ls_idx + 1) % len(LINESTYLES)})
 
 
 def _config_signature(tc: "TraceConfig") -> tuple:
@@ -2001,6 +2070,7 @@ class StylePicker(ttk.Frame):
         self._span = 1
         self._on_change = on_change
         self._expanded = False
+        self._editable = True
         self._cells: dict = {}
 
         u = self._u = max(12, tkfont.Font(font="TkDefaultFont")
@@ -2065,6 +2135,8 @@ class StylePicker(ttk.Frame):
             self._cells[("l", i)] = cv
 
     def _choose(self, color: int | None = None, ls: int | None = None) -> None:
+        if not self._editable:
+            return
         if color is not None:
             self._color_idx = color
         if ls is not None:
@@ -2132,7 +2204,32 @@ class StylePicker(ttk.Frame):
         if self._expanded:
             self.toggle()
 
+    def set_editable(self, editable: bool) -> None:
+        """
+        Lock the picker for a frozen trace.
+
+        A flag rather than a `state(['disabled'])` on the Frame: the palette is
+        twelve bare tk.Canvas cells with <Button-1> bindings, and ttk state
+        does not cascade to children, let alone to a Canvas.  Guarding _choose
+        and expand() is what actually stops a click.  The preview keeps drawing
+        the real colour -- a snapshot's style is worth READING -- but it leaves
+        the Tab order, because a focusable control that answers no key is worse
+        than one that is not there.
+        """
+        self._editable = bool(editable)
+        if not self._editable:
+            self.collapse()
+        try:
+            self._preview.configure(takefocus=self._editable)
+            self._arrow.state(["!disabled"] if self._editable else ["disabled"])
+        except Exception:                               # pragma: no cover
+            pass
+
     def toggle(self) -> None:
+        if not self._editable and not self._expanded:
+            # Collapsing is always allowed (set_editable(False) uses it); only
+            # OPENING a locked palette is refused.
+            return
         self._expanded = not self._expanded
         self._arrow.configure(text="▾" if self._expanded else "▸")
         if self._expanded:
@@ -2213,12 +2310,14 @@ class RowTable(ttk.Frame):
         self._max_visible = max(1, int(max_visible))
         self._rows: list[dict] = []      # per row: {key: tk.StringVar} + widgets
         self._resize_pending = False
+        self._editable = True
 
         # --- add button (outside the scroll area) ---
         head = ttk.Frame(self)
         head.pack(side=tk.TOP, fill=tk.X)
-        ttk.Button(head, text=add_text, width=8, command=self.add_row
-                   ).pack(side=tk.RIGHT, padx=1)
+        self._add_btn = ttk.Button(head, text=add_text, width=8,
+                                   command=self.add_row)
+        self._add_btn.pack(side=tk.RIGHT, padx=1)
 
         # --- scrollable body ---
         body = ttk.Frame(self)
@@ -2338,6 +2437,11 @@ class RowTable(ttk.Frame):
         self._rows.append(entry)
         for c, col in enumerate(self._columns):
             self._inner.columnconfigure(c, weight=1 if col.kind != "static" else 0)
+        if not self._editable:
+            # set_rows() runs before the editor decides whether the trace it is
+            # loading is frozen, so a row created now has to inherit the state
+            # rather than come back live under a greyed-out table.
+            self._set_state(entry["_widgets"], False)
         self._schedule_resize()
         if notify and self._on_change is not None:
             self._on_change()
@@ -2388,6 +2492,32 @@ class RowTable(ttk.Frame):
             self.add_row(notify=False)
         self._schedule_resize()
 
+    @staticmethod
+    def _set_state(widgets, editable: bool) -> None:
+        """
+        Grey a list of ttk widgets, reversibly.
+
+        ttk's state FLAGS, not `configure(state=...)`: `state(['disabled'])`
+        adds a flag and `state(['!disabled'])` removes it, so a combobox that
+        was `readonly` comes back readonly.  Reconstructing the original state
+        string by hand is what gets that wrong -- three of the connections
+        table's six columns are readonly combos.
+        """
+        flag = ["!disabled"] if editable else ["disabled"]
+        for w in widgets:
+            try:
+                w.state(flag)
+            except Exception:                           # pragma: no cover
+                pass
+
+    def set_editable(self, editable: bool) -> None:
+        """Grey/restore every cell, the '+ Add' button and every row's ✕."""
+        self._editable = bool(editable)
+        widgets = [self._add_btn]
+        for entry in self._rows:
+            widgets.extend(entry["_widgets"])
+        self._set_state(widgets, self._editable)
+
     def set_column_values(self, key: str, values: Sequence[str]) -> None:
         """Repopulate a combo column's choices (e.g. after a file change)."""
         idx = next((i for i, c in enumerate(self._columns) if c.key == key), None)
@@ -2426,6 +2556,16 @@ MODE_PLACEHOLDERS: dict[str, dict[int, str]] = {
 }
 
 LABEL_PLACEHOLDER = "trace name shown in plot legend (optional)"
+
+# The two Traces-list context-menu entries, and the note that explains why the
+# editor is greyed out.  Named constants because three tests and one menu
+# lookup key off them, and a menu entry nobody can find is the same as no
+# feature at all.
+FREEZE_MENU_LABEL = "Freeze as new trace"
+UNFREEZE_MENU_LABEL = "Unfreeze"
+FROZEN_EDITOR_NOTE = (
+    "❄ frozen snapshot — unfreeze to edit "
+    "(right-click it in the Traces list)")
 
 # Shown under the measurement-port table. This has to carry everything
 # the six retired placeholder hints used to say, because a plain ttk.Entry in
@@ -2986,8 +3126,22 @@ class App(tk.Tk):
             self._ed_canvas.xview_moveto(0)
 
     def _build_editor_form(self, parent: ttk.Frame) -> None:
-        # File combobox
         row = 0
+        # Why the editor is greyed out.  ROW 0, and gridded/removed rather than
+        # packed into the footer: the footer's whole spare budget is one line
+        # and mode 5 already spends it (_footer_strip_text), whereas the form
+        # is inside a Canvas that every mode change scrolls back to the top --
+        # so row 0 is the one place in the editor that is always the first
+        # thing on screen.
+        self.ed_frozen_note = ttk.Label(parent, anchor="w", justify=tk.LEFT,
+                                        wraplength=400, foreground="#b04000",
+                                        text=FROZEN_EDITOR_NOTE)
+        self.ed_frozen_note.grid(row=row, column=0, columnspan=4, sticky="we",
+                                 padx=2, pady=(2, 1))
+        self.ed_frozen_note.grid_remove()
+        row += 1
+
+        # File combobox
         ttk.Label(parent, text="File:").grid(row=row, column=0, sticky="e", padx=2, pady=1)
         self.ed_file_var = tk.StringVar()
         self.ed_file_cbo = ttk.Combobox(parent, textvariable=self.ed_file_var,
@@ -3000,6 +3154,7 @@ class App(tk.Tk):
         mode_frame = ttk.Frame(parent)
         mode_frame.grid(row=row, column=1, columnspan=3, sticky="w")
         self.ed_mode_var = tk.IntVar(value=1)
+        self._ed_mode_buttons: list = []
         # Mode 4 ("A ↔ B + VDD/GND") is retired: VDD is an AC ground, so it is
         # mode 2 with the supply ports merged into GND. Codes stay stable.
         for v, label in [(1, "Port(s) → GND"),
@@ -3007,9 +3162,11 @@ class App(tk.Tk):
                          (3, "A ↔ B + Short Pairs"),
                          (6, "+/- Ports / Coupling (M, k)"),
                          (5, "Custom (advanced)")]:
-            ttk.Radiobutton(mode_frame, text=label, variable=self.ed_mode_var,
-                            value=v, command=self._on_mode_changed
-                            ).pack(side=tk.TOP, anchor="w")
+            rb = ttk.Radiobutton(mode_frame, text=label,
+                                 variable=self.ed_mode_var, value=v,
+                                 command=self._on_mode_changed)
+            rb.pack(side=tk.TOP, anchor="w")
+            self._ed_mode_buttons.append(rb)
         row += 1
 
         # Port A
@@ -3095,10 +3252,10 @@ class App(tk.Tk):
         self.ed_enabled_var = tk.BooleanVar(value=True)
         self.ed_plot_self_var = tk.BooleanVar(value=True)
         self.ed_plot_mutual_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(self.ed_plot_frame, text="this trace",
-                        variable=self.ed_enabled_var,
-                        command=self._on_enabled_toggled
-                        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
+        self.ed_enabled_cb = ttk.Checkbutton(
+            self.ed_plot_frame, text="this trace",
+            variable=self.ed_enabled_var, command=self._on_enabled_toggled)
+        self.ed_enabled_cb.grid(row=0, column=0, sticky="w", padx=(0, 10))
         self.ed_plot_self_cb = ttk.Checkbutton(
             self.ed_plot_frame, text="self", variable=self.ed_plot_self_var)
         self.ed_plot_self_cb.grid(row=0, column=1, sticky="w", padx=(0, 8))
@@ -3123,8 +3280,10 @@ class App(tk.Tk):
         self.ed_conn_head.grid(row=row, column=0, columnspan=4, sticky="we",
                                padx=2, pady=(4, 0))
         ttk.Label(self.ed_conn_head, text="Connections:").pack(side=tk.LEFT)
-        ttk.Button(self.ed_conn_head, text="Edit as text…",
-                   command=self._on_edit_as_text).pack(side=tk.RIGHT)
+        self.ed_edit_text_btn = ttk.Button(self.ed_conn_head,
+                                           text="Edit as text…",
+                                           command=self._on_edit_as_text)
+        self.ed_edit_text_btn.pack(side=tk.RIGHT)
         # extra_lines has no widget of its own, so without this the two tables
         # can be EMPTY while a hidden block of DSL is in force -- and, being
         # emitted last, winning over anything typed into them afterwards.  The
@@ -3193,8 +3352,42 @@ class App(tk.Tk):
         # And there is nothing to apply -- the editor writes itself into the
         # selected trace as you type (see _schedule_editor_sync).
 
+        # Everything a frozen trace must not let the user change.  Collected
+        # once, here, where a new field is added: a walk over
+        # parent.winfo_children() would look tidier and would silently stop
+        # covering anything that ends up inside a sub-frame (the mode radios
+        # and the three Plot checkboxes both are).  The two RowTables and the
+        # StylePicker are NOT in this list -- they own children of their own
+        # and have a set_editable() each.
+        self._ed_lockable = [
+            self.ed_file_cbo, self.ed_porta, self.ed_portb, self.ed_short,
+            self.ed_gnd, self.ed_label, self.ed_enabled_cb,
+            self.ed_plot_self_cb, self.ed_plot_mutual_cb,
+            self.ed_edit_text_btn,
+        ] + list(self._ed_mode_buttons)
+
         parent.columnconfigure(1, weight=1)
         self._update_mode_visibility()
+
+    def _set_editor_editable(self, editable: bool) -> None:
+        """
+        Grey the whole editor out for a frozen trace, and put it back.
+
+        Belt and braces beside _sync_editor_to_trace's refusal, not a
+        substitute for it: the refusal is what makes the snapshot safe, and
+        this is what stops the user typing into a field that then discards
+        every keystroke in silence -- which is exactly the failure auto-apply
+        was built to remove.
+        """
+        editable = bool(editable)
+        RowTable._set_state(self._ed_lockable, editable)
+        self.ed_mp_table.set_editable(editable)
+        self.ed_conn_table.set_editable(editable)
+        self.ed_style.set_editable(editable)
+        if editable:
+            self.ed_frozen_note.grid_remove()
+        else:
+            self.ed_frozen_note.grid()
 
     def _build_global_controls(self, parent: ttk.LabelFrame) -> None:
         # RLC freq + band-fit on the same compact form
@@ -3318,6 +3511,18 @@ class App(tk.Tk):
         # "hide these four".  Returning "break" stops the Listbox class binding
         # from also treating space as select-activate-item.
         self.traces_lb.bind("<space>", self._on_toggle_trace_key)
+
+        # Freeze / Unfreeze live on a right-click menu, NOT on a fifth button:
+        # the Traces row is measured at 448 px with four buttons already asking
+        # 364, and Global Controls has no spare row either (a fifth one comes
+        # straight out of an editor viewport that is down to 45 px at the
+        # minsize).
+        self._trace_menu = tk.Menu(self, tearoff=0)
+        self._trace_menu.add_command(label=FREEZE_MENU_LABEL,
+                                     command=self._on_freeze_trace)
+        self._trace_menu.add_command(label=UNFREEZE_MENU_LABEL,
+                                     command=self._on_unfreeze_trace)
+        self.traces_lb.bind("<Button-3>", self._on_trace_context_menu)
 
         # ---- auto-apply -------------------------------------------------
         # Registered HERE, after _build_ui, and never in a widget constructor:
@@ -3548,6 +3753,113 @@ class App(tk.Tk):
         self.traces_lb.selection_set(tk.END)
         self._on_trace_selected()
 
+    # ------------------------------------------------------- Freeze / Unfreeze
+    #
+    # "Freeze as new trace" is the answer to "is this better than what I had?".
+    # A results log can only compare two NUMBERS at the marker frequency; a
+    # frozen trace is a second curve, so the two specs are compared over the
+    # whole sweep, side by side, with the cursor readout printing both in
+    # adjacent columns and both landing in the results table and the CSV.
+    #
+    # What makes it trustworthy is that a frozen trace is inert: Calculate
+    # skips it (_on_calculate) and the editor refuses to write it
+    # (_sync_editor_to_trace).  Everything else is unchanged -- it plots, it
+    # hides, it exports, Remove removes it.
+
+    def _on_trace_context_menu(self, event) -> None:
+        """
+        Right-click on the Traces list.
+
+        The click SELECTS the row under the pointer first.  A menu that acts on
+        whatever happened to be selected before is how you freeze the wrong
+        trace -- and the two entries are enabled from that row's state, so the
+        selection has to be settled before the menu is posted.
+        """
+        idx = self.traces_lb.nearest(event.y)
+        if idx < 0 or idx >= len(self.traces):
+            return
+        self.traces_lb.selection_clear(0, tk.END)
+        self.traces_lb.selection_set(idx)
+        self.traces_lb.activate(idx)
+        self._on_trace_selected()
+        self._sync_trace_menu(self.traces[idx])
+        try:
+            self._trace_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._trace_menu.grab_release()
+
+    def _sync_trace_menu(self, tc: TraceConfig) -> None:
+        """Only one of the two entries is ever live, and it says which."""
+        self._trace_menu.entryconfigure(
+            FREEZE_MENU_LABEL, state=tk.DISABLED if tc.frozen else tk.NORMAL)
+        self._trace_menu.entryconfigure(
+            UNFREEZE_MENU_LABEL,
+            state=tk.NORMAL if tc.frozen else tk.DISABLED)
+
+    def _on_freeze_trace(self) -> None:
+        # Same flush as Duplicate, for the same reason: without it the snapshot
+        # is taken from the trace as it was BEFORE the edit still sitting in
+        # the idle queue -- i.e. it would freeze a spec that is not on screen.
+        self._flush_editor_sync()
+        idx = self._sel_idx(self.traces_lb)
+        if idx is None:
+            messagebox.showinfo("No trace", "Select a trace first.")
+            return
+        src = self.traces[idx]
+        if src.frozen:
+            return
+        if src.Z is None and src.Zmat is None:
+            messagebox.showinfo(
+                "Nothing to freeze",
+                "This trace has no numbers yet.\n\nCalculate it first — "
+                "freezing keeps the RESULT, so there has to be one.")
+            return
+        tc = _freeze_trace_config(src, self._next_trace_id)
+        self._next_trace_id += 1
+        self.traces.append(tc)
+        self._refresh_trace_list()
+        # The SOURCE stays selected: freezing is the first half of "now change
+        # something and look at the difference", so the editor must not jump to
+        # the copy the user is not going to edit.
+        self.traces_lb.selection_set(idx)
+        self._append_result(
+            f"  Froze [{src.id}] {src.label} as [{tc.id}] {tc.label}: it keeps "
+            f"these numbers, Calculate skips it and the editor will not write "
+            f"it (right-click → {UNFREEZE_MENU_LABEL} to release it).")
+        # It goes into the results table NOW, not at the next Calculate -- the
+        # table is where the two are read against each other, and a baseline
+        # that appears one press later is a baseline nobody trusts.
+        if tc.coupling is not None:
+            self._last_coupling_blocks = (
+                list(getattr(self, "_last_coupling_blocks", []))
+                + [(tc, tc.file_label, tc.coupling)])
+        elif tc.rlc is not None:
+            self._last_result_rows = (
+                list(getattr(self, "_last_result_rows", []))
+                + [(tc, tc.file_label, tc.rlc)])
+        self._render_results(getattr(self, "_last_result_rows", []),
+                             getattr(self, "_last_fit_lines", []),
+                             getattr(self, "_last_coupling_blocks", []))
+        self._replot_from_cache()
+
+    def _on_unfreeze_trace(self) -> None:
+        idx = self._sel_idx(self.traces_lb)
+        if idx is None:
+            return
+        tc = self.traces[idx]
+        if not tc.frozen:
+            return
+        tc.frozen = False
+        self._refresh_trace_list()
+        self.traces_lb.selection_set(idx)
+        # The selection is this trace, so the editor showing it has to come
+        # back to life in the same gesture.
+        self._set_editor_editable(True)
+        self._append_result(
+            f"  [{tc.id}] {tc.label} is no longer frozen: the next Calculate "
+            f"will recompute it and REPLACE the snapshot numbers it is "
+            f"holding.", LOG_WARN)
+
     def _on_trace_selected(self) -> None:
         # Land any queued edit on the trace it was typed into, BEFORE the
         # editor is reloaded from a different one.  Deferring the sync is what
@@ -3576,6 +3888,10 @@ class App(tk.Tk):
             self.ed_conn_table.set_rows(tc.conn_rows)
             self._ed_extra_lines = tc.extra_lines
             self._refresh_port_choices()
+            # Before _update_mode_visibility, which ends by re-measuring the
+            # scrollregion: the frozen note is a gridded row of the form, so it
+            # changes the form's height.
+            self._set_editor_editable(not tc.frozen)
             # INSIDE the guard.  _update_mode_visibility calls set_placeholder
             # on four PlaceholderEntries, and each of those writes its variable
             # -- four unguarded write traces per selection if it runs after the
@@ -4030,6 +4346,14 @@ class App(tk.Tk):
         self._schedule_editor_sync()
 
     def _sync_editor_to_trace(self, tc: TraceConfig) -> None:
+        # A FROZEN trace is a snapshot, so the editor may not write into it at
+        # all -- its numbers and the spec printed beside them have to keep
+        # describing each other.  The guard lives here, not at the call sites:
+        # there are four of them (the deferred sync, the flush, and both of
+        # Calculate's), and the one that forgot would silently relabel or
+        # re-port a snapshot with whatever the editor happened to be showing.
+        if tc.frozen:
+            return
         tc.enabled = bool(self.ed_enabled_var.get())
         tc.color_idx, tc.ls_idx = self.ed_style.get()
         tc.file_label = self.ed_file_var.get()
@@ -4115,6 +4439,24 @@ class App(tk.Tk):
                 self._append_result(
                     f"  [{tc.id}] {tc.label}: file '{tc.file_label}' not loaded",
                     LOG_WARN)
+                continue
+
+            if tc.frozen:
+                # Never recomputed -- that is the whole of what "frozen" means
+                # -- but its cached numbers still go in the report, the same
+                # shape as a trace "Calculate This Trace" skipped below.  A
+                # snapshot missing from the table it is meant to be compared
+                # against would be worse than useless.
+                if tc.coupling is not None:
+                    coupling_blocks.append((tc, fe.label, tc.coupling))
+                elif tc.rlc is not None:
+                    result_rows.append((tc, fe.label, tc.rlc))
+                if only is tc:
+                    # Asked for by name, so say no by name.
+                    self._append_result(
+                        f"  [{tc.id}] {tc.label}: frozen snapshot -- not "
+                        f"recomputed. Right-click it in the Traces list → "
+                        f"{UNFREEZE_MENU_LABEL} first.", LOG_WARN)
                 continue
 
             if only is not None and tc is not only:
@@ -4689,6 +5031,32 @@ class App(tk.Tk):
             f"  {len(self.files)} file(s), {len(self.traces)} trace(s) "
             f"restored — press Calculate All & Plot for the numbers "
             f"(a config carries the setup, not the results).")
+        # A frozen trace is a snapshot of RESULTS, and results are exactly what
+        # a session file does not carry (_COMPUTED_TRACE_FIELDS -- and a numpy
+        # array is not JSON anyway).  So it comes back with its spec, its
+        # colour and its frozen flag, and with nothing to draw.
+        #
+        # It is reported here and marked '❄ no numbers' in the Traces list
+        # rather than being dropped on save, because the SPEC is still worth
+        # having: recomputing it reproduces the snapshot exactly whenever the
+        # file has not changed, which is the normal case (what is being
+        # compared is usually two port configurations of one file).  Dropping
+        # it on save would throw that away silently, and silently is the part
+        # that is not acceptable either way.
+        thawed = [tc for tc in self.traces
+                  if tc.frozen and tc.Z is None and tc.Zmat is None]
+        if thawed:
+            self._append_result(
+                "  frozen snapshot(s) came back WITHOUT their numbers (a "
+                "config carries the setup, never the results): "
+                + ", ".join(f"[{tc.id}] {_trunc_str(tc.label, 18)}"
+                            for tc in thawed), LOG_WARN)
+            self._append_result(
+                f"  Each is still frozen, so Calculate skips it and it draws "
+                f"nothing. Right-click → {UNFREEZE_MENU_LABEL}, then "
+                f"Calculate, to measure it again from the file as it is now — "
+                f"which reproduces the snapshot only if the file has not "
+                f"changed.")
         for label, path in missing:
             self._append_result(
                 f"  MISSING: '{label}' — looked for {path or '(no path)'}",
