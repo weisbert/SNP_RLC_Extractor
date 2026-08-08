@@ -8,9 +8,13 @@ Features (per spec):
     the coupling coefficient k = M / sqrt(L_a * L_b)) are supplied per trace via
     the optional ``Trace.aux`` dict of precomputed arrays aligned with ``freqs``.
   - X / Y log toggles (Y uses symlog for sign-crossing data)
-  - Draggable red-dashed freq marker line with intersection annotations
+  - Draggable red-dashed freq marker line
+  - One cursor readout box per subplot, which doubles as the legend: the
+    frequency once in its title, one row per curve, one value column per
+    cursor.  It is itself draggable, and a double-click inside it hands the
+    placement back to the automatic corner scoring.
   - 'M' key  : add square marker at nearest data point
-  - 'V' key  : add gray dotted vertical line + diamond markers on all traces
+  - 'V' key  : add a gray dotted cursor -- another column in the readout
   - Delete   : remove most-recent annotation/v-line (LIFO)
   - Fullscreen: open one selected plot type in a Toplevel for detail work
 """
@@ -281,6 +285,9 @@ class _PlotView:
         # Chosen corner per axes, decided from the DATA only and frozen until
         # the next redraw -- see READOUT_CORNERS.
         self._readout_loc: dict[int, str] = {}
+        # Boxes the user has dragged, keyed by plot type so the placement
+        # outlives the axes.  Beats _readout_loc; double-click clears it.
+        self._readout_manual: dict[str, tuple] = {}
         self._dragging = False
 
         # Cache axes-type pairs for hit-testing
@@ -305,6 +312,7 @@ class _PlotView:
         self.canvas.draw_idle()
 
     def redraw(self) -> None:
+        self._capture_manual_locs()     # before figure.clear() destroys them
         self.figure.clear()
         self._anno_stack = []      # axes go away with figure.clear()
         self._vline_freqs = []
@@ -360,16 +368,58 @@ class _PlotView:
         if handles:
             self.axes[0].legend(loc="best", fontsize=7)
 
-    def _pick_readout_loc(self, ax, plot_type: str) -> str:
+    def _capture_manual_locs(self) -> None:
         """
-        Corner with the least data in it, in axes fraction.
+        Remember any box the user has dragged, before the legend is replaced.
 
-        Deliberately scored from the curves and not from the rendered legend:
-        matplotlib's own loc="best" also weighs the legend's size, so a value
-        going from "2 nH" to "2.05 nH" during a drag can flip the box to
-        another corner.  A cursor readout that hops while you drag the cursor
-        is worse than one sitting in a slightly busier corner.
+        Read here rather than from a button-release handler on purpose: the
+        DraggableLegend registers its own release callback when the box is
+        built, i.e. AFTER _PlotView's, so ours would run first and read the
+        position from before the drag.  Every path that destroys a legend
+        (marker refresh, redraw) calls this first instead, which does not
+        depend on callback order at all.
+
+        A dragged legend stores its position as a 2-tuple in axes fraction;
+        an auto-placed one keeps the integer code of its named location.  That
+        is the discriminator.  Keyed by PLOT TYPE, not by axes id, so the
+        placement survives Calculate rebuilding the axes.
         """
+        for ax, plot_type in self._axes_types:
+            lg = ax.get_legend()
+            if lg is None:
+                continue
+            loc = getattr(lg, "_loc", None)
+            if isinstance(loc, tuple) and len(loc) == 2:
+                self._readout_manual[plot_type] = (float(loc[0]), float(loc[1]))
+
+    def _legend_at(self, event):
+        """(axes, plot_type, legend) under the pointer, or None."""
+        for ax, plot_type in self._axes_types:
+            lg = ax.get_legend()
+            if lg is None or event.x is None or event.y is None:
+                continue
+            try:
+                if lg.get_window_extent().contains(event.x, event.y):
+                    return ax, plot_type, lg
+            except Exception:
+                continue
+        return None
+
+    def _pick_readout_loc(self, ax, plot_type: str):
+        """
+        Where the readout box goes: the user's own placement if they dragged
+        it, else the corner with the least data in it, in axes fraction.
+
+        The automatic choice is deliberately scored from the curves and not
+        from the rendered legend: matplotlib's own loc="best" also weighs the
+        legend's size, so a value going from "2 nH" to "2.05 nH" during a drag
+        can flip the box to another corner.  A cursor readout that hops while
+        you drag the cursor is worse than one sitting in a slightly busier
+        corner.
+        """
+        manual = self._readout_manual.get(plot_type)
+        if manual is not None:
+            return manual
         key = id(ax)
         if key in self._readout_loc:
             return self._readout_loc[key]
@@ -482,13 +532,25 @@ class _PlotView:
         handles, rows, title = self._readout_rows(ax, plot_type, freqs, names)
         if not rows:
             return
-        ax.legend(handles, rows, title=title,
-                  loc=self._pick_readout_loc(ax, plot_type),
-                  framealpha=0.85, fancybox=False, borderpad=0.35,
-                  labelspacing=0.28, handlelength=1.5, handletextpad=0.5,
-                  borderaxespad=0.4,
-                  prop={"family": READOUT_FONT, "size": READOUT_FONT_SIZE},
-                  title_fontsize=READOUT_FONT_SIZE)
+        lg = ax.legend(handles, rows, title=title,
+                       loc=self._pick_readout_loc(ax, plot_type),
+                       framealpha=0.85, fancybox=False, borderpad=0.35,
+                       labelspacing=0.28, handlelength=1.5, handletextpad=0.5,
+                       borderaxespad=0.4,
+                       prop={"family": READOUT_FONT, "size": READOUT_FONT_SIZE},
+                       title_fontsize=READOUT_FONT_SIZE)
+        # Auto-placement cannot win every time -- four subplots, several
+        # cursors and a curve that happens to run through the chosen corner
+        # all end the same way.  update="loc" makes the dragged position a
+        # plain (x, y) axes-fraction tuple, which is what loc= accepts on
+        # every matplotlib the red zone might have (Legend.set_loc is 3.8+,
+        # the target box is 3.7.2).  Guarded: a Figure with no canvas yet
+        # cannot register the drag callbacks, and that must not stop the plot
+        # from being drawn.
+        try:
+            lg.set_draggable(True, use_blit=False, update="loc")
+        except Exception:
+            pass
 
     # -------- Drawing helpers --------
 
@@ -516,6 +578,7 @@ class _PlotView:
         ax.grid(True, which="both", alpha=0.3)
 
     def _refresh_marker(self) -> None:
+        self._capture_manual_locs()     # the legends below get replaced
         for ln in self._marker_lines:
             try:
                 ln.remove()
@@ -669,7 +732,30 @@ class _PlotView:
         self.canvas.draw_idle()
 
     def _on_press(self, event) -> None:
-        if event.button != 1 or event.inaxes is None or not self.show_marker:
+        if event.button != 1 or event.inaxes is None:
+            return
+        # The readout box wins the gesture: it is draggable itself, and a box
+        # sitting over the marker line would otherwise move the cursor and the
+        # box at the same time.  Double-click inside it hands the placement
+        # back to the automatic corner scoring -- the way out of a box dragged
+        # somewhere useless.
+        hit = self._legend_at(event)
+        if hit is not None:
+            hit_ax, plot_type, hit_lg = hit
+            if getattr(event, "dblclick", False):
+                # Drop the legend BEFORE refreshing: _refresh_marker captures
+                # dragged positions first, and it would read this one straight
+                # back out of the artist and undo the reset.
+                try:
+                    hit_lg.remove()
+                except Exception:
+                    pass
+                self._readout_manual.pop(plot_type, None)
+                self._readout_loc.pop(id(hit_ax), None)
+                self._refresh_marker()
+                self.canvas.draw_idle()
+            return
+        if not self.show_marker:
             return
         # Hit-test against this axes' marker line
         ax = event.inaxes

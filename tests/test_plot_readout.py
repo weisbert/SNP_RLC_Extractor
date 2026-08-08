@@ -54,13 +54,32 @@ class _NullCanvas:
 
 def _make_view(traces, types, marker_hz, figsize=(11, 6), dpi=110):
     fig = Figure(figsize=figsize, dpi=dpi)
+    # The canvas has to exist BEFORE the first draw: set_draggable registers
+    # its callbacks on figure.canvas, and with none there the readout would be
+    # built non-draggable and the drag tests would pass on a technicality.
+    FigureCanvasAgg(fig)            # binds itself as fig.canvas
     view = P._PlotView(fig, _NullCanvas(), lambda: list(types))
     view.x_log = True
     view.marker_freq_hz = marker_hz
     view.set_traces(traces)
-    FigureCanvasAgg(fig)            # binds itself as fig.canvas
     fig.canvas.draw()
     return fig, view
+
+
+class _Press:
+    """Minimal stand-in for a MouseEvent."""
+
+    def __init__(self, ax, x, y, button=1, dblclick=False):
+        self.inaxes, self.x, self.y = ax, x, y
+        self.button, self.dblclick = button, dblclick
+        self.xdata = self.ydata = None
+
+
+def _drag_legend_to(view, ax, xy_axes_frac):
+    """Simulate what DraggableLegend leaves behind after a drag: the position
+    as a 2-tuple in axes fraction.  Driving the real pick/motion machinery
+    would test matplotlib, not this module."""
+    ax.get_legend()._loc = tuple(xy_axes_frac)
 
 
 def _axes_texts(ax):
@@ -287,6 +306,89 @@ class TestReadoutWiring(unittest.TestCase):
             view._refresh_marker()
         fig.canvas.draw()
         self.assertEqual(view._readout_loc, first)
+
+    def test_the_box_is_draggable(self):
+        f, traces = _coupling_traces()
+        fig, view = _make_view(traces, ["L(nH)"], f[len(f) // 2])
+        lg = view.axes[0].get_legend()
+        self.assertTrue(lg.get_draggable(),
+                        "the readout cannot be moved out of the way")
+
+    def test_a_dragged_box_survives_a_marker_move(self):
+        """The box is rebuilt on every cursor move, so without capturing the
+        dragged position it would snap back on the next drag of the marker."""
+        f, traces = _coupling_traces()
+        fig, view = _make_view(traces, ["L(nH)"], f[len(f) // 2])
+        _drag_legend_to(view, view.axes[0], (0.31, 0.62))
+
+        view.marker_freq_hz = float(f[70])
+        view._refresh_marker()
+        fig.canvas.draw()
+        self.assertEqual(view._readout_manual.get("L(nH)"), (0.31, 0.62))
+        self.assertEqual(view.axes[0].get_legend()._loc, (0.31, 0.62))
+
+    def test_a_dragged_box_survives_recalculate(self):
+        """set_traces rebuilds the axes, so a placement keyed by axes id would
+        be lost every time the user hits Calculate."""
+        f, traces = _coupling_traces()
+        fig, view = _make_view(traces, ["L(nH)"], f[len(f) // 2])
+        _drag_legend_to(view, view.axes[0], (0.25, 0.44))
+
+        view.set_traces(traces)          # what Calculate does
+        fig.canvas.draw()
+        self.assertEqual(view.axes[0].get_legend()._loc, (0.25, 0.44))
+
+    def test_double_click_returns_the_box_to_automatic_placement(self):
+        f, traces = _coupling_traces()
+        fig, view = _make_view(traces, ["L(nH)"], f[len(f) // 2])
+        ax = view.axes[0]
+        auto = view._readout_loc[id(ax)]
+        _drag_legend_to(view, ax, (0.4, 0.4))
+        view.marker_freq_hz = float(f[60])
+        view._refresh_marker()
+        fig.canvas.draw()
+        self.assertIn("L(nH)", view._readout_manual)
+
+        b = ax.get_legend().get_window_extent(fig.canvas.get_renderer())
+        view._on_press(_Press(ax, (b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2,
+                              dblclick=True))
+        fig.canvas.draw()
+        self.assertNotIn("L(nH)", view._readout_manual)
+        self.assertEqual(view._readout_loc[id(ax)], auto)
+
+    def test_pressing_on_the_box_does_not_grab_the_marker(self):
+        """The box can sit on top of the marker line; one press must not move
+        both."""
+        f, traces = _coupling_traces()
+        fig, view = _make_view(traces, ["L(nH)"], f[len(f) // 2])
+        ax = view.axes[0]
+        axb = ax.get_window_extent()
+        lgb = ax.get_legend().get_window_extent(fig.canvas.get_renderer())
+        marker_x, _ = ax.transData.transform(
+            (view.marker_freq_hz, ax.get_ylim()[0]))
+        # Park the box centred ON the marker line -- placing it anywhere else
+        # makes this test pass without the guard, which is how it read green
+        # the first time it was written.
+        _drag_legend_to(view, ax, ((marker_x - lgb.width / 2 - axb.x0) / axb.width,
+                                   0.45))
+        view._refresh_marker()
+        fig.canvas.draw()
+
+        b = ax.get_legend().get_window_extent(fig.canvas.get_renderer())
+        px, py = (b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2
+        self.assertLess(abs(px - marker_x), P.MARKER_PIXEL_TOLERANCE,
+                        "precondition: the press must land on the marker line")
+        view._on_press(_Press(ax, px, py))
+        self.assertFalse(view._dragging,
+                         "the marker was grabbed through the box")
+
+    def test_pressing_the_marker_line_still_grabs_it(self):
+        f, traces = _coupling_traces()
+        fig, view = _make_view(traces, ["L(nH)"], f[len(f) // 2])
+        ax = view.axes[0]
+        mx, _ = ax.transData.transform((view.marker_freq_hz, ax.get_ylim()[0]))
+        view._on_press(_Press(ax, mx, ax.get_window_extent().y0 + 5))
+        self.assertTrue(view._dragging, "the marker is no longer draggable")
 
     def test_position_is_rechosen_on_redraw(self):
         f, traces = _coupling_traces()
