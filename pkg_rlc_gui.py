@@ -25,6 +25,7 @@ import csv
 import json
 import math
 import os
+import re
 import traceback
 from dataclasses import asdict, astuple, dataclass, field, fields, replace
 from datetime import datetime, timezone
@@ -911,19 +912,34 @@ WARN_FG = "#b04000"
 
 WARN_OPEN_LOOKS_TERMINATED = "open, but its name matches a terminated set"
 WARN_PROBE_AND_GROUND = "probe row AND ground row — the ground row wins"
+# Mode 6 does NOT let ground win: build_terminations_coupling raises, because a
+# probe side is tied together and grounding one of its ports grounds the whole
+# side.  Both behaviours are pinned and intended (CLAUDE.md), so the WINDOW has
+# to say which one it is showing.  Measured with the Mode-5 wording on a mode-6
+# trace (probes on 1 and 2, GND field '1'): the window said "the ground row
+# wins", which reads as "legal, and I know which side won", and Calculate then
+# refused the trace outright -- "Port(s) 1 are listed both as a probe
+# (measurement port 'c1') and as ground".  Mode 6 has neither a validation
+# strip nor a footer strip, so this row is the ONLY thing on screen about the
+# overlap and it must not state the other mode's rule.
+WARN_PROBE_AND_GROUND_COUPLING = (
+    "probe row AND ground row — Mode 6 refuses this; drop it from one list "
+    "or the other")
 WARN_FROM_KEPT_TEXT = "assigned by the kept-as-text block, not by a table row"
 
 
 def _role_warnings(roles: Sequence[PortRole],
-                   mport_rows: Sequence = ()) -> dict:
+                   mport_rows: Sequence = (),
+                   coupling: bool = False) -> dict:
     """
     1-based port -> why its row is flagged, for the rows that are.
 
     Three things earn a flag, and each is a way for a spec to look right and be
     wrong: an open port whose NAME belongs to a terminated set; a port a probe
-    row claims that a ground row then takes (legal, pinned, and invisible); and
-    a port assigned by the kept-as-text block, which is emitted last and so
-    beats every table row while having no widget of its own.
+    row claims that a ground row then takes (legal and invisible in Mode 5, a
+    hard refusal in Mode 6 -- hence `coupling`); and a port assigned by the
+    kept-as-text block, which is emitted last and so beats every table row
+    while having no widget of its own.
     """
     warn: dict = {}
     for r in roles:
@@ -939,7 +955,8 @@ def _role_warnings(roles: Sequence[PortRole],
                 continue
     for r in roles:
         if r.index in probe_ports and r.role in (ROLE_GROUND, ROLE_VDD):
-            warn[r.index] = WARN_PROBE_AND_GROUND
+            warn[r.index] = (WARN_PROBE_AND_GROUND_COUPLING if coupling
+                             else WARN_PROBE_AND_GROUND)
 
     for cluster in open_name_clusters(roles):
         for p in cluster.open_ports:
@@ -1396,6 +1413,83 @@ def _duplicate_trace_config(src: "TraceConfig", new_id: int) -> "TraceConfig":
 FREEZE_STAMP_FMT = "%H:%M"
 
 
+def freeze_label(src_label: str, stamp: str,
+                 limit: int = MAX_LABEL_LEN) -> str:
+    """
+    '<label> <HH:MM>', with the BASE trimmed so the stamp survives truncation.
+
+    The plot legend truncates to the FIRST `MAX_LABEL_LEN` characters
+    (pkg_rlc_plot: `label = (tr.label or "")[:MAX_LABEL_LEN]`), and the tool's
+    own default label is `f"{fe.label}_p1_to_gnd"` -- so any file name of 20
+    characters or more already overflows.  Appending the stamp to the end put
+    the ONE thing that tells a snapshot from its source exactly where
+    head-truncation deletes it: measured, source
+    'coupled_2port_gndref.s2p_p1_to_gnd' and snapshot
+    'coupled_2port_gndref.s2p_p1_to_gnd <21:29>' both legend as
+    'coupled_2port_gndref.s2p_p1_to' -- byte-identical entries for the two
+    curves the whole feature exists to put side by side.
+
+    Same rule, and the same '…' elision, as _compose_curve_label: trim the base,
+    keep the discriminator.
+    """
+    suffix = f" <{stamp}>"
+    base = (src_label or "").strip()
+    room = limit - len(suffix)
+    if len(base) > room and room >= 2:
+        base = base[:room - 1] + "…"
+    return f"{base}{suffix}"
+
+
+def _freeze_stamp_of(label: str) -> str:
+    """The '<HH:MM>' freeze_label appended, or '(unknown)'.
+
+    The label is the only place a snapshot records WHEN it was taken -- the
+    numbers are referenced, not re-dated -- and the CSV header needs it to say
+    which run the block is not from.  A user-renamed snapshot loses it, which
+    is why this degrades instead of raising.
+    """
+    m = re.search(r"<(\d{1,2}:\d{2})>\s*$", label or "")
+    return m.group(1) if m else "(unknown)"
+
+
+def freeze_refusal(tc: "TraceConfig") -> tuple:
+    """
+    (title, message) explaining why this trace must not be frozen, or ().
+
+    Two refusals, and the second is the one that matters.  A snapshot's whole
+    contract is "this spec produced these numbers", and a frozen trace can
+    never clear `stale` again -- _on_calculate skips it and
+    _sync_editor_to_trace refuses it -- so a stale trace frozen once is
+    MISLABELLED FOREVER, with nothing on screen saying so.  Measured on
+    coupled_2port_gndref.s2p (port 1 = 0.6 ohm / 2 nH, port 2 = 0.9 ohm / 3 nH):
+    Calculate with Port A = 1, type '2' into Port A, freeze without
+    recalculating, and the results table reads
+    '[ 2] coil <21:36>  M1: S:[2] G:[]  600 mOhm  2 nH ...' -- port 2's
+    descriptor over port 1's numbers, a 50% error on L, in the table, the run
+    page, the CSV and the legend.  Nothing raises and the numbers are real,
+    which is the worst kind of wrong.
+
+    Refusing is the only answer that keeps the contract true.  Carrying `stale`
+    onto the snapshot instead was considered and rejected: the flag means "the
+    drawn curve is older than the spec", and on a trace that can never be
+    recomputed that is a permanent complaint with no action behind it.
+    """
+    if tc.frozen:
+        return ()
+    if tc.Z is None and tc.Zmat is None:
+        return ("Nothing to freeze",
+                "This trace has no numbers yet.\n\nCalculate it first — "
+                "freezing keeps the RESULT, so there has to be one.")
+    if tc.stale:
+        return ("Spec has changed",
+                "This trace has been edited since it was last calculated, so "
+                "its numbers and the spec beside them no longer describe each "
+                "other.\n\nCalculate it first — freezing keeps the numbers, "
+                "and a frozen trace can never be recalculated to catch them "
+                "up.")
+    return ()
+
+
 def _freeze_trace_config(src: "TraceConfig", new_id: int,
                          stamp: Optional[str] = None) -> "TraceConfig":
     """
@@ -1422,7 +1516,7 @@ def _freeze_trace_config(src: "TraceConfig", new_id: int,
     stamp = stamp or datetime.now().strftime(FREEZE_STAMP_FMT)
     return TraceConfig(**{**src.__dict__,
                           "id": new_id,
-                          "label": f"{src.label} <{stamp}>",
+                          "label": freeze_label(src.label, stamp),
                           "mports": [replace(r) for r in src.mports],
                           "conn_rows": [replace(r) for r in src.conn_rows],
                           "frozen": True,
@@ -1791,7 +1885,8 @@ def run_stale_banner(newest_number: int) -> str:
             f"not this page")
 
 
-def keep_button_label(kept: int, cap: int, state: str) -> str:
+def keep_button_label(kept: int, cap: int, state: str,
+                      long: bool = False) -> str:
     """
     The Keep button's text.  `state` is one of:
 
@@ -1800,13 +1895,26 @@ def keep_button_label(kept: int, cap: int, state: str) -> str:
       'free' -- it can be kept
       'full' -- the kept set is at its cap, and the label has to say so,
                 because a disabled button with no reason is a bug report
+
+    `long` is the difference between a slot and a menu.  On the BUTTON, 'full'
+    reads 'Keep (5/5) — full': the sentence that says what to do about it does
+    not survive the slot.  Measured with TkDefaultFont scaled 1.5x (the
+    supported 150% DPI) at the 1040x600 minsize, the Results header is 575 px
+    and requests 687, and the Keep button is the LAST of five packed side=LEFT
+    -- so pack gave it the 213 px that were left and clipped
+    'Keep (5/5) — close a kept run first' mid-phrase, with winfo_ismapped()
+    still 1 so no ismapped assertion could see it.  A reason that is
+    unreadable is the state the rule exists to prevent.  The sentence lives on
+    the tab strip's right-click entry, which is not width-bound.
     """
     if state == "none":
         return "Keep run"
     if state == "kept":
         return f"Kept ({kept}/{cap})"
     if state == "full":
-        return f"Keep ({kept}/{cap}) — close a kept run first"
+        if long:
+            return f"Keep ({kept}/{cap}) — close a kept run first"
+        return f"Keep ({kept}/{cap}) — full"
     return f"Keep run ({kept}/{cap})"
 
 
@@ -3092,6 +3200,17 @@ MODE_PLACEHOLDERS: dict[str, dict[int, str]] = {
 
 LABEL_PLACEHOLDER = "trace name shown in plot legend (optional)"
 
+# The editor's single-line fields, in characters.  A MEASURED number, not a
+# taste: the form's requested width is the widest label (129 px,
+# "GND / VDD (AC gnd):") plus the widest field plus 8 px of cell padding, and
+# it is checked against a 431 px canvas.  At 42 chars a ttk.Entry asks 300 px
+# and the form asks 437 -- six pixels of overhang, which raises the editor's
+# horizontal scrollbar, which costs 17 px of a 45 px viewport at the 1040x600
+# minsize.  At 40 it asks 286 and the form 423, and modes 1/2/3 keep the whole
+# 45 px.  The fields are sticky="we", so this is only their MINIMUM; at any
+# width where the form fits they look identical.
+EDITOR_FIELD_CHARS = 40
+
 # The two Traces-list context-menu entries, and the note that explains why the
 # editor is greyed out.  Named constants because three tests and one menu
 # lookup key off them, and a menu entry nobody can find is the same as no
@@ -3960,8 +4079,21 @@ class App(tk.Tk):
         # File combobox
         ttk.Label(parent, text="File:").grid(row=row, column=0, sticky="e", padx=2, pady=1)
         self.ed_file_var = tk.StringVar()
+        # width=38, not 40, and it is a MEASURED number.  The editor form's
+        # requested width is the widest LABEL (129 px, "GND / VDD (AC gnd):")
+        # plus the widest FIELD plus 8 px of cell padding, and this combobox
+        # is the widest field in modes 1/2/3 -- 303 px against the 431 px
+        # canvas, for a form of 440.  Nine pixels of overhang bought a
+        # horizontal scrollbar, and at the 1040x600 minsize that scrollbar
+        # costs 17 px of a 45 px editor viewport: the four modes with no table
+        # paid a third of their remaining height to reach 9 px they did not
+        # need, while Mode 5 -- whose column budget was actually measured --
+        # fitted and paid nothing.  It is sticky="we", so this changes only
+        # the minimum; at any width where the form fits it looks identical.
+        # (Mode 6's form is 462 px and still raises the bar. That overhang is
+        # the measurement-port table, not this, and it is real.)
         self.ed_file_cbo = ttk.Combobox(parent, textvariable=self.ed_file_var,
-                                        state="readonly", width=40)
+                                        state="readonly", width=38)
         self.ed_file_cbo.grid(row=row, column=1, columnspan=3, sticky="we", padx=2, pady=1)
         row += 1
 
@@ -3988,7 +4120,7 @@ class App(tk.Tk):
         # Port A
         self.ed_porta_lbl = ttk.Label(parent, text="Signal / Port A:")
         self.ed_porta_lbl.grid(row=row, column=0, sticky="e", padx=2, pady=1)
-        self.ed_porta = PlaceholderEntry(parent, width=42,
+        self.ed_porta = PlaceholderEntry(parent, width=EDITOR_FIELD_CHARS,
                                          placeholder=MODE_PLACEHOLDERS["port_a"][1])
         self.ed_porta.grid(row=row, column=1, columnspan=3, sticky="we",
                            padx=2, pady=1)
@@ -3997,7 +4129,7 @@ class App(tk.Tk):
         # Port B
         self.ed_portb_lbl = ttk.Label(parent, text="Port B:")
         self.ed_portb_lbl.grid(row=row, column=0, sticky="e", padx=2, pady=1)
-        self.ed_portb = PlaceholderEntry(parent, width=42,
+        self.ed_portb = PlaceholderEntry(parent, width=EDITOR_FIELD_CHARS,
                                          placeholder=MODE_PLACEHOLDERS["port_b"][2])
         self.ed_portb.grid(row=row, column=1, columnspan=3, sticky="we",
                            padx=2, pady=1)
@@ -4006,7 +4138,7 @@ class App(tk.Tk):
         # Short pairs
         self.ed_short_lbl = ttk.Label(parent, text="Short Pairs:")
         self.ed_short_lbl.grid(row=row, column=0, sticky="e", padx=2, pady=1)
-        self.ed_short = PlaceholderEntry(parent, width=42,
+        self.ed_short = PlaceholderEntry(parent, width=EDITOR_FIELD_CHARS,
                                          placeholder=MODE_PLACEHOLDERS["short_pairs"][3])
         self.ed_short.grid(row=row, column=1, columnspan=3, sticky="we",
                            padx=2, pady=1)
@@ -4045,7 +4177,7 @@ class App(tk.Tk):
         # GND / VDD ports (VDD merged in: for AC small-signal they are the same)
         self.ed_gnd_lbl = ttk.Label(parent, text="GND / VDD (AC gnd):")
         self.ed_gnd_lbl.grid(row=row, column=0, sticky="e", padx=2, pady=1)
-        self.ed_gnd = PlaceholderEntry(parent, width=42,
+        self.ed_gnd = PlaceholderEntry(parent, width=EDITOR_FIELD_CHARS,
                                        placeholder=MODE_PLACEHOLDERS["gnd"][1])
         self.ed_gnd.grid(row=row, column=1, columnspan=3, sticky="we",
                          padx=2, pady=1)
@@ -4143,7 +4275,7 @@ class App(tk.Tk):
         # Label
         ttk.Label(parent, text="Label:").grid(row=row, column=0, sticky="e",
                                               padx=2, pady=1)
-        self.ed_label = PlaceholderEntry(parent, width=42,
+        self.ed_label = PlaceholderEntry(parent, width=EDITOR_FIELD_CHARS,
                                          placeholder=LABEL_PLACEHOLDER)
         self.ed_label.grid(row=row, column=1, columnspan=3, sticky="we",
                            padx=2, pady=1)
@@ -4466,6 +4598,15 @@ class App(tk.Tk):
         self._refresh_file_list()
         self._refresh_trace_list()
         self._refresh_file_combobox()
+        # Same call, same position, same reason as _on_remove_trace: the traces
+        # bound to this file are gone from the list, and without this the PLOT
+        # keeps drawing and legending their curves until the next Calculate.
+        # The readout box IS the legend, so the stale name sat in the cursor
+        # readout too -- the plot and the Traces list disagreeing about which
+        # measurements exist is exactly what the run pages' banner exists to
+        # prevent.  _replot_from_cache already skips a trace whose file is
+        # gone, so this needs nothing but the call.
+        self._replot_from_cache()
         self._append_result(f"Removed {fe.label}")
 
     def _on_show_ports(self) -> None:
@@ -4522,7 +4663,11 @@ class App(tk.Tk):
         header = _roles_header(fe.label, fe.ts.nports, roles)
         if term is None:
             header += "  (spec did not parse)"
-        return header, roles, _role_warnings(roles, mports)
+        # The mode decides which of the two overlap rules the window states:
+        # mode 6 is the one that routes to build_terminations_coupling and
+        # refuses, every other mode lets ground win.
+        return header, roles, _role_warnings(roles, mports,
+                                             coupling=(tc.mode == 6))
 
     def _refresh_port_roles_window(self) -> None:
         """
@@ -4765,11 +4910,12 @@ class App(tk.Tk):
         src = self.traces[idx]
         if src.frozen:
             return
-        if src.Z is None and src.Zmat is None:
-            messagebox.showinfo(
-                "Nothing to freeze",
-                "This trace has no numbers yet.\n\nCalculate it first — "
-                "freezing keeps the RESULT, so there has to be one.")
+        # The flush above is what makes the stale check reliable: the freshest
+        # spec is on the trace by now, so `stale` answers about the spec the
+        # user can see rather than the one that was there an event ago.
+        refusal = freeze_refusal(src)
+        if refusal:
+            messagebox.showinfo(*refusal)
             return
         tc = _freeze_trace_config(src, self._next_trace_id)
         self._next_trace_id += 1
@@ -5860,13 +6006,22 @@ class App(tk.Tk):
         # Every other field is frozen.  A PAST run is rendered as recorded.
         self._last_run = run.with_visibility(self.traces)
         self._render_results(self._last_run)
-        # The newest RUN PAGE is rewritten IN PLACE and no tab is created: a
-        # units switch measures nothing, so it is not a run.  (The Log is a
+        # EVERY run page is rewritten in place, and no tab is created: a units
+        # switch measures nothing, so it is not a run.  (The Log is a
         # chronological log and does append, which is what it is for.)
+        #
+        # Every page, not just the newest, because the unit is a RENDERING
+        # choice and not a recorded fact -- the run snapshots hold numbers, and
+        # _run_report_segments reads units_mode_var live.  Repainting only the
+        # newest left the older pages in the previous formatting until the next
+        # Calculate repainted them anyway (it re-renders all pages so their
+        # banners name the current run), so "a past run is rendered as
+        # recorded" was never what the user saw: they saw one screen showing
+        # two formattings, and then a silent flip.
         newest = self._newest_run_tab()
         if newest is not None and newest.run.number == self._last_run.number:
             newest.run = self._last_run
-            self._render_run_tab(newest)
+        self._render_all_run_tabs()
 
     def _build_termination(self, tc: TraceConfig,
                            nports: int | None = None) -> TerminationSet:
@@ -6231,7 +6386,19 @@ class App(tk.Tk):
                     # state, which is the newest run -- not whatever page the
                     # user happens to be reading -- so the file has to say so
                     # in its own words, the same way the older pages do.
-                    if run is not None:
+                    #
+                    # Except for a FROZEN trace, whose numbers came from an
+                    # EARLIER run and cannot be recomputed (Calculate skips
+                    # it): heading it with the newest run number says the
+                    # opposite of the truth for exactly the trace type that
+                    # exists to be a baseline.  A before/after CSV -- the only
+                    # reason two such traces are in one file -- labelled both
+                    # snapshots as belonging to the same run.
+                    if tc.frozen:
+                        fh.write(f"# Run: frozen snapshot taken at "
+                                 f"{_freeze_stamp_of(tc.label)}, numbers from "
+                                 f"an earlier run\n")
+                    elif run is not None:
                         fh.write(f"# Run: #{run.number} "
                                  f"{_run_marker_text(run.marker_freq_hz)}, "
                                  f"{run.when.strftime('%H:%M:%S')}\n")
@@ -6497,6 +6664,15 @@ class App(tk.Tk):
         rt = self._selected_run_tab()
         if rt is None:                                  # pragma: no cover
             return True
+        if rt.kept:
+            # The natural gesture is to press Keep on the page you are looking
+            # at, which is by definition the newest -- so without this the very
+            # next Calculate yanked the reader off the page they had just
+            # deliberately kept, which is what the docstring above says must
+            # not happen.  Measured: Calculate -> land on '#2' -> Keep ->
+            # Calculate -> selected '#3'.  The page they stay on is marked
+            # unseen instead, which is the documented fallback.
+            return False
         # Against the YOUNGEST PAGE ON SCREEN, not _current_run_number(): this
         # is called from _add_run_tab, by which point _last_run is already the
         # run being added, so "am I at the newest?" would answer itself with a
@@ -6707,6 +6883,18 @@ class App(tk.Tk):
             # The Log, or the empty strip to the right of the last tab.  The
             # Log cannot be kept and cannot be closed, so there is no menu.
             return
+        self._sync_run_tab_menu(rt)
+        try:
+            self._run_tab_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._run_tab_menu.grab_release()
+
+    def _sync_run_tab_menu(self, rt: "RunTab") -> None:
+        """Point the tab menu at one page and label its entries for it.
+
+        Split out of the popup handler so it can be driven without an event --
+        same shape as _sync_trace_menu, and the same reason.
+        """
         self._run_tab_menu_target = rt
         kept = len(self._kept_run_tabs())
         cap = self._kept_cap()
@@ -6717,15 +6905,14 @@ class App(tk.Tk):
             state = "free"
         else:
             state = "full"
+        # long=True: a menu entry is not width-bound, so this is where the
+        # sentence the button cannot afford at 150% DPI actually lives.  The
+        # button is what sends the user here, so it has to be here.
         self._run_tab_menu.entryconfigure(
             0, state=(tk.NORMAL if can_keep else tk.DISABLED),
-            label=keep_button_label(kept, cap, state))
+            label=keep_button_label(kept, cap, state, long=True))
         self._run_tab_menu.entryconfigure(
             2, state=(tk.NORMAL if len(self._run_tabs) > 1 else tk.DISABLED))
-        try:
-            self._run_tab_menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            self._run_tab_menu.grab_release()
 
     def _on_menu_keep_run(self) -> None:
         rt = self._run_tab_menu_target

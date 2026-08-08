@@ -706,6 +706,49 @@ class TestEditorLayout(_EditorCase):
                         "something invisible is reserving height below the "
                         "editor canvas")
 
+    def test_a_table_free_mode_does_not_pay_for_a_scrollbar_it_barely_needs(
+            self):
+        """
+        The horizontal bar costs 17 px of a 45 px editor viewport at the
+        1040x600 minsize -- more than a third of what is left.  Modes 1/2/3
+        have no table and no measured column budget, so they must simply fit.
+
+        Measured before this: form 440 px against a 431 px canvas, xview
+        (0, 0.98), canvas height 28 -- the four modes with nothing wide in them
+        paid a third of their remaining height to reach 9 px of overhang, while
+        Mode 5, whose CONN_TABLE_COLUMNS budget WAS measured, fitted at 417 and
+        paid nothing.  The 9 px came from the File combobox (303 px) beside the
+        129 px "GND / VDD (AC gnd):" label, and 6 more from the 42-character
+        entry fields.  Both are sticky="we", so shrinking their minimum changes
+        nothing visible.
+
+        Mode 6 is deliberately NOT in this list: its measurement-port table
+        genuinely overhangs (462 px), and test_mode6_no_longer_clips_
+        horizontally pins that it gets the bar.
+        """
+        for geom in ("1500x900", "1200x800", "1040x600"):
+            for mode in (1, 2, 3):
+                with self.subTest(geom=geom, mode=mode):
+                    self._mode(mode, geom)
+                    form = self.app._ed_form.winfo_reqwidth()
+                    canvas = self.app._ed_canvas.winfo_width()
+                    self.assertLessEqual(
+                        form, canvas,
+                        f"mode {mode} at {geom}: the form asks {form}px of a "
+                        f"{canvas}px canvas, so the editor raises a horizontal "
+                        "scrollbar it does not need")
+                    self.assertEqual(self.app._ed_hsb.winfo_ismapped(), 0)
+
+    def test_the_minsize_viewport_is_not_eaten_by_that_scrollbar(self):
+        """The number that matters to a reader: how much editor is on screen."""
+        heights = {}
+        for mode in (1, 2, 3, 5):
+            self._mode(mode, "1040x600")
+            heights[mode] = self.app._ed_canvas.winfo_height()
+        self.assertEqual(
+            len(set(heights.values())), 1,
+            f"the modes disagree about how much editor is visible: {heights}")
+
     def test_the_two_scrollbars_settle_instead_of_flip_flopping(self):
         """
         Autohiding both bars off their own scrollcommands is a LIMIT CYCLE:

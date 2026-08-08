@@ -40,6 +40,7 @@ import math
 import re
 import sys
 import unittest
+import warnings
 from pathlib import Path
 
 # Make pkg_rlc_core and the fixture generator importable when run directly.
@@ -889,6 +890,64 @@ class TestNoReturnPath(_CouplingTestCase):
                     Y, freqs, build_terminations_coupling(spec))
                 finite = [bool(np.isfinite(Zmat[k]).all()) for k in range(F)]
                 self.assertEqual(finite, [True, True, False, True, True])
+
+    def test_an_open_reading_on_the_unchecked_branch_reaches_the_user(self):
+        """
+        The G == 1 / no-minus-side branch deliberately has no magnitude test --
+        y_eff also crosses zero at a genuine parallel anti-resonance, and no
+        single-frequency test can tell that apart from a probe with no return
+        path.  That is about the NUMBERS, and it stands.
+
+        What did not stand is where the one diagnostic it produced went:
+        `1.0 / y_eff` raised numpy's own "divide by zero" / "invalid value"
+        RuntimeWarning on stderr, which a double-clicked GUI discards, while
+        the results pane printed the roundoff as a formatted measurement
+        ("3.6e+03 TOhm  -11.5 MH  2.21e-10 fF") with no annotation at all.
+        warnings_out is the channel the GUI prints under "Calculate @ ..." and
+        the CLI reports.
+        """
+        freqs, Y = _load("coupled_4port_float.s4p")
+        term = build_terminations_mode1([1], [])       # the reported case
+        with warnings.catch_warnings():
+            # A numpy RuntimeWarning escaping here IS the old behaviour: it
+            # goes to fd 2, and a double-clicked GUI has no fd 2.
+            warnings.simplefilter("error")
+            Z, warns = compute_z(Y, freqs, term)
+        self.assertEqual(int(np.sum(~np.isfinite(Z))), 1,
+                         "the reading is supposed to stay infinite")
+        hit = [w for w in warns if "open circuit" in w]
+        self.assertTrue(hit, warns)
+        self.assertIn("'A'", hit[0])                    # names the probe
+        self.assertIn("freq[", hit[0])                  # ...and the frequency
+        # It names BOTH readings, because this branch deliberately has no
+        # magnitude test and so genuinely cannot tell them apart.
+        self.assertIn("anti-resonance", hit[0])
+        self.assertIn("no return path", hit[0])
+
+    def test_the_numbers_on_that_branch_did_not_move(self):
+        """errstate and a warning, not a threshold. The invariant stands: a
+        huge Z is the honest reading of a parallel anti-resonance."""
+        freqs, Y = _load("coupled_4port_float.s4p")
+        Z, _ = compute_z(Y, freqs, build_terminations_mode1([1], []))
+        finite = Z[np.isfinite(Z)]
+        self.assertGreater(float(np.abs(finite).min()), 1e15)
+
+    def test_a_finite_reading_on_that_branch_says_nothing(self):
+        """A ground-referenced probe on a healthy file must stay silent."""
+        freqs, Y = _load("diff_pair_4port.s4p")
+        _, _, warns = compute_z_matrix(
+            Y, freqs, build_terminations_coupling([("p1", [1], [])]))
+        self.assertFalse(any("open circuit" in w for w in warns), warns)
+
+    def test_the_open_warning_is_capped_like_the_others(self):
+        """One line per frequency on a 5000-point sweep is not a report."""
+        freqs = np.linspace(1e9, 2e9, 40)
+        Y = np.zeros((len(freqs), 1, 1), dtype=complex)     # y_eff == 0 always
+        _, _, warns = compute_z_matrix(
+            Y, freqs, build_terminations_coupling([("solo", [1], [])]))
+        n = len([w for w in warns if "open circuit" in w])
+        self.assertGreaterEqual(n, 1)
+        self.assertLessEqual(n, 3)
 
     def test_healthy_files_never_report_a_collapse(self):
         for fname, spec in (

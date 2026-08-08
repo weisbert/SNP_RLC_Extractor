@@ -2692,6 +2692,24 @@ def _schur_collapse_warning(k: int, freq_hz: float) -> str:
             "ports the structure needs.")
 
 
+def _open_probe_warning(k: int, freq_hz: float, name: str) -> str:
+    """
+    The single-node probe read an open circuit (1/y_eff was not finite).
+
+    Deliberately NOT a claim that the file or the spec is wrong: y_eff also
+    passes through zero at a genuine parallel anti-resonance, where a huge Z is
+    the answer the user came for, and no single-frequency magnitude test can
+    tell that apart from a probe with no return path.  So this reports the
+    reading and names both readings of it.
+    """
+    return (f"Measurement port '{name}' reads an open circuit at freq[{k}]="
+            f"{freq_hz:.4g} Hz (its net admittance to the reference node is "
+            "zero to the last bit, so Z is infinite). That is either a genuine "
+            "parallel anti-resonance or a probe with no return path -- if the "
+            "structure is floating, give the measurement port a '-' side or "
+            "add the ground ports it needs.")
+
+
 def _no_return_path_warning(k: int, freq_hz: float, names: Sequence[str]) -> str:
     """
     Escalation of the above: pinv is NOT valid for these measurement ports.
@@ -3129,7 +3147,23 @@ def compute_z_matrix(Y_full: np.ndarray, freqs: np.ndarray,
                 # user came for, and no magnitude test can tell the two apart
                 # at a single frequency.
                 y_eff = ones_a @ Y_red[node_ix[0][0]] @ ones_a
-                Zmat[k, 0, 0] = 1.0 / y_eff
+                # errstate, not a threshold: the divide is ALLOWED to produce
+                # inf/nan here, and the numbers are unchanged.  What changes is
+                # where the diagnostic goes.  numpy's own "divide by zero" /
+                # "invalid value" warning is written to stderr, which a
+                # double-clicked GUI discards -- so the only notice the one
+                # branch with no other guard produced was invisible to every
+                # GUI user, while the results pane printed the roundoff as a
+                # formatted measurement ("3.6e+03 TOhm  -11.5 MH") with no
+                # annotation.  warnings_out is the channel the GUI already
+                # prints under "Calculate @ ..." and the CLI already reports.
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    z_eff = 1.0 / y_eff
+                Zmat[k, 0, 0] = z_eff
+                if not np.isfinite(z_eff) and probe_warnings < 3:
+                    warnings_out.append(_open_probe_warning(
+                        k, freqs[k], port_names[0]))
+                    probe_warnings += 1
             elif G == 1:
                 Y2 = np.empty((2, 2), dtype=complex)
                 Y2[0, 0] = Y_red[node_ix[0][0]].sum()

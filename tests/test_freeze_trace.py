@@ -34,10 +34,10 @@ import numpy as np  # noqa: E402
 import pkg_rlc_gui  # noqa: E402
 from pkg_rlc_core import ConnectionRow, MeasPortRow, parse_touchstone  # noqa: E402
 from pkg_rlc_gui import (  # noqa: E402
-    COLORS, FREEZE_MENU_LABEL, FROZEN_EDITOR_NOTE, LINESTYLES,
+    COLORS, FREEZE_MENU_LABEL, FROZEN_EDITOR_NOTE, LINESTYLES, MAX_LABEL_LEN,
     UNFREEZE_MENU_LABEL, App, FileEntry, TraceConfig,
-    _duplicate_trace_config, _freeze_trace_config, trace_from_dict,
-    trace_to_dict,
+    _duplicate_trace_config, _freeze_stamp_of, _freeze_trace_config,
+    freeze_label, freeze_refusal, trace_from_dict, trace_to_dict,
 )
 
 FIX = Path(__file__).resolve().parent / "fixtures"
@@ -169,6 +169,105 @@ class TestFreezeConfigCopy(unittest.TestCase):
         copy = _duplicate_trace_config(tc, 8)
         self.assertFalse(copy.frozen)
         self.assertIsNone(copy.Z)
+
+
+# ============================================================================
+# The two refusals, and the label (pure)
+# ============================================================================
+
+
+class TestFreezeRefusal(unittest.TestCase):
+    """
+    A snapshot's whole contract is "this spec produced these numbers".  A
+    frozen trace can never clear `stale` again -- _on_calculate skips it and
+    _sync_editor_to_trace refuses it -- so a STALE trace frozen once is
+    mislabelled forever, with nothing on screen saying so.
+    """
+
+    def test_a_computed_clean_trace_is_freezable(self):
+        self.assertEqual(freeze_refusal(_computed_trace()), ())
+
+    def test_a_trace_with_no_numbers_is_refused(self):
+        tc = TraceConfig(id=1, label="t")
+        title, msg = freeze_refusal(tc)
+        self.assertIn("Nothing to freeze", title)
+        self.assertIn("Calculate it first", msg)
+
+    def test_a_STALE_trace_is_refused(self):
+        """
+        Measured on coupled_2port_gndref.s2p (port 1 = 0.6 ohm / 2 nH, port 2 =
+        0.9 ohm / 3 nH): Calculate with Port A = 1, type '2' into Port A,
+        freeze without recalculating, and the results table read
+        '[ 2] coil <21:36>  M1: S:[2] G:[]  600 mOhm  2 nH ...' -- port 2's
+        descriptor over port 1's numbers, a 50% error on L, and the same wrong
+        pairing in the run page, the CSV and the plot legend.
+        """
+        tc = _computed_trace()
+        tc.stale = True
+        title, msg = freeze_refusal(tc)
+        self.assertIn("Spec has changed", title)
+        self.assertIn("Calculate it first", msg)
+
+    def test_the_message_says_a_snapshot_can_never_catch_up(self):
+        """The reason is what makes the refusal actionable rather than
+        obstructive: this is not "later", it is "never"."""
+        tc = _computed_trace()
+        tc.stale = True
+        self.assertIn("never", freeze_refusal(tc)[1])
+
+    def test_an_already_frozen_trace_is_not_re_refused(self):
+        """_on_freeze_trace returns before this for a frozen trace; the guard
+        must not claim a snapshot is broken."""
+        tc = _freeze_trace_config(_computed_trace(), 7, stamp="x")
+        self.assertEqual(freeze_refusal(tc), ())
+
+
+class TestFreezeLabelSurvivesTheLegend(unittest.TestCase):
+    """
+    pkg_rlc_plot truncates a legend entry to the FIRST MAX_LABEL_LEN
+    characters, so a stamp appended to the end of a long label is exactly what
+    head-truncation deletes.  The tool's own default label is
+    f"{fe.label}_p1_to_gnd", so any file name of 20 characters already
+    overflows.
+    """
+
+    LONG = "coupled_2port_gndref.s2p_p1_to_gnd"     # 34 chars, a real default
+
+    def test_a_short_label_is_untouched(self):
+        self.assertEqual(freeze_label("tank", "14:32"), "tank <14:32>")
+
+    def test_the_snapshot_and_its_source_legend_differently(self):
+        frozen = freeze_label(self.LONG, "21:29")
+        self.assertNotEqual(frozen[:MAX_LABEL_LEN], self.LONG[:MAX_LABEL_LEN],
+                            "the two curves get byte-identical legend entries")
+
+    def test_the_stamp_itself_survives_truncation(self):
+        frozen = freeze_label(self.LONG, "21:29")
+        self.assertIn("<21:29>", frozen[:MAX_LABEL_LEN])
+
+    def test_the_whole_label_fits_the_legend(self):
+        for n in (5, 20, 29, 30, 34, 90):
+            with self.subTest(n=n):
+                self.assertLessEqual(len(freeze_label("x" * n, "21:29")),
+                                     MAX_LABEL_LEN)
+
+    def test_a_trimmed_base_says_it_was_trimmed(self):
+        self.assertIn("…", freeze_label(self.LONG, "21:29"))
+
+    def test_the_real_freeze_uses_it(self):
+        src = _computed_trace()
+        src.label = self.LONG
+        tc = _freeze_trace_config(src, 7, stamp="21:29")
+        self.assertNotEqual(tc.label[:MAX_LABEL_LEN],
+                            src.label[:MAX_LABEL_LEN])
+
+
+class TestFreezeStampOf(unittest.TestCase):
+    def test_it_reads_the_stamp_back_off_the_label(self):
+        self.assertEqual(_freeze_stamp_of("tank <14:32>"), "14:32")
+
+    def test_a_renamed_snapshot_degrades_instead_of_raising(self):
+        self.assertEqual(_freeze_stamp_of("my baseline"), "(unknown)")
 
 
 # ============================================================================
@@ -305,6 +404,44 @@ class TestFreezingFromTheApp(_Case):
         self.assertEqual(len(self.app.traces), 2, "it froze a trace with no data")
         self.assertEqual(len(seen), 1)
         self.assertIn("Calculate it first", seen[0][1])
+
+    def test_an_edited_trace_cannot_be_frozen_until_it_is_recalculated(self):
+        """
+        End to end, through the editor, the way it actually happens: type a
+        different port into the field, do NOT press Calculate, right-click ->
+        Freeze.  _on_freeze_trace flushes the editor first, which guarantees
+        the freshest -- and unmeasured -- spec is the one that would be copied.
+        """
+        self.app.ed_porta.set_value("2")
+        self.app._flush_editor_sync()
+        self._settle()
+        self.assertTrue(self.tc.stale, "the edit did not mark the trace stale")
+        seen = []
+        real = pkg_rlc_gui.messagebox.showinfo
+        pkg_rlc_gui.messagebox.showinfo = lambda t, m, *a, **k: seen.append((t, m))
+        try:
+            self.app._on_freeze_trace()
+            self._settle()
+        finally:
+            pkg_rlc_gui.messagebox.showinfo = real
+        self.assertEqual(len(self.app.traces), 1,
+                         "it froze a spec that had never been measured")
+        self.assertEqual(len(seen), 1)
+        self.assertIn("Calculate it first", seen[0][1])
+
+    def test_recalculating_makes_it_freezable_again(self):
+        """The refusal has to be a step, not a wall."""
+        self.app.ed_porta.set_value("2")
+        self.app._flush_editor_sync()
+        self._settle()
+        self.app._on_calculate()
+        self._settle()
+        self.assertFalse(self.tc.stale)
+        frozen = self._freeze()
+        self.assertEqual(len(self.app.traces), 2)
+        # And the snapshot's spec really is the one that produced its numbers.
+        self.assertEqual(frozen.port_a, "2")
+        self.assertFalse(frozen.stale)
 
     def test_it_lands_in_the_results_table_straight_away(self):
         """
@@ -543,6 +680,39 @@ class TestEverythingElseStillWorks(_Case):
         self.app._on_remove_trace()
         self._settle()
         self.assertEqual([t.id for t in self.app.traces], [self.tc.id])
+
+    def test_the_csv_does_not_attribute_its_numbers_to_the_newest_run(self):
+        """
+        Export writes the current cached state, which for every OTHER trace is
+        the newest run -- but a frozen trace's numbers came from an earlier one
+        and cannot be recomputed.  A before/after CSV is the only reason two
+        such traces are in one file, and both blocks used to be headed
+        '# Run: #2 @ 0.100 GHz, 21:34:14'.
+        """
+        import tempfile
+        self.app._on_calculate()            # a second run, after the freeze
+        self._settle()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "out.csv")
+            real = pkg_rlc_gui.filedialog.asksaveasfilename
+            pkg_rlc_gui.filedialog.asksaveasfilename = lambda *a, **k: path
+            try:
+                self.app._on_export_csv()
+            finally:
+                pkg_rlc_gui.filedialog.asksaveasfilename = real
+            body = Path(path).read_text(encoding="utf-8")
+        blocks = {}
+        label = None
+        for line in body.splitlines():
+            if line.startswith("# Trace: "):
+                label = line[len("# Trace: "):]
+            elif line.startswith("# Run: ") and label is not None:
+                blocks.setdefault(label, line)
+        self.assertIn(self.frozen.label, blocks)
+        self.assertIn(self.tc.label, blocks)
+        self.assertIn("frozen snapshot", blocks[self.frozen.label])
+        self.assertNotIn("frozen snapshot", blocks[self.tc.label])
+        self.assertRegex(blocks[self.tc.label], r"# Run: #\d+")
 
 
 @unittest.skipUnless(TK_OK, "no Tk display available")

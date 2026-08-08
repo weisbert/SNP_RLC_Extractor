@@ -25,7 +25,7 @@ import math
 import tkinter as tk
 from dataclasses import dataclass
 from tkinter import ttk
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 import numpy as np
 import matplotlib
@@ -808,6 +808,109 @@ class _PlotView:
 
 
 # ============================================================================
+# A control strip that wraps instead of losing its tail
+# ============================================================================
+
+def reflow_rows(widths: Sequence[int], width: int) -> list[list[int]]:
+    """
+    Greedy left-to-right wrap: indices into `widths`, grouped into lines.
+
+    Pure, so the packing decision can be tested without a display.  A single
+    item that is wider than the whole strip still gets a line of its own rather
+    than an empty one -- there is nothing better to do with it, and returning
+    an empty line would place the next item on top of it.
+    """
+    rows: list[list[int]] = []
+    cur: list[int] = []
+    cur_w = 0
+    for i, w in enumerate(widths):
+        if cur and cur_w + w > width:
+            rows.append(cur)
+            cur, cur_w = [], 0
+        cur.append(i)
+        cur_w += w
+    if cur:
+        rows.append(cur)
+    return rows
+
+
+class ReflowRow(ttk.Frame):
+    """
+    A horizontal control strip that WRAPS onto a second line when it does not
+    fit, instead of letting pack silently unmap its tail.
+
+    This exists because the plot's control row is the one panel in the
+    application nothing guarded.  Measured at the declared 1040x600 minsize the
+    row asked for 918 px and got 575, and pack -- which unmaps from the END --
+    took 'Im(Z)', 'Q', 'k', the fullscreen-quantity combobox and the Fullscreen
+    button off screen with no scrollbar and no other route to them.  'k' is the
+    quantity Mode 6 exists to produce and Fullscreen is the documented escape
+    hatch for a readout box too wide for a 4-subplot grid, so neither has an
+    alternative.  It was not only the minsize: _clamp_to_screen opens the
+    window at min(1500, screen-80), which on a 1280-logical-px laptop is 1200
+    px, and Fullscreen was off screen out of the box.
+
+    Layout is by `place`, and that is load-bearing twice over.  Place does not
+    propagate, so the strip's REQUESTED width no longer carries the 918 px into
+    PlotPanel and out to the PanedWindow sash; and the wrap decision reads the
+    strip's IMPOSED width (fill=X from the parent) and writes only its height,
+    which cannot change that width.  That makes it a fixed point rather than
+    the limit cycle _apply_editor_scrollbars documents -- a layout rule that
+    reads a size it can itself change flips forever and update() never returns.
+    """
+
+    def __init__(self, master, pady: int = 1, **kw):
+        super().__init__(master, height=1, **kw)
+        self._items: list[tuple[tk.Widget, int, bool]] = []
+        self._applied: tuple = ()
+        self._pady = pady
+        self.bind("<Configure>", lambda _e: self._reflow())
+
+    def add(self, widget, padx: int = 2, fill_y: bool = False):
+        """Append a control.  `fill_y` is for vertical separators."""
+        self._items.append((widget, padx, fill_y))
+        self._reflow()
+        return widget
+
+    def item_widths(self) -> list[int]:
+        return [w.winfo_reqwidth() + 2 * padx for w, padx, _f in self._items]
+
+    def _reflow(self) -> None:
+        if not self._items:
+            return
+        width = self.winfo_width()
+        if width <= 1:
+            # Not laid out yet.  The <Configure> that gives it a real width
+            # will call back; doing nothing here is what keeps the first pass
+            # from wrapping every item onto its own line.
+            return
+        rows = reflow_rows(self.item_widths(), width)
+        row_h = max(w.winfo_reqheight()
+                    for w, _p, _f in self._items) + 2 * self._pady
+        key = (tuple(tuple(r) for r in rows), row_h)
+        if key == self._applied:
+            return
+        self._applied = key
+        y = 0
+        for row in rows:
+            x = 0
+            for i in row:
+                w, padx, fill_y = self._items[i]
+                ww = w.winfo_reqwidth()
+                x += padx
+                if fill_y:
+                    w.place(x=x, y=y + self._pady, width=ww,
+                            height=row_h - 2 * self._pady)
+                else:
+                    wh = w.winfo_reqheight()
+                    w.place(x=x, y=y + max(0, (row_h - wh) // 2),
+                            width=ww, height=wh)
+                x += ww + padx
+            y += row_h
+        self.configure(height=row_h * len(rows))
+
+
+# ============================================================================
 # Main plot panel (multi-subplot grid)
 # ============================================================================
 
@@ -897,39 +1000,42 @@ class PlotPanel(tk.Frame):
     # -------- UI construction --------
 
     def _build_ui(self) -> None:
-        ctrl = ttk.Frame(self)
+        ctrl = ReflowRow(self)
         ctrl.pack(side=tk.TOP, fill=tk.X, pady=(2, 2))
+        self.ctrl = ctrl
 
         self.x_log_var = tk.BooleanVar(value=True)
         self.y_log_var = tk.BooleanVar(value=False)
         self.show_marker_var = tk.BooleanVar(value=True)
         self.show_readout_var = tk.BooleanVar(value=True)
 
-        ttk.Checkbutton(ctrl, text="X log", variable=self.x_log_var,
-                        command=self._on_log_changed).pack(side=tk.LEFT, padx=2)
-        ttk.Checkbutton(ctrl, text="Y log", variable=self.y_log_var,
-                        command=self._on_log_changed).pack(side=tk.LEFT, padx=2)
-        ttk.Checkbutton(ctrl, text="Marker", variable=self.show_marker_var,
-                        command=self._on_marker_show_changed).pack(side=tk.LEFT, padx=6)
-        ttk.Checkbutton(ctrl, text="Readout", variable=self.show_readout_var,
-                        command=self._on_readout_changed).pack(side=tk.LEFT, padx=2)
+        ctrl.add(ttk.Checkbutton(ctrl, text="X log", variable=self.x_log_var,
+                                 command=self._on_log_changed))
+        ctrl.add(ttk.Checkbutton(ctrl, text="Y log", variable=self.y_log_var,
+                                 command=self._on_log_changed))
+        ctrl.add(ttk.Checkbutton(ctrl, text="Marker",
+                                 variable=self.show_marker_var,
+                                 command=self._on_marker_show_changed), padx=6)
+        ctrl.add(ttk.Checkbutton(ctrl, text="Readout",
+                                 variable=self.show_readout_var,
+                                 command=self._on_readout_changed))
 
-        ttk.Separator(ctrl, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=4)
+        ctrl.add(ttk.Separator(ctrl, orient=tk.VERTICAL), padx=4, fill_y=True)
 
         self.type_vars: dict[str, tk.BooleanVar] = {}
         for t in PLOT_TYPES:
             v = tk.BooleanVar(value=False)
             self.type_vars[t] = v
-            ttk.Checkbutton(ctrl, text=t, variable=v,
-                            command=self._on_types_changed).pack(side=tk.LEFT, padx=1)
+            ctrl.add(ttk.Checkbutton(ctrl, text=t, variable=v,
+                                     command=self._on_types_changed), padx=1)
 
-        ttk.Separator(ctrl, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=4)
+        ctrl.add(ttk.Separator(ctrl, orient=tk.VERTICAL), padx=4, fill_y=True)
 
         self._fs_type_var = tk.StringVar(value="|Z|(Ohm)")
-        ttk.Combobox(ctrl, textvariable=self._fs_type_var, values=PLOT_TYPES,
-                     width=10, state="readonly").pack(side=tk.LEFT, padx=2)
-        ttk.Button(ctrl, text="Fullscreen",
-                   command=self._open_fullscreen).pack(side=tk.LEFT, padx=2)
+        ctrl.add(ttk.Combobox(ctrl, textvariable=self._fs_type_var,
+                              values=PLOT_TYPES, width=10, state="readonly"))
+        ctrl.add(ttk.Button(ctrl, text="Fullscreen",
+                            command=self._open_fullscreen))
 
         self.figure = Figure(figsize=(8, 6))
         self.canvas = FigureCanvasTkAgg(self.figure, master=self)

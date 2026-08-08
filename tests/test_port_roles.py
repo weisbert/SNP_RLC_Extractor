@@ -62,6 +62,7 @@ from pkg_rlc_gui import (  # noqa: E402
     TraceConfig,
     WARN_OPEN_LOOKS_TERMINATED,
     WARN_PROBE_AND_GROUND,
+    WARN_PROBE_AND_GROUND_COUPLING,
     WARN_FROM_KEPT_TEXT,
     WARN_FG,
     _append_port_spec,
@@ -538,8 +539,33 @@ class TestTraceRoleRows(unittest.TestCase):
                          gnd_ports="1")
         roles, mports = self._roles(tc, 2)
         self.assertEqual(roles[0].role, ROLE_GROUND)
-        self.assertEqual(_role_warnings(roles, mports)[1],
+        self.assertEqual(_role_warnings(roles, mports, coupling=True)[1],
+                         WARN_PROBE_AND_GROUND_COUPLING)
+
+    def test_mode_6_is_told_that_mode_6_refuses_it(self):
+        """
+        Showing it is right; stating the OTHER mode's rule while showing it is
+        not.  Measured: the window said "the ground row wins", which reads as
+        "legal, and I know which side won", and Calculate then refused the
+        trace outright -- "Port(s) 1 are listed both as a probe (measurement
+        port 'c1') and as ground".  Mode 6 has neither a validation strip nor a
+        footer strip, so this row is the only thing on screen about it.
+        """
+        msg = WARN_PROBE_AND_GROUND_COUPLING
+        self.assertNotIn("the ground row wins", msg)
+        self.assertIn("refuses", msg)
+        # It says what to do, not just that it is broken.
+        self.assertIn("drop it from one list", msg)
+
+    def test_mode_5_keeps_the_precedence_wording(self):
+        """The two rules are both pinned and intended; the window has to say
+        which one it is showing."""
+        tc = TraceConfig(mode=5, mports=[MeasPortRow("a1", "1", "2")],
+                         conn_rows=[ConnectionRow(kind="ground", ports="1")])
+        roles, mports = self._roles(tc, 2)
+        self.assertEqual(_role_warnings(roles, mports, coupling=False)[1],
                          WARN_PROBE_AND_GROUND)
+        self.assertIn("the ground row wins", WARN_PROBE_AND_GROUND)
 
     def test_mode_5_is_the_tables_verbatim(self):
         tc = TraceConfig(mode=5, mports=[MeasPortRow("t", "1", "2")],
@@ -869,6 +895,33 @@ class TestWindowWarnings(_WindowCase):
         self.app._on_trace_selected()
         win = self._open()
         self.assertIn("warn", win.tree.item("1", "tags"))
+
+    def test_the_overlap_message_follows_the_MODE(self):
+        """
+        The window renders every mode through the permissive rows path, so it
+        shows the overlap in Mode 6 too -- and then has to state Mode 6's rule,
+        not Mode 5's.  This is the wiring: the mode reaches _role_warnings.
+        """
+        self.tc.mports = [MeasPortRow("c1", "9", ""),
+                          MeasPortRow("c2", "10", "")]
+        self.tc.conn_rows = []
+        self.tc.extra_lines = ""
+        self.tc.gnd_ports = "9"
+
+        self.tc.mode = 6
+        self.app._on_trace_selected()
+        win = self._open()
+        win.tree.selection_set("9")
+        self._settle()
+        self.assertIn(WARN_PROBE_AND_GROUND_COUPLING, win.detail.cget("text"))
+
+        self.tc.mode = 5
+        self.tc.conn_rows = [ConnectionRow(kind="ground", ports="9")]
+        self.app._on_trace_selected()
+        self._settle()
+        win.tree.selection_set("9")
+        self._settle()
+        self.assertIn(WARN_PROBE_AND_GROUND, win.detail.cget("text"))
 
 
 @unittest.skipUnless(TK_OK, "no Tk display available")

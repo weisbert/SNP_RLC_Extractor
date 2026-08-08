@@ -558,6 +558,72 @@ class TestPlotVisibility(_Case):
 
 
 # ============================================================================
+# Removing a file takes its curves off the plot
+# ============================================================================
+
+
+@unittest.skipUnless(TK_OK, "no Tk display available")
+class TestRemovingAFileClearsItsCurves(_Case):
+    """
+    _on_remove_file dropped the file's traces from self.traces and from the
+    Traces listbox and then did not replot, so until the next Calculate the
+    plot kept drawing -- and legending -- curves whose trace and whose file
+    were both gone.  The readout box IS the legend, so the stale name sat in
+    the cursor readout too.
+
+    _on_remove_trace has always called _replot_from_cache for the same class of
+    change, and _replot_from_cache already skips a trace whose file is gone --
+    the call was the whole of what was missing.
+    """
+
+    SECOND = FIX / "decap_4port.s4p"
+
+    def setUp(self):
+        super().setUp()
+        # A second file with a trace of its own, so removing one leaves one.
+        self.fe2 = FileEntry(parse_touchstone(self.SECOND))
+        self.app.files.append(self.fe2)
+        self.tc3 = TraceConfig(id=3, file_label=self.fe2.label, mode=1,
+                               port_a="1", gnd_ports="2-4", label="other",
+                               color_idx=2)
+        self.app.traces.append(self.tc3)
+        self.app._refresh_file_list()
+        self.app._refresh_file_combobox()
+        self.app._refresh_trace_list()
+        self.app._on_calculate()
+        self._settle()
+
+    def _remove_file(self, idx):
+        self.app.files_lb.selection_clear(0, tk.END)
+        self.app.files_lb.selection_set(idx)
+        self.app._on_remove_file()
+        self._settle()
+
+    def test_the_plot_loses_the_curves_of_the_removed_file(self):
+        drawn = len(self.app.plot.view.traces)
+        self.assertGreater(drawn, 1)
+        self._remove_file(1)
+        self.assertEqual(
+            len(self.app.plot.view.traces),
+            len([t for t in self.app.traces
+                 if t.enabled and (t.Z is not None or t.Zmat is not None)]),
+            "the plot and the Traces list disagree about what exists")
+
+    def test_no_curve_is_labelled_with_a_gone_trace(self):
+        self._remove_file(1)
+        labels = [t.label for t in self.app.plot.view.traces]
+        self.assertNotIn(self.tc3.label, labels)
+        self.assertIn(self.tc.label, labels)
+
+    def test_removing_the_other_file_leaves_the_first_drawn(self):
+        self._remove_file(0)
+        labels = [t.label for t in self.app.plot.view.traces]
+        self.assertNotIn(self.tc.label, labels)
+        self.assertNotIn(self.tc2.label, labels)
+        self.assertIn(self.tc3.label, labels)
+
+
+# ============================================================================
 # Calculate This Trace
 # ============================================================================
 

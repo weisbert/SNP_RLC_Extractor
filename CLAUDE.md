@@ -11,8 +11,8 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | File                    | Responsibility                                                                  |
 |-------------------------|---------------------------------------------------------------------------------|
 | `pkg_rlc_core.py`       | Touchstone parser (+ `TouchstoneParseError` / `diagnose_touchstone` / `check_touchstone`), S<->Y, unified `TerminationSet` model + the Mode 5 DSL (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`), the connection-table row model (`MeasPortRow`, `ConnectionRow`, `rows_to_dsl_text`, `dsl_text_to_rows`, `build_terminations_rows`), `parse_mport_spec`, `resolve_meas_ports`, `compute_z_matrix` / `compute_z`, `extract_rlc_at_freq` / `extract_coupling_at_freq`, `fit_inductor` / `fit_capacitor` / `fit_auto`. |
-| `pkg_rlc_plot.py`       | Matplotlib plot panel: multi-subplot grid over R/L/C/\|Z\|/Re/Im/Q/**k**, draggable freq marker, M / V / Delete keys, fullscreen window. Quantities that cannot be derived from one `(freqs, Z)` pair (today only `k`) arrive via the optional `Trace.aux` dict. |
-| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), the frozen-trace snapshot (`_freeze_trace_config`, the Traces-list right-click menu), the File menu and the JSON session format (`session_to_dict` / `session_from_dict` / `SessionError` / `autosave_path`), the results pane (a `ttk.Notebook` whose tab 0 is the Log, with `log_tab_label` / `_append_result(severity)` / `_select_results_tab`), and the immutable run record (`RowSnapshot` / `CouplingSnapshot` / `FitSnapshot` / `RunSnapshot`, `_snapshot_row` / `_snapshot_block` / `_snapshot_fit`) that `_render_results` consumes instead of live traces. Re-exports the DSL helpers it no longer defines. |
+| `pkg_rlc_plot.py`       | Matplotlib plot panel: multi-subplot grid over R/L/C/\|Z\|/Re/Im/Q/**k**, draggable freq marker, M / V / Delete keys, fullscreen window, and the `ReflowRow` / `reflow_rows` control strip that wraps instead of losing its tail. Quantities that cannot be derived from one `(freqs, Z)` pair (today only `k`) arrive via the optional `Trace.aux` dict. |
+| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), the frozen-trace snapshot (`_freeze_trace_config`, `freeze_label`, `freeze_refusal`, the Traces-list right-click menu), the File menu and the JSON session format (`session_to_dict` / `session_from_dict` / `SessionError` / `autosave_path`), the results pane (a `ttk.Notebook` whose tab 0 is the Log, with `log_tab_label` / `_append_result(severity)` / `_select_results_tab`), and the immutable run record (`RowSnapshot` / `CouplingSnapshot` / `FitSnapshot` / `RunSnapshot`, `_snapshot_row` / `_snapshot_block` / `_snapshot_fit`) that `_render_results` consumes instead of live traces. Re-exports the DSL helpers it no longer defines. |
 | `pkg_rlc_gui.py` (cont.) | Plus the **Ports & Roles** window (`PortRolesWindow`, `_trace_role_rows`, `_role_warnings`, `_roles_header`, `apply_ports_as`), which is what `Show Ports` now opens. |
 | `pkg_rlc_help.py`       | In-app Help window content (`HELP_TOPICS`, `HelpWindow`, `HELP_WINDOW_WIDTH`). One tab per mode + syntax + save/load + worked examples. |
 | `pkg_rlc_extractor.py`  | Entry point: dispatches GUI vs CLI from argv. CLI `--mode gnd \| p2p \| coupling`, `--mport` repeatable. |
@@ -22,14 +22,15 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `tests/test_parse_diagnostics.py` | The robust-reading work: what a file says about itself (span, sweep description, DC / \|S\|>1 notes) and what happens when it cannot be read. Every refusal test pins the **verdict** and the **line number**, not just "raises ValueError" — that would have passed before any of it existed. Plus the recovery cases (UTF-16, BOM, commas, `D` exponents, extension tiebreak) and the two GUI affordances. |
 | `tests/test_session.py` | Save Config / Load Config / Restore Last Session. Pure round trip (no Tk) for the trace fields, the refusal verdicts, the hand-edit tolerance and the path precedence; Tk-driven for the App-level save→wipe→load, the missing-file path, the autosave, and that the File menu and its accelerators are reachable. Also the guard on the Help window's tab strip, which the tenth tab pushed past the old 950 px. |
 | `tests/test_results_notebook.py` | The Results pane's `ttk.Notebook`: that the Log is tab 0, selected and MAPPED at startup (both are mechanical preconditions of tests elsewhere), the width-stable badge measured in the tab strip's own font, the unseen-warning count, the ERROR claim on the pane and the severity routing of the real call sites, plus the measured proof that a 30-tab strip does not move the left panel. Every guard mutation-checked. |
-| `tests/`                | `unittest`-based suite (862 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/test_plot_controls.py` | The plot panel's control strip: the pure `reflow_rows` wrap (no item is ever dropped, at any width), and — off a mapped window at 575 / 700 / 1040 / 1200 / 1500 px — that every control lies WHOLLY inside the strip, that it wraps only when it has to, that `place` keeps the strip's requested width out of `PlotPanel`, and that the layout settles instead of oscillating. The FIRST test in the repo to touch this panel. Every guard mutation-checked. |
+| `tests/`                | `unittest`-based suite (906 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
 | `tests/test_editor_autoapply.py` | The commit-step removal: WHEN the editor writes into a `TraceConfig` and WHICH one it lands on (the deferral, the object capture, the flush-before-selection-change), the style picker's storage / reachability / honesty about multi-curve traces, and that hiding a curve neither recomputes it nor destroys the cursors. Every guard here was mutation-checked. |
 | `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see, and the reordering hazard that forces `_import_dsl_text`'s verbatim fallback. |
 | `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
-| `tests/test_mode5_editor.py` | Stage 3: the pure text<->rows import decision and both strip renderers, plus Tk-driven editor wiring, per-mode widget visibility, the text hatch, the CSV gate, wheel routing, and the LAYOUT numbers (`ismapped` / `reqwidth` / `xview` / `scrollregion` / `sashpos`) measured off a mapped window. |
-| `tests/test_freeze_trace.py` | "Freeze as new trace": the pure copy rules (config copied, lists element-wise, results REFERENCED), the two refusals (Calculate skips it, the editor cannot write it), that everything else still works (plot / show-hide / CSV / Remove), the right-click menu, and the session round trip that comes back without numbers and says so. Every guard mutation-checked. |
-| `tests/test_port_roles.py` | Port names put to work: the pure classifier (`port_roles`), the provenance map (`row_sources`), the run-collapser, the open-port name check with its false-alarm cases run against every real fixture, `_trace_role_rows` (any mode → rows), and the Tk-driven Ports & Roles window — filter, sort-on-the-raw-value, both Treeview hazards, the flagged rows and the collapsed-range write-back. Every guard mutation-checked. |
-| `tests/test_run_history.py` | The run tabs: the width-stable label pair measured in the tab strip's own font, the three header lines, the named-signature diff (pinned one-for-one against `_config_signature`), and — Tk-driven — that eviction touches only the auto ring, that the kept cap bites at Keep time and the button says so, that the page being read survives as the SAME widget, the widget-count leak guard after a churn loop, the conditional auto-switch in both directions, the units re-render creating no tab, and that no run reaches the session file. Every guard mutation-checked. |
+| `tests/test_mode5_editor.py` | Stage 3: the pure text<->rows import decision and both strip renderers, plus Tk-driven editor wiring, per-mode widget visibility, the text hatch, the CSV gate, wheel routing, and the LAYOUT numbers (`ismapped` / `reqwidth` / `xview` / `scrollregion` / `sashpos`) measured off a mapped window — including that a mode with no table fits the 431 px canvas outright and every mode shows the same editor height at the minsize. |
+| `tests/test_freeze_trace.py` | "Freeze as new trace": the pure copy rules (config copied, lists element-wise, results REFERENCED), the two refusals (Calculate skips it, the editor cannot write it), the two *entry* refusals (`freeze_refusal` — no numbers, and a STALE spec), the `freeze_label` budget that keeps the `<HH:MM>` stamp inside `MAX_LABEL_LEN`, that everything else still works (plot / show-hide / CSV / Remove), that the CSV does not attribute a snapshot's numbers to the newest run, the right-click menu, and the session round trip that comes back without numbers and says so. Every guard mutation-checked. |
+| `tests/test_port_roles.py` | Port names put to work: the pure classifier (`port_roles`), the provenance map (`row_sources`), the run-collapser, the open-port name check with its false-alarm cases run against every real fixture, `_trace_role_rows` (any mode → rows), and the Tk-driven Ports & Roles window — filter, sort-on-the-raw-value, both Treeview hazards, the flagged rows (with the probe-and-ground message following the MODE), and the collapsed-range write-back. Every guard mutation-checked. |
+| `tests/test_run_history.py` | The run tabs: the width-stable label pair measured in the tab strip's own font, the three header lines, the named-signature diff (pinned one-for-one against `_config_signature`), and — Tk-driven — that eviction touches only the auto ring, that the kept cap bites at Keep time and the button says so, that the page being read survives as the SAME widget, the widget-count leak guard after a churn loop, the conditional auto-switch in all three directions (including that a KEPT page is never yanked away), the units re-render creating no tab and reaching EVERY page, the Keep button's readability at 150% font scaling, and that no run reaches the session file. Every guard mutation-checked. |
 | `tests/test_run_snapshot.py` | The immutable run snapshot: that the rendered page is byte-identical to `tests/fixtures/render_reference.json` (captured before the refactor), that a record does not move when its `TraceConfig` is relabelled / renumbered / re-ported, that no per-frequency array is reachable from a run, and the run number / frozen-visibility rules. Every guard mutation-checked. |
 | `tests/_render_capture.py` | Script + case registry that (re)generates `render_reference.json`, and the ONE place that knows the renderers' signatures. NOT auto-discovered (leading underscore). Regenerate ONLY in the same commit that justifies moving the reference. |
 | `tests/test_report_readability.py` | Four display-only changes, none of which touches a number: the ranked / floored coupling list (pure — the key, the two things never hidden, the sign invariant), the coloured trace Listbox, the tagged results-table swatch, and the editor's footer summary line (mapped window at the 1040x600 minsize). Every guard mutation-checked. |
@@ -143,7 +144,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 - **`pinv(Y_node, rcond=PINV_RCOND)`, not `inv`.** A fully floating differential structure has a singular `Y_node` whose null direction is the common mode; the balanced `+/-` injection is orthogonal to it, so `pinv` is exact where `inv` returns garbage. The rank-deficiency warning is **informational** (capped at 3, mirroring the Schur-fallback cap) and fires at *every* frequency on a normal coupled-inductor file — GUI and CLI both annotate it as such. Do not turn it into an error.
 - **`np.linalg.inv` does NOT raise on a numerically singular matrix**, so the `except LinAlgError -> pinv` guard alone is dead code. `Y2 = [[y,-y],[-y,y]]` gets `det ~ 1e-19` from LAPACK's LU, `inv` returns a `~1e16` matrix, and `Z2[0,0]+Z2[1,1]-Z2[0,1]-Z2[1,0]` is the difference of four huge numbers (measured: `L` wandering 1.27 / 4.77 / 2.12 / 3.18 / 2.23 nH instead of a flat 2.000). `_is_singular_2x2` tests `|det| <= rcond*|Y2|_max^2` **before** `inv` gets the chance and routes those frequencies to `_probe_impedance`. Healthy fixtures sit at `>= 1e-8`, the degenerate one at `<= 3e-15` — do not remove the guard and do not widen the threshold into that gap.
 - **`pinv` is only valid for probes orthogonal to `null(Y_node)`.** `_probe_impedance` does one SVD and uses it for three things: numpy's exact `pinv` expression (verified bit-identical), the rank flag, and the null-space test `|| U[:, r:]^H w_g || / || w_g || > PROBE_RANGE_TOL`. A probe that fails it has **no return path** — its whole row and column of `Z` become `complex(nan, nan)` (a real `np.nan` would leave `imag == 0` and `L` would read as a plausible 0 H) and a warning names it. Other measurement ports are untouched: `Z[b][c] = w_b^T Y^+ w_c` only involves those two columns, so one bad probe cannot contaminate a good one. `PROBE_RANGE_TOL = sqrt(PINV_RCOND)`, not `PINV_RCOND` — that is the level below which the discarded direction contributes less than the truncation `pinv` already commits, and it is what keeps a *nearly* floating structure out of the error path.
-- **The `G == 1, no minus side` branch deliberately has NO degeneracy check.** `1/y_eff -> inf` is already the honest reading of a probe with no return path, and `y_eff` also crosses zero at a genuine parallel anti-resonance, where a huge `Z` is the answer the user came for. No single-frequency magnitude test can tell those apart.
+- **The `G == 1, no minus side` branch deliberately has NO degeneracy check.** `1/y_eff -> inf` is already the honest reading of a probe with no return path, and `y_eff` also crosses zero at a genuine parallel anti-resonance, where a huge `Z` is the answer the user came for. No single-frequency magnitude test can tell those apart. **But the divide is wrapped in `np.errstate` and a non-finite result appends `_open_probe_warning` to `warnings_out` (capped at 3, like the others).** The numbers do not move — this is not a threshold, and the golden reference is untouched. What moved is where the one diagnostic the branch produced went: numpy's own "divide by zero" / "invalid value" `RuntimeWarning` goes to fd 2, and a double-clicked GUI has no fd 2, so the only notice was invisible to every GUI user while the results pane printed the roundoff as a formatted measurement (`3.6e+03 TOhm  -11.5 MH  2.21e-10 fF`) with no annotation at all. `warnings_out` is the channel the GUI prints under `Calculate @ …` and the CLI reports. The text names BOTH readings, because the branch genuinely cannot tell them apart.
 - **`SCHUR_COLLAPSE_TOL` is advisory only — it must never produce a NaN.** It flags `|Y_kk - Y_ko @ X|` falling under `1e-12` of its own two terms (pure cancellation noise). Unlike the rank test this is a magnitude heuristic: healthy fixtures bottom out at `3.8e-10` against `7e-16` for the degenerate case, so the margin is real but finite. Checked once per chunk (`i == 0`) and only when `>= 2` ports survive the reduction.
 - **Port indices are validated against the file's port count** in `_validate_port_indices`, called from `compute_z_matrix` (and from `build_terminations_coupling` when `nports=` is passed, which the GUI and CLI both do). Before this, `"3 / 5"` on a 4-port file silently became a ground-referenced probe reporting a plausible wrong number. The resolver only scans `range(n)`, so nothing deeper can catch it.
 - **A probe port may not also be a GND port (Mode 6 only).** A probe side is tied together, so grounding one of its ports grounds the whole side; `build_terminations_coupling` raises. `build_terminations_mode1/2/3` keep their historical "ground wins" precedence — do not "fix" those, the golden reference pins them.
@@ -277,6 +278,23 @@ looking at the screen.
   number and no column set fits at 150% DPI. It also fixes a pre-existing Mode 6 defect:
   form 463 vs canvas 431, `xview (0.0, 0.962)`, 32 px of the ✕ column unreachable with no
   way to scroll to it.
+- **A mode with NO table must fit the 431 px canvas outright, and its two widest
+  fields are sized to make it.** The editor form's requested width is the widest LABEL
+  (129 px, `GND / VDD (AC gnd):`) + the widest FIELD + 8 px of cell padding, and the
+  horizontal scrollbar costs 17 px of a 45 px viewport at the 1040x600 minsize. Modes
+  1/2/3 measured **440 px** against 431, `xview (0, 0.98)`, canvas height **28** — they
+  paid a third of their remaining height to reach **9 px** of overhang, while Mode 5,
+  whose column budget WAS measured, fitted at 417 and paid nothing. That is the same
+  28 px the empty-host-frame rule below was removed to fix, arriving from the other
+  direction. The File combobox is therefore `width=38` (303 → 289 px) and the four
+  single-line fields `EDITOR_FIELD_CHARS = 40` (300 → 286 px), for a 426 px form and
+  the whole 45 px back; both are `sticky="we"`, so this is only their MINIMUM and
+  nothing looks different at any width where the form fits. **Mode 6 is deliberately
+  not in that set** — its measurement-port table genuinely overhangs (462 px) and
+  keeps the bar. Guarded per mode by
+  `tests/test_mode5_editor.py::TestEditorLayout::test_a_table_free_mode_does_not_pay_for_a_scrollbar_it_barely_needs`;
+  re-measure `_ed_form.winfo_reqwidth()` before widening any field or lengthening any
+  label in the form's first column.
 - **Both editor scrollbars are decided in ONE function, `_apply_editor_scrollbars`.**
   Autohiding each off its own `yscrollcommand` / `xscrollcommand` is a **limit cycle**,
   not a race: hiding the horizontal bar gives the canvas 17 px of height back, which can
@@ -407,6 +425,17 @@ claim below was mutation-checked — reverting the behaviour turns its test red.
   toggle cannot drift apart in what they draw. It reads colour, linestyle and self/mutual
   fresh every time. Anything the plot needs must be cached on the `TraceConfig` — a value
   only `_on_calculate` knows would silently vanish from the traces that stay.
+- **EVERY path that removes a trace must call it — including `_on_remove_file`.**
+  `_on_remove_trace` always did; `_on_remove_file` dropped the file's traces from
+  `self.traces` and from the Traces listbox and then did not replot, so until the next
+  Calculate the plot kept drawing and LEGENDING curves whose trace and whose file were
+  both gone. Measured: two files each with a trace, Calculate, Remove the second file →
+  `app.traces` and the listbox held one entry while `app.plot.view.traces` still held
+  two. The readout box IS the legend, so the stale name sat in the cursor readout too,
+  and the plot disagreeing with the Traces list about which measurements exist is the
+  same disagreement the run pages' banner exists to prevent. `_replot_from_cache`
+  already skips a trace whose `_file_by_label` returns `None`, so the call was the
+  whole of what was missing.
 - **Toggling visibility must NOT recompute and must NOT drop the cursors.** Hiding a curve
   through `_on_calculate` costs a Schur reduction of a 153-port file to produce numerically
   identical results, and `set_traces` clears `_anno_stack` *and* `_vline_freqs` (twice —
@@ -520,6 +549,47 @@ mutation-checked.
   — a snapshot missing from the table it exists to be compared against is worse than
   useless. `Calculate This Trace` aimed AT a frozen trace says so by name rather than
   silently doing nothing.
+- **A STALE trace may not be frozen, and `freeze_refusal` is the one place that
+  says so.** A snapshot's whole contract is "this spec produced these numbers",
+  and a frozen trace can never clear `stale` again — Calculate skips it and
+  `_sync_editor_to_trace` refuses it — so a stale trace frozen once is
+  mislabelled FOREVER, with the trailing `*` that would have warned about it
+  deliberately deleted. Measured on `coupled_2port_gndref.s2p` (port 1 =
+  0.6 Ω / 2 nH, port 2 = 0.9 Ω / 3 nH): Calculate with Port A = 1, type `2`
+  into Port A, freeze without recalculating, and the results table read
+  `█ [ 2] coil <21:36>  M1: S:[2] G:[]  600 mΩ  2 nH  −1.27 nF  2.09  ind` —
+  port 2's descriptor over port 1's numbers, a 50% error on L, and the same
+  wrong pairing in the run page, the CSV and the plot legend. Nothing raises
+  and the numbers are real. `_on_freeze_trace` flushes the editor FIRST, which
+  is what makes the check answer about the spec on screen rather than the one
+  from an event ago. Carrying `stale` onto the snapshot instead was rejected:
+  the flag means "the drawn curve is older than the spec", and on a trace that
+  can never be recomputed that is a permanent complaint with no action behind
+  it. The Freeze menu entry stays LIVE on a stale trace so the refusal can
+  explain itself — a greyed entry would be the same bug report.
+- **The `<HH:MM>` stamp goes through `freeze_label`, which trims the BASE.**
+  `pkg_rlc_plot` truncates a legend entry to the FIRST `MAX_LABEL_LEN = 30`
+  characters, and the tool's own default label is `f"{fe.label}_p1_to_gnd"`, so
+  any file name of 20 characters already overflows. Appending the stamp put the
+  one thing that tells a snapshot from its source exactly where head-truncation
+  deletes it: measured, source `coupled_2port_gndref.s2p_p1_to_gnd` and
+  snapshot `coupled_2port_gndref.s2p_p1_to_gnd <21:29>` both legend as
+  `coupled_2port_gndref.s2p_p1_to` — byte-identical entries for the two curves
+  the feature exists to put side by side, in `_draw_plain_legend`, which is what
+  is on screen right after Calculate. Same rule and same `…` elision as
+  `_compose_curve_label`: trim the base, keep the discriminator. (The cursor
+  readout was never affected — `_fit_names` keeps the tail — which is why the
+  suite did not catch it.)
+- **Export CSV does NOT head a frozen trace with the current run.** Every other
+  trace's block carries `# Run: #N @ f, HH:MM:SS` because export writes the
+  cached state, which is the newest run. A snapshot's numbers came from an
+  EARLIER run and cannot be recomputed, so the provenance line said the
+  opposite of the truth for exactly the trace type that exists to be a
+  baseline — and a before/after CSV, the only reason two such traces are in one
+  file, labelled both as the same run. It writes
+  `# Run: frozen snapshot taken at HH:MM, numbers from an earlier run`
+  instead, reading the stamp back off the label with `_freeze_stamp_of` (a
+  user-renamed snapshot degrades to `(unknown)` rather than raising).
 - **`_freeze_trace_config` copies config and REFERENCES results.** `mports` /
   `conn_rows` element-wise (the documented Duplicate aliasing bug), but `Z` / `Zmat` /
   `rlc` / `fit` / `fit_freqs` / `fit_Z` are the same objects: `_on_calculate` ASSIGNS
@@ -775,9 +845,19 @@ mutation-checked.
   invariant; a change that lets Calculate consider a kept tab, or lets the kept
   cap be checked anywhere but at the moment of Keep, breaks it.
 - **The kept cap bites AT KEEP TIME, and by then the button already says why.**
-  `keep_button_label(..., "full")` renders `Keep (5/5) — close a kept run
-  first`, and `_keep_run_tab` refuses as a backstop. A disabled button with no
-  reason on it is a bug report. `_kept_cap() = _run_tabs_max - _run_auto_max`
+  `_keep_run_tab` refuses as a backstop. A disabled button with no reason on it
+  is a bug report — but a reason that does not FIT is not a reason either.
+  `keep_button_label(..., "full")` renders `Keep (5/5) — full` on the button
+  and, with `long=True`, `Keep (5/5) — close a kept run first` on the tab
+  strip's right-click entry, which is not width-bound and is where the button
+  sends the user anyway. Measured with `TkDefaultFont` scaled 1.5x (the
+  supported 150% DPI) at the 1040x600 minsize: the Results header is 575 px,
+  requests 687 with the long label, and the Keep button — packed LAST of five
+  `side=LEFT` — got the 213 px that were left and the sentence was clipped
+  mid-phrase with `winfo_ismapped()` still 1, so no ismapped assertion could
+  see it. The guard is
+  `test_the_keep_button_is_READABLE_at_150_percent_font_scaling`, which asserts
+  `winfo_width() >= winfo_reqwidth()`. `_kept_cap() = _run_tabs_max - _run_auto_max`
   and `_on_run_caps_changed` clamps the auto ring to `_run_tabs_max - 1`, so
   the kept cap can never reach zero and leave the button permanently dead with
   nothing to close.
@@ -810,9 +890,14 @@ mutation-checked.
   "am I at the newest?" with a flat no and the switch never happens again after
   the first run.
 - **The auto-switch is CONDITIONAL: only if the reader was already on the
-  newest run, or on the Log.** Calculate is pressed constantly in the
-  edit/compute/read loop, and yanking a reader off a page they deliberately
-  kept is the opposite of what keeping means. The decision is taken **before**
+  newest run, or on the Log — and a KEPT page never counts, even when it IS
+  the newest.** Calculate is pressed constantly in the edit/compute/read loop,
+  and yanking a reader off a page they deliberately kept is the opposite of
+  what keeping means. The kept half is not redundant with "am I at the newest":
+  the natural gesture is to press Keep on the page you are looking at, which is
+  by definition the newest, so without `if rt.kept: return False` the very next
+  Calculate moved them off it. Measured: Calculate → land on `#2` → Keep →
+  Calculate → selected `#3`. The decision is taken **before**
   the new page exists, or "am I at the newest?" answers itself. When the switch
   does not happen the page is marked unseen instead, so nothing arrives
   silently. An ERROR still wins with no extra rule: it claimed the pane before
@@ -862,11 +947,20 @@ mutation-checked.
   Log for a line the user is looking at elsewhere would be a lie). A second
   copy would let the two disagree about a run's contents with nothing to tell
   them apart.
-- **The units switch re-renders the newest page IN PLACE and creates no tab.**
+- **The units switch re-renders EVERY page in place and creates no tab.**
   A units switch measures nothing, so it is not a run. It still appends to the
   Log — that is what a chronological log is for, and
   `test_run_snapshot.py::test_a_units_re_render_follows_the_visibility_as_it_stands_then`
-  reads it back from there. An OLDER page is left exactly as recorded.
+  reads it back from there. Every page, not just the newest, because the unit
+  is a **rendering choice, not a recorded fact**: a run snapshot holds numbers
+  and `_run_report_segments` reads `units_mode_var` live. Repainting only the
+  newest did not leave an old page "as recorded", it left it stale until the
+  next Calculate repainted it anyway (that path re-renders every page so their
+  banners name the current run) — measured, one screen showing
+  `-399.8 / -1.242 / 2` on page #3 and `-400 mOhm / -1.24 mH / 2 fF` on page
+  #1, and then a silent flip the user did not ask for. What IS frozen per run
+  is everything in the snapshot: id, label, port descriptor, `enabled`,
+  `color_idx` and the numbers.
 - **Freezing a trace joins the CURRENT run and rewrites its page in place**,
   for the same reason: the run number counts Calculates, and freezing measures
   nothing.
@@ -916,6 +1010,19 @@ mutation-checked.
   rows are relabelled to the FIELD the user typed into (`GND / VDD`, `Port B`,
   `Short Pairs`) — telling a mode-1 user their port came from "probe row 1 (+)"
   names a row that exists nowhere on their screen.
+- **The probe-and-ground flag states the rule of the MODE it is showing.**
+  Mode 5 lets ground win (`WARN_PROBE_AND_GROUND`, "the ground row wins"); Mode
+  6 does not — `build_terminations_coupling` raises, because a probe side is
+  tied together and grounding one of its ports grounds the whole side. Both are
+  pinned and intended, so `_role_warnings(..., coupling=)` picks the wording and
+  `_port_roles_data` passes `coupling=(tc.mode == 6)`. Measured with the Mode-5
+  wording on a mode-6 trace (probes on 1 and 2, GND field `1`): the window said
+  "the ground row wins", the user read that as "legal, and I know which side
+  won", and Calculate then refused the trace outright with `ERROR Port(s) 1 are
+  listed both as a probe (measurement port 'c1') and as ground`. Mode 6 has
+  neither a validation strip nor a footer strip, so this row is the ONLY thing
+  on screen about the overlap; `WARN_PROBE_AND_GROUND_COUPLING` therefore says
+  the same thing the exception does, plus what to do about it.
 - **`collapse_ports` must never emit a space.** The DSL is whitespace-tokenised
   and the port field is `parts[0]`, so `1-3, 7` parses as the port field `1-3,`
   with a stray `7` where the keyword belongs. `1-3,7` round-trips through
@@ -972,6 +1079,49 @@ mutation-checked.
   follow exactly as they do for a keystroke — poking the trace directly is
   overwritten by the next sync. A frozen trace refuses the write, by name, for
   the same reason `_sync_editor_to_trace` does.
+- **This window IS the affordance `docs/design_connection_table.md` §5a
+  deferred, and the five "Show Ports" pointers now point HERE.** The port cells
+  take bare numbers because a name-bearing dropdown does not fit the editor
+  width (a ttk popdown is only as wide as its widget, and 15 chars ≈ 105 px the
+  431 px viewport does not have), so the substitute had to be findable: it is
+  named in both table hints, in Help → Mode 5, in Help → Input syntax, and in
+  the README. If a dropdown ever carries names, those five and this window's
+  role in them are one decision, not six.
+
+### The plot panel's control strip
+
+`tests/test_plot_controls.py` is the guard, and every claim below was
+mutation-checked. Before that file, **no test in the repo touched this panel**,
+which is how it stayed broken.
+
+- **The strip WRAPS; it must never be a plain `pack(side=LEFT)` run.** Measured:
+  thirteen controls asking **918 px** into the 575 px right-hand pane at the
+  declared 1040x600 minsize, and pack unmaps from the END — so `Im(Z)`, `Q`,
+  `k`, the fullscreen-quantity combobox and the `Fullscreen` button were simply
+  not on screen, with no scrollbar, no chevron and no other route to them. Two
+  of those have no alternative at all: `k` is the coupling quantity Mode 6
+  exists to produce (`AUX_PLOT_TYPES = ("k",)`) and Fullscreen is the documented
+  escape hatch for a readout box too wide for a 4-subplot grid. It was not only
+  the minsize — `_clamp_to_screen` opens the window at `min(1500, screen-80)`,
+  so on the 1280-logical-px laptop its own comment names the app opened 1200 px
+  wide and Fullscreen was off screen out of the box (sweep: 1040/1100 lost `k`
+  and Fullscreen, 1160–1280 lost Fullscreen, 1320+ was whole).
+- **`ReflowRow` lays out by `place`, and that is load-bearing TWICE.** Place
+  does not propagate, so the strip's requested width is ~1 px and the 918 px no
+  longer travels up through `PlotPanel` into the PanedWindow sash; and the wrap
+  decision reads the strip's IMPOSED width (`fill=X` from the parent) and writes
+  only its height, which cannot change that width. That makes it a **fixed
+  point**, not the limit cycle `_apply_editor_scrollbars` documents — a layout
+  rule that reads a size it can itself change flips forever and `update()` never
+  returns, hanging the GUI and the test suite together. Do not "simplify" it to
+  `grid` or `pack`.
+- **A wrap costs plot height, so it must happen only when needed.** Measured:
+  the strip is 29 px (one line) at 1500 and 58 px (two) at the 1040 and 1200
+  widths where it does not fit. The default window pays nothing.
+- **The assertion is "wholly inside", not `winfo_ismapped()`.** A placed widget
+  stays mapped while it hangs off the right edge, so the test checks
+  `x + width <= strip width` and `y + height <= strip height` for every child.
+  Re-measure before adding a fourteenth control.
 
 ### Cursor readout (the plot's marker / V-line labels)
 
@@ -1049,6 +1199,47 @@ mutation-checked.
   `MARKER_PIXEL_TOLERANCE` of it before testing anything — keep that
   precondition assertion, it is what stops the test rotting back into a
   tautology.
+
+### Rejected UI proposals (do not re-propose these)
+
+Each was designed, measured, and turned down for a reason that has not changed.
+They keep coming back because they sound good in one sentence, so the reason is
+recorded here rather than in a commit message nobody will find.
+
+- **A matplotlib connection SCHEMATIC in a tab beside the plot.** Three costs,
+  each fatal on its own: a notebook tab strip is **26 px of permanent plot
+  height**, paid on every session whether or not the schematic is ever looked
+  at (the Results notebook already spends 28 px, and the plot pane is 400 px at
+  the minsize); `<<NotebookTabChanged>>` on a plot notebook forces a
+  `canvas.focus_set()` handler, and the M / V / Delete keys depend on canvas
+  focus, so switching tabs either steals focus from the plot or silently breaks
+  those keys; and a matplotlib redraw is **~10x** the cost of drawing the same
+  boxes on a `tk.Canvas`, on a path that fires from the editor's variable traces
+  — i.e. per keystroke. If a schematic is ever built, it is a `tk.Canvas` in a
+  Toplevel, like the Ports & Roles window.
+- **A `ttk.Treeview` for the MAIN results table.** It destroys the `aligned`
+  units mode outright — that mode exists so digits line up column-wise in a
+  monospace `Text`, and a Treeview lays out per cell in a proportional font; it
+  loses select-and-copy of a whole block, which is how numbers get into a mail
+  or a spreadsheet; and its row height is frozen at 20 px whatever the font (the
+  hazard the Ports & Roles window has to work around with a derived style). The
+  ban is on the *editable* table for a different reason (no cell editors) and
+  the *read-only role list* is a legitimate Treeview; the results table is
+  neither case.
+- **A unicode bar chart of `|k|` in the coupling block.** Wrong metric — `|k|`
+  is exactly the key `rank_coupling_pairs` rejected, because `|k| = 0.02`
+  between two 2 nH coils and between a 2 nH and a 500 pH coil are different
+  problems. Wrong scale — real values span `1e-4 … 1e-1` and a linear bar
+  renders every one of them as an empty cell but the strongest. And it
+  contradicts the signed-value invariant: a bar has no sign, and `M`, `C_c` and
+  `k` are signed everywhere in this tool on purpose.
+- **A large-type KPI strip above the plot ("R = 1.5 Ω  L = 2 nH  …").** It is
+  the plot's cursor readout, printed twice. The readout is already the legend,
+  already tracks the marker, already prints engineering units through
+  `format_si`, and is already the thing a reader is looking at. A second copy
+  fed by a different code path drifts from it — and if it were fed by the same
+  path it would just be the readout in a worse place, costing plot height the
+  strip measurements above say is not available.
 
 ### `reduce_snp.py` specifics
 

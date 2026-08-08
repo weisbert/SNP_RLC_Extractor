@@ -344,7 +344,24 @@ class TestKeepButtonLabel(unittest.TestCase):
     def test_at_the_cap_the_label_states_the_reason(self):
         lbl = keep_button_label(4, 4, "full")
         self.assertIn("4/4", lbl)
-        self.assertIn("close a kept run first", lbl)
+        self.assertIn("full", lbl)
+
+    def test_the_menu_gets_the_sentence_the_button_cannot_afford(self):
+        """
+        The button's slot is width-bound and the menu entry is not.
+
+        Measured with TkDefaultFont scaled 1.5x at the 1040x600 minsize: the
+        Results header is 575 px, requests 687 with the long label, and pack
+        gave the last-packed Keep button the 213 px that were left -- the
+        sentence was clipped mid-phrase with winfo_ismapped() still 1, so no
+        ismapped assertion could see it.
+        """
+        self.assertIn("close a kept run first",
+                      keep_button_label(4, 4, "full", long=True))
+        self.assertNotIn("close a kept run first",
+                         keep_button_label(4, 4, "full"))
+        # Both still carry the budget, which is the part that says WHY.
+        self.assertIn("4/4", keep_button_label(4, 4, "full", long=True))
 
     def test_below_the_cap_it_shows_the_budget(self):
         self.assertEqual(keep_button_label(1, 5, "free"), "Keep run (1/5)")
@@ -580,7 +597,7 @@ class TestTheKeptCapBitesAtKeepTime(_AppCase):
         self.assertTrue(self.app._keep_btn.instate(["disabled"]))
         label = self.app._keep_btn.cget("text")
         self.assertIn(f"{cap}/{cap}", label)
-        self.assertIn("close a kept run first", label)
+        self.assertIn("full", label)
 
     def test_keeping_is_refused_at_the_cap(self):
         cap = self.app._kept_cap()
@@ -681,6 +698,39 @@ class TestConditionalAutoSwitch(_AppCase):
         self._settle()
         self._calc()
         self.assertEqual(self.app.results_nb.select(), str(older.frame))
+
+    def test_a_KEPT_page_is_not_yanked_away_even_though_it_is_the_newest(self):
+        """
+        The natural gesture is to press Keep on the page you are looking at,
+        which is by definition the newest -- so "am I at the newest?" answered
+        yes and the very next Calculate moved the reader off the page they had
+        just deliberately kept.  Measured: Calculate -> land on '#2' -> Keep ->
+        Calculate -> selected '#3'.
+        """
+        self._calc()
+        kept = self.app._run_tabs[0]
+        self.app.results_nb.select(kept.frame)
+        self._settle()
+        self.assertTrue(self.app._keep_run_tab(kept))
+        self._settle()
+        self._calc()
+        self.assertEqual(self.app.results_nb.select(), str(kept.frame),
+                         "Calculate moved the reader off a kept page")
+        # ... and the new page announces itself instead of arriving silently.
+        newest = self.app._run_tabs[0]
+        self.assertIsNot(newest, kept)
+        self.assertTrue(newest.unseen)
+
+    def test_an_unkept_newest_page_still_follows_the_run(self):
+        """The kept check must not switch the whole feature off."""
+        self._calc()
+        first = self.app._run_tabs[0]
+        self.app.results_nb.select(first.frame)
+        self._settle()
+        self._calc()
+        self.assertNotEqual(self.app.results_nb.select(), str(first.frame))
+        self.assertEqual(self.app.results_nb.select(),
+                         str(self.app._run_tabs[0].frame))
 
     def test_the_page_it_did_not_switch_to_is_marked_unseen(self):
         self._calc(2)
@@ -842,14 +892,49 @@ class TestUnitsRerender(_AppCase):
         self.assertEqual(after.count(run_headline(rt.run)), 1,
                          "the page grew a second copy of the report")
 
-    def test_an_older_page_is_left_as_it_was_recorded(self):
+    def test_every_page_follows_the_unit_not_just_the_newest(self):
+        """
+        The unit is a RENDERING choice, not a recorded fact.
+
+        This used to assert the opposite -- that an older page keeps the
+        formatting it was written with -- and that was never what the user saw.
+        _run_report_segments reads units_mode_var live and the next Calculate
+        re-renders every page (so their banners name the current run), so the
+        old page flipped to the new units one Calculate later without the user
+        touching Units again.  What "leave it as recorded" actually bought was
+        one screen showing two formattings and then a silent flip.
+        """
         self._calc(2)
         older = self.app._run_tabs[1]
         before = older.text.get("1.0", tk.END)
         self.app.units_mode_var.set("aligned")
         self.app._on_units_mode_changed()
         self._settle()
-        self.assertEqual(older.text.get("1.0", tk.END), before)
+        self.assertNotEqual(older.text.get("1.0", tk.END), before,
+                            "the older page kept the previous unit formatting")
+        # ... and it is a re-render, not an append.
+        self.assertEqual(
+            older.text.get("1.0", tk.END).count(run_headline(older.run)), 1,
+            "the older page grew a second copy of the report")
+
+    def test_the_pages_agree_with_each_other_after_a_units_switch(self):
+        """Two pages of the same one-trace run must format its row the same
+        way; the disagreement is what made this visible at all."""
+        self._calc(2)
+        self.app.units_mode_var.set("aligned")
+        self.app._on_units_mode_changed()
+        self._settle()
+
+        def data_row(rt):
+            for line in rt.text.get("1.0", tk.END).splitlines():
+                if line.startswith(pkg_rlc_gui.RESULTS_SWATCH):
+                    return line[line.index("]") + 1:]
+            return ""
+
+        rows = [data_row(rt) for rt in self.app._run_tabs]
+        self.assertTrue(all(rows), "no data row on one of the pages")
+        self.assertEqual(len(set(rows)), 1,
+                         f"the pages disagree about the units: {rows}")
 
 
 @unittest.skipUnless(TK_OK, "no Tk display available")
@@ -952,6 +1037,25 @@ class TestTabContextMenu(_AppCase):
         self._calc()
         self.assertIsNone(self.app._run_tab_at(-50, -50))
 
+    def test_the_menu_carries_the_sentence_the_button_cannot_afford(self):
+        """
+        The Keep BUTTON says 'Keep (5/5) — full' because at 150% DPI the
+        1040x600 Results header clips anything longer.  That is only honest if
+        the sentence exists somewhere the user can reach, and this menu -- the
+        one the disabled button sends them to -- is not width-bound.
+        """
+        cap = self.app._kept_cap()
+        for _ in range(cap):
+            self._calc()
+            self.app._keep_run_tab(self.app._run_tabs[0])
+        self._calc()
+        target = self.app._run_tabs[0]
+        self.assertFalse(target.kept)
+        self.app._sync_run_tab_menu(target)
+        self._settle()
+        self.assertIn("close a kept run first",
+                      str(self.app._run_tab_menu.entrycget(0, "label")))
+
     def test_close_this_run_removes_exactly_one_page(self):
         self._calc(3)
         victim = self.app._run_tabs[1]
@@ -1052,6 +1156,39 @@ class TestHeaderLayoutAtTheMinsize(unittest.TestCase):
             self.assertLessEqual(
                 header.winfo_reqwidth(), header.winfo_width(),
                 "the Results header asks for more room than it has")
+        finally:
+            app.destroy()
+
+    def test_the_keep_button_is_READABLE_at_150_percent_font_scaling(self):
+        """
+        winfo_ismapped() cannot see this failure.  With the long sentence on
+        the button, measured with TkDefaultFont scaled 1.5x (the supported
+        150% DPI) at the 1040x600 minsize: the header is 575 px, requests 687,
+        and the Keep button -- packed last of five side=LEFT -- got the 213 px
+        that were left and the text was clipped mid-phrase.  ismapped stayed 1
+        the whole time.  'A disabled button with no reason on it is a bug
+        report', and a reason cut in half is no reason.
+        """
+        import tkinter.font as tkfont
+        app = App()
+        try:
+            app.geometry("1040x600")
+            app.deiconify()
+            app.update()
+            f = tkfont.nametofont("TkDefaultFont", root=app)
+            base = f.cget("size")
+            f.configure(size=int(round(abs(base) * 1.5)) * (1 if base > 0 else -1))
+            app._keep_btn.configure(text=keep_button_label(5, 5, "full"))
+            for _ in range(4):
+                app.update_idletasks()
+                app.update()
+            self.assertGreaterEqual(
+                app._keep_btn.winfo_width(), app._keep_btn.winfo_reqwidth(),
+                f"the Keep button's label is clipped: "
+                f"{app._keep_btn.cget('text')!r} needs "
+                f"{app._keep_btn.winfo_reqwidth()} px and has "
+                f"{app._keep_btn.winfo_width()}")
+            f.configure(size=base)
         finally:
             app.destroy()
 
