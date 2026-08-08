@@ -841,6 +841,59 @@ class PlotPanel(tk.Frame):
     def set_marker_freq(self, freq_hz: float) -> None:
         self.view.set_marker_freq(freq_hz)
 
+    def view_state(self) -> dict:
+        """
+        How the plot is being LOOKED AT -- axes scales, cursor, which
+        quantities are on screen.  Not the data, and not the cursors the user
+        placed (an M marker is anchored to one data point of one trace, which a
+        saved session has not computed yet).
+
+        Exists so the session file can restore it: the checkbox row is part of
+        the setup a user rebuilds every morning, and it costs six values.
+        """
+        return {
+            "x_log": bool(self.x_log_var.get()),
+            "y_log": bool(self.y_log_var.get()),
+            "marker": bool(self.show_marker_var.get()),
+            "readout": bool(self.show_readout_var.get()),
+            "types": self._active_types(),
+            "marker_freq_hz": float(self.view.marker_freq_hz),
+        }
+
+    def set_view_state(self, state: dict) -> None:
+        """
+        Apply what `view_state` returned.  Missing or malformed keys keep the
+        current value -- a session file is user-editable text, and a typo in it
+        must not leave the plot in a state with no checkbox to get out of.
+
+        Setting a Checkbutton's variable does NOT fire its `command`, so the
+        mirrored fields on the view are written here explicitly and the redraw
+        happens once at the end rather than four times.
+        """
+        if not isinstance(state, dict):
+            return
+        for key, var in (("x_log", self.x_log_var), ("y_log", self.y_log_var),
+                         ("marker", self.show_marker_var),
+                         ("readout", self.show_readout_var)):
+            if isinstance(state.get(key), bool):
+                var.set(state[key])
+        types = state.get("types")
+        # `any` guard, not just `isinstance`: an empty or entirely unknown list
+        # would clear every checkbox, and _on_types_changed is not in the loop
+        # here to force one back on.
+        if isinstance(types, list) and any(t in self.type_vars for t in types):
+            for t, var in self.type_vars.items():
+                var.set(t in types)
+        freq = state.get("marker_freq_hz")
+        if isinstance(freq, (int, float)) and not isinstance(freq, bool) \
+                and math.isfinite(freq) and freq > 0:
+            self.view.marker_freq_hz = float(freq)
+        self.view.x_log = self.x_log_var.get()
+        self.view.y_log = self.y_log_var.get()
+        self.view.show_marker = self.show_marker_var.get()
+        self.view.show_readout = self.show_readout_var.get()
+        self.view.redraw()
+
     # -------- UI construction --------
 
     def _build_ui(self) -> None:

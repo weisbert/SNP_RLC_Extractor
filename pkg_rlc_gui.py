@@ -22,9 +22,12 @@ Measurement modes (integer codes are stable and never renumbered):
 from __future__ import annotations
 
 import csv
+import json
 import math
+import os
 import traceback
-from dataclasses import astuple, dataclass, field, replace
+from dataclasses import asdict, astuple, dataclass, field, fields, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -811,6 +814,301 @@ def _validation_strip_text(msgs: Sequence[str],
         return "\n".join(msgs)
     return "\n".join(msgs[:limit]
                      + [f"… +{len(msgs) - limit} more (see Results)"])
+
+
+# ============================================================================
+# Session files (Save Config / Load Config / autosave)
+# ============================================================================
+#
+# A session file holds the CONFIG, never the results.  A .sNp file is megabytes
+# and a computed Z is one array per trace per frequency; the point of this file
+# is that it is a few kB of readable JSON that can go in git, be mailed to a
+# colleague, or ride along to the red zone next to the data it describes.  What
+# comes back is the setup -- press Calculate and the numbers return.  Export CSV
+# remains the results path, so the two never overlap and never disagree.
+#
+# The functions below are deliberately free of Tk: `session_to_dict` takes the
+# lists and `session_from_dict` returns them, so the whole round trip is
+# testable without a display.
+
+SESSION_FORMAT = "pkg_rlc_extractor_session"
+SESSION_VERSION = 1
+
+SESSION_FILETYPES = [("RLC session", "*.json"), ("All files", "*.*")]
+
+# Where the on-exit autosave lives.  Under the user's home rather than beside
+# the install, because the install may well be read-only (the red zone copies
+# a tarball into place) and losing the autosave is not worth an error dialog.
+AUTOSAVE_DIRNAME = ".pkg_rlc_extractor"
+AUTOSAVE_FILENAME = "last_session.json"
+
+# Filled in by Calculate and NOT saved.  This set is the blacklist and the
+# config fields are everything else, so a new *config* field is saved without
+# anyone remembering to add it -- the failure mode of the other arrangement is
+# a field that silently stops round-tripping, which nothing would catch.  A new
+# *computed* field forgotten here fails loudly instead (json.dump on a numpy
+# array), and tests/test_session.py::TestFieldCoverage pins that every field of
+# TraceConfig is classified one way or the other.
+_COMPUTED_TRACE_FIELDS = frozenset({
+    "stale", "Z", "rlc", "fit_kind", "fit", "fit_freqs", "fit_Z",
+    "Zmat", "mport_names", "coupling",
+})
+
+# Retired-but-still-loading fields (mode 4's VDD list, the free-text Mode 5
+# spec, the two hard-coded Mode 6 measurement ports).  They are written only
+# when non-empty: a trace the user has never selected still carries them
+# unmigrated, so dropping them would lose a spec, but emitting eight empty
+# strings on every trace of every file would bury the fields that matter.
+_LEGACY_TRACE_FIELDS = frozenset({
+    "vdd_ports", "custom_text",
+    "mp1_name", "mp1_plus", "mp1_minus",
+    "mp2_name", "mp2_plus", "mp2_minus", "mp_more",
+})
+
+_TRACE_ROW_CLASSES = {"mports": MeasPortRow, "conn_rows": ConnectionRow}
+_TRACE_INT_FIELDS = frozenset({"id", "mode", "color_idx", "ls_idx"})
+_TRACE_BOOL_FIELDS = frozenset({"plot_self", "plot_mutual", "enabled"})
+
+# Global controls, and the values the two readonly comboboxes will accept.  A
+# combobox is state="readonly", so a value from outside its list would sit
+# there unselectable with no way back except retyping it into the file.
+_CONTROL_KEYS = ("rlc_freq_ghz", "fit_fmin_ghz", "fit_fmax_ghz",
+                 "fit_model", "units_mode")
+_CONTROL_CHOICES = {
+    "fit_model": ("none", "auto", "inductor", "capacitor"),
+    "units_mode": ("smart", "aligned"),
+}
+
+
+class SessionError(ValueError):
+    """
+    A session file this build will not read.
+
+    `str(e)` IS the whole verdict, same contract as TouchstoneParseError: the
+    first question a failed load has to answer is "is my file wrong or is your
+    tool wrong", and a JSON traceback answers neither.
+    """
+
+
+@dataclass
+class LoadedSession:
+    """What `session_from_dict` recovered.  `files` is (label, path, found)."""
+    files: list = field(default_factory=list)
+    traces: list = field(default_factory=list)
+    controls: dict = field(default_factory=dict)
+    plot: dict = field(default_factory=dict)
+    warnings: list = field(default_factory=list)
+
+
+def _config_trace_fields() -> list[str]:
+    """The TraceConfig fields a session file carries, in declaration order."""
+    return [f.name for f in fields(TraceConfig)
+            if f.name not in _COMPUTED_TRACE_FIELDS]
+
+
+def autosave_path() -> Path:
+    return Path.home() / AUTOSAVE_DIRNAME / AUTOSAVE_FILENAME
+
+
+def trace_to_dict(tc: "TraceConfig") -> dict:
+    out: dict = {}
+    for name in _config_trace_fields():
+        value = getattr(tc, name)
+        if name in _TRACE_ROW_CLASSES:
+            out[name] = [asdict(r) for r in value]
+        elif name in _LEGACY_TRACE_FIELDS and not value:
+            continue
+        else:
+            out[name] = value
+    return out
+
+
+def _coerce_bool(value) -> bool:
+    """
+    JSON true/false, or the spellings a hand-edit produces.
+
+    Plain `bool()` is wrong here: `bool("false")` is True, so a file edited by
+    hand into `"enabled": "false"` would silently mean the opposite of what it
+    says.  An unrecognised string raises, and the caller keeps the default with
+    a note.
+    """
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low in ("true", "yes", "1"):
+            return True
+        if low in ("false", "no", "0", ""):
+            return False
+        raise ValueError(value)
+    return bool(value)
+
+
+def _rows_from_list(cls, value, key: str, warn) -> list:
+    if not isinstance(value, list):
+        warn(f"'{key}' is not a list; ignored")
+        return []
+    names = {f.name for f in fields(cls)}
+    rows = []
+    for item in value:
+        if not isinstance(item, dict):
+            warn(f"a '{key}' row is not an object; dropped")
+            continue
+        kw = {k: ("" if v is None else str(v))
+              for k, v in item.items() if k in names}
+        for k in item:
+            if k not in names:
+                warn(f"'{key}' field '{k}' is not known to this build; ignored")
+        rows.append(cls(**kw))
+    return rows
+
+
+def trace_from_dict(data, warn) -> "TraceConfig":
+    """
+    One trace, rebuilt defensively.
+
+    A session file is user-editable text, so every value is coerced to the type
+    the field is declared with and a value that will not coerce keeps the
+    default with a note.  Refusing the whole file over one bad `color_idx`
+    would throw away a port map that took ten minutes to type.
+    """
+    if not isinstance(data, dict):
+        raise SessionError("a 'traces' entry is not a JSON object")
+    known = set(_config_trace_fields())
+    tc = TraceConfig()
+    for key, value in data.items():
+        if key not in known:
+            warn(f"trace field '{key}' is not known to this build; ignored")
+            continue
+        cls = _TRACE_ROW_CLASSES.get(key)
+        try:
+            if cls is not None:
+                coerced = _rows_from_list(cls, value, key, warn)
+            elif key in _TRACE_INT_FIELDS:
+                coerced = int(value)
+            elif key in _TRACE_BOOL_FIELDS:
+                coerced = _coerce_bool(value)
+            else:
+                coerced = "" if value is None else str(value)
+        except (TypeError, ValueError):
+            warn(f"trace field '{key}': {value!r} is not usable; "
+                 f"kept the default")
+            continue
+        setattr(tc, key, coerced)
+    return tc
+
+
+def _file_ref(fe: "FileEntry", base_dir: Optional[str]) -> dict:
+    """
+    One file, addressed BOTH ways.
+
+    The relative path is what makes a session survive the whole folder being
+    copied to another machine -- which is the normal way work reaches the red
+    zone -- and the absolute one is what makes a session file that has been
+    moved on its own still find the data.  Loading tries relative first.
+    """
+    ap = Path(fe.ts.source_path).resolve()
+    ref = {"label": fe.label, "path": ap.as_posix()}
+    if base_dir:
+        try:
+            ref["rel_path"] = Path(os.path.relpath(ap, base_dir)).as_posix()
+        except ValueError:
+            pass        # different drive on Windows: absolute is all there is
+    return ref
+
+
+def resolve_session_file(ref: dict, base_dir: str) -> tuple[str, bool]:
+    """(path, found).  Relative first -- see _file_ref."""
+    candidates: list[str] = []
+    rel = ref.get("rel_path")
+    if base_dir and isinstance(rel, str) and rel:
+        candidates.append(os.path.normpath(os.path.join(base_dir, rel)))
+    absolute = ref.get("path")
+    if isinstance(absolute, str) and absolute:
+        candidates.append(os.path.normpath(absolute))
+    for cand in candidates:
+        if os.path.isfile(cand):
+            return cand, True
+    return (candidates[0] if candidates else ""), False
+
+
+def session_to_dict(files: Sequence, traces: Sequence, controls: dict,
+                    plot_state: dict, base_dir: Optional[str] = None,
+                    saved_utc: Optional[str] = None) -> dict:
+    """
+    The whole session as a JSON-ready dict.
+
+    `base_dir` is the directory the file is about to be written into, and is
+    None for the autosave -- that one never moves, so a path relative to it
+    would say nothing an absolute path does not.
+    """
+    return {
+        "format": SESSION_FORMAT,
+        "version": SESSION_VERSION,
+        "saved_utc": saved_utc or datetime.now(timezone.utc)
+                                          .strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "files": [_file_ref(fe, base_dir) for fe in files],
+        "traces": [trace_to_dict(tc) for tc in traces],
+        "controls": dict(controls),
+        "plot": dict(plot_state),
+    }
+
+
+def session_from_dict(data, base_dir: str = "") -> LoadedSession:
+    if not isinstance(data, dict):
+        raise SessionError(
+            "This is not a session file: its top level is not a JSON object.")
+    fmt = data.get("format")
+    if fmt != SESSION_FORMAT:
+        said = f" (its 'format' says {fmt!r})" if fmt else " (it has no 'format' key)"
+        raise SessionError(
+            f"This is not a PKG RLC Extractor session file{said}.\n\n"
+            "Session files are the ones written by File → Save Config.")
+    version = data.get("version")
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise SessionError("This session file has no usable 'version' number.")
+    if version > SESSION_VERSION:
+        raise SessionError(
+            f"This session file is version {version}; this build reads up to "
+            f"version {SESSION_VERSION}.\n\nUpdate the tool, or re-save the "
+            f"session from the version that wrote it.")
+
+    sess = LoadedSession()
+    warn = sess.warnings.append
+
+    raw_files = data.get("files") or []
+    if not isinstance(raw_files, list):
+        raise SessionError("This session file's 'files' is not a list.")
+    for ref in raw_files:
+        if not isinstance(ref, dict):
+            warn("a 'files' entry is not an object; dropped")
+            continue
+        path, found = resolve_session_file(ref, base_dir)
+        label = ref.get("label") or os.path.basename(path)
+        sess.files.append((str(label), path, found))
+
+    raw_traces = data.get("traces") or []
+    if not isinstance(raw_traces, list):
+        raise SessionError("This session file's 'traces' is not a list.")
+    for entry in raw_traces:
+        sess.traces.append(trace_from_dict(entry, warn))
+
+    controls = data.get("controls")
+    if isinstance(controls, dict):
+        for key in _CONTROL_KEYS:
+            value = controls.get(key)
+            if value is None:
+                continue
+            value = str(value)
+            choices = _CONTROL_CHOICES.get(key)
+            if choices is not None and value not in choices:
+                warn(f"'{key}' = {value!r} is not one of {', '.join(choices)}; "
+                     f"kept the current setting")
+                continue
+            sess.controls[key] = value
+
+    plot = data.get("plot")
+    if isinstance(plot, dict):
+        sess.plot = plot
+    return sess
 
 
 # ============================================================================
@@ -2046,8 +2344,13 @@ class App(tk.Tk):
 
         self._install_wheel_router()
         self._build_ui()
+        self._build_menubar()
         self._bind_events()
         self._clamp_to_screen()
+        # Closing the window is the moment the session would otherwise be lost,
+        # so it is the moment it is written.
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._announce_last_session()
 
     # ------------------------------------------------------- wheel routing
 
@@ -2135,6 +2438,42 @@ class App(tk.Tk):
 
         self._build_left_panel(left)
         self._build_right_panel(right)
+
+    def _build_menubar(self) -> None:
+        """
+        Save / Load live on a menu bar, not on a button.
+
+        The left panel has no spare pixels: the Files and Traces rows are both
+        four buttons deep against a measured 448 px, and a fifth row inside
+        Global Controls comes straight out of the editor viewport, which at the
+        1040x600 minsize is already down to tens of pixels.  A menu bar costs
+        the left panel nothing, and File → Save/Open is where anyone looks
+        first anyway.
+        """
+        menubar = tk.Menu(self)
+        file_menu = tk.Menu(menubar, tearoff=False)
+        file_menu.add_command(label="Save Config…", accelerator="Ctrl+S",
+                              command=self._on_save_config)
+        file_menu.add_command(label="Load Config…", accelerator="Ctrl+O",
+                              command=self._on_load_config)
+        file_menu.add_separator()
+        file_menu.add_command(label="Restore Last Session",
+                              command=self._on_restore_last_session)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self._on_close)
+        menubar.add_cascade(label="File", menu=file_menu)
+        self.config(menu=menubar)
+        self._file_menu = file_menu
+
+        self.bind_all("<Control-s>", lambda _e: self._on_save_config())
+        self.bind_all("<Control-o>", lambda _e: self._on_load_config())
+        # Tk's Text class binds <Control-o> to "insert a newline without moving
+        # the cursor", and a bind_all handler runs AFTER the class binding, so
+        # with the caret in the Results pane Ctrl+O would open the dialog and
+        # scribble in the pane behind it.  Same removal, for the same reason, as
+        # the TCombobox wheel binding in _install_wheel_router.  Nothing in this
+        # application is a document; open-line has no use here.
+        self.unbind_class("Text", "<Control-o>")
 
     def _build_left_panel(self, parent: ttk.Frame) -> None:
         parent.pack_propagate(False)
@@ -3318,6 +3657,23 @@ class App(tk.Tk):
         self._ed_sync_after = None
         self._apply_editor_sync()
 
+    def _cancel_editor_sync(self) -> None:
+        """
+        Drop a queued sync WITHOUT running it.
+
+        Only correct when the target trace is being discarded outright (loading
+        a session replaces the whole trace list).  Everywhere else the queued
+        edit is the user's most recent keystroke and must land -- use
+        _flush_editor_sync.
+        """
+        if self._ed_sync_after is not None:
+            try:
+                self.after_cancel(self._ed_sync_after)
+            except Exception:
+                pass
+        self._ed_sync_after = None
+        self._ed_sync_target = None
+
     def _apply_editor_sync(self) -> None:
         self._ed_sync_after = None
         tc = self._ed_sync_target
@@ -3801,6 +4157,249 @@ class App(tk.Tk):
 
     def _on_help(self) -> None:
         HelpWindow(self)
+
+    # ----------------------------------------------------------- Session I/O
+
+    def _session_dict(self, base_dir: Optional[str]) -> dict:
+        """Everything the user typed, ready for json.dump."""
+        # Same reason Calculate flushes: a keystroke in the same event burst as
+        # the click is still in the idle queue, and a saved config that is one
+        # character behind what is on screen is worse than no config at all.
+        self._flush_editor_sync()
+        return session_to_dict(
+            files=self.files,
+            traces=self.traces,
+            controls={
+                "rlc_freq_ghz": self.rlc_freq_var.get(),
+                "fit_fmin_ghz": self.fit_fmin_var.get(),
+                "fit_fmax_ghz": self.fit_fmax_var.get(),
+                "fit_model": self.fit_model_var.get(),
+                "units_mode": self.units_mode_var.get(),
+            },
+            plot_state=self.plot.view_state(),
+            base_dir=base_dir,
+        )
+
+    def _write_session(self, path: str, base_dir: Optional[str]) -> None:
+        target = Path(path)
+        data = self._session_dict(base_dir)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # ensure_ascii=False so a port named in Chinese stays readable in the
+        # file; indent=2 so it diffs line by line in git.
+        with open(target, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+
+    def _on_save_config(self) -> None:
+        if not self.files and not self.traces:
+            messagebox.showinfo(
+                "Nothing to save",
+                "There is no file and no trace to save yet.")
+            return
+        path = filedialog.asksaveasfilename(
+            title="Save configuration",
+            defaultextension=".json",
+            initialfile="rlc_session.json",
+            filetypes=SESSION_FILETYPES,
+        )
+        if not path:
+            return
+        try:
+            self._write_session(path, str(Path(path).parent))
+        except Exception as e:
+            messagebox.showerror("Save error", f"{path}\n\n{e}")
+            return
+        self._append_result(
+            f"Saved config ({len(self.files)} file(s), {len(self.traces)} "
+            f"trace(s)): {path}")
+
+    def _on_load_config(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Load configuration", filetypes=SESSION_FILETYPES)
+        if path:
+            self._load_session_file(path, "Loaded config")
+
+    def _on_restore_last_session(self) -> None:
+        path = autosave_path()
+        if not path.is_file():
+            messagebox.showinfo(
+                "No last session",
+                f"Nothing has been auto-saved yet.\n\nThe session is written "
+                f"to\n{path}\nwhen the window is closed with at least one file "
+                f"or trace open.")
+            return
+        self._load_session_file(str(path), "Restored last session")
+
+    def _load_session_file(self, path: str, origin: str) -> bool:
+        """
+        Read, validate, confirm, apply.  Returns True when it was applied.
+
+        Every failure is a dialog naming the file and what is wrong with it --
+        same contract as the Touchstone reader, for the same reason: a JSON
+        traceback does not tell the user whether their file is bad or the tool
+        is.
+        """
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except OSError as e:
+            messagebox.showerror("Cannot read config", f"{path}\n\n{e}")
+            return False
+        except UnicodeDecodeError:
+            messagebox.showerror(
+                "Cannot read config",
+                f"{path}\n\nThis is not a UTF-8 text file. A session file is "
+                f"JSON written by File → Save Config.")
+            return False
+        except json.JSONDecodeError as e:
+            messagebox.showerror(
+                "Cannot read config",
+                f"{path}\n\nThis file is not valid JSON — line {e.lineno}, "
+                f"column {e.colno}: {e.msg}.")
+            return False
+        try:
+            sess = session_from_dict(
+                data, os.path.dirname(os.path.abspath(path)))
+        except SessionError as e:
+            messagebox.showerror("Cannot read config", f"{path}\n\n{e}")
+            return False
+
+        # Ask BEFORE anything is torn down, and only when there is something to
+        # lose.  Loading is a replace, not a merge: two sessions describing the
+        # same file under the same label would fight over every trace binding.
+        if (self.files or self.traces) and not messagebox.askyesno(
+                "Replace current session?",
+                f"Loading this config replaces the {len(self.files)} file(s) "
+                f"and {len(self.traces)} trace(s) now open, and anything not "
+                f"saved is lost.\n\nContinue?"):
+            return False
+
+        self._apply_session(sess, f"{origin}: {path}")
+        return True
+
+    def _apply_session(self, sess: LoadedSession, origin: str) -> None:
+        # Cancel, don't flush: the queued edit belongs to a trace that is about
+        # to be discarded.  _apply_editor_sync's identity check would decline it
+        # anyway; running it just to be declined is a way for that check to rot.
+        self._cancel_editor_sync()
+        self.files = []
+        self.traces = []
+        self._trace_list_shown = []
+        self._append_result(f"\n=== {origin} ===")
+        for note in sess.warnings:
+            self._append_result(f"  note: {note}")
+
+        missing: list[tuple[str, str]] = []
+        for label, path, found in sess.files:
+            ts = self._load_one_file(path) if found else None
+            if ts is None:
+                missing.append((label, path))
+                continue
+            fe = FileEntry(ts)
+            if fe.label != label:
+                # Only reachable via a hand-edited file -- which is also the
+                # only way to re-point a session at data that moved, since the
+                # loader offers no relocate dialog.  Re-bind rather than leave
+                # every trace reporting "file not loaded".
+                for tc in sess.traces:
+                    if tc.file_label == label:
+                        tc.file_label = fe.label
+                self._append_result(
+                    f"  '{label}' resolved to {fe.label}; its traces were "
+                    f"re-bound to the new name")
+            self.files.append(fe)
+
+        self.traces = list(sess.traces)
+        self._next_trace_id = max((tc.id for tc in self.traces), default=0) + 1
+
+        controls = sess.controls
+        for key, var in (("rlc_freq_ghz", self.rlc_freq_var),
+                         ("fit_fmin_ghz", self.fit_fmin_var),
+                         ("fit_fmax_ghz", self.fit_fmax_var),
+                         ("fit_model", self.fit_model_var),
+                         ("units_mode", self.units_mode_var)):
+            if key in controls:
+                var.set(controls[key])
+
+        self._refresh_file_list()
+        self._refresh_trace_list()
+        self._refresh_file_combobox()
+        self.plot.set_view_state(sess.plot)
+        # keep_cursors=False: nothing is computed yet, so there is no curve for
+        # a restored cursor to read.
+        self._replot_from_cache(keep_cursors=False)
+        if self.traces:
+            self.traces_lb.selection_clear(0, tk.END)
+            self.traces_lb.selection_set(0)
+            self.traces_lb.activate(0)
+            self._on_trace_selected()
+
+        self._append_result(
+            f"  {len(self.files)} file(s), {len(self.traces)} trace(s) "
+            f"restored — press Calculate All & Plot for the numbers "
+            f"(a config carries the setup, not the results).")
+        for label, path in missing:
+            self._append_result(
+                f"  MISSING: '{label}' — looked for {path or '(no path)'}")
+        if missing:
+            self._append_result(
+                "  Traces bound to a missing file are still listed and still "
+                "editable; add the file and load the config again, or point "
+                "the editor's File box at one that is loaded.")
+
+    def _autosave_session(self) -> None:
+        """
+        Write the config to the user directory on the way out.
+
+        Never raises and never opens a dialog: this runs while the window is
+        closing, where the only thing a failure could achieve is to stop the
+        application from exiting.  An EMPTY session is not written -- opening
+        the tool, changing nothing and closing it must not erase what the
+        previous run left behind.
+
+        base_dir is None deliberately: this file never moves, so a path
+        relative to it would say nothing the absolute path does not.
+        """
+        if not self.files and not self.traces:
+            return
+        try:
+            self._write_session(str(autosave_path()), None)
+        except Exception:
+            pass
+
+    def _announce_last_session(self) -> None:
+        """
+        Name what is on disk from last time, in one line, and stop there.
+
+        Loading it would re-parse every Touchstone file in it, which on package
+        exports is tens of seconds before the user has asked for anything --
+        a tool that is busy at startup is a worse trade than one that waits to
+        be told.  Runs during construction, so it must never raise.
+        """
+        try:
+            path = autosave_path()
+            if not path.is_file():
+                return
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            if not isinstance(data, dict) or data.get("format") != SESSION_FORMAT:
+                return
+            n_files = len(data.get("files") or [])
+            n_traces = len(data.get("traces") or [])
+            if not n_files and not n_traces:
+                return
+            self._append_result(
+                f"Last session: {n_files} file(s), {n_traces} trace(s), saved "
+                f"{data.get('saved_utc') or 'at an unknown time'}.")
+            self._append_result(
+                "  File → Restore Last Session to load it.")
+        except Exception:
+            pass
+
+    def _on_close(self) -> None:
+        self._flush_editor_sync()
+        self._autosave_session()
+        self.destroy()
 
     # --------------------------------------------------------------- CSV
 
