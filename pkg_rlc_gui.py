@@ -3586,8 +3586,8 @@ class App(tk.Tk):
             # current" when there are no numbers above.
             self._append_result(
                 "  (every trace has 'Plot: this trace' unchecked -- the plot is "
-                "empty on purpose, and so is the table; they were measured, "
-                "show one again or use Export CSV to read the numbers)")
+                "empty on purpose, and so is the table; they were measured, so "
+                "showing one again costs no Calculate)")
 
     def _replot_from_cache(self, keep_cursors: bool = True) -> None:
         """
@@ -3725,10 +3725,10 @@ class App(tk.Tk):
 
         A hidden trace is filtered out here rather than at collection time, so
         `_last_result_rows` still holds everything and a units-mode re-render
-        follows the visibility as it stands then.  Its numbers are not lost:
-        they stay cached on the trace (re-showing it needs no Calculate), the
-        line under the table names it, and Export CSV still writes it out with
-        a `Plotted: no` comment.
+        follows the visibility as it stands then.  Its numbers are not lost --
+        they stay cached on the trace, so showing it again needs no Calculate
+        -- but they are not reported anywhere until it is shown, which is why
+        the line under the table has to name it.
         """
         units = self.units_mode_var.get()
         shown_rows = [r for r in rows if r[0].enabled]
@@ -3747,10 +3747,12 @@ class App(tk.Tk):
                 _format_coupling_block(tc, file_label, cres, units))
         if hidden:
             # Named, not silently dropped: Calculate still measured them, and
-            # the CSV still carries them, so the report has to say where they
-            # went -- otherwise re-reading it later, a trace is simply missing.
+            # since they are in no other output either, this line is the only
+            # place the report says where they went -- otherwise a trace is
+            # simply missing from it.
             self._append_result(
-                "  hidden (measured, not plotted, still in Export CSV): "
+                "  hidden (measured, not plotted, not exported; show it to "
+                "read or export it): "
                 + ", ".join(f"[{tc.id}] {_trunc_str(tc.label, 18)}"
                             for tc in hidden))
 
@@ -3803,10 +3805,30 @@ class App(tk.Tk):
     # --------------------------------------------------------------- CSV
 
     def _on_export_csv(self) -> None:
-        traces_with_data = [tc for tc in self.traces
-                            if tc.Z is not None or tc.Zmat is not None]
+        """
+        Write the shown traces out.  Hiding a trace takes it off the plot, out
+        of the results table and out of here: the checkbox selects what the
+        session is about, and a file carrying rows the user took off the screen
+        is the same duplicate they hid, one step further from where it can be
+        noticed.  Nothing is destroyed -- the numbers stay cached on the trace,
+        so showing it again and exporting once more costs no Calculate.
+        """
+        computed = [tc for tc in self.traces
+                    if tc.Z is not None or tc.Zmat is not None]
+        traces_with_data = [tc for tc in computed if tc.enabled]
         if not traces_with_data:
-            messagebox.showinfo("No data", "Run Calculate first.")
+            if computed:
+                # Distinguish the two empty cases: "you have not calculated" is
+                # wrong and unactionable advice when the numbers exist and are
+                # merely hidden.
+                messagebox.showinfo(
+                    "Nothing shown",
+                    "Every calculated trace is hidden, and hidden traces are "
+                    "not exported.\n\nShow at least one (Show/Hide, or the "
+                    "space bar on the Traces list) and export again -- it "
+                    "needs no recalculation.")
+            else:
+                messagebox.showinfo("No data", "Run Calculate first.")
             return
         path = filedialog.asksaveasfilename(
             defaultextension=".csv",
@@ -3822,13 +3844,10 @@ class App(tk.Tk):
                     if fe is None:
                         continue
                     fh.write(f"# Trace: {tc.label}\n")
-                    # Hidden traces ARE exported -- visibility gates the plot,
-                    # not the measurement -- so the file has to say which ones
-                    # were not on screen, or a CSV and a screenshot of the same
-                    # session disagree with nothing to explain it.
-                    hidden = "" if tc.enabled else ", Plotted: no"
-                    fh.write(f"# File: {fe.label}, Mode: {tc.mode_name()}"
-                             f"{hidden}\n")
+                    # No 'Plotted: no' marker any more -- every trace in the
+                    # file is one that was on the plot, so a CSV and a
+                    # screenshot of the same session carry the same traces.
+                    fh.write(f"# File: {fe.label}, Mode: {tc.mode_name()}\n")
                     # Gate on the DATA, not the mode -- _on_calculate routes on
                     # the measurement-port count, so a Mode 5 spec with two
                     # probes has a full Zmat too.  Gating on `mode == 6` used to

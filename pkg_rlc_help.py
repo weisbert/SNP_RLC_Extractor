@@ -172,16 +172,19 @@ cursors you have placed stay where they are. This is how to compare
 two traces out of five without deleting the other three and typing
 them in again.
 
-A hidden trace is still MEASURED, but it leaves the results table
-with the curve: the table reads as "what is on the plot", and a row
-for a curve that is not drawn looks like a duplicate of the one that
-is. It is named on one line under the table instead --
+The checkbox governs every output, not just the picture: a hidden
+trace also leaves the results table and Export CSV. The table reads
+as "what is on the plot", and a row for a curve that is not drawn
+looks like a duplicate of the one that is -- in a CSV that same row
+is simply one step further from where you would notice it.
 
-   hidden (measured, not plotted, still in Export CSV): [2] t2
+It is still MEASURED, and it is named on one line under the table:
 
--- it keeps its numbers in memory, so showing it again costs no
-Calculate, and Export CSV still writes it out in full with
-"Plotted: no" on its header line.
+   hidden (measured, not plotted, not exported; show it to read or
+   export it): [2] t2
+
+Its numbers stay in memory, so showing it again costs no Calculate
+-- tick it back on and export again to get it into a file.
 
 Broadband fit models
 --------------------

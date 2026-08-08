@@ -408,8 +408,8 @@ class TestPlotVisibility(_Case):
 
     def test_a_hidden_trace_is_named_under_the_table(self):
         """
-        Not silently dropped: it WAS measured and it IS in the CSV, so a report
-        that just omits it leaves a trace missing with no explanation.
+        Not silently dropped.  It WAS measured, and it is in no other output
+        either, so this line is the only place the report says where it went.
         """
         self.tc2.enabled = False
         mark = self.app.results_text.index(tk.END)
@@ -418,6 +418,58 @@ class TestPlotVisibility(_Case):
         body = self.app.results_text.get(mark, tk.END)
         self.assertIn("hidden (measured, not plotted", body)
         self.assertIn(f"[{self.tc2.id}] {self.tc2.label}", body)
+
+    def test_a_hidden_trace_is_not_exported_either(self):
+        """
+        The checkbox selects what the session is about.  A CSV carrying the row
+        the user took off the screen is the same duplicate they hid, one step
+        further from where they can notice it.
+        """
+        self.app._on_calculate()
+        self._settle()
+        self.tc2.enabled = False
+        body = self._export()
+        self.assertIn(f"# Trace: {self.tc.label}\n", body,
+                      "the visible trace is missing from the CSV")
+        self.assertNotIn(f"# Trace: {self.tc2.label}\n", body,
+                         "the hidden trace was exported")
+
+    def test_exporting_with_everything_hidden_explains_itself(self):
+        """
+        "Run Calculate first" is wrong and unactionable advice when the numbers
+        exist and are merely hidden -- and the file dialog must not open at all.
+        """
+        self.app._on_calculate()
+        self._settle()
+        self.tc.enabled = False
+        self.tc2.enabled = False
+        seen = []
+        asked = []
+        real_info = pkg_rlc_gui.messagebox.showinfo
+        real_ask = pkg_rlc_gui.filedialog.asksaveasfilename
+        pkg_rlc_gui.messagebox.showinfo = lambda t, m, *a, **k: seen.append((t, m))
+        pkg_rlc_gui.filedialog.asksaveasfilename = lambda *a, **k: asked.append(1)
+        try:
+            self.app._on_export_csv()
+        finally:
+            pkg_rlc_gui.messagebox.showinfo = real_info
+            pkg_rlc_gui.filedialog.asksaveasfilename = real_ask
+        self.assertEqual(asked, [], "it opened the save dialog with nothing to write")
+        self.assertEqual(len(seen), 1)
+        self.assertIn("hidden", seen[0][1])
+        self.assertNotIn("Run Calculate first", seen[0][1])
+
+    def _export(self) -> str:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "out.csv")
+            real = pkg_rlc_gui.filedialog.asksaveasfilename
+            pkg_rlc_gui.filedialog.asksaveasfilename = lambda *a, **k: path
+            try:
+                self.app._on_export_csv()
+            finally:
+                pkg_rlc_gui.filedialog.asksaveasfilename = real
+            return Path(path).read_text(encoding="utf-8")
 
     def test_a_hidden_trace_takes_its_fit_summary_with_it(self):
         """A fit line under a table that has no such row is an orphan."""
