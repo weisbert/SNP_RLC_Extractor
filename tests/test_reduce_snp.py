@@ -125,6 +125,121 @@ class TestPortConfig(unittest.TestCase):
             rs.resolve_port_config(groups, 4, [""] * 4)
 
 
+class TestPortRanges(unittest.TestCase):
+    """`1,2,3, 4:1:17, 80` and `6-14` in a port config."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _resolve(self, text, n_ports=20, names=None):
+        p = self.tmp / "ports.txt"
+        p.write_text(text)
+        groups = rs.parse_port_config(p)
+        return rs.resolve_port_config(groups, n_ports, names or [""] * n_ports)
+
+    def test_colon_range_expands_inclusive(self):
+        _, keep, _ = self._resolve("# A\n1,2,3, 4:1:17, 80\n", n_ports=100)
+        self.assertEqual(keep, [1, 2, 3] + list(range(4, 18)) + [80])
+
+    def test_colon_range_honours_step(self):
+        _, keep, _ = self._resolve("# A\n1:3:10\n")
+        self.assertEqual(keep, [1, 4, 7, 10])
+
+    def test_negative_step_counts_down(self):
+        _, keep, _ = self._resolve("# A\n9:-2:3\n", n_ports=10)
+        self.assertEqual(keep, [3, 5, 7, 9])          # sorted output order
+
+    def test_dash_range_expands_inclusive(self):
+        _, keep, _ = self._resolve("# A\n6-9\n")
+        self.assertEqual(keep, [6, 7, 8, 9])
+
+    def test_spaces_around_colons_still_one_range(self):
+        _, keep, _ = self._resolve("# A\n4 : 1 : 7\n")
+        self.assertEqual(keep, [4, 5, 6, 7])
+
+    def test_range_in_gnd_group(self):
+        _, keep, gnd = self._resolve("# GND\n10:1:14\n# SIG\n1 2\n")
+        self.assertEqual((keep, gnd), ([1, 2], [10, 11, 12, 13, 14]))
+
+    def test_overlapping_ranges_deduplicate(self):
+        keep_groups, keep, _ = self._resolve("# A\n1-5, 3:1:7\n")
+        self.assertEqual(keep, [1, 2, 3, 4, 5, 6, 7])
+        self.assertEqual(keep_groups["A"], [1, 2, 3, 4, 5, 6, 7])
+
+    # --- the collision cases: a name is not a range -------------------------
+    def test_port_name_with_dash_is_not_a_range(self):
+        names = ["VDD-1", "VDD-2", "x", "y"]
+        _, keep, _ = self._resolve("# A\nVDD-2\n", n_ports=4, names=names)
+        self.assertEqual(keep, [2])
+
+    def test_port_name_with_colon_is_not_a_range(self):
+        names = ["I0:VDD", "b", "c", "d"]
+        _, keep, _ = self._resolve("# A\nI0:VDD\n", n_ports=4, names=names)
+        self.assertEqual(keep, [1])
+
+    def test_range_shadowing_an_exact_port_name_is_refused(self):
+        names = ["a", "b", "2-3", "d"]
+        with self.assertRaises(SystemExit) as cm:
+            self._resolve("# A\n2-3\n", n_ports=4, names=names)
+        self.assertIn("both a port range and", str(cm.exception))
+
+    # --- refusals -----------------------------------------------------------
+    def test_empty_range_is_refused_not_silently_dropped(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._resolve("# A\n17:1:4\n", n_ports=20)
+        self.assertIn("expands to no ports", str(cm.exception))
+
+    def test_zero_step_is_refused(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._resolve("# A\n1:0:5\n")
+        self.assertIn("step cannot be zero", str(cm.exception))
+
+    def test_out_of_range_message_names_the_range(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._resolve("# A\n1:1:99\n", n_ports=20)
+        msg = str(cm.exception)
+        self.assertIn("1:1:99", msg)
+        self.assertIn("port 21", msg)
+
+    def test_expand_port_range_returns_none_for_a_non_range(self):
+        for tok in ("VDD_RX_1", "VDD-A", "A-1", "1-", "1:2", "1:2:3:4", ""):
+            self.assertIsNone(rs.expand_port_range(tok), msg=tok)
+
+    def test_fmt_ports_collapses_runs(self):
+        self.assertEqual(rs._fmt_ports([1, 2, 3, 7, 9, 10]), "1-3, 7, 9-10")
+        self.assertEqual(rs._fmt_ports([5]), "5")
+        self.assertEqual(rs._fmt_ports([]), "(none)")
+
+
+class TestInlinePortSpecs(unittest.TestCase):
+    """`--keep` / `--gnd` build the same group mapping a config file does."""
+
+    def test_keep_and_gnd(self):
+        groups = rs.groups_from_cli(["1,2,3, 4:1:6"], ["10-12"])
+        self.assertEqual(groups["Keep1"], ["1", "2", "3", "4:1:6"])
+        self.assertEqual(groups["GND"], ["10-12"])
+
+    def test_repeated_keep_makes_separate_groups(self):
+        groups = rs.groups_from_cli(["RX=1,2", "3,4"], None)
+        self.assertEqual(list(groups), ["RX", "Keep2"])
+
+    def test_reserved_ground_name_on_keep_is_refused(self):
+        with self.assertRaises(SystemExit):
+            rs.groups_from_cli(["GND=1,2"], None)
+
+    def test_empty_spec_is_refused(self):
+        with self.assertRaises(SystemExit):
+            rs.groups_from_cli(["  "], None)
+
+    def test_resolves_through_the_same_path_as_a_file(self):
+        groups = rs.groups_from_cli(["1,2", "5:1:7"], ["10-11"])
+        _, keep, gnd = rs.resolve_port_config(groups, 20, [""] * 20)
+        self.assertEqual((keep, gnd), ([1, 2, 5, 6, 7], [10, 11]))
+
+
 class TestReduction(unittest.TestCase):
     def test_open_matches_hand_coded_schur(self):
         S = make_network(5, seed=1)

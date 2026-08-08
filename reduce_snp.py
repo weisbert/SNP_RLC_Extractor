@@ -23,6 +23,7 @@ Usage:
     python3 reduce_snp.py input.s153p --ports ports.txt -o reduced.s46p
     python3 reduce_snp.py input.s153p --ports ports.txt --method matched
     python3 reduce_snp.py input.s153p --ports ports.txt --order config --check-passivity
+    python3 reduce_snp.py input.s153p --keep RX=1,2,3 --keep 4:1:17,80 --gnd 100:1:153
 
 Port config file format (`#` lines = group headers, entries = 1-indexed port
 numbers OR port names taken from the `! Port[n] = name` comments):
@@ -33,6 +34,16 @@ numbers OR port names taken from the `! Port[n] = name` comments):
     11, 141, 70, 71
     # RX
     VDD_RX_1   VDD_RX_2
+
+A port entry may also be a numeric RANGE, so a package's ground balls fit on one
+line:
+
+    1, 2, 3, 4:1:17, 80        # `start:step:stop`, inclusive (MATLAB style)
+    6-14                       # `start-stop`, inclusive
+
+Ranges are recognised only when the whole token is numeric, so a port *named*
+`VDD-1` or `I0:VDD` is still resolved as a name. A token that is both a valid
+range and an exact port name is refused rather than guessed.
 
 Standalone by design: numpy + stdlib only, no imports from this repo, so it can
 be dropped onto a simulation server on its own.
@@ -62,6 +73,71 @@ _PORT_NAME_RES = (
 # ============================================================
 # Port Config Parser
 # ============================================================
+# A range token must be numeric END TO END, because `-` and `:` are ordinary
+# characters in a net name (`VDD-1`, `I0:VDD`) and those must keep resolving as
+# names. `start:step:stop` mirrors the GUI's `parse_port_range` syntax.
+_RANGE_COLON_RE = re.compile(r"^(\d+):([+-]?\d+):(\d+)$")
+_RANGE_DASH_RE = re.compile(r"^(\d+)-(\d+)$")
+# `4 : 1 : 17` is one range, not three tokens. Joining only between digits keeps
+# a name-bearing colon (`Port1: foo`) out of it.
+_RANGE_SPACE_RE = re.compile(r"(?<=\d)\s*:\s*(?=[+-]?\d)")
+_TOKEN_SPLIT_RE = re.compile(r"[,;\s]+")
+
+
+def split_config_tokens(text):
+    """Split one config line (or one `--keep` / `--gnd` spec) into raw tokens."""
+    text = text.split("!", 1)[0]
+    text = _RANGE_SPACE_RE.sub(":", text)
+    return [tok for tok in _TOKEN_SPLIT_RE.split(text.strip()) if tok]
+
+
+def _dedup(ports):
+    """Drop repeats, keep first-seen order. Ranges make overlaps easy to write."""
+    seen = set()
+    return [p for p in ports if not (p in seen or seen.add(p))]
+
+
+def _fmt_ports(ports):
+    """Collapse consecutive runs for display: [1,2,3,7] -> '1-3, 7'."""
+    if not ports:
+        return "(none)"
+    runs, start, prev = [], ports[0], ports[0]
+    for p in list(ports[1:]) + [None]:
+        if p == prev + 1:
+            prev = p
+            continue
+        runs.append(f"{start}" if start == prev else f"{start}-{prev}")
+        start = prev = p
+    return ", ".join(runs)
+
+
+def expand_port_range(token):
+    """
+    Expand `start:step:stop` or `start-stop` into a list of 1-indexed ports.
+
+    Returns None when `token` is not a numeric range -- the caller then treats
+    it as a port name. Raises ValueError for a well-formed range that expands to
+    nothing (`17:1:4`), which would otherwise drop ports with no symptom.
+    """
+    m = _RANGE_COLON_RE.match(token)
+    if m:
+        start, step, stop = (int(g) for g in m.groups())
+        if step == 0:
+            raise ValueError(f"step cannot be zero in range '{token}'")
+        out = list(range(start, stop + 1, step) if step > 0
+                   else range(start, stop - 1, step))
+    else:
+        m = _RANGE_DASH_RE.match(token)
+        if not m:
+            return None
+        a, b = (int(g) for g in m.groups())
+        out = list(range(a, b + 1) if a <= b else range(a, b - 1, -1))
+    if not out:
+        raise ValueError(f"range '{token}' expands to no ports "
+                         f"(check the sign of the step)")
+    return out
+
+
 def parse_port_config(filepath):
     """
     Parse a port configuration file into ordered groups of raw tokens.
@@ -92,15 +168,42 @@ def parse_port_config(filepath):
                 groups.setdefault(current_group, [])
                 continue
 
-            # Strip trailing comment, then split on comma/whitespace.
-            stripped = stripped.split("!", 1)[0]
-            for tok in re.split(r"[,;\s]+", stripped):
-                if tok:
-                    groups[current_group].append(tok)
+            groups[current_group].extend(split_config_tokens(stripped))
 
     groups = OrderedDict((k, v) for k, v in groups.items() if v)
     if not groups:
         sys.exit(f"[ERROR] No ports found in {filepath}")
+    return groups
+
+
+def groups_from_cli(keep_specs, gnd_specs):
+    """
+    Build the same `{group: [token, ...]}` mapping from `--keep` / `--gnd`.
+
+    A `--keep` spec may carry a group name (`RX=1,2,3`); without one it is named
+    after its position, so repeating the flag gives you several KEEP groups the
+    same way several `#` headers do in a config file.
+    """
+    groups = OrderedDict()
+    for i, spec in enumerate(keep_specs or [], 1):
+        name, sep, body = spec.partition("=")
+        if not sep:
+            name, body = f"Keep{i}", spec
+        name = name.strip() or f"Keep{i}"
+        if name.upper() in GND_GROUP_NAMES:
+            sys.exit(f"[ERROR] --keep group '{name}' uses a reserved ground name; "
+                     f"use --gnd for ports shorted to the reference node.")
+        tokens = split_config_tokens(body)
+        if not tokens:
+            sys.exit(f"[ERROR] --keep {spec!r} lists no ports.")
+        groups.setdefault(name, []).extend(tokens)
+
+    for spec in gnd_specs or []:
+        tokens = split_config_tokens(spec)
+        if not tokens:
+            sys.exit(f"[ERROR] --gnd {spec!r} lists no ports.")
+        groups.setdefault("GND", []).extend(tokens)
+
     return groups
 
 
@@ -120,30 +223,49 @@ def resolve_port_config(groups, n_ports, port_names, order="sorted"):
             by_name.setdefault(nm.strip().upper(), []).append(i + 1)
 
     def resolve(tok, group):
+        """Resolve one config token -> list of 1-indexed ports (a range gives many)."""
+        def check(p, what):
+            if not (1 <= p <= n_ports):
+                sys.exit(f"[ERROR] Group '{group}': {what} out of range [1, {n_ports}]")
+            return p
+
         try:
             p = int(tok)
         except ValueError:
-            hits = by_name.get(tok.strip().upper())
-            if hits is None:
-                # fall back to unique substring match
-                key = tok.strip().upper()
-                hits = sorted({p for nm, ps in by_name.items() if key in nm for p in ps})
-            if not hits:
-                sys.exit(f"[ERROR] Group '{group}': token '{tok}' is neither an "
-                         f"integer nor a known port name.")
-            if len(hits) > 1:
-                sys.exit(f"[ERROR] Group '{group}': port name '{tok}' is ambiguous, "
-                         f"matches ports {hits}.")
-            return hits[0]
-        if not (1 <= p <= n_ports):
-            sys.exit(f"[ERROR] Group '{group}': port {p} out of range [1, {n_ports}]")
-        return p
+            pass
+        else:
+            return [check(p, f"port {p}")]
+
+        try:
+            ports = expand_port_range(tok)
+        except ValueError as exc:
+            sys.exit(f"[ERROR] Group '{group}': {exc}")
+        if ports is not None:
+            shadowed = by_name.get(tok.strip().upper())
+            if shadowed:
+                sys.exit(f"[ERROR] Group '{group}': '{tok}' is both a port range and "
+                         f"the name of port(s) {shadowed}. List the numbers "
+                         f"explicitly to say which you mean.")
+            return [check(p, f"range '{tok}' -> port {p}") for p in ports]
+
+        hits = by_name.get(tok.strip().upper())
+        if hits is None:
+            # fall back to unique substring match
+            key = tok.strip().upper()
+            hits = sorted({p for nm, ps in by_name.items() if key in nm for p in ps})
+        if not hits:
+            sys.exit(f"[ERROR] Group '{group}': token '{tok}' is neither an "
+                     f"integer, a port range, nor a known port name.")
+        if len(hits) > 1:
+            sys.exit(f"[ERROR] Group '{group}': port name '{tok}' is ambiguous, "
+                     f"matches ports {hits}.")
+        return [hits[0]]
 
     keep_groups = OrderedDict()
     keep_order = []          # config order, de-duplicated
     gnd = []
     for group, tokens in groups.items():
-        resolved = [resolve(t, group) for t in tokens]
+        resolved = _dedup([p for t in tokens for p in resolve(t, group)])
         if group.strip().upper() in GND_GROUP_NAMES:
             gnd.extend(resolved)
             continue
@@ -163,9 +285,9 @@ def resolve_port_config(groups, n_ports, port_names, order="sorted"):
     print(f"[INFO] Port config: {len(keep_groups)} keep-groups, {len(keep_1idx)} kept, "
           f"{len(gnd_1idx)} grounded, {n_unused} unused")
     for group, ports in keep_groups.items():
-        print(f"       KEEP  {group}: {ports}")
+        print(f"       KEEP  {group}: {_fmt_ports(ports)}")
     if gnd_1idx:
-        print(f"       GND   : {gnd_1idx}")
+        print(f"       GND   : {_fmt_ports(gnd_1idx)}")
 
     return keep_groups, keep_1idx, gnd_1idx
 
@@ -622,10 +744,18 @@ def main():
         description="Reduce a Touchstone .sNp file to fewer ports.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Port config: '# GND' group is shorted to reference; other groups\n"
-               "are kept as ports; unlisted ports are eliminated per --method.")
+               "are kept as ports; unlisted ports are eliminated per --method.\n"
+               "A port entry is a number, a port name, or a range -- '4:1:17'\n"
+               "(start:step:stop) or '6-14', both inclusive.")
     p.add_argument("input", help="Input Touchstone file (e.g. xxx.s153p)")
-    p.add_argument("--ports", required=True,
-                   help="Port config file defining which ports to keep")
+    p.add_argument("--ports", default=None,
+                   help="Port config file defining which ports to keep "
+                        "(or give the ports inline with --keep / --gnd)")
+    p.add_argument("--keep", action="append", metavar="[NAME=]SPEC",
+                   help="Ports to keep, inline: '1,2,3,4:1:17,80'. Repeatable; "
+                        "each occurrence is one group, optionally named 'RX=1,2'")
+    p.add_argument("--gnd", action="append", metavar="SPEC",
+                   help="Ports shorted to the reference node, inline. Repeatable")
     p.add_argument("-o", "--output", default=None,
                    help="Output Touchstone file (default: auto-named)")
     p.add_argument("--method", choices=["open", "matched"], default="open",
@@ -650,7 +780,14 @@ def main():
                    help="Where to save the port mapping (default: auto-named)")
     args = p.parse_args()
 
-    groups = parse_port_config(args.ports)
+    if not args.ports and not args.keep and not args.gnd:
+        p.error("one of --ports (config file) or --keep / --gnd (inline) is required")
+    groups = parse_port_config(args.ports) if args.ports else OrderedDict()
+    for name, tokens in groups_from_cli(args.keep, args.gnd).items():
+        groups.setdefault(name, []).extend(tokens)
+    if not groups:
+        sys.exit("[ERROR] No ports given.")
+
     try:
         ts = parse_touchstone(args.input, force_nports=args.nports)
     except ValueError as exc:

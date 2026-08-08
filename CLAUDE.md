@@ -19,7 +19,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `deploy.sh`             | **Top level on purpose.** Red-zone update entry point: `cd <install> && bash deploy.sh` auto-detects the uploaded tarball. The operator's cross-project convention is `<install>/deploy.sh` — do not move it back under `deploy/`. |
 | `deploy/`               | Rest of the air-gapped ("red zone") pipeline: `pack.ps1` (Windows, `git archive`), `doctor.sh` + `_env_check.py` (what can this box run?). No network, no pip, no venv on the far side. |
 | `tests/test_parse_diagnostics.py` | The robust-reading work: what a file says about itself (span, sweep description, DC / \|S\|>1 notes) and what happens when it cannot be read. Every refusal test pins the **verdict** and the **line number**, not just "raises ValueError" — that would have passed before any of it existed. Plus the recovery cases (UTF-16, BOM, commas, `D` exponents, extension tiebreak) and the two GUI affordances. |
-| `tests/`                | `unittest`-based suite (442 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/`                | `unittest`-based suite (466 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
 | `tests/test_editor_autoapply.py` | The commit-step removal: WHEN the editor writes into a `TraceConfig` and WHICH one it lands on (the deferral, the object capture, the flush-before-selection-change), the style picker's storage / reachability / honesty about multi-curve traces, and that hiding a curve neither recomputes it nor destroys the cursors. Every guard here was mutation-checked. |
 | `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see, and the reordering hazard that forces `_import_dsl_text`'s verbatim fallback. |
 | `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
@@ -520,6 +520,22 @@ claim below was mutation-checked — reverting the behaviour turns its test red.
 
 - **Standalone, no repo imports.** It runs from a scratch directory on a sim server. numpy + stdlib only. Duplicating the Touchstone parser here is intentional, not an oversight — keep the n=2 column-order quirk mirrored on both sides.
 - **Three port buckets, not two.** KEEP becomes an output port; a group named `GND`/`GROUND`/`SHORT` is shorted to the reference node (**delete that row and column in Y**, because V=0); everything unlisted is Schur-eliminated. Grounding is *not* the same as opening — PKG ground balls need the GND group or the result is wrong.
+- **A range token must be numeric END TO END.** `4:1:17` (`start:step:stop`, mirroring
+  the GUI's `parse_port_range`) and `6-14` are ranges; anything else goes to the name
+  resolver, because `-` and `:` are ordinary characters in a net name (`VDD-1`,
+  `I0:VDD`) and this is the one parser in the repo where numbers and names share a
+  token slot. A token that is both a valid range **and** an exact port name is refused,
+  not guessed. Unlike `parse_port_range`, a range that expands to nothing (`17:1:4`)
+  is an **error** here — in a config file a silently-empty group is a wrong answer with
+  no symptom, and `_fmt_ports` collapses the echo back into runs so a 54-ball GND group
+  stays one readable line. `tests/test_reduce_snp.py::TestPortRanges` is the guard and
+  all five behaviours above were mutation-checked.
+- **`--keep` / `--gnd` reach the SAME code path as a config file.** They build the
+  `{group: [token]}` mapping `parse_port_config` returns (`groups_from_cli`) and go
+  through `resolve_port_config` — one resolver, one set of error messages. `--keep` is
+  repeatable and takes an optional `NAME=` prefix so it can express several KEEP groups;
+  a reserved ground name there is refused rather than silently becoming a GND group.
+  Either source may be given, or both (the file first, inline merged on top).
 - **`--method matched` with no GND ports == plain S sub-matrix.** Proven in `test_matched_equals_submatrix`; the code takes the sub-matrix fast path there. Terminating in Z0 == adding `Y0=1/z0` to the unused diagonal before elimination.
 - **Do NOT use `np.fromstring(sep=' ')` in the parser.** It is ~9x *slower* than `float()` on numpy 2.x and truncates silently on a bad token. The `array.array('d')` + bounded staging list + `np.frombuffer` view is the measured optimum (2.5x less peak memory than a list-of-floats for +16% time).
 - **Build `s` via `s.real = ... / s.imag = ...`,** never `raw[...,0] + 1j*raw[...,1]` — the latter allocates two full-size complex temporaries and doubles peak memory on multi-GB files.
