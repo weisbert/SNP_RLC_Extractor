@@ -70,6 +70,22 @@ if ($dirty) {
 $short = (& git rev-parse --short $Ref).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrEmpty($short)) { throw "cannot resolve ref: $Ref" }
 
+# --- locate cmd.exe ----------------------------------------------------------
+# Two steps below redirect a git stream to a file THROUGH cmd.exe, because
+# PowerShell's own capture re-encodes the stream (LF -> CRLF) and would desync
+# the loose reduce_snp copy from the one inside the tarball. Resolve it from
+# %ComSpec% / the system directory rather than the PATH: a hand-edited or
+# truncated PATH that has lost C:\Windows\System32 still packs fine. Observed in
+# the wild as "The term 'cmd.exe' is not recognized", which is a baffling thing
+# to hit while packaging.
+$ComSpec = $env:ComSpec
+if ([string]::IsNullOrEmpty($ComSpec) -or -not (Test-Path -LiteralPath $ComSpec)) {
+    $ComSpec = Join-Path ([Environment]::GetFolderPath('System')) 'cmd.exe'
+}
+if (-not (Test-Path -LiteralPath $ComSpec)) {
+    throw "cmd.exe not found (ComSpec='$($env:ComSpec)'). It is required for byte-exact stream redirection - repair your PATH/environment."
+}
+
 # --- preflight: the shell scripts MUST reach the red zone as LF --------------
 # This is the single failure mode that bricks a red-zone deploy (bash reports
 # `$'\r': command not found`). Catch it here, at pack time, not over there.
@@ -97,7 +113,7 @@ foreach ($sh in $shScripts) {
 # scan the raw bytes: a tar holds ASCII headers plus file content, and neither
 # may contain CR here, so a single byte scan is exact.
 $probeTar = Join-Path $OutDir ("_pack_probe_{0}.tar" -f $PID)   # stays in OutDir, not the system temp
-& cmd.exe /c "git archive --format=tar $Ref -- $($shScripts -join ' ') > `"$probeTar`" 2>nul"
+& $ComSpec /c "git archive --format=tar $Ref -- $($shScripts -join ' ') > `"$probeTar`" 2>nul"
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $probeTar)) {
     if (Test-Path $probeTar) { Remove-Item -LiteralPath $probeTar -Force }
     throw "git archive cannot find $($shScripts -join ', ') in $Ref - commit them (and .gitattributes) first."
@@ -139,7 +155,7 @@ if (-not $NoSingleFile) {
     $singleName = "reduce_snp_$short.py"
     $singlePath = Join-Path $OutDir $singleName
     if (Test-Path $singlePath) { Remove-Item -LiteralPath $singlePath -Force }
-    & cmd.exe /c "git cat-file blob ${Ref}:reduce_snp.py > `"$singlePath`""
+    & $ComSpec /c "git cat-file blob ${Ref}:reduce_snp.py > `"$singlePath`""
     if ($LASTEXITCODE -ne 0) { throw "git cat-file blob ${Ref}:reduce_snp.py failed" }
     if (-not (Test-Path $singlePath) -or (Get-Item $singlePath).Length -eq 0) {
         throw "extracted $singleName is empty"
