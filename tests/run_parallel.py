@@ -8,6 +8,15 @@ Why this exists (all numbers measured on this repo, 20 logical cores):
     python tests/run_parallel.py                  108 s   906 tests   (2.7x)
     python tests/run_parallel.py --fast           2.9 s   523 tests
 
+Re-measured on this box after the attribution work, at 1566 tests / 289 shards:
+
+    python tests/run_parallel.py                  236 s / 230 s (two runs)
+    python tests/run_parallel.py --fast           4.1 s / 4.1 s   642 tests
+
+The full number tracks CONTENTION as much as anything -- 120 s on an idle box
+and 339 s with another agent on the same cores have both been measured on the
+same tree -- so read the exit code, not the clock.
+
 Where the time goes: 87% of the suite is the eight Tk-driven modules, and
 HALF of that is `App()` being rebuilt in setUp -- 258 ms a time (against 31 ms
 for a bare `tk.Tk()`), 498 times, which is 128 s, i.e. 44% of the whole suite.
@@ -36,7 +45,7 @@ which is the standard LPT heuristic for makespan.  The first run has no cache
 and falls back to "most test methods first".
 
     python tests/run_parallel.py                  # everything
-    python tests/run_parallel.py --fast           # the no-Tk modules only (0.6 s)
+    python tests/run_parallel.py --fast           # the no-Tk modules only (4.1 s)
     python tests/run_parallel.py -m core coupling # substring match on module names
     python tests/run_parallel.py -j 8             # worker count
 
@@ -62,17 +71,20 @@ REPO = Path(__file__).resolve().parent.parent
 TESTS = REPO / "tests"
 
 # Modules with no Tk dependency: the guard to run while iterating on the
-# numeric core.  Measured together: 522 tests in 2.9 s, against 116 s for the
-# full parallel suite.  Anything touching pkg_rlc_gui.py or pkg_rlc_plot.py
+# numeric core.  Measured together: 642 tests in 4.1 s, against 230-236 s for
+# the full parallel suite.  Anything touching pkg_rlc_gui.py or pkg_rlc_plot.py
 # needs more than this -- see --fast in the help text and the note in
 # CLAUDE.md.  `test_freq_label` is deliberately NOT here despite being quick:
 # it imports tkinter, and the one property this list has is that it does not.
 #
-# The four attribution modules belong here and were missing: `pkg_rlc_attrib`
+# The SIX attribution modules belong here and were missing: `pkg_rlc_attrib`
 # imports numpy and `pkg_rlc_core` and nothing else, and the CLI ones drive
 # `pkg_rlc_extractor` through argv.  A change to the attribution engine that
-# cannot be caught by --fast is a change whose author will run the full 116 s
-# suite instead, or nothing.
+# cannot be caught by --fast is a change whose author will run the full suite
+# instead, or nothing.  The two cold-start modules arrived after that and were
+# left out, so `--fast` was silent about the whole cold-start screen -- 119 of
+# its tests, and 0.6 s of measured cost.  Verified against the one property
+# this list has: neither imports tkinter.
 FAST_MODULES = (
     "test_golden_regression",
     "test_core",
@@ -85,6 +97,8 @@ FAST_MODULES = (
     "test_attrib_vs_engine",
     "test_attrib_degenerate",
     "test_attrib_cli",
+    "test_attrib_coldstart",
+    "test_attrib_cli_coldstart",
 )
 
 _RAN_RE = re.compile(r"Ran (\d+) test")

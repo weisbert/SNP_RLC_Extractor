@@ -1,11 +1,14 @@
 # Design note — port attribution (`pkg_rlc_attrib.py`)
 
-Status: **specified, nothing implemented.** No code, no GUI, no tests exist
-yet. This note is the authoritative statement of what the module computes,
-what it refuses to compute, and which of its rules came from a measurement
-rather than from taste. Every number quoted below was reproduced in this
-repo against `tests/fixtures/` unless it is explicitly attributed to the
-user's own (not-in-repo) package file.
+Status: **all five stages shipped** — the engine, the sensitivity and Möbius
+layer, the CLI report, the `Toplevel` (§13), and the cold-start screen (§14).
+See the staging table in §10. Sections 1-8 are the original specification and
+have been left as written: they are the argument the code was built from, and
+where the implementation ended up somewhere else the difference is recorded in
+§13 with the measurement that moved it, rather than by quietly editing the
+history. Every number quoted below was reproduced in this repo against
+`tests/fixtures/` unless it is explicitly attributed to the user's own
+(not-in-repo) package file.
 
 The module imports `pkg_rlc_core` and nothing else from the repo — the same
 acyclic relationship `pkg_rlc_plot` has (`pkg_rlc_plot.py` imports
@@ -949,15 +952,27 @@ already solved the same set of problems and its solutions transfer directly:
   `after_idle`-coalesced, never raises, writes to nothing but its own widgets,
   never writes a `TraceConfig`, guards on `winfo_exists()`, and sits **outside**
   that function's try/except so a window failure cannot blank the strips.
-- **A read-only `ttk.Treeview` is legitimate here.** The repo's Treeview ban
-  covers the *editable* connection table (no cell editors) and the *main
-  results table* (it destroys the `aligned` units mode and freezes row height
-  at 20 px). A contribution table is read-only and columnar, which is the
-  `PortRolesWindow` case — with its two handled hazards: set row height from
-  the font metrics on a **derived** style name, never by reconfiguring the
-  global `Treeview`; and apply the `_fixed_map_filter` so tag colours are not
-  outranked by `('!disabled', '!selected')` specs. Sort on the **raw record**,
-  never the rendered string.
+- ~~**A read-only `ttk.Treeview` is legitimate here.**~~ **This one was wrong,
+  and stage 4 measured it out — see §13.2.** The reasoning below is sound for
+  a table of *names and roles*, which is what `PortRolesWindow` has; it does
+  not survive a table of **signed numbers**. Measured in this environment: the
+  same eight columns need 671 px as a Treeview at 100 % font scaling and
+  971 px at 150 %, against 490 px / 700 px as Consolas 9 text; ttk will not
+  shrink a column below its set width even with `stretch=True` and it clips
+  with **no ellipsis and no overflow indicator**, so `-0.6231` silently
+  becomes a plausible shorter number; and in `TkDefaultFont` the signed-number
+  glyphs are all different widths (`-` 5 px, `+` 9, U+2212 9, `.` 3, ` ` 4,
+  digits 7), so a right-aligned column of signed values has its decimal point
+  wandering ±4 px per row. The window uses a monospace `tk.Text` instead. The
+  original argument, retained because it is still the right argument for
+  `PortRolesWindow`: the repo's Treeview ban covers the *editable* connection
+  table (no cell editors) and the *main results table* (it destroys the
+  `aligned` units mode and freezes row height at 20 px); a read-only columnar
+  table is neither case, provided its two hazards are handled — row height set
+  from the font metrics on a **derived** style name, never by reconfiguring
+  the global `Treeview`, and `_fixed_map_filter` applied so tag colours are
+  not outranked by `('!disabled', '!selected')` specs — and provided sorting
+  is on the **raw record**, never the rendered string.
 - **Write-back through the widgets, never into the `TraceConfig`** — the same
   rule, for the same reason: poking the trace directly is overwritten by the
   next auto-apply sync. If the sensitivity table ever grows an "apply this
@@ -975,13 +990,14 @@ wrong rule is worse than no row.
 
 ## 10. Staging
 
-| Stage | Content | Verifiable without a human? |
-|---|---|---|
-| 0 | This note. Fixture-level verification of §5.1, §5.3, §5.5, §5.9, §5.10 by script | **Yes** |
-| 1 | `pkg_rlc_attrib.py` core: baseline, elements, `decompose`, reconciliation, return budget, diagnostics (§5.1–5.8, 5.11, 5.12) | **Yes** — round trip against `compute_z_matrix` |
-| 2 | Sensitivity (§5.9) and the Möbius sweep (§5.10), each verified against an honest recompute | **Yes** |
-| 3 | CLI report — the whole feature is usable headless before any Tk exists | **Yes** |
-| 4 | The `Toplevel` (§9) | Code yes, look-and-feel no |
+| Stage | Content | Verifiable without a human? | Status |
+|---|---|---|---|
+| 0 | This note. Fixture-level verification of §5.1, §5.3, §5.5, §5.9, §5.10 by script | **Yes** | **done** |
+| 1 | `pkg_rlc_attrib.py` core: baseline, elements, `decompose`, reconciliation, return budget, diagnostics (§5.1–5.8, 5.11, 5.12) | **Yes** — round trip against `compute_z_matrix` | **done** |
+| 2 | Sensitivity (§5.9) and the Möbius sweep (§5.10), each verified against an honest recompute | **Yes** | **done** |
+| 3 | CLI report — the whole feature is usable headless before any Tk exists | **Yes** | **done** |
+| 4 | The `Toplevel` (§9) | Code yes, look-and-feel no | **done** — `pkg_rlc_attrib_gui.py`, with `tests/test_attrib_window.py` (127, the window in isolation) and `tests/test_attrib_gui_integration.py` (end to end through the real app). What it became, and where it departed from §9, is §13 |
+| 5 | The cold-start screen — which ports matter *before* a spec exists | **Yes** — same closed-form-vs-honest-recompute contract as stage 2 | **done** — in `pkg_rlc_attrib.py`, `tests/test_attrib_coldstart.py` (49) + `tests/test_attrib_cli_coldstart.py` (70). §14 |
 
 Stage 1 must not start before stage 0's script is green on every fixture,
 because §5.3 says the repo's flagship Mode 6 example breaks a naive
@@ -1038,3 +1054,341 @@ say every pixel in the GUI is already spoken for.
   extremum are closed form, and a sample grid can miss both.
 - **Presenting the contribution table as a port ranking.** §6.1 — it omits
   every open port, which on a package is most of them.
+
+---
+
+## 13. Stage 4, as built: what the `Toplevel` actually became
+
+`pkg_rlc_attrib_gui.py`, opened from **Analyze → Attribution…** and from the
+Traces right-click. `pkg_rlc_gui.py` holds only hooks — the two menu entries,
+one line under the coupling block in the Results pane, and the refresh calls of
+§13.6. The module is separate because `pkg_rlc_gui.py` was already 7000+ lines
+and because a separate module let the window and its hooks be written at the
+same time by different hands. `pkg_rlc_gui` imports it; it imports `pkg_rlc_gui`
+back only from **inside functions**, so the cycle never exists at import time.
+
+§9 argued for a modeless `Toplevel` modelled on `PortRolesWindow` and that is
+what shipped. Four of its specifics did not survive contact with a measurement,
+and those are the interesting part of this section.
+
+### 13.1 No notebook — and specifically not the obvious four tabs
+
+The shape that suggests itself is four tabs: Contributions / Sensitivity /
+Sweep / Across frequency. It was designed and rejected, for two reasons that
+are about *what the tabs are*, not about pixels:
+
+- **The sweep is a drill-down on the row you just clicked**, not a place. As a
+  tab it makes the user re-pick the element they had already selected, and it
+  breaks the one gesture the pane exists for: click a row, see what that row
+  would be worth.
+- **"Does this ranking hold across frequency" is a validity qualifier on the
+  table, not a place.** As a tab it is never opened, and the acceptance item it
+  answers is then satisfied on paper only.
+
+What shipped instead: a fixed header, the sign-convention strip, the
+reconciliation strip and a one-line across-frequency **badge with an expander**
+that opens it in place; one primary pane with a **radiobutton view toggle**
+(`(•) Contributions  ( ) Sensitivity`); and a detail pane under a sash, driven
+by the selected row, carrying that element's current, its transimpedance, the
+candidate deltas and the sweep plot **for that element**. Every pane is
+populated **before** `PanedWindow.add()` — ttk sizes a pane from its requested
+size at `add()` time and never recomputes.
+
+### 13.2 Monospace `tk.Text`, not `ttk.Treeview`
+
+§9's Treeview bullet is struck through above with the measurement. The
+consequences are worth stating positively, because they are what the table
+actually does:
+
+- Columns are sized from the widest cell **or the header**, whichever is wider
+  — the cursor-readout rule (§ of `pkg_rlc_plot`), because sizing on the values
+  alone puts a 7-character value under a 5-character heading and throws every
+  heading one place off the numbers it names.
+- Only the two **text** columns are capped, and they ellipsise with U+2026. No
+  numeric column is ever capped: a clipped number is a plausible wrong number,
+  which is the whole failure being avoided.
+- Every glyph a table emits measures **exactly 7 px** in Consolas 9 —
+  re-measured for this window across `' ' 0 9 - + − █ ▸ ▾ . M X ( ) % j … Ω ←`
+  — so the columns line up. `✓` is 12 px in that font and is therefore banned
+  from tables and used only in ttk labels.
+- Rows are headed by the results pane's own `█` swatch as a colour tag, the
+  `c0..c11` precedent, so select-drag-copy of a whole block into a mail still
+  works and the `aligned` units mode still means one SI prefix per **column**.
+
+### 13.3 Signs are a width-stable pair, and colour never means sign
+
+One of U+2212 (negative) or `+` (positive) is emitted for **every** numeric
+cell, never a conditional sign — both are 7 px in Consolas 9, the same as a
+space, so a column of mixed signs keeps its decimal points in one place.
+
+Rows are coloured by **element kind**, reusing `PORT_ROLE_FG`, the palette the
+user already learned in Ports & Roles. **Never by sign.** Red is `WARN_FG`
+everywhere else in this application, and a red negative term makes a correct
+answer look like a fault — which matters more here than anywhere, because §5.7
+measured a case where the *bare EM term* is negative and four declared grounds
+cancel most of it. The rule that makes that readable is stated once, in the
+header: a negative term **opposes** the total and the terms sum to it exactly;
+shares are of the **signed** total, so they exceed 100 % and go negative
+wherever terms cancel.
+
+### 13.4 Reconciliation is in the header, not the footer
+
+§5.5 says the residual must be reported with its floor. Where it is reported
+turns out to matter: it **gates trust in everything under it**, and at the
+bottom of a scrolling table it is the first thing off screen. It renders as a
+verdict word plus the number — `reconciled  rel diff 3.1e-13 (floor 4.3e-10)`
+— and when the split is withheld the **total is still shown**, which is §5.5's
+"degrade, never refuse" made visible.
+
+### 13.5 `[Recompute]`, not auto-refresh — the one that would have shipped broken
+
+The obvious design is a window that refreshes from `_apply_editor_strips` like
+`PortRolesWindow` does. It is wrong, and the reason is a property of the host
+application rather than of this feature:
+
+> `tc.Zmat` is written **only** by `_on_calculate`. Editing the spec sets
+> `tc.stale` and leaves `Zmat` at the **previous run's** value.
+
+So a window refreshing on every keystroke would, on the first character typed,
+decompose the **new** spec and reconcile it against the **old** authoritative
+total. The residual would not be `1e-13`, it would be however much the edit
+changed the network — and by §13.4 the window would then withhold its own
+split. **The documented behaviour of the auto-refresh design is a window that
+erases itself while you type.**
+
+The editor hook is kept, but it updates exactly one thing: a **staleness
+banner** (a signature comparison, microseconds), which is what makes the button
+honest. The banner also names the provenance permanently — `from run #7 @
+5.600 GHz` — because a window holding a result must say which result.
+
+### 13.6 The window outlives its subject
+
+`PortRolesWindow` re-reads `app.traces` on every refresh and degrades
+gracefully. This window holds a **result**, so it cannot. Every path that
+removes a trace or a file, and every session load, must call
+`refresh_attribution_windows(app)`; `_on_units_mode_changed` calls it with
+`rerender=True` and nothing else does. That is the same class of omission as
+the documented `_on_remove_file` forgot-to-replot bug, and it is why the hook
+is a named function in this module rather than a line of code in the host.
+
+### 13.7 `transient(app)`: deliberately **not** set
+
+`PortRolesWindow` sets it, and that is right for it — a quick read-while-editing
+panel that should not clutter the taskbar. This window is the opposite: it
+holds a result that cost a Recompute to produce, it is read against the plot
+and the editor over many edits, and parking it on a second monitor and
+alt-tabbing back is the normal gesture. On Windows `transient` removes both the
+taskbar button and the Alt-Tab entry and makes the WM withdraw the child with
+its master, so setting it would take that gesture away. The cost of not setting
+it is that the window can end up behind the main one; `open_attribution_window`
+answers that by **lifting and focusing an existing window** for the same
+(trace, victim, aggressor) rather than opening a second copy.
+
+No `grab_set` anywhere, for the reason §9 gives: a modal `Toplevel` that
+outlives its opener blocks event delivery, `update()` never returns, and the
+GUI and the test suite hang together.
+
+### 13.8 The refusals, and why the menu entry stays live
+
+`attribution_refusal(trace, file_entry)` returns `None` or the reason, in
+words meant for the user. Four things are refused: a **frozen** snapshot (its
+numbers came from an earlier run and can never be recalculated, so anything
+computed now could only be stamped with the current run — the run-snapshot bug
+arriving through a different door), a **stale** trace (the numbers and the spec
+beside them no longer describe each other), a trace with **no numbers or no
+loaded file**, and a trace with **one measurement port** (`Z_ab` is a mutual
+impedance; there has to be a victim *and* an aggressor).
+
+The menu entry stays **live** in all four cases, which is CLAUDE.md's rule on
+the identical decision for Freeze: *a greyed entry would be the same bug
+report.*
+
+### 13.9 The sweep canvas: two deliberate departures from the shipped precedent
+
+`pkg_rlc_plot.FullscreenPlotWindow` is the precedent for a second
+`FigureCanvasTkAgg` in a `Toplevel`, and it is followed — `Figure()`, never
+`pyplot.figure()`, so no global registry keeps the figure alive after the
+window is destroyed. Two things are done differently:
+
+- **No `<Enter>` → `focus_set` binding.** Measured: that binding moves focus
+  off a sibling Entry, and this window has Entry fields directly above the
+  plot. The user types `5.6` into Freq, moves the mouse toward `[Recompute]`,
+  crosses the plot, and the rest of the keystrokes go nowhere. No M / V /
+  Delete bindings either — this is a read-only what-if curve, not the
+  measurement plot.
+- **Drawn lazily, on first reveal.** A canvas in an unmapped pane has no size,
+  so `draw()` / `tight_layout` there lays the axes out for a 1x1 widget and the
+  labels stay on top of each other forever after.
+
+### 13.10 No accelerator
+
+`bind_all` reaches every `Toplevel`. Measured on this application's own
+menubar: Ctrl+S typed into a `Toplevel` Entry fires the App's
+`_on_save_config`, so Ctrl+O inside this window would open Load Config and
+replace every trace — including the one the window is describing. Nothing here
+registers a `bind_all`, and the two existing routes (menubar, right-click) are
+enough. `<Return>` in the frequency field recomputes, bound **on the Entry**.
+
+### 13.11 Layout numbers that were measured, not chosen
+
+- Default `980x700`, minimum `720x420`. Re-measured on a real window while
+  writing these docs (mode-6 trace `coil` on `coupled_4port_diff.s4p`): the
+  header's six items are 228/160/186/145/143/99 px = **961 px**, the strip is
+  **964 px** at 980 — **one row, 29 px** — and **704 px** at 720, where it
+  wraps to **two rows, 58 px**. `winfo_reqwidth()` is **1** at both sizes. That
+  is why it is a `ReflowRow` and not a `pack(side=LEFT)` run: `pack` unmaps
+  from the **end**, which would have taken `[Recompute]` off screen with no
+  scrollbar and no other route to it, and `place` does not propagate, so the
+  961 px never travels up into the `Toplevel`.
+- The trace label in the header is capped at 18 + 18 characters. **Three
+  pixels** of headroom at the default width is the reason: the test suite's own
+  default label already puts the same sum at 970 px, and uncapped the first
+  item is 317 px worst case, which forces a **third** row.
+- The three strips (banner, sign, reconciliation) are one line each with
+  `wraplength=0`, i.e. they **clip** — measured at **21 px each** at both
+  declared sizes. Letting them wrap costs 51 px of a 213 px pane budget at the
+  minimum size.
+- **The character budget was measured at 100% only, and that was the bug.** The
+  original sign strip was 221 characters / 1316 px, of which 120 fit at 720 px
+  and 162 at 980 — true, and irrelevant at the 150% DPI this repo supports,
+  where the same strip fits **52 characters at 720 and 74 at 980**. The string
+  spent its first 64 on the sign rule, so at 150% the SHARE rule (§13.4's
+  second mandatory clause) was off screen at every size, with the comment
+  beside the constant asserting the opposite. It is rewritten to spend its
+  first **48** characters on both rules; re-measured on the real widget: 48 at
+  150%/720, 66 at 150%/980, 110 at 100%/720, all 143 at 100%/980.
+  `reconciliation_line` moved `— split WITHHELD` from behind `rel diff …
+  (floor …)` to immediately after the verdict word for the same reason —
+  measured, the word never appeared at 150% at either width, above a table
+  reading "(no per-element split — see the reconciliation line above)".
+- **The declared MINIMUM was a size at which the window showed nothing.**
+  Measured at 150%, the fixed chrome is **436 px at 720 wide** against a
+  declared 420, and at exactly 720x420 the entire `PanedWindow` read
+  `winfo_ismapped() == 0` — the table, the detail pane and the sweep canvas all
+  gone, with the header, the three strips and all three buttons fine, i.e. the
+  pack order of §13.10 doing exactly what it says while the content vanished.
+  `_apply_min_height` raises the floor to `chrome + 9 x <table font linespace>`
+  at the current width (the split needs a measured 124 px at 100% and 162 at
+  150% for the table to be mapped). At 100% the computed value is 333, under
+  the declared 420, so the 100% window is untouched. It reads the WIDTH and
+  writes only a minimum HEIGHT, so it is the `ReflowRow` fixed point rather
+  than the `_apply_editor_scrollbars` limit cycle — verified by measurement
+  over eight resizes in both directions at both scalings.
+- `ttk.Panedwindow` starves its **first** pane, not its last: at 720x420 the
+  split wanted 445 px and got 168, and the **table** read
+  `winfo_ismapped() == 0` while the detail pane was fine. The cause was the
+  matplotlib canvas requesting 420x240 (figsize x dpi) against the table pane's
+  156; capping the canvas *widget* to 240x90 balances them at 156/156 and both
+  survive at 54/74 px. Only the floor moved — matplotlib re-lays out on every
+  `<Configure>`.
+- Pack order, per §9's rule and CLAUDE.md's: footer `side=BOTTOM` **first**,
+  then the header and the strips, then the `PanedWindow` with `expand=True`
+  last. The buttons and the reconciliation verdict are unconditional; it is the
+  table that gives up height.
+
+### 13.12 What the window does not offer
+
+**The shared-return ground model.** It is a dense element-impedance matrix
+(§5.2), it cannot be written as a `TerminationSet`, and the header is already
+over budget at 980 px, so a seventh control would push `[Recompute]` onto a
+third row. It stays on the CLI (`--attribute-ground-model shared:…`). Because
+the choice is worth 6–10 dB, the window does not let the reader *assume* a
+model: the export names the one its numbers came out of, in full.
+
+**The cold-start screen** (§14). It is CLI-only today.
+
+---
+
+## 14. Stage 5: the cold-start screen
+
+`decompose` ranks **declarations**. At the start of a job there are none — and
+the all-open configuration, which is the one that produced the disputed number
+of §1, has no elements and therefore no terms. §5.9's sensitivity does reach
+undecided ports, but it is framed as "check the robustness of the spec you
+already wrote", which is a different question from "what should the spec say".
+
+The mathematics is in `docs/theory.md` §13.14; the user-facing shape is in the
+README and in Help → Mode 6. What belongs *here* is why it is shaped this way.
+
+**It is read off the machinery that already exists, not reimplemented.** Build
+one `AttribContext` whose `TerminationSet` is "the probes, plus one ideal ground
+on every other port" and every step falls out of it: `ctx.Dmat` is the all-open
+matrix, `ctx.Zop` the all-grounded one, `ctx.Rmat[e,a]` is `Zbase[a,p]`,
+`ctx.Pmat_b[e,b]` is `Zbase[p,b]`, `ctx.Gm[e,e]` is `Zbase[p,p]`, the one-element
+solve **is** the closed form, the two-element solve is the pair scan, and
+`leave_one_out` on the same context is the mirror direction with no new code.
+That is also what makes the verification claim cheap to state: the same
+closed-form-versus-honest-recompute contract as stage 2, measured at `1.47e-11`
+worst on the planted 12-port case and `<= 5.8e-11` over every fixture.
+
+**Four steps, in this order, and the order is the design.**
+
+| Step | What | Why it is where it is |
+|---|---|---|
+| 0 | the open..ideal-ground **bracket**, in dB | It decides whether the other three are worth reading. Measured 25.67 dB on the planted case. |
+| 1 | every candidate port, ranked by the **exact** effect of grounding it, with **two** coupling columns | The ranking. See below on why the columns are not collapsed. |
+| 2 | the **pair scan** over the top K, from all-open, plus the mirror from all-grounded | The blind spot of step 1, and it is not optional. |
+| 3 | the **greedy cumulative curve** | The only step that answers *how many* ports matter. |
+
+**Two coupling columns, never their product.** Measured on the planted case,
+the port with the largest `|Zbase[a,p]|` in the file (`34.777 Ω`, 67 % above
+the real path's) has `|Zbase[p,b]| = 0.038` and an effect of `−0.378 pH`
+against `−395.369 pH`: ranked on coupling-to-the-victim alone it is **first**
+and worthless, ranked on the effect it is fifth of eight. `theory.md` §13.14.2
+carries the complementary in-repo measurement, where two ports with the two
+columns *swapped* (a factor of 2021 apart) have the same effect to twelve
+digits.
+
+**The pair scan is mandatory, and the measurement says so.** A shield brought
+out as two ports reads **+9.689 pH** with either end grounded alone and
+**−870.268 pH** with both — 90x the largest single-port effect, opposite sign.
+`5 short_to 6` with no ground anywhere gives the identical −870.268 pH, which
+proves the mechanism is the closed **loop** and not the grounding. Its mirror
+image is the 60-ground-ball case, where one-at-a-time from *all-grounded* reads
+`~0` because the other fifty-nine carry the return. Both directions are needed;
+neither subsumes the other.
+
+**The negative result is reported as a result.** "The other N ports are all
+below X dB, so the coupling is local" is what lets a designer stop looking, and
+a screen that only ever prints a top-10 cannot say it.
+
+**Name families are a proposal the tool TESTS, never an assumption it folds
+in.** The requirement was explicit — *which port is ground is a semantic
+judgement and we do not want the script guessing*. So the numbers are computed
+both ways and the grouping stays a sentence the reader accepts or rejects. The
+minimum family size is **2**, deliberately not core's
+`OPEN_CLUSTER_MIN_FAMILY = 4`: that threshold keeps a remnant check from crying
+wolf about `coil1`/`coil2`, while the case this one exists for is exactly a
+two-member family. Nothing in the bracket, the ranking, the pair scan or the
+curve changes according to whether the file carries port names at all, and the
+test suite pins that by running the whole report twice.
+
+**What it cannot find, on the report and not in a footnote:** anything needing
+three or more ports to move together. Step 1 is first order in the candidate
+set, step 2 exactly second, and step 3's greedy walk can stumble onto a triple
+with no guarantee.
+
+**Why there is no window for it.** The output is four tables and several
+paragraphs of qualification — the same argument that put stage 3 before stage
+4 — and the Attribution window's header is already at its width budget
+(§13.11). A GUI surface for the cold-start screen is a separate design with its
+own measurements, and inventing one inside the attribution window would spend
+the pixels §13.11 shows are not there.
+
+### 14.1 Cost, measured
+
+At one frequency on a 153-port package export, 151 candidates:
+
+| | |
+|---|---|
+| `cold_start_context` (the only `O(N³)` piece; pass it to every step) | 350.6 ms |
+| step 1, the whole ranking | **2.41 ms** — against **2402.6 ms** for one `compute_z_matrix` per candidate, a factor of **997** |
+| step 2, the pair scan | 0.44 ms at K=8, 3.4 ms at K=20, 8.2 ms at K=30 |
+| step 3, the curve | 132 ms at k=12, 237 ms at k=24, **54.9 s** at k=0 (every candidate) |
+| all four steps together | **9.5 s** — of which **9.3 s** is the mirror direction |
+| all four steps at 38 candidates | 17.6 ms |
+
+Two things those numbers changed. A bare `--cold-start-cumulative` meaning
+"every candidate" would have been a 55-second trap, so the flag takes an
+explicit `K`. And the pair scan's cap is about **how much table a person
+reads**, not about cost — 28 pairs in 0.44 ms is nothing.

@@ -11,7 +11,8 @@ brought you here, sections 2, 3 and 8 are enough.
 of termination assumptions, and section 13 takes that number apart into "the bare EM
 coupling" plus one exact term per assumption. Read section 8 first; §13 leans on §8.5 (why
 open-circuit is the right primitive) and §8.8 (M/L versus the exact current-transfer ratio)
-throughout.
+throughout. **§13.14** is the same algebra pointed the other way — before any assumption has
+been made, *which ports would matter if you made one?* — and is where a new file starts.
 
 ---
 
@@ -1363,3 +1364,217 @@ structurally on integer port-index sets first, with the offending elements named
 is `cond(G)` looked at. Elements whose `u` is the zero vector after probe-side merging are
 dropped as already inert — the same class `inert_lumped_messages` reports on the Mode 5
 validation strip.
+
+### 13.14 The cold-start screen — which ports matter before a spec exists
+
+Everything from §13.3 to §13.13 ranks **declarations**. At the start of a job there are none.
+The designer knows the victim and the aggressor and nothing about the other 149 ports, and
+the all-open configuration — the one `compute_z_matrix` returns for a probes-only spec, and
+the one that produced the disputed number of §13.1 — has no elements in it, so `m = 0`, `U`
+is empty, and the contribution table of §13.3 is **empty by construction**. §13.7's
+sensitivity does reach undecided ports, but it is framed as "check the spec you already
+wrote", which is a different question from "what should the spec say".
+
+The cold-start screen answers the second one, in four steps, each exact and each read off the
+**same** `Zbase` that §13.2 already defines.
+
+#### 13.14.1 The closed form
+
+Take one candidate port `p` and ground it ideally. That is §13.3 with exactly one element:
+`u = e_p`, and `Zt = [0]`, because an ideal element has **zero impedance** (§13.2 — this is
+the whole reason the `Zt` form is used rather than the `D = Zt^-1` form, which would need
+`D = inf` here). Substituting into §13.3 term by term,
+
+```
+H   = Zt + G = [ u^T Zbase u ]      = [ Zbase[p,p] ]
+p_b = u^T Zbase w_b                 = Zbase[p,b]
+r_a = (w_a^T Zbase u)^T             = Zbase[a,p]
+I   = solve(H, p_b)                 = Zbase[p,b] / Zbase[p,p]
+```
+
+and therefore
+
+```
+Z_ab(p grounded) = Zbase[a,b] − Zbase[a,p]·Zbase[p,b] / Zbase[p,p]
+
+           dZ_ab =            − Zbase[a,p]·Zbase[p,b] / Zbase[p,p]
+```
+
+`H` is `1x1`, so the solve is a division and the "Woodbury update" is a scalar. The same
+expression drops out of plain linear algebra without going through §13.3 at all: grounding a
+port means `V_p = 0`, i.e. deleting row and column `p` of the node admittance, and the
+`(a,b)` entry of the inverse of a matrix with one row and column deleted **is** that Schur
+complement. Both readings earn their place — the first says *why the number is a
+transimpedance times a current*, the second says *why it is exact*.
+
+**Exact, not first order.** There is no expansion in a small parameter anywhere. The element
+is not small, it is ideal, and the identity holds for any `Zbase[p,p] ≠ 0`.
+
+Reproduced in this repo on `tests/fixtures/diff_pair_4port.s4p` at the grid point nearest
+5 GHz (5.0005 GHz), ground-referenced probes on port 1 (`vic`) and port 2 (`agg`), candidates
+3 and 4 — the closed form above, the module's own `cold_start_screen`, and an **honest**
+re-solve through `compute_z_matrix` with a rebuilt `TerminationSet`:
+
+| candidate | closed-form `dZ_ab` (Ω) | vs the honest re-solve |
+|---|---:|---:|
+| ground port 3 | `−6.5709e-10 + 7.9328411386800 j` | `7.11e-13` relative |
+| ground port 4 | `−6.5593e-10 + 7.9328411386806 j` | `8.30e-13` relative |
+
+On a planted 12-port case built for the purpose the worst relative disagreement over every
+candidate is `1.47e-11`, and it is `<= 5.8e-11` over every fixture in the repo
+(`tests/test_attrib_coldstart.py`).
+
+**Cost.** The mathematics needs `Zbase[a, :]`, `Zbase[:, b]` and `diag(Zbase)` — **two solves
+plus the diagonal** — and then one division per candidate. The implementation builds the whole
+baseline once anyway (measured 350.6 ms at `N = 153`), because the other three steps need it;
+the ranking itself is then **2.41 ms** for 151 candidates against **2402.6 ms** for one
+`compute_z_matrix` per candidate, a factor of **997** for the identical answer.
+
+#### 13.14.2 Why two coupling columns, and not their product
+
+The formula is a product of three factors and the screen ranks on the product. It
+nevertheless prints `|Zbase[a,p]|` and `|Zbase[p,b]|` as **two separate columns**, because
+the product cannot be read backwards and the two factors mean different physical things:
+
+- `Zbase[a,p]` — how strongly port `p` talks to the **victim**. A port with no path to the
+  victim cannot carry coupling into it however loud the aggressor is at it.
+- `Zbase[p,b]` — how strongly the **aggressor** talks to port `p`. The same argument the
+  other way round.
+
+A port has to do **both** to be a path, and either factor alone is a plausible-looking
+ranking key that is wrong. Measured on the planted 12-port case: the port with the **largest**
+`|Zbase[a,p]|` in the whole file — `34.777 Ω`, 67 % more than the real coupling path's
+`20.873 Ω` — has `|Zbase[p,b]| = 0.038` and a true effect of **−0.378 pH**, against
+**−395.369 pH** for the real path. Ranked on coupling-to-the-victim alone that port comes
+**first** and is worthless; ranked on `|dZ_ab|` it is **fifth of eight**.
+
+The repo's own fixture makes the complementary point, and more cleanly, because there the two
+ports are provably equivalent. `diff_pair_4port.s4p` at 5.0005 GHz with the probes above:
+
+| candidate | `\|Zbase[a,p]\|` | `\|Zbase[p,b]\|` | `\|Zbase[p,p]\|` | `dZ_ab` |
+|---|---:|---:|---:|---:|
+| port 3 (`out_p`, far end of the **victim's** line) | 15953.3 Ω | 7.89368 Ω | 15874.5 Ω | `+7.93284 Ω` |
+| port 4 (`out_n`, far end of the **aggressor's** line) | 7.89368 Ω | 15953.3 Ω | 15874.5 Ω | `+7.93284 Ω` |
+
+The two columns are swapped between the rows, they differ by a factor of **2021**, and the
+two ports have the **same effect to twelve digits**. Rank on either column alone and one of
+these two identical ports comes first while the other comes last. That is the argument for
+printing both and ranking on neither.
+
+#### 13.14.3 Step 0: the bracket
+
+Before any ranking, one number: the quantity with every non-probe port **open**, against the
+same quantity with every one of them at **ideal ground**, and the dB between. The low end is
+`Zbase[a,b]` itself; the high end is §13.3 with one ideal element per candidate, i.e. one
+`m x m` solve with `m` the candidate count — and that end comes with a second opinion for
+free, because `compute_z_matrix` *can* be asked about the all-grounded spec (measured
+agreement `1.44e-14` on `diff_pair_4port.s4p`). The all-open end has no second opinion
+available and the report says so: no `TerminationSet` spells "the probe sides merged and every
+element removed" — that **is** the baseline.
+
+Measured **25.67 dB** on the planted case. It is printed first because it decides whether the
+other three steps are worth reading at all.
+
+**It brackets the open..ideal-ground family and nothing else.** It is not a bound over all
+terminations, for exactly the reason §13.8 gives: as a function of one element's impedance
+`z` the answer traces a **Möbius arc**, and an arc between two endpoints is not the segment
+between them. A series ground inductance resonates with the structure's shunt capacitance and
+leaves the bracket — measured on `diff_pair_4port.s4p`, sweeping one ground's series `L` over
+`[0, inf)` peaks at 9 mH of apparent `M` at `L = 505 nH`, against a 1.01 nH open..ideal
+bracket. `sweep_mobius` is the closed form for the interval actually achieved over a range
+you can build; the bracket is the cheap first question, and it is labelled as such
+(`COLD_START_BRACKET_CAVEAT`, carried verbatim into every export).
+
+#### 13.14.4 Step 2: pairs, and why the second order is not optional
+
+Two candidates `p`, `q` grounded together is §13.3 with `m = 2`:
+
+```
+      [ Zbase[p,p]  Zbase[p,q] ]         [ Zbase[p,b] ]
+H  =  [ Zbase[q,p]  Zbase[q,q] ]   p_b = [ Zbase[q,b] ]   r_a = [ Zbase[a,p], Zbase[a,q] ]
+
+dZ_ab  =  − r_a^T H^-1 p_b
+```
+
+one 2x2 solve, microseconds, exact. And the algebra says immediately where the surprise comes
+from: **if `Zbase[p,q] = 0` then `H` is diagonal and `dZ_pair = dZ_p + dZ_q` exactly.** The
+non-additivity `dZ_pair − dZ_p − dZ_q` is driven entirely by how much the two candidate ports
+talk **to each other** — which is precisely what a one-at-a-time scan never measures, and
+precisely what the two ends of one physical structure do maximally.
+
+Measured, and this is why the step is mandatory rather than a refinement: a shield brought out
+as two ports reads **+9.689 pH** with either end grounded alone and **−870.268 pH** with both
+— **90x** the largest single-port effect in the file, with the **opposite sign**. A
+single-port ranking reports that as two minor positive entries and nobody looks again. The
+mechanism is the closed **loop**, not the grounding: `5 short_to 6`, with no ground anywhere,
+gives the identical −870.268 pH.
+
+The **mirror** direction — start from every candidate grounded and open one at a time, i.e.
+§13.7(e)'s leave-one-out over the same context — catches the opposite failure and is run
+alongside it. Sixty ground balls read `~0` each from all-grounded, because the other
+fifty-nine carry the return; that same shield reads +880 pH per end. Neither direction
+subsumes the other, which is why both are printed.
+
+A pair is **flagged** when its non-additivity exceeds `max(0.5 x` the largest single-port
+`|delta|` in the scan`, 0.01 x |`the all-open value`|)`. The first term is the one that means
+something — a surprise smaller than half the best single port's effect will not change which
+port you ground first. The second is a floor for the case where every single-port effect is
+`~0`, which is the *normal* reading of a shield and of 60 ground balls from all-grounded, and
+without it the first term collapses onto the noise and flags all 28 pairs. Measured: on the
+planted case the threshold is 197.7 pH and **no** pair clears it (largest non-additivity
+5.40 pH — the right answer, no pair mechanism was planted); on the shield case the threshold
+is 4.84 pH and the one pair clears it at 889.6 pH, **184x**. Nothing is hidden by the
+threshold — every scanned pair is returned, ranked, each carrying the threshold it was judged
+against.
+
+#### 13.14.5 Step 3: the greedy cumulative curve
+
+Ground the best candidate, **re-rank**, ground the next best, and tabulate the answer against
+`k`. This is §13.7(d) applied to candidates rather than to declarations, and it is the only
+one of the four steps that answers *how many* ports matter — a ranking says which is biggest
+and a pair scan says which two interact, and neither is that question. The report names the
+`k` at which the curve comes within a stated fraction of the full open → all-grounded span,
+**and states the fraction**, so "saturated" is a number the reader can disagree with rather
+than a verdict.
+
+Greedy is **not optimal**: the best-`k` subset is combinatorial and this module does not claim
+to solve it (`docs/design_port_attribution.md` §11 item 4). What the re-ranking buys is that
+the walk can step *into* the pair effects of §13.14.4 instead of past them.
+
+#### 13.14.6 Port-name families: a proposal the tool tests, never an assumption
+
+Grouping candidates by name family (core's `name_prefix`: `guard_ring1` and `guard_ring2` are
+one `guard_ring`) **would** have caught the shield above, because the two ends of a guard ring
+normally share a prefix. It is deliberately not done. Which ports are one physical structure
+is a semantic judgement about the layout, and a tool that folds a guess about it into a number
+has produced an answer nobody can audit.
+
+So a name family only ever produces a **sentence**, with the numbers computed both ways
+beside it:
+
+```
+ports 5,6 share the name family 'guard_ring'; tested together they are -870 pH,
+tested separately +9.7 pH each -- if they are one structure, group them
+```
+
+The **numbers** are computed; the **grouping** is a suggestion the reader accepts or rejects.
+Nothing in the bracket, the ranking, the pair scan or the curve depends on whether the file
+carries port names at all — the whole report runs identically on a file with none, and
+`tests/test_attrib_coldstart.py` pins that by running it twice.
+
+(The minimum family size is **2** here, and deliberately not core's
+`OPEN_CLUSTER_MIN_FAMILY = 4`. That threshold keeps a *remnant* check from crying wolf about
+`coil1`/`coil2`; the case this one exists for is exactly a two-member family — the two ends of
+one ring.)
+
+#### 13.14.7 What the cold-start screen cannot find
+
+**Anything that needs three or more ports to move together.** Step 1 is first order in the
+candidate set, step 2 is exactly second order, and step 3's greedy walk can stumble onto a
+triple but has no guarantee. A three-terminal version of the shield above is invisible to
+every step. That sentence is on the report, not in a footnote
+(`COLD_START_BLIND_SPOT_TEXT`).
+
+Every boundary in §13.10 still applies too, in particular: **it cannot evaluate new metal.**
+Every port it considers is one the S-parameter file already has. A shield that is not already
+a port changes `Y` itself and needs a new EM solve.

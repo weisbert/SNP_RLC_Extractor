@@ -864,7 +864,15 @@ class ReflowRow(ttk.Frame):
         self._items: list[tuple[tk.Widget, int, bool]] = []
         self._applied: tuple = ()
         self._pady = pady
+        #: The one pending `after_idle` `refresh()` may own.  Held so it can be
+        #: coalesced and, more importantly, CANCELLED on destroy: an
+        #: un-cancelled `after` fires against a Tcl command the widget's
+        #: teardown has already deleted, and Tk prints `invalid command name
+        #: "..._reflow"` to a console a double-clicked GUI does not have --
+        #: noise in a test run, invisible in production.
+        self._pending = None
         self.bind("<Configure>", lambda _e: self._reflow())
+        self.bind("<Destroy>", self._cancel_refresh)
 
     def add(self, widget, padx: int = 2, fill_y: bool = False):
         """Append a control.  `fill_y` is for vertical separators."""
@@ -874,6 +882,53 @@ class ReflowRow(ttk.Frame):
 
     def item_widths(self) -> list[int]:
         return [w.winfo_reqwidth() + 2 * padx for w, padx, _f in self._items]
+
+    def refresh(self) -> None:
+        """
+        Re-lay the strip after a CHILD's requested size changed.
+
+        `_reflow` runs from `add()` and from this strip's own `<Configure>`,
+        and a child whose TEXT grew fires neither -- `place` then goes on
+        forcing the stale width and the child is CLIPPED, with no ellipsis and
+        no overflow marker.  Measured in the Attribution window, whose header
+        is a ReflowRow carrying a label built from the trace name: relabelling
+        the trace to the documented 18-character cap took that item's request
+        from 220 px to 307 while place kept it at 220, i.e. 87 px / 14
+        characters cut in silence, and the strip went on reporting one row
+        (29 px) while its items asked 1048 px of 964.  A 1 px window resize
+        fixed both, which is what makes it a missing notification rather than
+        a layout bug.
+
+        Deferred to `after_idle` because the child's own geometry request has
+        not been recomputed at the moment its text is set.  It reads the
+        strip's IMPOSED width and writes only its height, so it is the same
+        fixed point `_reflow` is and cannot become the limit cycle
+        `_apply_editor_scrollbars` documents.  Coalesced, because a repaint
+        that sets three labels must still cost one relayout.
+        """
+        if self._pending is not None:
+            return
+        try:
+            self._pending = self.after_idle(self._refresh_now)
+        except Exception:                       # pragma: no cover
+            self._pending = None                # a dead widget cannot reflow
+
+    def _refresh_now(self) -> None:
+        self._pending = None
+        if self.winfo_exists():
+            self._reflow()
+
+    def _cancel_refresh(self, event=None) -> None:
+        # <Destroy> reaches every descendant too, so only the strip's own event
+        # may cancel -- the same guard `AttributionWindow._on_destroy` carries.
+        if event is not None and event.widget is not self:
+            return
+        if self._pending is not None:
+            try:
+                self.after_cancel(self._pending)
+            except Exception:                   # pragma: no cover
+                pass
+            self._pending = None
 
     def _reflow(self) -> None:
         if not self._items:

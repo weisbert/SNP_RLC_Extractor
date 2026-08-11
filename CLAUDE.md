@@ -13,11 +13,12 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | File                    | Responsibility                                                                  |
 |-------------------------|---------------------------------------------------------------------------------|
 | `pkg_rlc_core.py`       | Touchstone parser (+ `TouchstoneParseError` / `diagnose_touchstone` / `check_touchstone`), S<->Y, unified `TerminationSet` model + the Mode 5 DSL (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`), the connection-table row model (`MeasPortRow`, `ConnectionRow`, `rows_to_dsl_text`, `dsl_text_to_rows`, `build_terminations_rows`), `parse_mport_spec`, `resolve_meas_ports`, `compute_z_matrix` / `compute_z`, `extract_rlc_at_freq` / `extract_coupling_at_freq`, `fit_inductor` / `fit_capacitor` / `fit_auto`. |
-| `pkg_rlc_attrib.py`     | **Port attribution.** Given `Y(f)` and a `TerminationSet`, answers two questions at one frequency: an EXACT additive signed decomposition of `Z_ab` into the bare EM coupling plus one term per declared termination (`build_context` / `decompose` / `format_decomposition`), and the EXACT what-if of changing any of them (`sensitivity`, `group_joint`, `cumulative_curve`, `leave_one_out`, `sweep_mobius`, `transfer_ratio`). Plus `Element` / `Term` / `ReturnBudget` / `Decomposition` / `AttribContext`, the `DECOMPOSABLE` / `NON_DECOMPOSABLE` registries, the `Alternative` builders, `termination_impedance_diagonal` / `termination_impedance_shared_return`, `SIGN_CONVENTION_TEXT` and `AttribError`. Imports `pkg_rlc_core` ONLY (acyclic, the `pkg_rlc_plot` rule), no scipy. `pkg_rlc_extractor.py` drives it from the `--attribute*` flag group (`--mode coupling` only); **no GUI surface** — stage 4 of `docs/design_port_attribution.md` is unstarted. |
+| `pkg_rlc_attrib.py`     | **Port attribution.** Given `Y(f)` and a `TerminationSet`, answers three questions at one frequency. (a) An EXACT additive signed decomposition of `Z_ab` into the bare EM coupling plus one term per declared termination (`build_context` / `decompose` / `format_decomposition`). (b) The EXACT what-if of changing any of them (`sensitivity`, `group_joint`, `cumulative_curve`, `leave_one_out`, `sweep_mobius`, `transfer_ratio`). (c) The **cold-start screen** — which ports matter BEFORE a spec exists, from all-open: `cold_start_context` / `cold_start_bracket` / `cold_start_screen` / `cold_start_pairs` / `cold_start_leave_one_out` / `cold_start_cumulative` / `name_family_suggestions` / `cold_start_negative_result` / `cold_start_report` / `format_cold_start`, with `Bracket` / `PortScreenRow` / `PairEffect` / `FamilySuggestion` / `ColdStartContext` / `ColdStart` and the `COLD_START_*` constants. Plus `Element` / `Term` / `ReturnBudget` / `Decomposition` / `AttribContext`, the `DECOMPOSABLE` / `NON_DECOMPOSABLE` registries, the `Alternative` builders, `termination_impedance_diagonal` / `termination_impedance_shared_return`, `SIGN_CONVENTION_TEXT` and `AttribError`. Imports `pkg_rlc_core` ONLY (acyclic, the `pkg_rlc_plot` rule), no scipy. `pkg_rlc_extractor.py` drives it from the `--attribute*` and `--cold-start*` flag groups (`--mode coupling` only); the GUI surface for (a) and (b) is `pkg_rlc_attrib_gui.py`, and (c) is CLI-only. |
+| `pkg_rlc_attrib_gui.py` | **The Attribution window** (`AttributionWindow`, `open_attribution_window`, `ATTRIB_MENU_LABEL`, `attribution_refusal`, `refresh_attribution_windows`, `attribution_session_state` / `apply_attribution_session_state`) plus the pure formatters it is testable through with no display (`render_table` / `Column` / `TableText`, `contributions_table`, `sensitivity_table`, `detail_lines`, `sweep_caption`, `reconciliation_verdict` / `reconciliation_line`, `provenance_lines`, `staleness_text`, `stability_line`, `report_text`, `csv_records`, `signed_str`, `parse_candidate`). A modeless `Toplevel` over `pkg_rlc_attrib`; `pkg_rlc_gui.py` holds only the Analyze-menu entry, the Traces right-click entry, the Results-pane pointer line and the refresh hooks. It is a separate module because `pkg_rlc_gui.py` was already 7000+ lines; `pkg_rlc_gui` imports it, and it imports `pkg_rlc_gui` back only from **inside functions** (`_gui()`), so the cycle never exists at import time. |
 | `pkg_rlc_plot.py`       | Matplotlib plot panel: multi-subplot grid over R/L/C/\|Z\|/Re/Im/Q/**k**, draggable freq marker, M / V / Delete keys, fullscreen window, and the `ReflowRow` / `reflow_rows` control strip that wraps instead of losing its tail. Quantities that cannot be derived from one `(freqs, Z)` pair (today only `k`) arrive via the optional `Trace.aux` dict. |
 | `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), the frozen-trace snapshot (`_freeze_trace_config`, `freeze_label`, `freeze_refusal`, the Traces-list right-click menu), the File menu and the JSON session format (`session_to_dict` / `session_from_dict` / `SessionError` / `autosave_path`), the results pane (a `ttk.Notebook` whose tab 0 is the Log, with `log_tab_label` / `_append_result(severity)` / `_select_results_tab`), and the immutable run record (`RowSnapshot` / `CouplingSnapshot` / `FitSnapshot` / `RunSnapshot`, `_snapshot_row` / `_snapshot_block` / `_snapshot_fit`) that `_render_results` consumes instead of live traces. Re-exports the DSL helpers it no longer defines. |
-| `pkg_rlc_gui.py` (cont.) | Plus the **Ports & Roles** window (`PortRolesWindow`, `_trace_role_rows`, `_role_warnings`, `_roles_header`, `apply_ports_as`), which is what `Show Ports` now opens. |
-| `pkg_rlc_help.py`       | In-app Help window content (`HELP_TOPICS`, `HelpWindow`, `HELP_WINDOW_WIDTH`). One tab per mode + syntax + save/load + worked examples. |
+| `pkg_rlc_gui.py` (cont.) | Plus the **Ports & Roles** window (`PortRolesWindow`, `_trace_role_rows`, `_role_warnings`, `_roles_header`, `apply_ports_as`), which is what `Show Ports` now opens; and the **Attribution hooks** — the `Analyze` cascade, the third Traces right-click entry, `_on_attribution`, the Results-pane pointer line, and the `refresh_attribution_windows` calls. The window itself is `pkg_rlc_attrib_gui.py`. |
+| `pkg_rlc_help.py`       | In-app Help window content (`HELP_TOPICS`, `HelpWindow`, `HELP_WINDOW_WIDTH`). One tab per mode + syntax + save/load + worked examples. **Ten tabs, and there is no room for an eleventh** — port attribution, the Attribution window and the cold-start screen all live at the bottom of `Mode 6 (Coupling)`, cross-referenced from `Overview`, `Input syntax` and `Worked examples`. See the measurement under "Port attribution". |
 | `pkg_rlc_extractor.py`  | Entry point: dispatches GUI vs CLI from argv. CLI `--mode gnd \| p2p \| coupling`, `--mport` repeatable. |
 | `reduce_snp.py`         | **Standalone** CLI: shrinks a big `.sNp` to a few ports (KEEP / GND-short / open-or-matched elimination). Deliberately imports nothing from this repo — it gets copied to simulation servers on its own. |
 | `deploy.sh`             | **Top level on purpose.** Red-zone update entry point: `cd <install> && bash deploy.sh` auto-detects the uploaded tarball. The operator's cross-project convention is `<install>/deploy.sh` — do not move it back under `deploy/`. |
@@ -29,10 +30,14 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `tests/test_attrib_core.py` | Port attribution. The load-bearing one is the **reconciliation**: `decompose`'s sum against `compute_z_matrix` over every (spec, frequency) pair on every fixture, and every fast low-rank what-if (`sensitivity` / `group_joint` / `sweep_mobius`) against an HONEST recompute through a rebuilt `TerminationSet` — a Woodbury update that agrees with itself and with nothing else is the failure mode this module has. Plus the twelve requirements one by one: the reciprocity solve, the dense `Zt`, the singular-baseline fold, the structural rank check, the condition-aware residual floor, the return budget, the projection share, the refusal-by-name of non-decomposable quantities, non-additivity, the Möbius endpoints/interval/extremum, the sign convention, and the mode-1/2/3 ground-beats-probe precedence. Every guard mutation-checked. |
 | `tests/test_attrib_vs_engine.py` | A deliberately INDEPENDENT second opinion on the one claim everything else rests on — that the node-space decomposition and the engine's Schur reduction are two routes to one number. It differs from the acceptance suite on purpose in four ways: it walks the case registry in `tests/_golden_capture.py` (so "every mode is covered" is a property of the walk, not a docstring claim) and anchors on the bit-exact `golden_legacy.npz` array rather than on the `compute_z_matrix` call `build_context` makes for itself; it computes its TOLERANCE here, from the file's own admittance slice, because comparing the module's residual against the module's own floor proves only self-consistency — which it would keep with both of them wrong; it pins requirement 12 STRUCTURALLY (which declaration became an element, which was thrown away), not only as a number that happens to agree; and it FUZZES — 4000 random specs over six fixtures, two-sided contract: either it agrees with the engine inside the condition-aware budget or the `Decomposition` says so out loud. |
 | `tests/test_attrib_degenerate.py` | What the module does when the spec, the network or the data is BROKEN — the only interesting question here, because **every failure mode below produces a plausible number rather than an exception**: no DC reference (`cond(Y) = 2.5e16`) inverting to garbage; a redundant spec making `H` exactly singular (which must read as a spec bug, not as "unattributable physics"); an ill-conditioned baseline putting the decomposition's own sum 100% away from the engine with both numbers finite; independent-per-ball grounds reading **9.6 dB low** against the shared return real balls have; **eight** ground balls where every one-at-a-time and every pairwise measurement reads ~0 while the collective effect is **600x larger and the OTHER SIGN**; a ground inductance resonating with a package capacitance putting `M` outside the [ideal, open] bracket; one NaN in one S entry. It CONSTRUCTS each degeneracy — the repo's 2- and 4-port fixtures cannot express an eight-ball package or a resonant return — and checks against an honest rebuild through `compute_z_matrix`, so both sides come from shipped code. Every guard mutation-checked, with the defeating mutation named in each test's own docstring. |
-| `tests/run_parallel.py` | **The test runner to use.** Class-sharded, longest-first. Measured when it was written: `python -m unittest discover -s tests` 293 s against `python tests/run_parallel.py` 108 s over the same 906 tests (2.7x). `--fast` is 1.3 s for the seven no-Tk modules; `-m <substr>` picks modules by name. Sharded by CLASS not module because `test_run_history` alone is 86 s of the serial 293. Exit code 0 means every shard passed. NOT auto-discovered (no `test_` prefix). |
+| `tests/test_attrib_coldstart.py` | The cold-start screen (49 tests, 0.25 s, no Tk). The load-bearing one is the same as `test_attrib_core.py`'s: the closed form `-Zbase[a,p]Zbase[p,b]/Zbase[p,p]` against an HONEST re-solve through `compute_z_matrix` with a rebuilt `TerminationSet` — `1.47e-11` worst on the planted 12-port case, `<= 5.8e-11` over every fixture. Plus the bracket and its second opinion, the two coupling columns kept separate (the planted **red herring**: largest `\|Z_ap\|` in the file, negligible effect, ranks 5th of 8 by `\|dM\|` and 1st by `\|Z_ap\|` alone), the pair scan and the **shield** (`+9.689` / `+9.689` / `-870.268 pH`, 89.8x, sign flip), the mirror, the greedy curve's saturation, the family suggestion as a SENTENCE, and that the whole report is byte-identical with and without port names. |
+| `tests/test_attrib_cli_coldstart.py` | `--cold-start` on the CLI (70 tests, 0.33 s). The flag refusals and that every `--cold-start-*` is inert without it (all three cap flags default to `None` so the check is EXACT, which `_attr_dependent_flags` cannot be); the printed ORDER, with `test_the_BRACKET_comes_before_the_RANKING` pinning that pair on its own; that `--attribute` and `--cold-start` together are allowed with cold start last; the `--cold-start-csv` `DictReader` round trip; and the line-width budget (widest line 95, the same as `--attribute`'s). |
+| `tests/test_attrib_window.py` | The Attribution window IN ISOLATION (150 tests). Split in two on purpose: the pure formatters run with **no display** (the monospace table model, the width-stable sign pair, the reconciliation verdict, the provenance and staleness text, the CSV records), and the rest drives real Tk off a hand-built `TraceConfig` — the four refusals by name, the header `ReflowRow` budget, both PanedWindow starvation cases, the lazy sweep draw, that crossing the canvas does NOT steal focus from the frequency Entry (measured with `focus -lastfor`, not `focus_get()`, because the test process rarely owns WM focus under the parallel runner), the `[Recompute]`-not-auto-refresh contract, and that the swatch stays equal to `pkg_rlc_gui.RESULTS_SWATCH`. Plus the integration pass's own classes: `TestGesturesThatMustNotDiscardWork` (Escape from inside a field, and a click past the last row), `TestTheDetailPaneSaysWhatItRefused` (a refused candidate reaching a widget, the sweep not collapsing, the Candidates entry on screen at the minimum), `TestTheHeaderHearsAboutItsOwnText` (`ReflowRow.refresh`) and `TestTheDeclaredMinimumShowsContent`, which builds a SECOND App at `tk scaling 2.0` with every named font x1.5 and asserts the content is mapped at the enforced minimum, that the 100% minimum did not move, and that the layout SETTLES over eight resizes. Every guard mutation-checked. |
+| `tests/test_attrib_gui_integration.py` | The same window END TO END through the REAL app, which is the other half: nothing here constructs a `TraceConfig`, a `FileEntry` or an `AttribResult` — the file goes in through `_on_add_file`, the measurement ports are typed into the real `RowTable`, and the window is opened through the menu entries a user clicks. It owns the JOIN, i.e. every defect where `pkg_rlc_gui`'s hooks and `pkg_rlc_attrib_gui`'s window are each right on their own: the number on the table against `pkg_rlc_attrib` called directly AND against the `M` the results pane printed down the separate `compute_z_matrix` path, the right-click SELECTING the row under the pointer first, every refusal by name, rule 6 in full, rule 11 (remove the trace / remove the file / load a session, each with the window open), the Results-pane pointer and its gate, and that none of it put a run or a result into the session file. **The window is MAPPED everywhere here** — a withdrawn root answers 0 to every geometry query and `Listbox.nearest()` then answers row 0 for every y, which is exactly the answer the right-click tests exist to rule out. |
+| `tests/run_parallel.py` | **The test runner to use.** Class-sharded, longest-first. Measured when it was written: `python -m unittest discover -s tests` 293 s against `python tests/run_parallel.py` 108 s over the same 906 tests (2.7x). Re-measured here: **1566 tests in 236 s / 230 s**, and `--fast` **642 tests in 4.1 s** over the thirteen no-Tk modules (the two cold-start ones were added — neither imports tkinter, which is the one property that list has); `-m <substr>` picks modules by name. Sharded by CLASS not module because `test_run_history` alone is 86 s of the serial 293. Exit code 0 means every shard passed. NOT auto-discovered (no `test_` prefix). |
 | `tests/test_freq_label.py` | Frequency-label honesty: the marker frequency a report prints says where the numbers came from. Both extractors snap to the nearest grid point via `argmin`, and the default 0.1 GHz marker on `diff_pair_4port.s4p` lands on 0.10099 GHz — every default session in the repo snapped and said nothing. |
 | `tests/test_large_files.py` | How big a file the tool will read and what it says when it will not: the escalating port-count sniff past `MAX_SNIFF_NPORTS` to `SNIFF_HARD_CAP`, the refusal as a `TouchstoneParseError`, and the memory envelope. |
-| `tests/`                | `unittest`-based suite (1219 tests at the time of writing, covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, port attribution and its cross-check against the engine, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/`                | `unittest`-based suite (1566 tests run by `tests/run_parallel.py` at the time of writing, covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, port attribution and its cross-check against the engine, the Attribution window, the cold-start screen, the bit-exact golden regression, and `reduce_snp`). |
 | `tests/test_editor_autoapply.py` | The commit-step removal: WHEN the editor writes into a `TraceConfig` and WHICH one it lands on (the deferral, the object capture, the flush-before-selection-change), the style picker's storage / reachability / honesty about multi-curve traces, and that hiding a curve neither recomputes it nor destroys the cursors. Every guard here was mutation-checked. |
 | `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see, and the reordering hazard that forces `_import_dsl_text`'s verbatim fallback. |
 | `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
@@ -168,20 +173,23 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 
 ### Port attribution (`pkg_rlc_attrib.py`)
 
-Design note: `docs/design_port_attribution.md`. Theory: `docs/theory.md` §13.
-User docs: Help → Mode 6 → "Where the number came from", and the README's
-"Port attribution" section. `tests/test_attrib_core.py`,
-`tests/test_attrib_vs_engine.py` and `tests/test_attrib_degenerate.py` are the
-guards, and every claim below was mutation-checked.
+Design note: `docs/design_port_attribution.md`. Theory: `docs/theory.md` §13
+(and §13.14 for the cold-start closed form). User docs: Help → Mode 6 →
+"Where the number came from", and the README's "Port attribution" section.
+`tests/test_attrib_core.py`, `tests/test_attrib_vs_engine.py` and
+`tests/test_attrib_degenerate.py` are the guards, and every claim below was
+mutation-checked.
 
-Stages 1-3 are done — the engine plus the CLI report (`--attribute` and its
-flag group in `pkg_rlc_extractor.py`, `--mode coupling` only). **Stage 4, a
-`Toplevel`, is unstarted and `pkg_rlc_gui.py` does not import this module.**
-That order was deliberate: the output of this feature is a table and a
-paragraph, both of which a CLI can print, and every pixel in the GUI is
-already spoken for by the measurements elsewhere in this file. If a GUI
-surface is ever built it is a `Toplevel` like Ports & Roles — **not** a
-notebook tab beside the plot, for the reasons under "Rejected UI proposals".
+**All five stages are shipped.** 1-3 are the engine, the sensitivity / Möbius
+layer and the CLI report (`--attribute` and its flag group in
+`pkg_rlc_extractor.py`, `--mode coupling` only). Stage 4 is the `Toplevel` —
+`pkg_rlc_attrib_gui.py`, and see "The Attribution window" below for its own
+rules. Stage 5 is the cold-start screen, which is in `pkg_rlc_attrib.py` and
+is **CLI-only** — see "The cold-start screen" below. The CLI-before-GUI order
+was deliberate and is worth keeping in mind for anything added here: the
+output of this feature is a table and a paragraph, both of which a CLI can
+print, and every pixel in the GUI is already spoken for by the measurements
+elsewhere in this file.
 
 **Why it exists at all.** The user extracted `M` between the same two coils
 from the same EM solve twice and got 1.71 pH and 3.44 pH — **6.07 dB apart**,
@@ -509,6 +517,481 @@ was measured and was worse.
   resolves the measurement ports and raises on conflicting signal groups.
   **Nothing in this module may modify `compute_z_matrix`, `_probe_impedance`,
   `_is_singular_2x2` or anything else `golden_legacy.npz` pins.**
+- **THERE IS NO ELEVENTH HELP TAB, and that is a measurement, not a
+  preference.** `HELP_TOPICS` has 10 tabs and the strip needs **968 px**
+  against `HELP_WINDOW_WIDTH = 1010`. Re-measured for this feature (Tk 8.6,
+  vista theme, `TkDefaultFont` = Microsoft YaHei UI 9, `tk scaling` 1.333): an
+  eleventh tab labelled `Cold start` takes it to **1033 px**, `Attribution` to
+  **1037**, `Port attribution` to **1064**. A `ttk.Notebook` CLIPS a strip it
+  cannot fit — no wrap, no scroll, no chevron — and the tab that vanishes is
+  the **LAST** one, so the new tab would be the invisible one. Everything about
+  this feature therefore folds into **Mode 6 (Coupling)**, cross-referenced
+  from `Overview`, `Input syntax` and `Worked examples`.
+  `tests/test_session.py::TestHelpTabsAllFit` is the guard and re-measures it.
+
+### The Attribution window (`pkg_rlc_attrib_gui.py`)
+
+`tests/test_attrib_window.py` is the guard, and every claim below was
+mutation-checked. `docs/design_port_attribution.md` §13 records what stage 4
+became and where it departed from that note's own §9 sketch.
+
+**The hook surface `pkg_rlc_gui.py` calls, and there is no other:**
+`ATTRIB_MENU_LABEL`, `attribution_refusal(trace, file_entry)`,
+`open_attribution_window(app, trace)`, `refresh_attribution_windows(app)` —
+which **must** be called from `_apply_editor_strips`, from every path that
+removes a trace or a file, and after a session load —
+`refresh_attribution_windows(app, rerender=True)` from
+`_on_units_mode_changed` and **nowhere else**, and
+`attribution_session_state` / `apply_attribution_session_state`. The two
+`refresh` forms are not interchangeable: measured with one window open,
+**28.6 µs** for the banner refresh against **6049 µs** for `rerender=True`,
+which redraws the tables and the sweep — 200x, and the reason the cheap one is
+the default on a path that fires from a Tk variable trace. The reverse import
+is **lazy** (`_gui()`), which is the only reason
+`import pkg_rlc_attrib_gui` at the top of `pkg_rlc_gui` is not a cycle. A
+second copy of `_value_formatter` / `_trace_role_rows` / `_build_termination`
+was the alternative, and two renderings of one spec drifting apart is a
+failure this repo has already had more than once.
+
+- **MODELESS, no `grab_set` — and deliberately NOT `transient(app)`.** No
+  `grab_set` for the documented reason: a modal `Toplevel` that outlives its
+  opener blocks event delivery, `update()` never returns, and the GUI and the
+  test suite hang together (the style-picker / scrollbar-limit-cycle failure).
+  `transient` is the one where this window and `PortRolesWindow` diverge **on
+  purpose**: on Windows it removes the taskbar button and the Alt-Tab entry
+  and makes the WM withdraw the child with its master. That is right for a
+  quick read-while-editing panel and wrong for a window holding a RESULT that
+  cost a Recompute, which is read against the plot over many edits and parked
+  on a second monitor. The cost of omitting it — the window can end up behind
+  the main one — is paid by `open_attribution_window` **lifting and focusing
+  an existing window** for the same `(trace, victim, aggressor)` instead of
+  opening a second copy.
+- **NO NOTEBOOK, and specifically not the obvious four tabs.** Contributions /
+  Sensitivity / Sweep / Across-frequency was designed and rejected: the sweep
+  is a **drill-down on the row just clicked**, so a tab makes the user re-pick
+  the element they already selected; and "does this ranking hold across
+  frequency" is a **validity qualifier on the table, not a place**, so as a tab
+  it is never opened and the acceptance item is satisfied on paper only.
+  Shipped instead: a fixed header, three one-line strips, a one-line
+  across-frequency badge with an expander, one pane with a **radiobutton view
+  toggle**, and a detail pane under a sash. Every pane is populated **before**
+  `PanedWindow.add()` — ttk sizes a pane from its requested size at `add()`
+  time and never recomputes.
+- **THE TABLES ARE A MONOSPACE `tk.Text`, NOT A `ttk.Treeview`** — this
+  reverses `design_port_attribution.md` §9's own bullet, on a measurement.
+  Measured here: the same eight columns need **671 px** as a Treeview at 100%
+  and **971 px** at 150%, against **490 / 700 px** as Consolas 9 text; ttk will
+  not shrink a Treeview column below its set width even with `stretch=True`
+  and it clips with **no ellipsis and no overflow indicator**, so `-0.6231`
+  silently becomes a plausible shorter number; and in `TkDefaultFont` the
+  signed-number glyphs are all different widths (`-` 5 px, `+` 9, U+2212 9,
+  `.` 3, ` ` 4, digits 7), so a right-aligned column of signed values has its
+  decimal point wandering ±4 px per row. In Consolas 9 every glyph the tables
+  emit — `' ' 0 9 - + − █ ▸ ▾ . M X ( ) % j … Ω ←` — measures **exactly 7 px**
+  (re-measured), which is why they line up. `✓` is **12 px** there and is
+  banned from tables, used only in ttk Labels. The pure text formatter is
+  separate from the widget so it is testable with no display.
+- **Numeric columns are auto-sized from the widest cell OR the header, and are
+  never capped.** Sizing on the values alone puts a 7-char value under a 5-char
+  header and throws the heading one place off the numbers it names — the
+  cursor-readout rule. Only the two TEXT columns cap, and they ellipsise with
+  U+2026; a clipped number is a plausible wrong number, which is the whole
+  reason this is not a Treeview.
+- **A sign is always one of a WIDTH-STABLE PAIR, and colour NEVER means sign.**
+  U+2212 for negative, an explicit `+` for positive, one of the two on every
+  numeric cell — both 7 px in Consolas 9, the same as a space, so a column of
+  mixed signs keeps its decimal points in one place. Rows are coloured by
+  element **KIND**, reusing `PORT_ROLE_FG`, the palette the user already
+  learned in Ports & Roles. Not by sign: red is `WARN_FG` everywhere else in
+  this application and a red negative makes a correct answer look like a fault
+  — which bites hardest exactly here, because §5.7's measured case has a
+  **negative bare EM term** with four declared grounds cancelling most of it.
+  The rule is stated ONCE in the header, beside the reference declaration.
+- **RECONCILIATION GOES IN THE HEADER, NOT THE FOOTER.** It gates trust in
+  everything under it, and at the bottom of a scrolling table it is the first
+  thing off screen. Verdict word plus number
+  (`reconciled  rel diff 3.1e-13  (floor 4.3e-10)`), and the **TOTAL is shown
+  even when the split is withheld** — that is the core module's "degrade, never
+  refuse" made visible.
+- **`[Recompute]`, NOT AUTO-REFRESH. This is the one that would have shipped
+  broken.** `tc.Zmat` is written **only** by `_on_calculate`; editing the spec
+  sets `tc.stale` and leaves the numbers at the PREVIOUS run's. A window
+  refreshing from `_apply_editor_strips` would therefore, on the first
+  keystroke, decompose the NEW spec and reconcile it against the OLD
+  authoritative total — a residual not of `1e-13` but of however much the edit
+  changed — and by the rule above it would then withhold its own split. **The
+  documented behaviour of the auto-refresh design is a window that erases
+  itself while you type.** The editor hook stays, but it updates exactly ONE
+  thing: the **staleness banner**, a signature comparison costing microseconds,
+  which is what makes the button honest. The banner also names the provenance
+  permanently (`from run #7 @ 5.600 GHz`).
+- **REFUSE ON A STALE OR FROZEN TRACE, BY NAME, and keep the menu entry LIVE.**
+  `attribution_refusal` returns `None` or the reason, duck-typed on `getattr`
+  so it is importable and testable without `pkg_rlc_gui`. Four refusals, in the
+  order the work would hit them except that `frozen` is tested FIRST (a frozen
+  trace can never be attributed whatever the file is doing, so sending the user
+  to load one is a dead end): **frozen** — its numbers came from an earlier run
+  and can never be recalculated, so a decomposition now could only be stamped
+  with the CURRENT run, which is the frozen-trace-CSV bug through another door;
+  **file not loaded**; **no numbers**, or `Zmat is None` with `Z` set, which
+  means ONE measurement port and there is no mutual impedance to attribute;
+  and **stale**. The entry stays live in all four cases — CLAUDE.md's rule on
+  the identical decision for Freeze: *a greyed entry would be the same bug
+  report.*
+- **THE SWEEP CANVAS follows `FullscreenPlotWindow` with two deliberate
+  departures.** `Figure()`, never `pyplot.figure()` — pyplot's global registry
+  outlives the `Toplevel` and the figure is never collected. Then: **no
+  `<Enter>` → `focus_set`** (measured: that binding moves focus off a sibling
+  Entry, and this window has Entry fields directly above the plot, so a user
+  typing `5.6` into Freq and moving the mouse toward `[Recompute]` loses the
+  rest of the keystrokes), and **no M / V / Delete bindings** — it is a
+  read-only what-if curve, not the measurement plot. It is drawn **LAZILY on
+  first reveal**: a canvas in an unmapped pane has no size, so `draw()` /
+  `tight_layout` there lays the axes out for a 1x1 widget and the labels stay
+  on top of each other forever after. The curve itself is the closed-form
+  Möbius sweep — do not re-solve per point.
+- **NO ACCELERATOR, and nothing registered with the wheel router.** `bind_all`
+  reaches every `Toplevel`: measured on this application's own menubar, Ctrl+S
+  typed into a `Toplevel` Entry fires the App's `_on_save_config`, so a Ctrl+O
+  here would open Load Config and replace every trace including the one this
+  window describes. `<Return>` in the frequency field recomputes and is bound
+  **on the Entry**. For the wheel, this window registers NOTHING with
+  `App._register_scrollable`, so `_route_wheel` walks out of it, finds no
+  handler and lets Tk's class bindings scroll the Texts (`"Text"` is in
+  `App._WHEEL_OWNERS`). `"Canvas"` is **not** in that set, so a matplotlib
+  canvas gets no bail-out — which is safe only because there is no registered
+  scrollable ancestor here, by construction. Do not nest it inside one.
+- **PACK ORDER: footer `side=BOTTOM` FIRST, then the header and the strips,
+  then the `PanedWindow` with `expand=True` LAST.** `pack` unmaps from the END,
+  so the buttons and the reconciliation verdict are unconditional and it is the
+  TABLE that gives up height. **"Gives up height" must not mean "gives up all
+  of it", and the MINIMUM is therefore measured rather than declared.**
+  Re-measured at 150% DPI (`tk scaling 2.0` + every named font x1.5, the
+  definition `test_run_history.py::test_the_keep_button_is_READABLE_at_150_percent_font_scaling`
+  uses): the fixed chrome is **436 px at 720 wide** and 388 at 980, against a
+  declared minimum of 420 — so at exactly 720x420 the whole `PanedWindow` read
+  `winfo_ismapped() == 0`, table and detail pane and sweep canvas all gone,
+  with no scrollbar, no message and no way down because the user is already AT
+  the minimum. It was not only the minimum: the table was already unmapped at
+  820x540. `_apply_min_height` therefore raises the floor to
+  `chrome + ATTRIB_SPLIT_FLOOR_LINES x <table font linespace>` at the CURRENT
+  width — the split needs a measured **124 px at 100% / 162 px at 150%** for
+  the table to be mapped, and 9 lines is 126 / 198. At 100% the computed value
+  is 333 px, i.e. under the declared 420, so **nothing about the 100% window
+  moves**. It SETTLES because it reads the WIDTH and writes only a minimum
+  HEIGHT (the `ReflowRow` fixed point, not the `_apply_editor_scrollbars` limit
+  cycle): measured over eight resizes in both directions at both scalings,
+  every one settled inside 40 update rounds with the last twenty identical.
+- **The same rule applies INSIDE the sweep pane: the caption is packed before
+  the canvas.** With the canvas first it claimed its whole 90 px request and
+  left the caption 1 px — measured at 720x420, **103 x 6 PIXELS of axes** over
+  a 1 px label, and that label is where rule 8's mandatory `NON-MONOTONIC: the
+  curve LEAVES the [ideal, open] bracket` goes, along with the `cannot sweep`
+  refusal for `k` / `M/L_a` and any refused candidate. Six pixels of curve is
+  worth nothing; the sentence saying the two endpoints are not a bound is worth
+  the pane.
+- **The sweep caption is CAPPED at `SWEEP_NOTE_LINES = 3` clipping lines, and
+  the full text is in Copy report.** It was a wrapping Label at
+  `wraplength=420` holding up to four sentences (957 characters on a
+  non-monotonic sweep), i.e. a **293 px** request — and packed against an
+  `expand=True` canvas that meant the plot sat at its 90 px floor at every
+  window size: measured 194 -> 90 px of canvas at 980x700 and 274 -> 90 at
+  1400x900 the moment a row was selected. Three lines and not two, seen on
+  screen rather than argued: at two, the second line was `… +N more` and the
+  MANDATORY non-monotonicity label was inside the +N. Order is priority — a
+  refused candidate, the interval, the warning, then the module's notes — and
+  whatever does not fit is COUNTED, never dropped in silence.
+- **A REFUSED CANDIDATE has to reach a widget.** `_alternatives` used to write
+  its problem list into `sweep_note` and `_draw_sweep` overwrote that Label
+  later in the same `_render()` pass, so `candidate_list("open, R=5 m", …)` --
+  which produces exactly the `_rlc_tokens` message this repo requires, "'R=5 m'
+  would silently mean 5 Ω, not 5 mΩ" — reached NOTHING: measured, `sweep_note`
+  held the caption, `foot_note` was empty, and the Sensitivity table went from
+  four rows to two with its own note saying "2 rows" and nothing else. It is
+  now a RECORD (`_cand_problems`) rendered by `_set_sweep_note` ahead of the
+  caption and counted on `table_note`, and `_on_candidates_changed` parses
+  EAGERLY so the refusal lands on the keystroke that caused it.
+- **The Candidates Entry is packed BEFORE the hint that describes it.** pack
+  unmaps from the end: measured at 100%, the caption row needs 103 + 615 + 188
+  = 920 px, so the field was 112/188 px wide at 860, 12 at 760 and
+  `winfo_ismapped() == 0` at the declared 720 minimum — gone, while the 601 px
+  sentence telling you to type into it was still there; at 150% it needed a
+  1920 px window to appear at all. The hint is `wraplength=0` and clips, like
+  the three header strips.
+- **NO `<Escape>` BINDING.** A Toplevel is in every descendant's bindtags, so
+  `self.bind("<Escape>", …destroy)` fires from anywhere inside the window:
+  measured, Escape in the Freq entry, in either port combobox, in the table and
+  on `[Recompute]` all destroyed it. `PortRolesWindow` binds it and is right
+  to — it is a read-only list that rebuilds from live state on reopen — but
+  this window HOLDS a result: a Recompute, plus five `build_context` +
+  `decompose` passes if the badge was expanded, all O(N^3) in the port count,
+  and nothing restores it. The Close button and the WM close box remain.
+- **`[Recompute]` FLUSHES the queued editor sync first, and re-asks the
+  refusal.** The documented "Auto-sync editor on Calculate" invariant, on the
+  one button the module calls "THE button". Measured with the trace calculated
+  at `gnd_ports = "2,4"`: typing `2` into the GND field and pressing Recompute
+  in the same event burst decomposed the OLD spec — the table came back with
+  `ground port 2` AND `ground port 4` — and only then did the queued
+  `after_idle` sync land, after which the banner said "the spec has been EDITED
+  since — press Recompute", pointing at the edit Recompute was supposed to have
+  picked up. `_on_toggle_stability` flushes for the same reason. The refusal is
+  re-asked with **`allow_stale=True`**, which exists for this call site and no
+  other: an edited spec is what the button is FOR, but a trace that became
+  frozen or lost its file while the window was open must still be turned away
+  (measured without it: a frozen trace recomputed here came back reconciled and
+  stamped `spec_matches_run: True`).
+- **The BANNER says `spec_matches_run`, not just the export.**
+  `_on_recompute`'s docstring promises "the banner, the export and the copied
+  report all say the plot and the results table are showing something else";
+  only two of the three did. `staleness_text` compared
+  `spec_signature(trace) != prov.signature`, which is False immediately after a
+  Recompute — the Recompute just re-captured it — and nothing consulted
+  `spec_matches_run`. Measured: run #1 is M = +821 pH, editing GND to `2` and
+  pressing Recompute gives +407 pH (**2.0x** what the plot, the results table
+  and Export CSV are showing), and the banner read
+  `from run #1 @ 5.1 GHz   ·   M: 'vic' ← 'agg'` in the theme foreground. A
+  MOVED signature outranks it when both are true: "press Recompute" is the
+  action.
+- **The refusal counts MEASUREMENT PORTS, not just `Zmat is None`.**
+  `_on_calculate` routes on `tc.mode == 6 or n_mports > 1`, so a mode-6 trace
+  with ONE measurement port takes the coupling path anyway and comes back with
+  a real `(F, 1, 1)` `Zmat` — measured. Testing `Zmat is None` alone waved it
+  through, and what stopped it was `open_attribution_window`'s
+  "fewer than two measurement port names cached. Calculate it again." backstop:
+  a message about an internal inconsistency that had not happened, advising
+  something that cannot help. Both routes to the shortfall now reach the one
+  message that names it.
+- **A click PAST the last table row selects nothing.** Tk's `@x,y` index CLAMPS
+  to the nearest existing line, so a click in the empty space below the table
+  resolved to the last row — measured, a 5-line table in a 222 px widget
+  answered `index("@50,218")` (about 150 px below the last text line) with
+  `"5.51"` and selected the final element, silently re-driving the detail pane
+  and running a sweep solve for something nobody clicked. `_on_table_click`
+  tests the clicked line's own `bbox`.
+- **`ReflowRow.refresh()` after a child's TEXT changes.** `_reflow` runs from
+  `add()` and from the strip's own `<Configure>`, and a child whose text grew
+  fires neither — `place` then goes on forcing the stale width and the child is
+  CLIPPED with no ellipsis and no overflow marker, which is the Treeview
+  failure this window's tables exist to refuse, arriving in the header instead.
+  Measured at 980x700 with the trace relabelled to the 18-character cap: the
+  item asked 307 px and was placed at 220, i.e. 87 px / 14 characters gone in
+  silence, while the strip went on reporting one row against items asking
+  1048 px of 964. A 1 px resize fixed both, which is what makes it a missing
+  notification rather than a layout bug. The refresh is `after_idle`,
+  coalesced, and CANCELLED on `<Destroy>` (an un-cancelled `after` fires
+  against a Tcl command teardown has already deleted).
+- **THE WINDOW OUTLIVES ITS SUBJECT.** `PortRolesWindow` re-reads `app.traces`
+  every refresh and degrades gracefully; this one holds a RESULT and cannot.
+  Every path that removes a trace or a file, and every session load, must call
+  `refresh_attribution_windows(app)` — the same class of omission as the
+  documented `_on_remove_file` forgot-to-replot bug, which is why the poke is a
+  named function here rather than a line of code in the host.
+- **THE UNITS MODE IS READ LIVE OFF THE APP; everything else on the
+  `Provenance` is frozen.** Same rule and same reason as
+  `_run_report_segments`: the unit is a **rendering choice, not a recorded
+  fact**, so freezing it would leave this window printing `-1.242` beside a
+  results pane printing `-1.24 mH`. The stored value is only the fallback for a
+  window whose App has gone.
+- **EXPORT CARRIES THE FULL PROVENANCE.** Copy report and the CSV both head
+  with the run number, the frequency and its snap note, the complete sign
+  convention, the ground model and the termination spec verbatim. The
+  frozen-trace CSV precedent is explicit that a block attributed to the wrong
+  run is a real bug — and here the exports are also where the clipped strips'
+  tails live, so they are not optional prose.
+- **The three strips are ONE LINE each with `wraplength=0`, i.e. they CLIP.**
+  Re-measured on a real window: each is **21 px** at 980x700 and still 21 px at
+  720x420, i.e. all three stay one line at both declared sizes. Letting them
+  wrap costs 51 px of a **213 px** pane budget at the minimum, and there are
+  three of them. **THE BUDGET IS 48 CHARACTERS, NOT 120.** The 120 / 162 figures
+  were measured at 100% only; re-measured at 150% the same strip fits **52
+  characters at 720 px and 74 at 980**, and the old sign strip spent its first
+  64 on the sign rule alone — so the shares rule, which rule 4 requires to be
+  stated once in the header, was off screen at **every** supported size while
+  the comment beside it said the opposite. `SIGN_STRIP_TEXT` is rewritten to
+  spend its first 48 characters on both rules and nothing else (measured on the
+  real widget: 48 at 150%/720, 66 at 150%/980, 110 at 100%/720, all 143 at
+  100%/980). For the same reason `reconciliation_line` puts `— split WITHHELD`
+  **immediately after the verdict word** instead of behind 45 characters of
+  `rel diff … (floor …)`: measured, WITHHELD never appeared at 150% at either
+  width, while the table underneath read "(no per-element split — see the
+  reconciliation line above)" and pointed at a line that no longer carried the
+  reason. Each strip leads with its verdict and its number, and the full
+  declaration is in Copy report and the CSV, where it cannot clip.
+- **The header is a `ReflowRow`, and the trace label is capped at 18+18
+  chars.** Re-measured on a real window (mode-6 trace `coil` on
+  `coupled_4port_diff.s4p`): the six items are 228/160/186/145/143/99 px =
+  **961 px**, the strip is **964 px** at the 980 default — **one row, 29 px** —
+  and **704 px** at the 720 minimum, where it wraps to **two rows, 58 px**.
+  Three pixels of headroom at the default width is the whole reason the label
+  is capped; the test's own default label puts the same sum at 970 and
+  uncapped the first item is 317 px worst case, which forces a THIRD row.
+  `winfo_reqwidth()` stays at **1** at both sizes, which is the other half of
+  why `ReflowRow` (it lays out by `place`, and place does not propagate), so
+  the header cannot force the `Toplevel` wider than the user set it. A plain
+  `pack(side=LEFT)` run would have unmapped `[Recompute]` from the END with no
+  scrollbar and no other route to it — exactly the defect
+  `tests/test_plot_controls.py` exists to stop recurring.
+- **`ttk.Panedwindow` starves its FIRST pane, not its last.** Measured at
+  720x420: the split wanted 445 px and got 168, and the **table** read
+  `winfo_ismapped() == 0` while the detail pane was fine. The cause was
+  `FigureCanvasTkAgg` sizing its Tk widget from `figsize x dpi` and therefore
+  REQUESTING 420x240 against the table pane's 156; capping the canvas *widget*
+  to 240x90 balances them at 156/156 and both survive at 54/74 px. Only the
+  FLOOR moved — matplotlib re-lays the figure out on every `<Configure>`, so
+  the drawn plot is whatever the pane actually gets (183 px tall at the default
+  size).
+- **The window does NOT offer the shared-return ground model.** It is a dense
+  element-impedance matrix, it cannot be written as a `TerminationSet`, and the
+  header is already over budget at 980 px so a seventh control pushes
+  `[Recompute]` onto a third row. It stays on the CLI
+  (`--attribute-ground-model shared:…`). Because the choice is worth
+  **9.60 dB** (measured, four balls at 1 nH each independently versus the same
+  four tied through one shared 1 nH), the export states the model in full
+  rather than letting the reader assume one was chosen.
+- **A session restores the CHOICES, never the WINDOW.** `attribution_refusal`
+  turns away a trace with no numbers, and a freshly loaded session has none
+  until Calculate has run — so auto-reopening would show nothing but the
+  refusal, once per saved entry, before the user has asked for anything. What
+  is kept is the pair, the quantity, the frequency, the view **and the
+  Candidates field**, so reopening from the menu lands on what was being read.
+  Candidates is on that list because it is the one field here the user TYPED
+  and that this tool refuses to guess (`STRUCTURAL_CANDIDATES`' docstring says
+  so in as many words); it was missing at first, so the round trip handed back
+  the default pair and the only part of the state that cost anyone any thought
+  was the only part not kept. `view` and `candidates` are also APPLIED on
+  reopen — both were being written to the file and stored in `_RESTORED` and
+  then never read, which is the same as not saving them. `_apply_session`
+  **names**
+  every entry it did not reopen in the Results pane. Same shape as the frozen
+  trace coming back without its numbers and saying so twice; same rule as the
+  rest of the session file — a bad value costs its own entry, never the file,
+  and `apply_attribution_session_state` never raises.
+
+### The cold-start screen (`--cold-start`, CLI only)
+
+Which ports matter BEFORE a spec exists. `tests/test_attrib_coldstart.py` and
+`tests/test_attrib_cli_coldstart.py` are the guards; the mathematics is
+`docs/theory.md` §13.14 and the rationale is
+`docs/design_port_attribution.md` §14.
+
+- **`decompose` is STRUCTURALLY BLIND to this case and that is why the screen
+  exists.** With every port open there are no elements, so `m = 0`, `U` is
+  empty and the contribution table is empty — and the all-open configuration is
+  exactly the one that produced the disputed number. `sensitivity` does reach
+  undecided ports but is framed as "check the spec you already wrote", which is
+  a different question. Do not "fix" this by folding hypothetical elements into
+  `decompose`; the contribution table ranking DECLARATIONS is an invariant.
+- **It is READ OFF THE EXISTING MACHINERY, not reimplemented.** One
+  `AttribContext` whose `TerminationSet` is "the probes plus one ideal ground
+  per candidate" gives all four steps: `ctx.Dmat` is all-open, `ctx.Zop` is
+  all-grounded, `ctx.Rmat[e,a]` is `Zbase[a,p]`, `ctx.Pmat_b[e,b]` is
+  `Zbase[p,b]`, `ctx.Gm[e,e]` is `Zbase[p,p]`, the one-element solve IS the
+  closed form, the two-element solve is the pair scan, and
+  `leave_one_out(ctx, …)` is the mirror with no new code. Probe membership
+  comes from `_probe_side_of_port` (`merge_terms`' rule), so a short that
+  defines a probe side survives the rewrite; every other declaration is dropped
+  and **named** in `notes`.
+- **The closed form is `dZ_ab = -Zbase[a,p]·Zbase[p,b]/Zbase[p,p]`, and it is
+  EXACT.** It is §13.3 with one element and `Zt = [0]`, and equivalently the
+  Schur complement of deleting row/column `p`. Verified against an HONEST
+  re-solve through `compute_z_matrix` with a rebuilt `TerminationSet`:
+  **1.47e-11** worst on the planted 12-port case, `<= 5.8e-11` over every
+  fixture; re-measured while writing the docs on `diff_pair_4port.s4p` at
+  5.0005 GHz (probes 1/2, candidates 3/4), **7.11e-13** and **8.30e-13**. The
+  mathematics needs only **two solves plus the diagonal**; the implementation
+  builds the whole baseline once because the other steps need it.
+- **BOTH COUPLING COLUMNS ARE MANDATORY AND MUST NOT BE COLLAPSED INTO THEIR
+  PRODUCT.** Measured on the planted case: the port with the **largest**
+  `|Zbase[a,p]|` in the file (34.777 Ω, 67% more than the real path's 20.873)
+  has `|Zbase[p,b]| = 0.038` and a true effect of **-0.378 pH** against
+  **-395.369 pH** — ranked on coupling-to-the-victim alone it is FIRST and
+  worthless, ranked on `|dM|` it is fifth of eight. The repo's own fixture
+  makes the converse point and is the cleaner demonstration: on
+  `diff_pair_4port.s4p` at 5.0005 GHz port 3 reads `|Z_ap| = 15953.3`,
+  `|Z_pb| = 7.89368` and port 4 reads them **swapped** — a factor of 2021 —
+  while both have the **same effect to twelve digits** (`+7.93284 Ω`). Rank on
+  either column alone and one of two identical ports is first and the other is
+  last.
+- **THE PAIR SCAN IS NOT OPTIONAL.** Measured: a shield brought out as two
+  ports reads **+9.689 pH** with either end grounded alone and **-870.268 pH**
+  with both — **89.8x** the largest single-port effect, with the **OPPOSITE
+  SIGN**. A single-port ranking reports it as two minor positive entries.
+  `5 short_to 6` with no ground anywhere gives the identical -870.268 pH, which
+  proves the mechanism is the closed **LOOP** and not the grounding. The
+  algebra says where the surprise lives: with `Zbase[p,q] = 0` the 2x2 `H` is
+  diagonal and the two effects add **exactly**, so the non-additivity is
+  entirely how much the two candidates talk to each other.
+- **THE MIRROR DIRECTION IS ALSO MANDATORY, and it is a different failure, not
+  a check.** Leave-one-out from ALL-GROUNDED: 60 ground balls read `~0` each
+  because the other 59 carry the return, while the shield reads **+880 pH** per
+  end. One-at-a-time-from-all-open and leave-one-out-from-all-grounded catch
+  opposite failures (loop closure versus parallel-return saturation) and
+  neither subsumes the other. On a large file the mirror is also the expensive
+  half — measured **9.3 s of a 9.5 s** four-step report at 151 candidates.
+- **A pair is FLAGGED against a threshold that is REPORTED, and nothing is
+  hidden by it.** `max(COLD_START_PAIR_REL * largest single-port |delta|,
+  COLD_START_PAIR_FLOOR_REL * |all-open value|)` = `max(0.5·…, 0.01·…)`. The
+  first term is the one that means something; the second is a floor for the
+  case where every single-port effect is `~0` — the normal reading of a shield
+  and of 60 balls from all-grounded — without which the first term collapses
+  onto the noise and flags all 28 pairs. Measured: planted case threshold
+  197.7 pH, **no** pair clears it (largest non-additivity 5.40 pH — correct, no
+  pair mechanism was planted); shield case threshold 4.84 pH, the one pair
+  clears at 889.6 pH, **184x**. Every scanned pair is returned, ranked, each
+  carrying the threshold it was judged against.
+- **STEP 0 COMES FIRST AND IS PINNED THAT WAY.** The open..ideal-ground bracket
+  answers "is any of this worth my time" before anything else is computed
+  (measured **25.67 dB** on the planted case), and
+  `test_the_BRACKET_comes_before_the_RANKING` pins that pair on its own. It is
+  **not** a bound over all terminations — a reactive termination leaves the
+  Möbius arc; measured on `diff_pair_4port.s4p`, one ground's series `L` swept
+  over `[0, inf)` peaks at 9 mH of apparent `M` at `L = 505 nH` against a
+  1.01 nH bracket. `COLD_START_BRACKET_CAVEAT` is one string so every export
+  carries it verbatim, the `SIGN_CONVENTION_TEXT` rule.
+- **THE NEGATIVE RESULT IS REPORTED AS A RESULT.** "The other N ports are all
+  below X dB, so the coupling is LOCAL" is what lets a designer stop looking,
+  and a screen that only prints a top-10 cannot say it.
+  `COLD_START_LOCAL_DB = 1.0` is anchored on the 6.07 dB dispute this whole
+  module exists to settle: a port that cannot move the answer by 1 dB is not
+  part of that argument. It changes no number, only the sentence.
+- **A NAME FAMILY IS A PROPOSAL THE TOOL TESTED, NEVER AN ASSUMPTION IT FOLDED
+  IN.** The requirement was explicit that which port is ground is a semantic
+  judgement and the script must not guess it. So the NUMBERS are computed both
+  ways and the GROUPING stays a sentence ("ports 5,6 share the name family
+  'guard_ring'; tested together they are -870 pH, tested separately +9.7 pH
+  each — if they are one structure, group them"). **Nothing else in the report
+  depends on port names at all**, and the test suite pins that by running the
+  whole thing twice. `COLD_START_MIN_FAMILY = 2`, deliberately **not** core's
+  `OPEN_CLUSTER_MIN_FAMILY = 4`: that threshold keeps a REMNANT check from
+  crying wolf about `coil1`/`coil2`, while the case this one exists for is
+  exactly a two-member family.
+- **WHAT IT CANNOT FIND goes on the screen, not in a footnote.** Anything
+  needing THREE OR MORE ports to move together: step 1 is first order in the
+  candidate set, step 2 exactly second, and step 3's greedy walk can stumble
+  onto a triple with no guarantee. `COLD_START_BLIND_SPOT_TEXT` is the one
+  string that says so and it is printed by the report.
+- **`context=` is KEYWORD-ONLY on every step, and the four contract signatures
+  are positionally exact.** The context is the only `O(N³)` piece (measured
+  350.6 ms at 153 ports) and every step off it costs microseconds to
+  milliseconds, so building four of them is the one expensive mistake
+  available. `cold_start_report` shares it for you.
+- **`--cold-start-cumulative` takes an explicit K because a bare "every
+  candidate" was a 55-second trap.** Measured at 151 candidates: 132 ms at
+  `k = 12`, 237 ms at `k = 24`, **54.9 s** at `k = 0`. Step 3 is always run —
+  it is the only step that answers "how many ports matter" and at the default
+  it is 132 ms of a 9.5 s report, so there is nothing to opt out of. All three
+  cap flags default to `None` so `_cold_dependent_flags` is EXACT where
+  `_attr_dependent_flags` (which compares against a substituted default)
+  cannot be.
+- **`--attribute` and `--cold-start` together are ALLOWED, cold start last.**
+  The attribution explains the `M` printed just above it and must stay next to
+  it; refusing the combination would only force the file to be read and
+  inverted twice (measured 132 ms + 675 ms on a 16 MB 153-port file).
+- **Both port names go on a line UNDER the pair table, not in the cell.**
+  Measured: `guard_ring1` / `guard_ring2` in one cell truncate to two identical
+  `guard_rin~` stumps, because `_trunc` keeps the HEAD — the same failure
+  `freeze_label` was fixed for. Putting the names in full underneath took the
+  table from 110 to 89 columns as well.
 
 ### Connection table (the Mode 5 / Mode 6 row editor)
 
@@ -1594,6 +2077,34 @@ recorded here rather than in a commit message nobody will find.
   fed by a different code path drifts from it — and if it were fed by the same
   path it would just be the readout in a worse place, costing plot height the
   strip measurements above say is not available.
+- **A FOUR-TAB notebook inside the Attribution window** (Contributions /
+  Sensitivity / Sweep / Across-frequency). Rejected on what the tabs *are*, not
+  on pixels: the sweep is a **drill-down on the row just clicked**, so a tab
+  makes the user re-pick the element they already selected and breaks the one
+  gesture the pane exists for; and "does this ranking hold across frequency" is
+  a **validity qualifier on the table, not a place**, so as a tab it is never
+  opened and the requirement behind it is satisfied on paper only. A
+  radiobutton view toggle plus a one-line badge with an expander does both jobs
+  in the height a tab strip alone would have cost.
+- **A `ttk.Treeview` for the Attribution window's contribution table.**
+  Different case from the two Treeview entries elsewhere in this file, and it
+  loses on its own measurement: eight columns need **671 px** as a Treeview at
+  100% font scaling and **971 px** at 150%, against **490 / 700 px** as
+  Consolas 9 text; ttk will not shrink a column below its set width even with
+  `stretch=True`, and it clips with **no ellipsis and no overflow indicator**,
+  so `-0.6231` silently becomes a plausible shorter number. And in
+  `TkDefaultFont` the signed-number glyphs are all different widths (`-` 5 px,
+  `+` 9, U+2212 9, `.` 3, ` ` 4, digits 7), so a right-aligned column of signed
+  values has its decimal point wandering ±4 px per row. A read-only Treeview is
+  still right for **names and roles** (Ports & Roles); it is wrong for a table
+  of signed numbers. Note this reverses `design_port_attribution.md` §9's own
+  recommendation — that bullet is struck through there with the measurement.
+- **An eleventh Help tab for attribution or cold start.** `HELP_TOPICS`' ten
+  tabs need **968 px** against `HELP_WINDOW_WIDTH = 1010`; an eleventh labelled
+  `Cold start` takes the strip to **1033 px**, `Attribution` to **1037**,
+  `Port attribution` to **1064**. A `ttk.Notebook` clips silently and the tab
+  that vanishes is the LAST one, so the new tab would be the invisible one.
+  Fold into `Mode 6 (Coupling)` and cross-reference.
 
 ### `reduce_snp.py` specifics
 
@@ -1677,22 +2188,30 @@ recorded here rather than in a commit message nobody will find.
 
 ```bash
 python tests/run_parallel.py            # the whole suite -- use this
-python tests/run_parallel.py --fast     # 2.9 s, 523 tests, the eleven no-Tk modules
+python tests/run_parallel.py --fast     # 4.1 s, 642 tests, the thirteen no-Tk modules
 python tests/run_parallel.py -m attrib coupling core    # substring on module name
 ```
 
+**Re-measured on this box: 1566 tests / 289 shards in 236 s and 230 s over two runs, and
+642 tests in 4.1 s twice for `--fast`.** (The historical figures the runner's docstring
+opens with — 293 s serial against 108 s parallel over 906 tests — are what justified the
+runner and are kept as such.) The full number tracks CONTENTION as much as anything: 120 s
+on an idle box and 339 s with another agent competing for the same cores have both been
+measured on the same tree, so **read the exit code, not the clock**. The runner shards by
+test CLASS (not module: `test_run_history` alone was 86 s of that 293 s), longest-first, and
+exit code 0 means every shard passed; failing shards print their full output.
+
 `python -m unittest discover -s tests` still works and is still the ground truth, but it is
-**2.7x slower for the same tests** — measured at the time `run_parallel.py` was written,
-293 s serial against 108 s parallel over 906 tests. The runner shards by test CLASS (not
-module: `test_run_history` alone was 86 s of that 293), longest-first, and exit code 0 means
-every shard passed; failing shards print their full output. Measured here at 1130 tests:
-120 s on an idle box, 339 s with another agent competing for the same cores — the wall time
-tracks contention, so read the exit code, not the clock.
+**2.7x slower for the same tests**.
 
 While iterating, run the **narrowest set that can still catch your mistake**: `--fast` for
 numeric-only changes, `-m <your modules>` otherwise. **87 % of the suite is Tk GUI tests**
 that a change to `pkg_rlc_core` numerics or to `pkg_rlc_attrib` cannot affect. Run the full
 parallel suite once before reporting — never the serial `discover`.
+
+`--fast` now covers the cold-start screen: `test_attrib_coldstart` and
+`test_attrib_cli_coldstart` were qualified on the one property `FAST_MODULES` has — neither
+imports tkinter — and were added, which is what took it from 523 tests / 2.9 s to 642 / 4.1 s.
 
 ## How to add a new measurement mode
 
@@ -1700,7 +2219,7 @@ Pick the **next unused integer** code (4 is retired, not free) and never renumbe
 
 1. **Core**: add a `build_terminations_modeN(...)` helper in `pkg_rlc_core.py` that produces a `TerminationSet`, converting 1-based to 0-based *there* and nowhere deeper. If a new termination semantic is needed, add a dataclass to the `PortTermination` / `Coupling` unions and handle it in `compute_z_matrix`'s evaluation order (lumped -> short merge -> ground/vdd drop -> Schur -> probe-node contraction). If the mode only rearranges probes, it needs no new semantic at all — `Signal(group, sign)` already covers arbitrarily many measurement ports.
 2. **GUI**: add a new radio button in `_build_editor`, add the fields to `TraceConfig`, register placeholder hints in `MODE_PLACEHOLDERS`, extend `_update_mode_visibility` to show/hide and re-set placeholders, extend `_port_descriptor`, and dispatch in `_build_termination`. Mirror the dispatch in the CLI argparser (`_make_arg_parser` + `_run_cli`) and reject flags that belong to other modes with a clear message. A **table-based** mode registers NO `MODE_PLACEHOLDERS` entry — a cell cannot hold a hint, so its hint is a `_CollapsibleHint` under the table.
-3. **Help**: add a new tab to `HELP_TOPICS` in `pkg_rlc_help.py` with assumptions, inputs, and a worked example. Update the `Input syntax` tab if the mode adds syntax, and the `Mode 5 (Custom)` tab if the new mode could also be expressed in the DSL.
+3. **Help**: document the mode in `pkg_rlc_help.py` with assumptions, inputs, and a worked example. **A new tab is no longer free**: the ten existing tabs need 968 px against `HELP_WINDOW_WIDTH = 1010`, and an eleventh takes the strip to 1033–1064 px depending on its label (measured), where a `ttk.Notebook` silently clips the LAST tab. Either fold the mode into the nearest existing tab (what port attribution and the cold-start screen did, into `Mode 6 (Coupling)`) or widen `HELP_WINDOW_WIDTH` and re-run `tests/test_session.py::TestHelpTabsAllFit`, which re-measures it. Either way update the `Input syntax` tab if the mode adds syntax, the `Mode 5 (Custom)` tab if it could also be expressed in the DSL, and cross-reference from `Overview` and `Worked examples`.
 4. **Docs**: update the mode table in `README.md` and add a section to `docs/theory.md`. If the mode changes what a "measurement" is (rather than just which ports are terminated how), say so in both.
 5. **Tests**: add a case in `test_core.py` (or `test_coupling.py` for anything probe-shaped) that builds the new termination set and asserts the result matches a hand-coded reference. Also add an "equivalence test" pinning that the new named mode produces identical results to a hand-built `TerminationSet`.
 6. **Golden regression**: if the change touches `compute_z_matrix` at all, run `python -m unittest tests.test_golden_regression` and expect it green *without* regenerating `golden_legacy.npz`. Adding a fixture or a new mode does not require regeneration; a numeric drift in an existing mode means you broke something.

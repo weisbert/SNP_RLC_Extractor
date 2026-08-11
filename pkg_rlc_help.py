@@ -30,6 +30,14 @@ S-parameters of an N-port linear network, the tool:
      COUPLING between them: mutual inductance M, coupling factor k,
      the coupling ratio M/L, and the coupling capacitance C_c.
      See the "Mode 6 (Coupling)" tab.
+  6. Answers WHERE a coupling number came from, which is a separate
+     question from what it is. Analyze -> Attribution... splits an
+     extracted Z_ab into the bare EM coupling plus one signed term
+     per termination you declared, and says what it would be with
+     any of them changed. On the CLI, --cold-start goes the other
+     way and ranks the ports you have NOT declared anything for.
+     Both are on the "Mode 6 (Coupling)" tab, under "Where the
+     number came from".
 
 Universal assumptions (apply to ALL modes)
 ------------------------------------------
@@ -1131,9 +1139,15 @@ gave |M| = 1.71 pH and |M| = 3.44 pH. Both runs were correct. What
 differed was the grounding assumption -- and nothing on the screen
 said so.
 
-`pkg_rlc_attrib.py` answers two questions about ONE frequency of
-ONE spec:
+`pkg_rlc_attrib.py` answers three questions about ONE frequency of
+ONE spec. They are numbered in the order they were built, not the
+order you ask them -- Q0 is where a new job starts:
 
+  Q0  COLD START. You have not written a spec yet. WHICH of the
+      other 149 ports in this file matter at all? Answered by the
+      four-step screen in the next section, and answered from
+      ALL PORTS OPEN, because that is the configuration the
+      disputed number came out of.
   Q2  ATTRIBUTION. Split the Z_ab you just read into "the bare EM
       coupling" plus one signed term per termination you declared.
       The terms add up to the total EXACTLY -- this is
@@ -1143,11 +1157,157 @@ ONE spec:
       open instead? A 50 ohm resistor? A 1 nH lead? Also exact:
       it re-solves the network, it does not extrapolate.
 
+Q2 and Q1 are what the Attribution window shows (Analyze ->
+Attribution...). Q0 is CLI-only today.
+
 The algebra, if you want it, is one Woodbury update: terminating a
 set of ports is a low-rank change to the file's own admittance, so
 the whole answer is a small dense solve on an m x m matrix, where
 m is the number of terminations you declared. See docs/theory.md
 section 13.
+
+
+Start here: the cold-start screen (Q0)
+---------------------------------------
+Everything else on this tab assumes you already wrote a spec. At
+the start of a job you have not. You know the victim and the
+aggressor and nothing about the other ports, and the all-open
+configuration -- the one this tool returns, and the one that
+produced the number you are arguing about -- contains no
+declarations at all, so the contribution table below is EMPTY by
+construction. The cold-start screen is the answer to that, and it
+is the first thing to run on an unfamiliar file.
+
+Four steps, in this order. Every one of them is exact (a closed
+form checked against a full re-solve to 1.5e-11, not a first-order
+slope) and every one measures from ALL PORTS OPEN.
+
+STEP 0  THE BRACKET. The quantity with every non-probe port OPEN,
+        against the same quantity with every one of them at IDEAL
+        GROUND, and the dB between them. It is first because it
+        decides whether the other three steps are worth reading.
+        Measured 25.67 dB on a planted 12-port case; a file that
+        reads 0 dB has nothing else connected to your two coils
+        and you can stop here.
+        It brackets the OPEN..IDEAL-GROUND family and NOTHING
+        else. It is not a bound over all terminations: a series
+        ground inductance resonates with the structure's shunt C
+        and can put M outside it (measured on
+        diff_pair_4port.s4p, a peak of 9 mH of apparent M at
+        L = 505 nH against a 1.01 nH open..ideal bracket). The
+        report prints that caveat with the numbers, every time.
+
+STEP 1  THE TWO-COLUMN SCREEN. Every port that is not part of a
+        measurement port, with
+
+            |Z_ap|   how strongly it talks to the VICTIM
+            |Z_pb|   how strongly the AGGRESSOR talks to it
+            delta    the exact effect of grounding it
+
+        ranked by |delta|. The two coupling columns are separate
+        ON PURPOSE and must never be read as their product: a port
+        has to do BOTH to be a path. Measured on the planted case,
+        the port with the LARGEST |Z_ap| in the whole file
+        (34.777 ohm, 67% more than the real path's 20.873) has
+        |Z_pb| = 0.038 and moves the answer by -0.378 pH, against
+        -395.369 pH for the real one. Ranked on coupling to the
+        victim alone that port is FIRST and it is worthless;
+        ranked on the effect it is fifth of eight. That is the
+        whole reason there are two columns and not their product.
+        The NEGATIVE result is a result. The list ends with "the
+        other N ports are all below X dB", which is what lets you
+        say the coupling is local and stop looking.
+
+STEP 2  THE PAIR SCAN over the top K of step 1, again from
+        all-open. This is not optional. Measured: a shield brought
+        out as two ports reads +9.689 pH with either end grounded
+        alone and -870.268 pH with BOTH -- 90x the largest
+        single-port effect in the file, with the OPPOSITE SIGN. A
+        single-port ranking reports that as two minor positive
+        entries and you never look at it again. The mechanism is
+        the closed LOOP, not the grounding: "5 short_to 6" with no
+        ground anywhere gives the identical -870.268 pH.
+        The same step runs the MIRROR direction -- start with
+        every candidate GROUNDED and open one at a time -- because
+        the two catch opposite failures. Sixty ground balls read
+        ~0 each from all-grounded, since the other fifty-nine
+        carry the return; that same shield reads +880 pH per end.
+
+STEP 3  THE GREEDY CUMULATIVE CURVE. Ground the best port,
+        RE-RANK, ground the next best, and so on, tabulating the
+        answer against k. Neither a ranking nor a pair scan tells
+        you HOW MANY ports matter; this does, and the report names
+        the k at which the curve saturates and the tolerance it
+        used for the word. Greedy is not optimal -- the best-k
+        subset is combinatorial -- but the re-ranking is what lets
+        the walk stumble into the pair effects of step 2.
+
+Port names are a PROPOSAL, never an assumption
+-----------------------------------------------
+Grouping ports by name family WOULD have caught the shield above,
+because the two ends of a guard ring normally share a prefix. But
+which ports are one structure is a semantic judgement about your
+layout, and this tool will not guess it. So the numbers are
+computed both ways and the grouping stays a sentence you accept or
+reject:
+
+    ports 5,6 share the name family 'guard_ring'; tested together
+    they are -870 pH, tested separately +9.7 pH each -- if they
+    are one structure, group them
+
+Nothing in the bracket, the ranking, the pair scan or the curve
+changes according to whether the file carries port names at all.
+
+What the cold-start screen cannot find
+---------------------------------------
+Anything that needs THREE OR MORE ports to move together. Step 1
+is one port at a time, step 2 is exactly two, and step 3 can
+stumble onto a triple but has no guarantee. A three-terminal
+version of the shield above is invisible to every step.
+
+And, as everywhere in this layer: it cannot evaluate NEW METAL.
+Every port it considers is one your S-parameter file already has.
+
+Running it
+----------
+CLI only -- there is no window for the cold-start screen. Same
+shape as --attribute, and the two may be given together (the
+attribution prints first, because it explains the M printed just
+above it):
+
+      python pkg_rlc_extractor.py --cli <file> --mode coupling \\
+          --mport "dco = 1" --mport "rx = 2" --freq 5.0 \\
+          --cold-start dco,rx
+
+Note there is no --gnd and no --short in that command. --cold-start
+deliberately sets your declarations aside and starts from all-open;
+the report names every one it set aside.
+
+  --cold-start VICTIM,AGGRESSOR
+      Turn the four-step screen on. Both sides are named exactly
+      the way --attribute names them: a measurement-port NAME from
+      --mport, or a 1-based position in that list.
+  --cold-start-top K
+      How many ports of the step-1 ranking enter the pair scan
+      (default 8, i.e. 28 pairs). Refused below 2 -- the pair scan
+      is not optional.
+  --cold-start-cumulative K
+      Depth of the greedy curve (default 12; it is always run). 0
+      means every candidate, which is the one expensive setting
+      here: measured 54.9 s at 151 candidates against 132 ms at
+      K = 12.
+  --cold-start-csv PATH
+      Every record -- the bracket, the UNCAPPED screen, every
+      scanned pair whether flagged or not, the whole mirror, the
+      curve and the name-family suggestions -- one row each,
+      tagged by a "section" column.
+
+Cost, measured on a 153-port package export at one frequency: the
+four steps together are 9.5 s, of which 9.3 s is the mirror
+direction; at 38 candidates the same four steps are 17.6 ms. What
+they replace is one full re-solve per candidate port: 2.41 ms for
+the ranking against 2402.6 ms, a factor of 997.
+
 
 The baseline
 ------------
@@ -1250,10 +1410,109 @@ of a magnitude and has no sign. Ask for one of those per term and
 the tool refuses BY NAME and tells you which linear quantity to
 decompose instead.
 
-Where to run it
----------------
-There is no window for this yet. It lives on the --cli path:
-add "--attribute VICTIM,AGGRESSOR" to any "--mode coupling" run,
+Where to run it: the Attribution window
+----------------------------------------
+Analyze -> Attribution..., or right-click the trace in the Traces
+list. It decomposes the SELECTED trace, so calculate that trace
+first. It is a normal window and not a dialog: it stays open while
+you edit, it keeps its own taskbar button, and you can park it on
+a second monitor. Several can be open at once, on different traces
+or different pairs; asking again for a pair that is already open
+raises that window instead of making a second copy of it.
+
+It refuses to open on a trace it cannot honestly describe, and it
+says which of these is in the way:
+
+   * the trace is a FROZEN snapshot -- its numbers came from an
+     earlier run and can never be recalculated, so anything
+     computed now could only be stamped with the CURRENT run;
+   * the trace is STALE, i.e. edited since the last Calculate --
+     the numbers and the spec beside them no longer describe each
+     other;
+   * it has no numbers yet, or its Touchstone file is not loaded;
+   * it has only ONE measurement port. Z_ab is a MUTUAL impedance;
+     there has to be a victim AND an aggressor.
+
+The menu entry stays LIVE in all four cases on purpose. A greyed
+entry cannot tell you why.
+
+What is on the window, top to bottom:
+
+  HEADER        trace / victim / aggressor / quantity / frequency
+                / [Recompute]. Change any of the first five and
+                press Recompute; nothing recomputes on its own,
+                and that is deliberate (see below). The row wraps
+                onto a second line at narrow widths rather than
+                pushing [Recompute] off the end.
+  BANNER        where these numbers came from -- "from run #7 @
+                5.600 GHz". It turns into a warning the moment you
+                edit the spec in the main window, which is what
+                makes the button honest.
+  SIGNS         the convention, stated once, above any signed
+                number. A negative term OPPOSES the total and the
+                terms sum to it exactly; shares are of the SIGNED
+                total, so they can exceed 100% and go negative
+                wherever terms cancel. The line clips at narrow
+                widths -- the full declaration, including the
+                ground model, is in Copy report and in the CSV.
+  RECONCILE     the cross-check, in the header rather than the
+                footer because it gates trust in everything under
+                it: "reconciled  rel diff 3.1e-13 (floor
+                4.3e-10)". If it ever fails, the per-element SPLIT
+                is withheld and the TOTAL is still shown -- the
+                total is compute_z_matrix's and is not in doubt.
+  ACROSS FREQ   one line saying whether the ranking still holds at
+                other frequencies, with an expander that opens it
+                in place.
+  TABLE         (o) Contributions   ( ) Sensitivity -- one pane,
+                two views, not two tabs. Rows are coloured by
+                element KIND, in the same palette as the Ports &
+                Roles window. Never by sign: red means "warning"
+                everywhere else in this tool, and a red negative
+                would make a correct answer look like a fault.
+                Click a row to drill into it.
+  DETAIL        for the selected row: its element current, its
+                transimpedance to the victim, what it would be
+                worth as each candidate in the Candidates box
+                (open, ideal, or R=/L=/C= -- the tool will not
+                guess a package value for you), and the
+                closed-form sweep of that one element plotted
+                beside it, with both asymptotes and the current
+                spec marked. Non-monotonicity is labelled where
+                the sweep finds it.
+  FOOTER        Copy report / Export CSV... / Close. Both exports
+                carry the full provenance: run number, the
+                frequency and whether it was snapped to the file's
+                grid, the whole sign convention, the ground model,
+                and the termination spec verbatim.
+
+Why a [Recompute] button and not an automatic refresh: the numbers
+a trace carries are written by Calculate and by nothing else.
+Editing the spec marks the trace stale and leaves those numbers at
+the PREVIOUS run's. A window that re-decomposed on every keystroke
+would therefore be checking a NEW spec against an OLD total, would
+find them disagreeing by however much you just typed, and -- by
+the reconciliation rule above -- would blank its own table. It
+would erase itself while you type. So an edit moves the banner and
+nothing else, and you press the button when you mean it.
+
+The window does not offer the shared-return ground model. That is
+a dense element-impedance matrix, it cannot be written as a
+termination spec, and it lives on the CLI
+(--attribute-ground-model shared:...). Every export names the
+model the numbers came out of rather than letting you assume one.
+
+Save Config remembers WHICH pair you were reading -- the victim,
+the aggressor, the quantity, the frequency, the view and the
+Candidates field -- but it does not reopen the window on Load. A config carries the setup and
+never the results, so a just-loaded trace has no numbers yet and
+the window could only open on its own refusal. The Results pane
+names each entry it did not reopen; Calculate, then Analyze ->
+Attribution..., and you land back where you were.
+
+Where to run it: the CLI
+-------------------------
+Add "--attribute VICTIM,AGGRESSOR" to any "--mode coupling" run,
 where both sides are measurement-port NAMES as you gave them to
 --mport. Everything below came out of that.
 
@@ -1558,9 +1817,16 @@ while N balls sharing one z is z.
 "Where the number came from" on the Mode 6 tab is the section that
 splits an extracted M into one signed term per row you wrote here,
 and tells you what each row would be worth if it were open, a
-resistor or a lead inductance instead. It also states, in those
+resistor or a lead inductance instead. Open it with Analyze ->
+Attribution... on a calculated trace. It also states, in those
 words, what the split is blind to: a port you left OPEN
 contributes no row, so it contributes no term.
+
+That last sentence is why the same tab carries a COLD-START screen
+for the other direction -- which of the ports you have not written
+a row for matter at all, ranked from all-open, before any of this
+table exists. It is CLI-only: --cold-start VICTIM,AGGRESSOR. Read
+it before you write your first ground row on an unfamiliar file.
 """
 
 
@@ -1687,7 +1953,9 @@ Same file as Example F. You changed "GND Ports = 5,6" to
 know which reading to defend.
 
 That is what "Where the number came from" at the bottom of the
-Mode 6 tab is for. It splits the extracted M into
+Mode 6 tab is for, and the window is Analyze -> Attribution... on
+the calculated trace (or right-click it in the Traces list). It
+splits the extracted M into
 
       bare EM coupling  +  one signed term per GND / short /
                            lumped row you declared
@@ -1706,6 +1974,43 @@ ground 3 because it is the far end of the VICTIM's own line.
 Read the three caveats on that tab before quoting any of it -- in
 particular, the table ranks the rows you DECLARED, so a port you
 left open is absent from it rather than small in it.
+
+
+Example F3: you do not know which ports matter yet
+---------------------------------------------------
+A fresh 153-port package export. You know the aggressor and the
+victim and nothing else, and Example F2's table is empty because
+you have declared nothing for it to rank.
+
+Run the cold-start screen instead (Mode 6 tab, "Start here"):
+
+      python pkg_rlc_extractor.py --cli <file> --mode coupling \\
+          --mport "dco = 1" --mport "rx = 2" --freq 5.0 \\
+          --cold-start dco,rx
+
+and read it in the order it prints.
+
+  STEP 0 says whether to bother at all: M with everything open
+     against M with everything grounded. Measured 25.67 dB on a
+     planted case -- that is a real argument. 0 dB and you are
+     done, nothing else in the file touches these two coils.
+  STEP 1 ranks every port by the EXACT effect of grounding it,
+     with its coupling to the victim and its coupling to the
+     aggressor as two SEPARATE columns. Watch that pair: the
+     measured red herring had the largest coupling-to-the-victim
+     in the whole file (34.777 ohm) and moved the answer by
+     -0.378 pH, because its coupling to the aggressor was 0.038.
+  STEP 2 grounds pairs of the top ports together. The measured
+     shield reads +9.689 pH per end alone and -870.268 pH for
+     both -- 90x, opposite sign. Step 1 alone would have shown you
+     two harmless-looking positive entries.
+  STEP 3 grounds them cumulatively, best first, re-ranking as it
+     goes, and says how many actually matter.
+
+Then write the GND rows the screen justifies, calculate, and use
+Example F2's window to check what those rows are now worth. That
+is the loop: cold start to decide what to declare, attribution to
+audit what you declared.
 
 
 Example G: PDN impedance with mixed VDD/GND balls

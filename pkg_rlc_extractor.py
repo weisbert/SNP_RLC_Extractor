@@ -40,6 +40,17 @@ Examples:
         --attribute-ground-model "shared:L=1n" --attribute-freqs "1,5,10" \\
         --attribute-csv attribution.csv
 
+    # WHICH of the other 149 ports matter at all -- the question that comes
+    #   BEFORE --attribute, when the only two ports you are sure of are the
+    #   victim and the aggressor.  Declare nothing: --cold-start starts from
+    #   all-open on purpose and says so.
+    python pkg_rlc_extractor.py --cli pkg.s153p --mode coupling \\
+        --mport "dco = 1" --mport "rx = 2" --freq 5.0 --cold-start dco,rx
+    python pkg_rlc_extractor.py --cli pkg.s153p --mode coupling \\
+        --mport "dco = 1" --mport "rx = 2" --freq 5.0 --cold-start dco,rx \\
+        --cold-start-top 12 --cold-start-cumulative 20 \\
+        --cold-start-csv coldstart.csv
+
 Note: --vdd is deprecated.  For AC small-signal analysis VDD is identical to
 ground, so any --vdd ports are simply unioned into the --gnd list.
 """
@@ -62,6 +73,7 @@ from pkg_rlc_core import (
     TouchstoneParseError,
     build_terminations_coupling,
     check_touchstone,
+    collapse_ports,
     build_terminations_mode1,
     build_terminations_mode2,
     build_terminations_mode3,
@@ -224,6 +236,74 @@ def _make_arg_parser() -> argparse.ArgumentParser:
                              "effects, the cumulative curve, the sweeps and the "
                              "cross-frequency ranks. One row per record, tagged "
                              "by a 'section' column")
+
+    # ---- cold start (--mode coupling only) -------------------------------
+    # Its own group for the same reason the attribution has one: every flag
+    # here is inert without --cold-start, and _run_cli refuses them by name
+    # when it is absent.  The two groups are deliberately shaped alike -- one
+    # naming flag, some caps, a CSV -- because they are one family: --attribute
+    # explains the number a spec produced, --cold-start asks which ports the
+    # spec should have mentioned at all.
+    n_pairs_default = (attrib.COLD_START_TOP_K
+                       * (attrib.COLD_START_TOP_K - 1) // 2)
+    cs_grp = p.add_argument_group(
+        "cold start (--mode coupling only)",
+        "WHICH ports matter, before a spec exists. Every step is exact (a "
+        "closed form verified against a full re-solve to 1.5e-11), not a "
+        "first-order slope, and every one of them starts from ALL-OPEN -- the "
+        "configuration that produced the disputed number in the first place.")
+    cs_grp.add_argument("--cold-start", default=None,
+                        metavar="VICTIM,AGGRESSOR",
+                        help="Run the four-step port screen for the mutual "
+                             "impedance between these two measurement ports "
+                             "instead of decomposing a spec: the "
+                             "open..grounded BRACKET, a ranked screen of every "
+                             "non-probe port with its coupling to BOTH sides, "
+                             "a pair scan plus the mirror leave-one-out from "
+                             "all-grounded, and the greedy cumulative curve. "
+                             "Both sides are named exactly as --attribute "
+                             "names them -- a measurement-port NAME from "
+                             "--mport, or a 1-BASED position in that list. Any "
+                             "--gnd / --short your spec declares is NOT in "
+                             "force here, and the report names every one it "
+                             "set aside. Measured cost at 151 candidates (a "
+                             "153-port package): 9.5 s for the four steps, of "
+                             "which 9.3 s is the mirror direction; at 38 "
+                             "candidates the same four steps are 17.6 ms")
+    cs_grp.add_argument("--cold-start-top", type=int, default=None,
+                        metavar="K",
+                        help=f"How many ports of the step-1 ranking enter the "
+                             f"pair scan (default: "
+                             f"{attrib.COLD_START_TOP_K}, i.e. "
+                             f"{n_pairs_default} "
+                             "pairs). The cap is about how much table a person "
+                             "reads, not about cost: the scan is K*(K-1)/2 "
+                             "rank-2 updates and measured 0.5 ms at K=8, "
+                             "3.4 ms at K=20 and 8.2 ms at K=30 on a 153-port "
+                             "file. Refused below 2 -- the pair scan is not "
+                             "optional, see the shield measurement the report "
+                             "prints")
+    cs_grp.add_argument("--cold-start-cumulative", type=int, default=None,
+                        metavar="K",
+                        help=f"Depth of the greedy cumulative curve, which is "
+                             f"step 3 and is ALWAYS run (default: "
+                             f"{attrib.COLD_START_MAX_K}). It is not opt-in "
+                             "because it is the only step that answers 'how "
+                             "many ports actually matter', and at 151 "
+                             "candidates it is 132 ms of a 9.5 s report. 0 "
+                             "means every candidate, which is the one "
+                             "expensive setting here: 54.9 s at 151 "
+                             "candidates, against 132 ms at K=12 and 237 ms "
+                             "at K=24")
+    cs_grp.add_argument("--cold-start-csv", default=None, metavar="PATH",
+                        help="Write every cold-start record to this CSV -- the "
+                             "bracket, the full UNCAPPED screen (every "
+                             "candidate port, with the COMPLEX coupling "
+                             "columns the report shows as magnitudes), every "
+                             "scanned pair whether flagged or not, the whole "
+                             "mirror, the curve and the name-family "
+                             "suggestions. One row per record, tagged by a "
+                             "'section' column")
     return p
 
 
@@ -1832,6 +1912,735 @@ def _attr_print_caveats() -> None:
         print()
 
 
+# ============================================================================
+# Cold start (--cold-start):  WHICH ports matter, before a spec exists
+# ============================================================================
+#
+# Same rule as the attribution above, and for the same reason: `pkg_rlc_attrib`
+# does every piece of arithmetic, and everything in this section is argument
+# parsing, ranking and printing.  If a number here is not straight off one of
+# that module's dataclasses it is a bug.
+#
+# The two reports are one FAMILY -- one naming flag, some caps, a CSV with a
+# 'section' column, refusals that name the offending token -- but they answer
+# different questions from DIFFERENT BASELINES.  --attribute decomposes the
+# network the spec declares; --cold-start rewrites that spec to all-open,
+# because "which of these 149 ports matter" is a question about ports the spec
+# has not mentioned yet.  Every header below says which baseline is in force,
+# and the engine names every declaration it set aside.
+
+#: Screen rows printed to the terminal.  This is NOT a free choice.  The
+#: sentence that covers the rest of the file -- "the other N port(s) would each
+#: move the answer by at most X" -- is `cold_start_negative_result(rows, unit)`
+#: at its default `top=COLD_START_SHOW`, and `cold_start_report` builds it that
+#: way.  Print any other number of rows and that sentence counts from the wrong
+#: place: at 20 printed rows it would re-describe 10 ports the reader has just
+#: read as "the other ports", and at 5 it would silently leave 5 out of both.
+#: Track the engine's constant; do not pick a number here.
+COLD_RANK_ROWS = attrib.COLD_START_SHOW
+
+#: Flagged pairs printed.  With the default --cold-start-top 8 the scan is 28
+#: pairs, so this bites only when more than 20 of them are surprising -- which
+#: is itself the message -- and the CSV carries every scanned pair, flagged or
+#: not, so nothing is lost.
+COLD_PAIR_ROWS = 20
+
+#: Mirror rows printed.  There is one per candidate, i.e. 151 on a 153-port
+#: package, and the engine's own renderer shows COLD_START_SHOW of them.
+COLD_MIRROR_ROWS = attrib.COLD_START_SHOW
+
+#: The quantity the whole report is in.  Hard-wired to M, like every ranked
+#: section of --attribute: it is the number a spur / pulling budget is written
+#: against, and it is real by construction so a table of it needs one column
+#: per value rather than two.  The engine takes 'k', 'ImZ', 'M/L_a' and the
+#: rest, and the CSV carries a `quantity` column, so exposing a flag later is
+#: an addition rather than a format change.
+COLD_QUANTITY = "M"
+
+
+def _cold_dependent_flags(args: argparse.Namespace) -> list[str]:
+    """
+    The --cold-start-* flags the user set.  Inert without --cold-start.
+
+    All three default to None rather than to their real defaults precisely so
+    this check can be exact: `--cold-start-top 8` is indistinguishable from not
+    passing it once the default has been substituted, and a user who spells the
+    default out loud and forgets --cold-start deserves the same message as one
+    who does not.  (`_attr_dependent_flags` compares against the default value
+    instead and cannot make that distinction; it is not worth changing there,
+    but it is worth not repeating.)
+    """
+    given: list[str] = []
+    if args.cold_start_top is not None:
+        given.append("--cold-start-top")
+    if args.cold_start_cumulative is not None:
+        given.append("--cold-start-cumulative")
+    if args.cold_start_csv:
+        given.append("--cold-start-csv")
+    return given
+
+
+def _cold_cap(value: int | None, default: int, flag: str, minimum: int,
+              why: str) -> int:
+    """A cap flag: its default when unset, itself when sane, a refusal below."""
+    if value is None:
+        return default
+    if value < minimum:
+        raise ValueError(f"{flag} {value}: {why}")
+    return value
+
+
+def _cold_q(value: complex, unit: str) -> str:
+    """
+    One value of the report's quantity.
+
+    Non-finite prints '--' rather than 'nan': a row the screen could not
+    evaluate is a MISSING measurement, and `format_si` would render it as the
+    word 'nan' in a column of henries, where it reads like a number.  Same
+    guard, same reason, as the attribution tables above.
+
+    Only the real part is rendered, which is exact for COLD_QUANTITY = "M":
+    `_map_value` divides Im(Z_ab) by omega, so the imaginary part is
+    identically zero (checked in the export -- every `value_im` in the CSV is
+    0.000000e+00).  A future --cold-start-quantity flag that admitted 'Z' would
+    have to widen this, and the CSV already carries both parts so nothing is
+    lost in the meantime.
+    """
+    v = complex(value)
+    if not math.isfinite(v.real):
+        return "--"
+    return format_si(v.real, unit)
+
+
+def _cold_abs(value: complex) -> str:
+    """|Z| for one of the two coupling columns, or '--'."""
+    m = abs(complex(value))
+    return "--" if not math.isfinite(m) else f"{m:.4g}"
+
+
+# ---------------------------------------------------------------------------
+# The CSV.  Same shape as the attribution's -- one long table with a `section`
+# column -- because the records have genuinely different shapes and a single
+# header that csv.DictReader round-trips beats six tables nobody can join.
+#
+# What `value` and `delta` MEAN is per section, and the header written into the
+# file says so.  That is the attribution CSV's own convention (its `sweep` rows
+# put interval[0] in value_re and interval[1] in value_im), not a shortcut
+# taken here.
+# ---------------------------------------------------------------------------
+
+_COLD_CSV_FIELDS = [
+    "section", "freq_GHz", "victim", "aggressor", "quantity", "unit",
+    "port", "port_j", "port_name", "declared", "k",
+    "z_ap_re", "z_ap_im", "z_pb_re", "z_pb_im", "z_pp_re", "z_pp_im",
+    "value_re", "value_im", "delta_re", "delta_im", "delta_dB",
+    "threshold", "flagged", "defined", "extra",
+]
+
+
+def _cold_row(section: str, **kw) -> dict:
+    """One CSV record.  An unknown field name RAISES rather than vanishing."""
+    row = {f: "" for f in _COLD_CSV_FIELDS}
+    for k in kw:
+        if k not in row:
+            raise KeyError(f"unknown cold-start CSV field '{k}'")
+    row["section"] = section
+    row.update(kw)
+    return row
+
+
+def _write_cold_csv(path: str, ts, args, cs, rows: list[dict]) -> None:
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        fh.write(f"# File: {ts.source_path}\n")
+        fh.write(f"# Cold start: {args.cold_start}, mport="
+                 + " | ".join(args.mport or [])
+                 + f", freq={args.freq} GHz\n")
+        fh.write("# Baseline: " + cs.bracket.baseline_note + "\n")
+        fh.write("# The spec's own --gnd / --short are NOT in force here; see "
+                 "the 'note' rows and the report.\n")
+        # value / delta mean different things per section, so the file says so
+        # rather than leaving a reader to infer it from a column name that is
+        # right in five sections out of six.
+        fh.write("# Sections: bracket (value=open end, delta=grounded-open, "
+                 "delta_dB=the span), screen (one row per candidate, UNCAPPED; "
+                 "value=quantity with that port grounded, delta=change from "
+                 "the baseline, z_*=the COMPLEX coupling columns the report "
+                 "prints as magnitudes), pair (every scanned pair; "
+                 "value=change with BOTH grounded, delta=non-additivity), "
+                 "mirror (leave-one-out from all-grounded, UNCAPPED), "
+                 "cumulative (the greedy curve, one row per k), family "
+                 "(name-family suggestions, which changed no number above; "
+                 "port_name is the name PREFIX and extra carries the member "
+                 "ports).\n")
+        # Requirement 11's rule, and the same one the attribution CSV follows:
+        # the sign convention, the bracket's honesty clause and the blind spot
+        # travel with EVERY export, because a CSV outlives the terminal it was
+        # printed in.
+        for text in (attrib.SIGN_CONVENTION_TEXT, cs.bracket.caveat,
+                     cs.blind_spot):
+            for line in textwrap.wrap(text, 100):
+                fh.write("# " + line + "\n")
+        w = csv.DictWriter(fh, fieldnames=_COLD_CSV_FIELDS)
+        w.writeheader()
+        for row in rows:
+            w.writerow(row)
+
+
+# ---------------------------------------------------------------------------
+# The report
+# ---------------------------------------------------------------------------
+
+def _cold_print_header(csc, br, names: list[str],
+                       notes_extra: list[str]) -> None:
+    """What was screened, from what baseline, and how well conditioned it is."""
+    ctx = csc.ctx
+    print(f"  frequency        : {format_freq(br.freq_hz)}"
+          + ("" if br.freq_hz == br.requested_hz
+             else f"   (requested {format_freq(br.requested_hz)}; snapped to "
+                  "the file's grid)"))
+    print("  measurement ports: "
+          + "   ".join(f"{i + 1} '{n}'" for i, n in enumerate(names))
+          + "      <- --cold-start takes either the name or the number")
+    print(f"  candidate ports  : {br.n_candidates} (every port that is not "
+          f"part of a measurement port), {br.n_screenable} screenable")
+    print(f"  conditioning     : cond(Ybase) {ctx.cond_Ybase:.3g}   "
+          f"cond(G) {ctx.cond_G:.3g}   "
+          f"reciprocity |r_a - p_a|/|p_a| {ctx.reciprocity_rel:.3g}")
+    if ctx.reciprocity_rel > RECIPROCITY_WARN:
+        for line in _attr_wrap(
+                "WARN: the baseline is not reciprocal to within "
+                f"{RECIPROCITY_WARN:g}. The screen's two coupling columns are "
+                "solved separately, so the numbers below are still right, but "
+                "a non-reciprocal EM solve is worth explaining before a budget "
+                "is written against it.", "    ", hang="      "):
+            print(line)
+    # The baseline is the single most load-bearing line on this page: on a
+    # structure with no DC reference it is NOT all-open, the engine folds a
+    # ground in to have one, and every delta below is measured from that
+    # instead.  Measured on coupled_4port_float.s4p probed differentially on
+    # coil 1, the two readings of "grounding port 4" differ completely
+    # (-6.8355 Ohm against 2.8e-14), so this cannot be a footnote.
+    for line in _attr_wrap("baseline         : " + br.baseline_note, "  ",
+                           hang="                     "):
+        print(line)
+    for n in notes_extra:
+        for line in _attr_wrap("note: " + n, "    ", hang="      "):
+            print(line)
+    for w in ctx.core_warnings:
+        for line in _attr_wrap("WARN (compute_z_matrix): " + w, "    ",
+                               hang="      "):
+            print(line)
+
+
+def _cold_print_bracket(br, shared_notes: list[str],
+                        csv_rows: list[dict]) -> None:
+    """Step 0: the two ends and the dB between them."""
+    u = br.unit
+    lo_label = ("every non-probe port OPEN" if not br.baseline_grounded
+                else "all open EXCEPT port(s) "
+                     + collapse_ports([p + 1 for p in br.baseline_grounded]))
+    w = max(len(lo_label), 29)
+    print(f"  {lo_label:<{w}} = {_cold_q(br.value_open, u)}")
+    print(f"  {'every non-probe port GROUNDED':<{w}} = "
+          f"{_cold_q(br.value_grounded, u)}")
+    print(f"  {'the whole question is worth':<{w}}   {_fmt_db(br.span_db)}")
+    if math.isfinite(br.reconciliation_rel):
+        for line in _attr_wrap(
+                "(the grounded end agrees with compute_z_matrix to "
+                f"{br.reconciliation_rel:.3g} relative. The open end cannot "
+                "have a second opinion: no TerminationSet spells 'the probe "
+                "sides merged and every element removed' -- that IS the "
+                "baseline.)"):
+            print(line)
+    # The bracket's OWN notes.  `Bracket.notes` is seeded from the shared
+    # context notes so that `cold_start_bracket` can be called on its own and
+    # still tell the whole story; the header has already printed those, so only
+    # what the bracket ADDED belongs here.  Both lists come from one
+    # ColdStartContext, so the membership test compares strings from one place
+    # and cannot drift apart in whitespace.  What it carries is load-bearing:
+    # a 0 dB span that is "0 by construction, not by measurement" -- no
+    # candidate port could be screened -- reads as "nothing here matters",
+    # which is the opposite of what it means.
+    for n in br.notes:
+        if n not in shared_notes:
+            for line in _attr_wrap("note: " + n, "  ", hang="        "):
+                print(line)
+    print()
+    for line in _attr_wrap(br.caveat):
+        print(line)
+    csv_rows.append(_cold_row(
+        "bracket", freq_GHz=_e(br.freq_hz / 1e9), victim=br.victim,
+        aggressor=br.aggressor, quantity=br.quantity, unit=u,
+        value_re=_e(br.value_open.real), value_im=_e(br.value_open.imag),
+        delta_re=_e((br.value_grounded - br.value_open).real),
+        delta_im=_e((br.value_grounded - br.value_open).imag),
+        delta_dB=_e(br.span_db),
+        extra=f"grounded_re={br.value_grounded.real:.6e};"
+              f"grounded_im={br.value_grounded.imag:.6e};"
+              f"n_candidates={br.n_candidates};"
+              f"n_screenable={br.n_screenable};"
+              f"reconciliation_rel={br.reconciliation_rel:.6e};"
+              f"baseline_grounded="
+              + (collapse_ports([p + 1 for p in br.baseline_grounded])
+                 if br.baseline_grounded else "")))
+
+
+def _cold_print_screen(cs, csv_rows: list[dict]) -> None:
+    """Step 1: both coupling columns and the exact effect, ranked by |delta|."""
+    br = cs.bracket
+    u = br.unit
+    rows = cs.screen
+    if not rows:
+        for line in _attr_wrap(
+                "There is no candidate port to screen: every port of this file "
+                "carries a measurement port. The bracket above is 0 dB by "
+                "construction, not by measurement."):
+            print(line)
+        return
+
+    trows = []
+    for r in rows[:COLD_RANK_ROWS]:
+        trows.append([
+            r.label,
+            _cold_abs(r.z_ap), _cold_abs(r.z_pb),
+            _cold_q(r.value, u), _cold_q(r.delta, u),
+            "--" if not math.isfinite(r.delta_db) else _fmt_db(r.delta_db),
+            r.declared,
+        ])
+    _print_table(["port", "|Z_ap| (Ω)", "|Z_pb| (Ω)", f"{br.quantity} after",
+                  "Δ", "Δ (dB)", "declared"], trows,
+                 ["<", ">", ">", ">", ">", ">", "<"])
+    if len(rows) > COLD_RANK_ROWS:
+        print(f"  (the top {COLD_RANK_ROWS} of {len(rows)}; every candidate "
+              "port is in --cold-start-csv, which has no cap)")
+
+    # The NEGATIVE result is a deliverable, not a leftover: a screen that names
+    # two ports and says nothing about the remaining 147 has withheld the thing
+    # the user most wanted, which is permission to stop looking.  It is the
+    # engine's sentence verbatim, and it counts from COLD_RANK_ROWS -- see the
+    # constant.
+    if cs.negative_result:
+        print()
+        for line in _attr_wrap(cs.negative_result):
+            print(line)
+
+    # Rows the screen could not evaluate sort LAST and so may not be on screen
+    # at all, which would leave the context note's "see each row's note"
+    # pointing at nothing.  Grouped by the note itself: a folded baseline puts
+    # the same sentence on every unreachable port, and forty identical
+    # paragraphs is how a reader learns to skip the one that matters.
+    by_note: dict[str, list[int]] = {}
+    for r in rows:
+        if not r.defined:
+            by_note.setdefault(r.note or "not evaluated", []).append(r.port + 1)
+    for note, ports in by_note.items():
+        for line in _attr_wrap(
+                f"port(s) {collapse_ports(ports)} have NO delta -- {note}.",
+                "  ", hang="      "):
+            print(line)
+
+    for r in rows:
+        csv_rows.append(_cold_row(
+            "screen", freq_GHz=_e(br.freq_hz / 1e9), victim=br.victim,
+            aggressor=br.aggressor, quantity=br.quantity, unit=u,
+            port=str(r.port + 1), port_name=r.name, declared=r.declared,
+            z_ap_re=_e(r.z_ap.real), z_ap_im=_e(r.z_ap.imag),
+            z_pb_re=_e(r.z_pb.real), z_pb_im=_e(r.z_pb.imag),
+            z_pp_re=_e(r.z_pp.real), z_pp_im=_e(r.z_pp.imag),
+            value_re=_e(r.value.real), value_im=_e(r.value.imag),
+            delta_re=_e(r.delta.real), delta_im=_e(r.delta.imag),
+            delta_dB=_e(r.delta_db), defined=str(r.defined),
+            extra=("" if r.defined else f"note={r.note}")))
+
+
+def _cold_print_pairs(cs, csc, top_k: int, csv_rows: list[dict]) -> None:
+    """Step 2: pairs from the baseline, and the mirror from all-grounded."""
+    br = cs.bracket
+    u = br.unit
+
+    if cs.pairs:
+        thr = cs.pairs[0].threshold
+        # The number actually scanned, not the flag's value: the engine takes
+        # `usable[:top_k]`, so on a small file "over the top 8" would name a
+        # depth that does not exist and make 1 pair look like a truncation of
+        # 28.  Recovered from the pair count, which is n*(n-1)/2 by
+        # construction, so it cannot drift from what the engine did.
+        n_scanned = int(round((1 + math.sqrt(1 + 8 * len(cs.pairs))) / 2))
+        for line in _attr_wrap(
+                f"{len(cs.pairs)} pair(s) scanned over the top {n_scanned} of "
+                f"step 1 (--cold-start-top {top_k}). A pair is FLAGGED when "
+                f"its non-additivity exceeds {format_si(thr, u)} -- half the "
+                "largest single-port effect in the scan, floored at 1% of the "
+                "baseline value so that a file where every single-port effect "
+                "is ~0 (which is the normal reading of a shield) cannot "
+                "collapse the threshold onto its own noise and flag "
+                "everything."):
+            print(line)
+        print()
+    flagged = [p for p in cs.pairs if p.flagged]
+    if flagged:
+        prows = []
+        for p in flagged[:COLD_PAIR_ROWS]:
+            prows.append([
+                # Port NUMBERS only in the cell, and the names on their own
+                # line under the table.  Putting both names in the cell needs
+                # them truncated to fit -- and `_trunc` keeps the HEAD, so
+                # 'guard_ring1' and 'guard_ring2' both render as
+                # 'guard_rin~': two indistinguishable stumps beside the one
+                # pair the section exists to name.  That is the same
+                # head-truncation failure `freeze_label` documents (trim the
+                # base, keep the discriminator), and the answer here is not to
+                # truncate at all.  Measured: with the names in the cell the
+                # shield's table is 110 columns and with them under it 89.
+                p.label,
+                _cold_q(p.delta_i, u), _cold_q(p.delta_j, u),
+                _cold_q(p.delta_pair, u), _cold_q(p.non_additivity, u),
+                # %.3g, not %.1f: the ratio runs from ~0.02 (the two together
+                # very nearly cancel) to 89.8 (the measured shield), and at
+                # one decimal place every cancelling pair prints '0.0x', which
+                # is the half of the scale that says the ports are fighting.
+                "--" if not math.isfinite(p.ratio) else f"{p.ratio:.3g}x",
+                "SIGN FLIP" if p.sign_flip else "",
+            ])
+        _print_table(["pair", "Δ i alone", "Δ j alone", "Δ together",
+                      "non-additivity", "vs larger", "flag"], prows,
+                     ["<", ">", ">", ">", ">", ">", "<"])
+        if len(flagged) > COLD_PAIR_ROWS:
+            print(f"  ... {len(flagged) - COLD_PAIR_ROWS} more flagged pairs "
+                  "(all of them, flagged or not, are in --cold-start-csv)")
+        named = [p for p in flagged[:COLD_PAIR_ROWS] if p.name_i or p.name_j]
+        for p in named:
+            print(f"    {p.label} = {p.name_i or '(unnamed)'}, "
+                  f"{p.name_j or '(unnamed)'}")
+        if any(p.sign_flip for p in flagged):
+            for line in _attr_wrap(
+                    "SIGN FLIP means the two ports together move the answer "
+                    "the OTHER WAY from either of them alone. That is the "
+                    "measured signature of a closed loop -- a shield or guard "
+                    "ring brought out as two ports -- and a single-port "
+                    "ranking reports it as two minor entries with the wrong "
+                    "sign."):
+                print(line)
+    elif cs.pairs:
+        for line in _attr_wrap(
+                "No pair exceeds the threshold: within the ports scanned, "
+                "grounding two together does what grounding them one at a "
+                "time predicts. That is a result, not a gap -- it is what "
+                "says the single-port ranking above can be read at face "
+                "value."):
+            print(line)
+    else:
+        for line in _attr_wrap(
+                "No pair could be scanned: fewer than two candidate ports "
+                "could be evaluated, so there is no second-order effect to "
+                "look for."):
+            print(line)
+
+    for p in cs.pairs:
+        csv_rows.append(_cold_row(
+            "pair", freq_GHz=_e(br.freq_hz / 1e9), victim=br.victim,
+            aggressor=br.aggressor, quantity=br.quantity, unit=u,
+            port=str(p.port_i + 1), port_j=str(p.port_j + 1),
+            port_name=p.name_i,
+            value_re=_e(p.delta_pair.real), value_im=_e(p.delta_pair.imag),
+            delta_re=_e(p.non_additivity.real),
+            delta_im=_e(p.non_additivity.imag),
+            threshold=_e(p.threshold), flagged=str(p.flagged),
+            extra=f"name_j={p.name_j};delta_i={p.delta_i};"
+                  f"delta_j={p.delta_j};ratio={p.ratio:.6e};"
+                  f"sign_flip={p.sign_flip}"))
+
+    # The mirror.  Both directions are needed because they catch OPPOSITE
+    # failures: from all-open a set of ports that only acts collectively reads
+    # ~0 one at a time, and from all-grounded a set that SHARES a return reads
+    # ~0 one at a time for the opposite reason -- the other 59 balls still
+    # carry the current.
+    print()
+    for line in _attr_wrap(
+            "Mirror: from ALL candidate ports GROUNDED, opening one. The "
+            "number that moves is the one that was carrying something -- and "
+            "it is a different failure from the one above, not a check on it: "
+            "60 ground balls read ~0 each from all-grounded because the other "
+            "59 carry the return, and the shield reads +879.956 pH per end."):
+        print(line)
+    port_of = {e: p for p, e in csc.element_of_port.items()}
+    name_of = {r.port: r.label for r in cs.screen}
+    mrows = []
+    ranked = sorted(cs.mirror, key=lambda s: -s.abs_delta)
+    for s in ranked:
+        p = port_of.get(s.elements[0]) if s.elements else None
+        label = name_of.get(p, s.label) if p is not None else s.label
+        mrows.append([label, _cold_q(s.baseline_value, u),
+                      _cold_q(s.new_value, u), _cold_q(s.delta, u),
+                      "--" if not math.isfinite(s.delta_db)
+                      else _fmt_db(s.delta_db)])
+        csv_rows.append(_cold_row(
+            "mirror", freq_GHz=_e(br.freq_hz / 1e9), victim=br.victim,
+            aggressor=br.aggressor, quantity=s.quantity, unit=s.unit,
+            port=("" if p is None else str(p + 1)),
+            port_name=("" if p is None else csc.name_of(p)),
+            value_re=_e(s.new_value.real), value_im=_e(s.new_value.imag),
+            delta_re=_e(s.delta.real), delta_im=_e(s.delta.imag),
+            delta_dB=_e(s.delta_db),
+            extra=f"element={s.label};baseline_re={s.baseline_value.real:.6e};"
+                  f"baseline_im={s.baseline_value.imag:.6e}"))
+    if mrows:
+        _print_table(["port opened", f"{br.quantity} (all grounded)",
+                      f"{br.quantity} without it", "Δ", "Δ (dB)"],
+                     mrows[:COLD_MIRROR_ROWS], ["<", ">", ">", ">", ">"])
+        if len(mrows) > COLD_MIRROR_ROWS:
+            print(f"  ... {len(mrows) - COLD_MIRROR_ROWS} more "
+                  "(all of them are in --cold-start-csv, which has no cap)")
+    else:
+        print("    (nothing to open: no candidate port could be evaluated)")
+
+
+def _cold_print_curve(cs, csc, csv_rows: list[dict]) -> None:
+    """Step 3: the greedy cumulative curve and where it saturates."""
+    br = cs.bracket
+    u = br.unit
+    cv = cs.curve
+    if not cv.k:
+        for line in _attr_wrap(
+                "The curve is empty: no candidate port could be evaluated, so "
+                "there is no order to ground them in."):
+            print(line)
+        return
+    labels = {r.port: r.label for r in cs.screen}
+    crows = []
+    for i, k in enumerate(cv.k):
+        p = cv.order[i]
+        crows.append([
+            str(k), labels.get(p, f"port {p + 1}"),
+            _cold_q(cv.values[i], u), _cold_q(cv.deltas[i], u),
+            _cold_q(cv.sum_individual[i], u),
+            _cold_q(cv.non_additivity[i], u),
+        ])
+        csv_rows.append(_cold_row(
+            "cumulative", freq_GHz=_e(br.freq_hz / 1e9), victim=br.victim,
+            aggressor=br.aggressor, quantity=cv.quantity, unit=cv.unit,
+            # The bare NAME here, not `labels[p]`: every other section's
+            # `port_name` is the file's own name for the port, and a column
+            # that reads 'aux1' in five sections and 'port 5 (aux1)' in the
+            # sixth cannot be grouped on.
+            k=str(k), port=str(p + 1), port_name=csc.name_of(p),
+            value_re=_e(cv.values[i].real), value_im=_e(cv.values[i].imag),
+            delta_re=_e(cv.deltas[i].real), delta_im=_e(cv.deltas[i].imag),
+            extra=f"sum_individual={cv.sum_individual[i]};"
+                  f"non_additivity={cv.non_additivity[i]};"
+                  f"saturation_k={cv.saturation_k};"
+                  f"saturation_tol={cv.saturation_tol:.6e};"
+                  f"alternative={cv.alternative}"))
+    _print_table(["k", "port grounded", f"{br.quantity} with the top k", "Δ",
+                  "Σ Δ individual", "non-additivity"], crows,
+                 [">", "<", ">", ">", ">", ">"])
+    # The saturation point is the answer to "how many ports actually matter",
+    # which neither the ranking nor the pair scan gives.  It is the engine's
+    # own sentence and it carries the tolerance it was judged against, so a
+    # reader can see what "saturated" was taken to mean.
+    for n in cv.notes:
+        for line in _attr_wrap("note: " + n, "  ", hang="        "):
+            print(line)
+
+
+def _cold_print_families(cs, csv_rows: list[dict]) -> None:
+    """The name-family proposals -- tested, shown, and binding on nothing."""
+    br = cs.bracket
+    if not cs.families:
+        for line in _attr_wrap(
+                "No name family was proposed: this file's port names give no "
+                "two screened ports a shared prefix (a family is 'guard_ring1' "
+                "and 'guard_ring2', with only a TRAILING run of digits "
+                "stripped, so 'c1_p' and 'c2_p' stay two families). Nothing "
+                "above depended on the names either way."):
+            print(line)
+        return
+    for fs in cs.families:
+        for line in _attr_wrap(("* " if fs.flagged else "- ") + fs.text, "  ",
+                               hang="    "):
+            print(line)
+        csv_rows.append(_cold_row(
+            "family", freq_GHz=_e(br.freq_hz / 1e9), victim=br.victim,
+            aggressor=br.aggressor, quantity=br.quantity, unit=br.unit,
+            port_name=fs.prefix,
+            value_re=_e(fs.together.real), value_im=_e(fs.together.imag),
+            delta_re=_e(fs.non_additivity.real),
+            delta_im=_e(fs.non_additivity.imag),
+            threshold=_e(fs.threshold), flagged=str(fs.flagged),
+            extra=f"ports={collapse_ports([p + 1 for p in fs.ports])};"
+                  f"separate={fs.separate};tested={fs.tested}"))
+    print()
+    for line in _attr_wrap(
+            "These are SUGGESTIONS. Which ports are one physical structure is "
+            "a judgement about your layout, and this tool will not make it: "
+            "the numbers beside each line are computed both ways, the "
+            "grouping is not folded into any answer above, and every NUMBER "
+            "in this report is identical on a file with no port names at all "
+            "-- only the labels lose their names."):
+        print(line)
+
+
+def _run_cold_start(args: argparse.Namespace, ts, Y: np.ndarray, term,
+                    names: list[str]) -> int:
+    """
+    The whole --cold-start report.  Returns a process exit code.
+
+    Everything that can be wrong about the COMMAND LINE is checked before any
+    linear algebra runs, the same rule `_run_attribution` follows: a typo
+    should cost a message, not 9.5 s of Woodbury updates on a 153-port file.
+    """
+    # ---- 1. the command line --------------------------------------------
+    try:
+        vic_tok, agg_tok = _attr_parse_pair(args.cold_start)
+        a, notes_a = _attr_resolve_port(vic_tok, names)
+        b, notes_b = _attr_resolve_port(agg_tok, names)
+    except ValueError as e:
+        print(f"ERROR: --cold-start: {e}", file=sys.stderr)
+        return 2
+    if a == b:
+        # The engine allows victim == aggressor (its own fixture walk screens
+        # self terms on 2-port files), and it is refused here anyway: with
+        # a == b the quantity called M is L_a, so the whole page would be
+        # headed 'M' for a self inductance, and --attribute -- the other half
+        # of this flag family -- already refuses the same pair by name. Two
+        # flags in one family disagreeing about what a legal victim/aggressor
+        # pair is would be worse than the missing capability.
+        print(f"ERROR: --cold-start: victim and aggressor are the same "
+              f"measurement port '{names[a]}'. This screen ranks ports by what "
+              f"they do to a MUTUAL impedance -- name two different --mport "
+              f"entries.", file=sys.stderr)
+        return 2
+    try:
+        top_k = _cold_cap(
+            args.cold_start_top, attrib.COLD_START_TOP_K, "--cold-start-top",
+            2, "a pair scan needs at least two ports. The step is not "
+               "optional: a shield brought out as two ports reads +9.689 pH "
+               "for either end alone and -870.268 pH for both, 90x the "
+               "largest single-port effect with the opposite sign")
+        max_k = _cold_cap(
+            args.cold_start_cumulative, attrib.COLD_START_MAX_K,
+            "--cold-start-cumulative", 0,
+            "the greedy curve's depth cannot be negative. 0 means every "
+            "candidate port, which is the deepest setting there is (measured: "
+            "54.9 s at 151 candidates, against 132 ms at the default 12)")
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
+
+    f_target_hz = args.freq * 1e9
+
+    # ---- 2. one context, four steps --------------------------------------
+    #
+    # ONE context, built here and handed to `cold_start_report` as `context=`.
+    # It is the only O(N^3) piece -- measured 274.5 ms at 153 ports against
+    # 2.7 ms for the whole screen off it -- and building four of them is the
+    # one expensive mistake available in this section.  It is also the object
+    # that carries `element_of_port`, which is what lets the mirror table name
+    # a PORT rather than the element label 'ground port 5'.
+    try:
+        csc = attrib.cold_start_context(Y, ts.freqs, term, f_target_hz,
+                                        port_names=ts.port_names)
+        cs = attrib.cold_start_report(Y, ts.freqs, term, a, b, f_target_hz,
+                                      COLD_QUANTITY, top_k, max_k,
+                                      context=csc)
+    except (attrib.AttribError, ValueError) as e:
+        print(f"ERROR: --cold-start: {e}", file=sys.stderr)
+        return 2
+
+    csv_rows: list[dict] = []
+
+    # ---- 3. the report ---------------------------------------------------
+    print("\n" + _ATTR_LINE)
+    print(f"COLD START -- which ports matter:  victim '{names[a]}'  <-  "
+          f"aggressor '{names[b]}'")
+    print(_ATTR_LINE)
+    _cold_print_header(csc, cs.bracket, names,
+                       list(notes_a) + list(notes_b) + list(cs.notes))
+    for w in cs.warnings:
+        for line in _attr_wrap("WARN: " + w, "    ", hang="      "):
+            print(line)
+
+    # Requirement 11 again, and the ORDER is the requirement: a reader who
+    # meets the first signed number before the convention has already guessed.
+    # A run with BOTH --attribute and --cold-start prints this paragraph twice,
+    # which is deliberate -- each report is separately readable and separately
+    # copy-pasteable, and the alternative is one of them silently losing its
+    # sign convention depending on which other flag was on the command line.
+    _attr_section("Sign convention")
+    for line in _attr_wrap(attrib.SIGN_CONVENTION_TEXT):
+        print(line)
+
+    _attr_section(
+        "STEP 0. The bracket: is any of this worth your time?",
+        "The quantity with every non-probe port OPEN against every one of "
+        "them at IDEAL GROUND. This is first because it is the number that "
+        "decides whether the other three steps are worth reading -- measured "
+        "at 25.67 dB on a planted 12-port case and at exactly 0 dB on a file "
+        "where nothing else is connected to anything.")
+    _cold_print_bracket(cs.bracket, list(cs.notes), csv_rows)
+
+    _attr_section(
+        "STEP 1. Every candidate port, by the exact effect of grounding it",
+        "|Z_ap| and |Z_pb| are SEPARATE columns on purpose and must not be "
+        "read as their product: a port has to talk to BOTH sides to be a "
+        "path. Measured on the planted case, the port with the largest |Z_ap| "
+        "in the whole file (34.777 ohm, 67% more than the real path's) has "
+        "|Z_pb| = 0.038 and moves the answer by -0.378 pH against the real "
+        "path's -395.369 pH -- ranking on coupling to the victim alone puts "
+        "it first and it is worthless. Δ is exact: the closed form agrees "
+        "with a full re-solve through compute_z_matrix to 1.5e-11.")
+    _cold_print_screen(cs, csv_rows)
+
+    _attr_section(
+        "STEP 2. Two ports at once, and the mirror from all-grounded",
+        "This is the case a single-port ranking is structurally blind to. "
+        "Measured: a shield brought out as two ports reads +9.689 pH for "
+        "either end grounded alone and -870.268 pH for both -- 90x the "
+        "largest single-port effect in the file, with the OPPOSITE SIGN. The "
+        "mechanism is the closed LOOP and not the grounding, which is why "
+        "'5 short_to 6' with no ground anywhere gives the identical "
+        "-870.268 pH.")
+    _cold_print_pairs(cs, csc, top_k, csv_rows)
+
+    _attr_section(
+        "STEP 3. The greedy cumulative curve: how many ports actually matter",
+        "Ground the best port, RE-RANK, ground the next best. Neither a "
+        "ranking nor a pair scan answers 'how many of them matter'; this "
+        "does. Greedy and not optimal -- the best-k subset is combinatorial "
+        "-- but re-ranking is what lets the curve walk into the pair effects "
+        "step 2 exists for.")
+    _cold_print_curve(cs, csc, csv_rows)
+
+    _attr_section(
+        "Name-family suggestions -- a proposal this tool TESTED, never an "
+        "assumption",
+        "Grouping ports by name WOULD have caught the shield above, because "
+        "the two ends of a guard ring normally share a name family. Which "
+        "ports are one structure is a semantic judgement about the layout, so "
+        "the numbers are computed and shown and the grouping stays a "
+        "sentence.")
+    _cold_print_families(cs, csv_rows)
+
+    print("\n" + _ATTR_RULE)
+    print("What this screen cannot find")
+    print(_ATTR_RULE)
+    for line in _attr_wrap(cs.blind_spot):
+        print(line)
+    print()
+    for line in _attr_wrap(
+            "* IT CANNOT EVALUATE NEW METAL. Every port here is one the "
+            "S-parameter file already has. Moving a trace, adding a shield or "
+            "adding a ball that is not already a port is a different EM "
+            "solve, and nothing in this report predicts it.", "  ",
+            hang="    "):
+        print(line)
+
+    if args.cold_start_csv:
+        _write_cold_csv(args.cold_start_csv, ts, args, cs, csv_rows)
+        print(f"\nWrote cold-start CSV: {args.cold_start_csv}")
+    return 0
+
+
 def _run_cli(args: argparse.Namespace) -> int:
     if not args.file:
         print("ERROR: --cli requires a file argument", file=sys.stderr)
@@ -1846,6 +2655,16 @@ def _run_cli(args: argparse.Namespace) -> int:
               + (" only means" if len(dependents) == 1 else " only mean")
               + " something with --attribute VICTIM,AGGRESSOR "
                 "(e.g. --attribute vic,agg)", file=sys.stderr)
+        return 2
+    # The same check for the cold-start family, kept separate so the message
+    # names the parent flag the user actually forgot: "--cold-start-csv only
+    # means something with --attribute" would send them to the wrong report.
+    cs_dependents = _cold_dependent_flags(args)
+    if cs_dependents and not args.cold_start:
+        print("ERROR: " + ", ".join(cs_dependents)
+              + (" only means" if len(cs_dependents) == 1 else " only mean")
+              + " something with --cold-start VICTIM,AGGRESSOR "
+                "(e.g. --cold-start vic,agg)", file=sys.stderr)
         return 2
 
     try:
@@ -1903,6 +2722,13 @@ def _run_cli(args: argparse.Namespace) -> int:
                   "coupling --mport \"vic = 1\" --mport \"agg = 2\" "
                   "--attribute vic,agg)", file=sys.stderr)
             return 2
+        if args.cold_start:
+            print("ERROR: --cold-start is only valid with --mode coupling: it "
+                  "names a VICTIM and an AGGRESSOR measurement port, and "
+                  "those exist only where --mport defines them (e.g. --mode "
+                  "coupling --mport \"vic = 1\" --mport \"agg = 2\" "
+                  "--cold-start vic,agg)", file=sys.stderr)
+            return 2
         if args.mode == "gnd":
             if not a:
                 print("ERROR: --porta required", file=sys.stderr)
@@ -1953,6 +2779,20 @@ def _run_cli(args: argparse.Namespace) -> int:
             # the M and k printed above, so it has to come after the numbers
             # it is explaining rather than before them.
             rc = _run_attribution(args, ts, Y, term, specs, g, sp, names)
+            if rc:
+                return rc
+
+        if args.cold_start:
+            # AFTER the attribution, on the same principle: --attribute
+            # explains the M and k printed above and has to stay next to them,
+            # while --cold-start reports on a DIFFERENT network (all-open, with
+            # every declaration set aside) and would otherwise sit between the
+            # coupling report and its own explanation.  The two are not
+            # mutually exclusive -- they answer different questions and each
+            # names its own baseline -- and refusing the combination would only
+            # force the file to be read and inverted twice (measured: 132 ms to
+            # parse and 675 ms for s_to_y on a 16 MB, 153-port file).
+            rc = _run_cold_start(args, ts, Y, term, names)
             if rc:
                 return rc
 

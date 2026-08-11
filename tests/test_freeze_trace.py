@@ -34,7 +34,8 @@ import numpy as np  # noqa: E402
 import pkg_rlc_gui  # noqa: E402
 from pkg_rlc_core import ConnectionRow, MeasPortRow, parse_touchstone  # noqa: E402
 from pkg_rlc_gui import (  # noqa: E402
-    COLORS, FREEZE_MENU_LABEL, FROZEN_EDITOR_NOTE, LINESTYLES, MAX_LABEL_LEN,
+    ATTRIB_MENU_LABEL, COLORS, FREEZE_MENU_LABEL, FROZEN_EDITOR_NOTE,
+    LINESTYLES, MAX_LABEL_LEN,
     UNFREEZE_MENU_LABEL, App, FileEntry, TraceConfig,
     _duplicate_trace_config, _freeze_stamp_of, _freeze_trace_config,
     freeze_label, freeze_refusal, trace_from_dict, trace_to_dict,
@@ -722,9 +723,23 @@ class TestTheContextMenu(_Case):
                         "there is no way to reach the menu")
 
     def test_both_entries_are_on_it(self):
+        """
+        Freeze and Unfreeze are the FIRST TWO entries, in that order.
+
+        Pinned as a prefix rather than as the whole list.  The menu grew a
+        third entry (`Attribution…`) and `invoke(0)` / `invoke(1)` elsewhere in
+        this class depend on the first two positions, not on there being
+        exactly two -- an equality here turns every later addition into a
+        failure in a file about freezing.  What still has to hold is the order
+        and that no SEPARATOR was slipped in front of them: a separator has no
+        `-label` at all and `entrycget(i, "label")` on one returns '', which
+        this comparison catches.
+        """
         labels = [self.app._trace_menu.entrycget(i, "label")
                   for i in range(self.app._trace_menu.index("end") + 1)]
-        self.assertEqual(labels, [FREEZE_MENU_LABEL, UNFREEZE_MENU_LABEL])
+        self.assertEqual(labels[:2], [FREEZE_MENU_LABEL, UNFREEZE_MENU_LABEL])
+        self.assertIn(ATTRIB_MENU_LABEL, labels,
+                      "the Attribution entry is gone from the trace menu")
 
     def test_only_the_applicable_entry_is_live(self):
         self.app._sync_trace_menu(self.tc)

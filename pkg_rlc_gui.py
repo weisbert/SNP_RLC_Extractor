@@ -106,6 +106,30 @@ from pkg_rlc_plot import (
     COLORS, LINESTYLES, MAX_LABEL_LEN, PlotPanel, Trace as PlotTrace,
 )
 from pkg_rlc_help import HelpWindow
+# The Attribution window lives in its own module (pkg_rlc_attrib_gui);
+# this file carries only the hooks below.  It is imported at module
+# level, NOT lazily, for two measured reasons.
+#
+# (a) It is not a cycle.  pkg_rlc_attrib_gui imports pkg_rlc_gui only from
+#     inside functions (its `_gui()`), so whichever of the two is imported
+#     first, the other is complete in sys.modules by the time it is touched.
+# (b) It costs 9.4 / 10.2 / 11.5 ms in three fresh processes, against 349 /
+#     352 / 364 ms for `import pkg_rlc_gui` itself and a measured 258 ms for
+#     App() construction -- about 1.6% of GUI startup.  Nothing on the CLI path
+#     pays it at all: pkg_rlc_extractor imports pkg_rlc_gui only inside the
+#     GUI-launch branch.  A deferred import would have bought that 10 ms at the
+#     price of a SECOND copy of ATTRIB_MENU_LABEL in this file (the menu entry
+#     needs the label at build time), and a menu path spelled in two places is
+#     exactly the drift the "Show Ports needed five pointers" history warns
+#     about.
+from pkg_rlc_attrib_gui import (
+    ATTRIB_MENU_LABEL,
+    apply_attribution_session_state,
+    attribution_session_state,
+    live_windows as attribution_windows,
+    open_attribution_window,
+    refresh_attribution_windows,
+)
 
 
 # ============================================================================
@@ -1155,6 +1179,13 @@ class LoadedSession:
     controls: dict = field(default_factory=dict)
     plot: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
+    # What the Attribution windows were reading, carried OPAQUELY: this file
+    # neither builds nor inspects the block, it hands whatever
+    # `attribution_session_state` produced back to
+    # `apply_attribution_session_state`, which owns its shape and its version
+    # number.  A second reader here is how the two come to disagree about what
+    # a key means.
+    attribution: dict = field(default_factory=dict)
 
 
 def _config_trace_fields() -> list[str]:
@@ -1297,15 +1328,27 @@ def resolve_session_file(ref: dict, base_dir: str) -> tuple[str, bool]:
 
 def session_to_dict(files: Sequence, traces: Sequence, controls: dict,
                     plot_state: dict, base_dir: Optional[str] = None,
-                    saved_utc: Optional[str] = None) -> dict:
+                    saved_utc: Optional[str] = None,
+                    attribution: Optional[dict] = None) -> dict:
     """
     The whole session as a JSON-ready dict.
 
     `base_dir` is the directory the file is about to be written into, and is
     None for the autosave -- that one never moves, so a path relative to it
     would say nothing an absolute path does not.
+
+    `attribution` is what the open Attribution windows were reading, and it is
+    a SESSION-level key rather than a TraceConfig field on purpose.  It is
+    list-valued, which is the documented `mports` Duplicate-aliasing trap; it
+    would need handling in `_duplicate_trace_config` AND `_freeze_trace_config`
+    (a snapshot's copy of it would describe a window the snapshot cannot
+    reopen); and it must never reach `_config_signature`, because choosing a
+    different victim to read does not make the drawn curve older than the spec.
+    It is written only when there is something in it, the same rule as
+    `_LEGACY_TRACE_FIELDS`: an empty dict on every session file is noise that
+    buries the ones that carry state.
     """
-    return {
+    out = {
         "format": SESSION_FORMAT,
         "version": SESSION_VERSION,
         "saved_utc": saved_utc or datetime.now(timezone.utc)
@@ -1315,6 +1358,9 @@ def session_to_dict(files: Sequence, traces: Sequence, controls: dict,
         "controls": dict(controls),
         "plot": dict(plot_state),
     }
+    if attribution:
+        out["attribution"] = attribution
+    return out
 
 
 def session_from_dict(data, base_dir: str = "") -> LoadedSession:
@@ -1373,6 +1419,19 @@ def session_from_dict(data, base_dir: str = "") -> LoadedSession:
     plot = data.get("plot")
     if isinstance(plot, dict):
         sess.plot = plot
+
+    # A bad value costs its own field and never the file: a session file is
+    # readable text and will be hand-edited, and losing a port map that took
+    # ten minutes to type over a mangled window record is the wrong trade.
+    # Anything deeper inside the block is `apply_attribution_session_state`'s
+    # to validate -- it owns the shape and reports its own notes -- so all that
+    # is checked here is that there IS an object to hand it.
+    attribution = data.get("attribution")
+    if attribution is not None:
+        if isinstance(attribution, dict):
+            sess.attribution = attribution
+        else:
+            warn("'attribution' is not an object; ignored")
     return sess
 
 
@@ -4135,8 +4194,30 @@ class App(tk.Tk):
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self._on_close)
         menubar.add_cascade(label="File", menu=file_menu)
+
+        # Analyze is the SECOND cascade, and it is where a window that is not
+        # part of the measurement loop belongs.  The two rows that could
+        # otherwise have carried it are full: measured at the 1040x600 minsize
+        # the Files and Traces rows are 448 px with four buttons already asking
+        # 364, and a fifth row inside Global Controls comes straight out of an
+        # editor viewport that is down to 45 px there.  A menu bar costs the
+        # left panel nothing.
+        #
+        # NO ACCELERATOR, deliberately.  `bind_all` reaches every Toplevel --
+        # measured on this very menubar, Ctrl+S typed into a Toplevel Entry
+        # fires _on_save_config -- so an accelerator here would also fire from
+        # inside the Attribution window itself, opening a second window for
+        # whatever trace the main window happens to have selected.  The entry
+        # is reachable two ways already (here and the Traces right-click), and
+        # neither is a keystroke anyone would want to hit by accident.
+        analyze_menu = tk.Menu(menubar, tearoff=False)
+        analyze_menu.add_command(label=ATTRIB_MENU_LABEL,
+                                 command=self._on_attribution)
+        menubar.add_cascade(label="Analyze", menu=analyze_menu)
+
         self.config(menu=menubar)
         self._file_menu = file_menu
+        self._analyze_menu = analyze_menu
 
         self.bind_all("<Control-s>", lambda _e: self._on_save_config())
         self.bind_all("<Control-o>", lambda _e: self._on_load_config())
@@ -4851,6 +4932,20 @@ class App(tk.Tk):
                                      command=self._on_freeze_trace)
         self._trace_menu.add_command(label=UNFREEZE_MENU_LABEL,
                                      command=self._on_unfreeze_trace)
+        # Attribution is on this menu for the same reason Freeze is: it acts on
+        # ONE trace, and the right-click selects the row under the pointer
+        # first, so the gesture and the subject cannot disagree.  It is also on
+        # the Analyze menu, which is the discoverable route -- a right-click
+        # menu is invisible until you try it.
+        #
+        # APPENDED, and with NO separator in front of it.  A separator carries
+        # no -label, so `entrycget(i, "label")` raises TclError on it, and the
+        # existing guard in tests/test_freeze_trace.py enumerates this menu's
+        # labels by index; a separator would turn a one-token test update into
+        # an error.  Three commands, all acting on the selected trace, do not
+        # need a rule between them anyway.
+        self._trace_menu.add_command(label=ATTRIB_MENU_LABEL,
+                                     command=self._on_attribution)
         self.traces_lb.bind("<Button-3>", self._on_trace_context_menu)
 
         # ---- auto-apply -------------------------------------------------
@@ -4956,6 +5051,12 @@ class App(tk.Tk):
         # prevent.  _replot_from_cache already skips a trace whose file is
         # gone, so this needs nothing but the call.
         self._replot_from_cache()
+        # Same call, same reason, as in _on_remove_trace: a window whose trace
+        # went with this file, or whose file alone went, must stop claiming it
+        # can recompute.  Both cases land here -- the traces bound to the file
+        # were dropped above, and a window on a trace bound to it resolves its
+        # file through _file_by_label, which now returns None.
+        refresh_attribution_windows(self)
         self._append_result(f"Removed {fe.label}")
 
     def _on_show_ports(self) -> None:
@@ -5157,6 +5258,14 @@ class App(tk.Tk):
         self.traces.pop(idx)
         self._refresh_trace_list()
         self._replot_from_cache()
+        # An Attribution window HOLDS a result, so unlike the Ports & Roles
+        # window it cannot re-read app.traces and degrade -- it has to be
+        # told.  Same class of omission as the _on_remove_file
+        # forgot-to-replot bug: nothing raises, and the window carries on
+        # naming a trace that is gone with a [Recompute] button that would
+        # answer about nothing.  It resolves its subject by identity against
+        # app.traces, so this call is the whole of what is needed.
+        refresh_attribution_windows(self)
 
     def _on_toggle_trace_key(self, _event=None) -> str:
         self._on_toggle_trace()
@@ -5240,12 +5349,21 @@ class App(tk.Tk):
             self._trace_menu.grab_release()
 
     def _sync_trace_menu(self, tc: TraceConfig) -> None:
-        """Only one of the two entries is ever live, and it says which."""
+        """Only one of the FREEZE pair is ever live, and it says which."""
         self._trace_menu.entryconfigure(
             FREEZE_MENU_LABEL, state=tk.DISABLED if tc.frozen else tk.NORMAL)
         self._trace_menu.entryconfigure(
             UNFREEZE_MENU_LABEL,
             state=tk.NORMAL if tc.frozen else tk.DISABLED)
+        # Attribution is the exception: it stays LIVE even on a trace it cannot
+        # run on, because `attribution_refusal` names five different reasons
+        # (frozen / file not loaded / never calculated / one measurement port /
+        # edited since the last Calculate) and each of them tells the user what
+        # to do next.  A greyed entry would be the same bug report -- the
+        # identical decision, in the identical words, as the Freeze entry on a
+        # stale trace.  It is set explicitly rather than left at its default so
+        # the invariant is stated where it can be read and asserted.
+        self._trace_menu.entryconfigure(ATTRIB_MENU_LABEL, state=tk.NORMAL)
 
     def _on_freeze_trace(self) -> None:
         # Same flush as Duplicate, for the same reason: without it the snapshot
@@ -5317,6 +5435,34 @@ class App(tk.Tk):
             f"  [{tc.id}] {tc.label} is no longer frozen: the next Calculate "
             f"will recompute it and REPLACE the snapshot numbers it is "
             f"holding.", LOG_WARN)
+
+    # ------------------------------------------------------------ Attribution
+    #
+    # The window itself is pkg_rlc_attrib_gui; everything here is the route
+    # to it.  Two routes on purpose: the Analyze menu is the discoverable one,
+    # the Traces right-click is the one that is already under the pointer when
+    # you are looking at a trace.  There is a third pointer -- one line under
+    # the coupling block in the Results pane, see _run_report_segments -- and
+    # that is the one that reaches the user who is staring at "M = 2.16 pH"
+    # wondering where it came from.
+
+    def _on_attribution(self) -> None:
+        """
+        Open the Attribution window on the SELECTED trace.
+
+        No refusal logic here.  `open_attribution_window` resolves the file,
+        flushes the editor (a keystroke in the same event burst as the click is
+        still in the idle queue, so without it the staleness check answers
+        about the spec from an event ago), asks `attribution_refusal` and shows
+        whatever it returns -- including for `trace=None`, which is why no
+        selection is not special-cased here.  One decision, in one place, so
+        the menubar entry and the right-click entry cannot start refusing
+        different things.
+        """
+        idx = self._sel_idx(self.traces_lb)
+        tc = (self.traces[idx]
+              if idx is not None and idx < len(self.traces) else None)
+        open_attribution_window(self, tc)
 
     def _on_trace_selected(self) -> None:
         # Land any queued edit on the trace it was typed into, BEFORE the
@@ -5513,12 +5659,32 @@ class App(tk.Tk):
 
         Mode 5 owns the two Labels, mode 6 needs the style preview's curve
         span -- and an OPEN Ports & Roles window needs it in every mode, since
-        it is the same after_idle-coalesced pass that feeds it.  Without the
-        last clause the window would go stale the moment the user edited a
+        it is the same after_idle-coalesced pass that feeds it.  Without that
+        clause the window would go stale the moment the user edited a
         mode-1 GND field, which is precisely the edit it exists to check.
+
+        An open ATTRIBUTION window is the same clause for the same reason, and
+        it is not covered by either of the first two: an attribution needs two
+        measurement ports, so its trace is a mode 6 one in the normal case, and
+        mode 6 alone does NOT reach here -- `_apply_editor_sync` asks this
+        question before scheduling anything.  Measured without this clause: an
+        open window on a mode-6 trace, edit the GND field, and the banner still
+        read "from run #1 @ 5.1 GHz" with no staleness warning while the trace
+        was already marked stale and [Recompute] was already answering about a
+        different network.  The banner is the ONE thing that makes that button
+        honest, so a banner that does not update is the whole hook not working.
+        `attribution_windows` prunes dead windows and returns a list, so an
+        empty one is falsey and a closed window costs nothing again.  Measured
+        on this machine, per call: 0.6 us for the whole predicate with no
+        window open (0.2 us of it the pruning walk) and 2.1 us with one -- the
+        extra 1.5 us is a single `winfo_exists` round trip to Tcl.  What the
+        clause really buys back is the strip pass itself, 137 us per keystroke
+        in mode 6, which is the price of the window being right rather than
+        stale and is the same price an open Ports & Roles window already pays.
         """
         return (self.ed_mode_var.get() == 5
-                or self._port_roles_win is not None)
+                or self._port_roles_win is not None
+                or bool(attribution_windows(self)))
 
     def _on_editor_file_changed(self) -> None:
         self._refresh_port_choices()
@@ -5589,6 +5755,26 @@ class App(tk.Tk):
         # fails to render must not blank the strips, and a strip failure must
         # not leave the window showing the previous spec.
         self._refresh_port_roles_window()
+        # The Attribution windows get the STALENESS BANNER and nothing else,
+        # and that restraint is the point rather than an optimisation.  tc.Zmat
+        # is written only by _on_calculate; editing the spec sets tc.stale and
+        # leaves the numbers at the PREVIOUS run's.  A window that recomputed
+        # from here would, on the first keystroke, decompose the new spec and
+        # reconcile it against the old authoritative total -- a residual not of
+        # 1e-13 but of however much the edit changed -- and then withhold its
+        # own table, i.e. a window that erases itself while you type.  What the
+        # banner does instead is make [Recompute] honest.
+        #
+        # `refresh_attribution_windows` defaults to rerender=False for exactly
+        # that reason; the units re-render is the one caller that passes True
+        # (see _on_units_mode_changed).  Measured with one window open:
+        # 28.6 us for the banner refresh against 6049 us for the rerender=True
+        # form, which redraws the tables and the sweep -- a 200x difference,
+        # and the reason the default is the cheap one on a path that fires from
+        # a Tk variable trace.  It never raises, same contract as this
+        # function.  `_strips_wanted` is what gets us here at all in mode 6;
+        # see the note there.
+        refresh_attribution_windows(self)
 
     def _editor_port_names(self) -> Optional[Sequence[str]]:
         """Port names of the file the editor points at, or None."""
@@ -6359,6 +6545,35 @@ class App(tk.Tk):
         for block in shown_blocks:
             segs.append(("", (), LOG_INFO))
             segs.append((_format_coupling_block(block, units), (), LOG_INFO))
+        # WHERE DID THAT M COME FROM?  This is the pointer that matters: the
+        # user is looking at "M = 2.16 pH" here, not at a menu bar, and the
+        # "Show Ports needed five pointers before anyone found it" history is
+        # what says an analysis window nobody can find is an analysis window
+        # nobody uses.  Same idiom as the "(see Export CSV)" line inside the
+        # block: one line, naming the route.
+        #
+        # It is emitted HERE and not inside `_format_coupling_block`, which is
+        # where it belongs on the screen, for one hard reason:
+        # tests/fixtures/render_reference.json pins that function's output byte
+        # for byte (tests/_render_capture.py::render_case calls it directly),
+        # the reference was captured before the run-snapshot refactor to prove
+        # "the page did not move", and regenerating it is forbidden.  One
+        # segment later in the same report is the closest position that keeps
+        # that proof intact -- the line still lands directly under the coupling
+        # numbers, in the Log and on every run page, because
+        # `_run_report_segments` is the one builder of both.
+        #
+        # Gated on a PAIR existing, not merely on a block: a block with one
+        # measurement port prints "(only one measurement port ...)" and
+        # `attribution_refusal` turns that trace away by name.  Pointing at a
+        # refusal is worse than not pointing at all.  Once per run rather than
+        # once per block, the same rule as the hidden-traces line below: six
+        # coupling traces do not need six copies of one sentence.
+        if any(b.cres.pairs for b in shown_blocks):
+            segs.append((
+                f"  where each M above comes from, and what would move it: "
+                f"select the trace, then Analyze → {ATTRIB_MENU_LABEL} "
+                f"(also on the Traces list's right-click menu)", (), LOG_INFO))
         if hidden:
             # Named, not silently dropped: Calculate still measured them, and
             # since they are in no other output either, this line is the only
@@ -6411,6 +6626,16 @@ class App(tk.Tk):
         if newest is not None and newest.run.number == self._last_run.number:
             newest.run = self._last_run
         self._render_all_run_tabs()
+        # The ONE caller that passes rerender=True, and the reason is the same
+        # one that makes this function repaint every run page: the unit is a
+        # RENDERING choice, not a recorded fact.  An Attribution window's
+        # tables are formatted through the app's units_mode_var exactly as
+        # `_run_report_segments` is, and there is no other way for it to hear
+        # that the choice changed -- it would sit in the previous formatting
+        # beside a Results pane that had already flipped.  Not the default:
+        # a re-render redraws the sweep too, and on the editor's per-keystroke
+        # path that would be a closed-form solve per character.
+        refresh_attribution_windows(self, rerender=True)
 
     def _build_termination(self, tc: TraceConfig,
                            nports: int | None = None) -> TerminationSet:
@@ -6468,7 +6693,24 @@ class App(tk.Tk):
             },
             plot_state=self.plot.view_state(),
             base_dir=base_dir,
+            attribution=self._attribution_state(),
         )
+
+    def _attribution_state(self) -> dict:
+        """
+        What the open Attribution windows are reading, or {}.
+
+        Wrapped, because this is reached from `_autosave_session` -- which runs
+        inside WM_DELETE_WINDOW, where a raise is an application that cannot be
+        closed -- and from Save Config, where the trade would be losing a port
+        map that took ten minutes to type in order to report that an analysis
+        window's state could not be serialised.  A bad value costs its own
+        field, never the file: the same rule the loader is written to.
+        """
+        try:
+            return attribution_session_state(attribution_windows(self))
+        except Exception:
+            return {}
 
     def _write_session(self, path: str, base_dir: Optional[str]) -> None:
         target = Path(path)
@@ -6660,6 +6902,25 @@ class App(tk.Tk):
                 f"Calculate, to measure it again from the file as it is now — "
                 f"which reproduces the snapshot only if the file has not "
                 f"changed.")
+        # The Attribution windows, in two halves.
+        #
+        # First: every window that is still OPEN has just had its subject
+        # replaced wholesale -- the trace it holds is not in `self.traces` any
+        # more, whatever the new session calls its traces.  Rule 11: a window
+        # that holds a result cannot re-read its way out of that, it has to be
+        # told, or it carries on offering [Recompute] on a trace that is gone.
+        refresh_attribution_windows(self)
+        # Second: what the SAVED windows were reading.  Nothing is reopened --
+        # `attribution_refusal` turns away a trace with no numbers, and a
+        # freshly loaded session has none until Calculate has run, so an
+        # auto-reopen could only produce one refusal dialog per entry before
+        # the user had asked for anything.  The choices are kept so that
+        # reopening from the menu lands on the pair that was being read, and
+        # the notes say so out loud -- a restore that silently drops part of
+        # what was saved is the failure mode this pane exists to prevent.
+        for note in apply_attribution_session_state(self, sess.attribution):
+            self._append_result(f"  {note}", LOG_WARN)
+
         for label, path in missing:
             self._append_result(
                 f"  MISSING: '{label}' — looked for {path or '(no path)'}",

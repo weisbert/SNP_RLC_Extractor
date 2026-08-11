@@ -4,7 +4,9 @@ A desktop tool for RF and analog IC engineers to extract R, L, C, and Q from Tou
 
 The mental model for a measurement is a pair of multimeter probes: a **red probe** on the `+` ports and a **black probe** on the `-` ports. One such probe pair gives a self impedance; several of them alive at once give a G x G impedance matrix whose diagonal is the self impedances and whose off-diagonal is the open-circuit mutual impedance.
 
-A separate layer, [port attribution](#port-attribution-where-a-coupling-number-comes-from), answers the question that follows: of the `M` you just extracted, how much is the metal and how much is the grounding you assumed? It splits one `Z_ab` into the bare EM coupling plus one signed term per termination you declared — exactly, by superposition — and tells you what the answer would be with any of those terminations changed.
+A separate layer, [port attribution](#port-attribution-where-a-coupling-number-comes-from), answers the question that follows: of the `M` you just extracted, how much is the metal and how much is the grounding you assumed? It splits one `Z_ab` into the bare EM coupling plus one signed term per termination you declared — exactly, by superposition — and tells you what the answer would be with any of those terminations changed. That layer has a window (**Analyze → Attribution…**) and a CLI report.
+
+The same layer answers the question that comes *before* a spec exists, which on an unfamiliar 153-port export is the one you actually have first: **which of these ports matter at all?** The [cold-start screen](#cold-start-which-ports-matter-before-you-have-a-spec) brackets the whole question in one number, ranks every undeclared port by the exact effect of grounding it, scans pairs for the effects a one-at-a-time ranking is structurally blind to, and says how many ports it takes before the answer stops moving.
 
 ---
 
@@ -163,9 +165,16 @@ CLI flags:
 | `--diagnose` | Print the file-structure report and exit (`0` = nothing wrong, `1` = something is). Needs no `--cli` |
 | `--lenient` | Skip values that do not parse instead of refusing the file            |
 
-`--mode coupling` additionally takes the `--attribute*` flags, which are listed in their own
-`--help` group and are documented under
-[Port attribution](#port-attribution-where-a-coupling-number-comes-from).
+`--mode coupling` additionally takes two flag families, each in its own `--help` group and each
+inert (and refused by name) without its lead flag:
+
+| Family | Lead flag | What it answers |
+|---|---|---|
+| [Attribution](#running-it--cli) | `--attribute VICTIM,AGGRESSOR` | Of the `Z_ab` this spec produced, how much came from each termination you declared — and what it would be if any of them were different. |
+| [Cold start](#cold-start-which-ports-matter-before-you-have-a-spec) | `--cold-start VICTIM,AGGRESSOR` | Which ports the spec should have mentioned at all. Starts from **all-open** and sets your `--gnd` / `--short` aside, naming every one it set aside. |
+
+They may be given together; the attribution prints first, because it explains the `M` printed
+immediately above it.
 
 ---
 
@@ -275,9 +284,10 @@ Mode codes are stable and are never renumbered, so saved configurations keep wor
 
 Beside the modes there is one **post-processing layer**, which is not a mode and gets no code:
 
-| Layer | Module | What it answers |
-|-------|--------|-----------------|
-| Port attribution | `pkg_rlc_attrib.py` | Of the `Z_ab` a mode just produced, how much is the bare EM coupling and how much is each termination you declared — and what the answer would be if any of them were different. Exact both ways. See [Port attribution](#port-attribution-where-a-coupling-number-comes-from). |
+| Layer | Module | Surface | What it answers |
+|-------|--------|---------|-----------------|
+| Port attribution | `pkg_rlc_attrib.py` | **Analyze → Attribution…** (`pkg_rlc_attrib_gui.py`), or `--attribute` | Of the `Z_ab` a mode just produced, how much is the bare EM coupling and how much is each termination you declared — and what the answer would be if any of them were different. Exact both ways. See [Port attribution](#port-attribution-where-a-coupling-number-comes-from). |
+| Cold-start port screen | `pkg_rlc_attrib.py` | `--cold-start` (CLI only) | Which ports matter *before* a spec exists. A bracket, a two-column ranking of every undeclared port, a pair scan, and a greedy cumulative curve — all from **all-open**, all exact. See [Cold start](#cold-start-which-ports-matter-before-you-have-a-spec). |
 
 ### Mode 4 is retired: VDD ports go into the GND field
 
@@ -411,18 +421,66 @@ The same two coils out of the same EM solve, extracted twice, gave `|M| = 1.71 p
 `|M| = 3.44 pH` — **6.07 dB apart**, both runs correct. What differed was the grounding
 assumption, and nothing on screen said so. `pkg_rlc_attrib.py` is the layer that says so.
 
-It answers two questions about **one frequency of one spec**:
+It answers three questions about **one frequency of one spec**. They are numbered in the order
+they were built, not the order you ask them — on an unfamiliar file **Q0 is first**:
 
-| | Question | Exactness |
-|---|---|---|
-| **Q2 — attribution** | Split `Z_ab` into the bare EM coupling plus one signed term per termination you declared. | Exact. The terms sum to the total by superposition — not a linearisation, not an estimate, not percentages apportioned by hand. |
-| **Q1 — sensitivity** | What would `Z_ab` be if that ground ball were open? A 50 Ω resistor? A 1 nH lead? All of them at once? | Exact. It re-solves the network through a Woodbury update; it does not extrapolate. |
+| | Question | Exactness | Where |
+|---|---|---|---|
+| **Q0 — cold start** | No spec written yet. Which of the file's other 149 ports matter at all? | Exact. A closed form verified against a full re-solve to `1.5e-11`, not a first-order slope. | CLI (`--cold-start`) |
+| **Q2 — attribution** | Split `Z_ab` into the bare EM coupling plus one signed term per termination you declared. | Exact. The terms sum to the total by superposition — not a linearisation, not an estimate, not percentages apportioned by hand. | Window + CLI |
+| **Q1 — sensitivity** | What would `Z_ab` be if that ground ball were open? A 50 Ω resistor? A 1 nH lead? All of them at once? | Exact. It re-solves the network through a Woodbury update; it does not extrapolate. | Window + CLI |
 
 The algebra is one rank-`m` update, where `m` is the number of terminations you declared, so
 a 60-ball ground field costs a 60x60 solve rather than another Schur reduction of the whole
 file. The derivation, the prior art it rederives (Kron diakoptics, the adjoint variable
-method, PEEC partial elements, transfer-path analysis) and the precise statement of which
-quantities decompose are in [docs/theory.md §13](docs/theory.md).
+method, PEEC partial elements, transfer-path analysis), the cold-start closed form and the
+precise statement of which quantities decompose are in
+[docs/theory.md §13](docs/theory.md).
+
+### Running it — the Attribution window
+
+**Analyze → Attribution…**, or right-click the trace in the Traces list. It decomposes the
+**selected** trace, so Calculate it first. The window is modeless: it stays open while you
+edit, it keeps its own taskbar button and Alt-Tab entry, and several can be open at once on
+different traces or different pairs. Asking again for a pair that is already open **raises
+that window** rather than making a second copy of the same decomposition.
+
+It refuses, **by name**, on a trace it cannot honestly describe — a frozen snapshot (its
+numbers came from an earlier run and can never be recalculated), a stale trace (edited since
+the last Calculate, so the numbers and the spec beside them no longer describe each other), a
+trace with no numbers or no loaded file, and a trace with only one measurement port (`Z_ab` is
+a *mutual* impedance; there has to be a victim **and** an aggressor). The menu entry stays live
+in all four cases on purpose: a greyed entry cannot say why.
+
+| Part | What it is |
+|---|---|
+| Header | trace / victim / aggressor / quantity / frequency / **[Recompute]**. It wraps onto a second row at narrow widths rather than pushing the button off the end. |
+| Banner | provenance — `from run #7 @ 5.600 GHz`. It turns into a warning the moment you edit the spec in the main window. |
+| Sign strip | the convention, once, above any signed number: a negative term **opposes** the total and the terms sum to it exactly; shares are of the **signed** total, so they exceed 100 % and go negative wherever terms cancel. |
+| Reconciliation | the cross-check against `compute_z_matrix`, in the **header** and not the footer because it gates trust in everything under it: `reconciled  rel diff 3.1e-13 (floor 4.3e-10)`. If it fails, the per-element **split** is withheld and the **total** is still shown. |
+| Across-frequency badge | one line saying whether the ranking holds elsewhere in the band, with an expander that opens it in place. |
+| Table | `(•) Contributions  ( ) Sensitivity` — one pane, two views. Rows are coloured by element **kind**, in the Ports & Roles palette; never by sign, because red means *warning* everywhere else in this tool and a red negative would make a correct answer look like a fault. Click a row to drill in. |
+| Detail pane | for the selected row: its element current, its transimpedance to the victim, what it would be worth as each candidate you list (`open`, `ideal`, or `R=`/`L=`/`C=`), and the **closed-form** sweep of that one element plotted beside it with both asymptotes and the current spec marked. |
+| Footer | Copy report / Export CSV… / Close. Both carry the full provenance: run number, the frequency and whether it was snapped to the file's grid, the whole sign convention, the ground model, and the termination spec verbatim. |
+
+**Why there is a [Recompute] button and no auto-refresh.** A trace's numbers are written by
+Calculate and by nothing else; editing the spec marks the trace stale and leaves them at the
+*previous* run's value. A window that re-decomposed on every keystroke would be checking a
+**new** spec against an **old** total, would find them disagreeing by however much you just
+typed, and — by the reconciliation rule above — would blank its own table. It would erase
+itself while you type. So an edit moves the banner and nothing else, which is what makes the
+button honest.
+
+The window does not offer the shared-return ground model: that is a dense element-impedance
+matrix, it cannot be written as a `TerminationSet`, and it lives on the CLI
+(`--attribute-ground-model shared:…`). Every export names the model its numbers came out of
+rather than letting you assume one.
+
+**Save Config remembers which pair you were reading** — victim, aggressor, quantity, frequency
+and view — but does not reopen the window on Load. A config carries the setup and never the
+results, so a just-loaded trace has no numbers and the window could only open on its own
+refusal; the Results pane names each entry it did not reopen. Calculate, then
+**Analyze → Attribution…**, and you land back where you were.
 
 ### Running it — CLI
 
@@ -460,9 +518,109 @@ the closed-form sweeps, and cross-frequency rank stability. Section 1 of the run
 
 Three quarters of that `M` is the grounding, not the metal: open both grounds and it falls to
 the 251 pH bare term. The two balls are not worth the same, either — port 4 is the far end of
-the **victim's** own line and is worth twice port 3, the far end of the aggressor's. There is
-no GUI window yet (stage 4 of `docs/design_port_attribution.md`); the CLI report and the CSV
-are the whole surface today.
+the **victim's** own line and is worth twice port 3, the far end of the aggressor's.
+
+### Cold start: which ports matter, before you have a spec
+
+Everything above ranks **declarations**. At the start of a job there are none — you know the
+victim and the aggressor and nothing about the other 149 ports, and the all-open
+configuration (the one `compute_z_matrix` returns, and the one that produced the disputed
+number) contains no declarations at all, so the contribution table is empty by construction.
+The cold-start screen answers that question instead, in four steps, each exact and each
+measured **from all-open**.
+
+```bash
+python pkg_rlc_extractor.py --cli <file> --mode coupling \
+    --mport "dco = 1" --mport "rx = 2" --freq 5.0 \
+    --cold-start dco,rx
+```
+
+Note there is no `--gnd` and no `--short` in that command: `--cold-start` deliberately sets
+your declarations aside and starts from all-open, and the report names every one it set aside.
+
+**Step 0 — the bracket.** The quantity with every non-probe port open, against the same
+quantity with every one of them at ideal ground, and the dB between. It is first because it
+decides whether the other three steps are worth reading: **25.67 dB** on a planted 12-port
+case is a real argument; 0 dB means nothing else in the file touches your two coils and you
+can stop. It brackets the **open..ideal-ground family and nothing else** — a series ground
+inductance resonates with the structure's shunt C and can put the answer outside it (measured
+on `diff_pair_4port.s4p`: a peak of 9 mH of apparent `M` at `L = 505 nH` against a 1.01 nH
+open..ideal bracket). The report prints that caveat with the numbers, every time.
+
+**Step 1 — the two-column screen.** Every port that is not part of a measurement port, with
+
+| Column | Meaning |
+|---|---|
+| `\|Z_ap\|` | how strongly the port talks to the **victim** |
+| `\|Z_pb\|` | how strongly the **aggressor** talks to the port |
+| `Δ` | the exact effect of grounding it — `dZ_ab = −Zbase[a,p]·Zbase[p,b]/Zbase[p,p]`, verified against a full re-solve to `1.5e-11` |
+
+ranked by `|Δ|`. **The two coupling columns are separate on purpose and must never be read as
+their product.** Measured on the planted case, the port with the *largest* `|Z_ap|` in the
+whole file (34.777 Ω, 67 % more than the real path's 20.873) has `|Z_pb| = 0.038` and moves
+the answer by **−0.378 pH**, against **−395.369 pH** for the real one. Ranked on coupling to
+the victim alone that port comes **first** and is worthless; ranked on the effect it is fifth
+of eight. The negative result is a result too: the list ends with *"the other N ports are all
+below X dB"*, which is what lets you call the coupling local and stop looking.
+
+**Step 2 — the pair scan** over the top `K` of step 1, again from all-open, plus the **mirror**
+direction (start from every candidate grounded, open one at a time). This is not optional.
+Measured: a shield brought out as two ports reads **+9.689 pH** with either end grounded alone
+and **−870.268 pH** with both — **90×** the largest single-port effect in the file, with the
+**opposite sign**. A one-at-a-time ranking reports it as two minor positive entries. The
+mechanism is the closed **loop**, not the grounding: `5 short_to 6` with no ground anywhere
+gives the identical −870.268 pH. The mirror catches the opposite failure — sixty ground balls
+read ~0 each from all-grounded because the other fifty-nine carry the return, while that same
+shield reads +880 pH per end.
+
+**Step 3 — the greedy cumulative curve.** Ground the best port, **re-rank**, ground the next
+best, tabulating the answer against `k`. Neither a ranking nor a pair scan says *how many*
+ports matter; this does, and the report names the `k` at which the curve saturates and the
+tolerance it used for the word. Greedy is not optimal — the best-`k` subset is combinatorial —
+but the re-ranking is what lets the walk find the pair effects of step 2.
+
+| Flag | Meaning |
+|------|---------|
+| `--cold-start VICTIM,AGGRESSOR` | Turn the four-step screen on. Both sides are named exactly as `--attribute` names them: a measurement-port **name** from `--mport`, or a 1-based position in that list. |
+| `--cold-start-top K` | How many ports of the step-1 ranking enter the pair scan (default `8`, i.e. 28 pairs). Refused below 2 — the pair scan is not optional. |
+| `--cold-start-cumulative K` | Depth of the greedy curve (default `12`; it is always run). `0` means *every* candidate, which is the one expensive setting here: **54.9 s** at 151 candidates against **132 ms** at `K = 12`. |
+| `--cold-start-csv PATH` | Every record — the bracket, the **uncapped** screen (with the complex coupling columns the report shows as magnitudes), every scanned pair whether flagged or not, the whole mirror, the curve, and the name-family suggestions — one row each, tagged by a `section` column. |
+
+#### Port names are a proposal the tool tests, never an assumption it folds in
+
+Grouping ports by name family *would* have caught the shield, because the two ends of a guard
+ring normally share a prefix. But which ports are one structure is a semantic judgement about
+the layout, and the tool does not guess it. So the numbers are computed both ways and the
+grouping stays a sentence you accept or reject:
+
+```
+ports 5,6 share the name family 'guard_ring'; tested together they are -870 pH,
+tested separately +9.7 pH each -- if they are one structure, group them
+```
+
+Nothing in the bracket, the ranking, the pair scan or the curve changes according to whether
+the file carries port names at all.
+
+#### What the cold-start screen cannot find
+
+**Anything that needs three or more ports to move together.** Step 1 is one port at a time,
+step 2 is exactly two, and step 3 can stumble onto a triple but has no guarantee. A
+three-terminal version of the shield above is invisible to every step. And, as everywhere in
+this layer, it **cannot evaluate new metal**: every port it considers is one the S-parameter
+file already has.
+
+#### Cost
+
+Measured on a 153-port package export at one frequency, 151 candidates:
+
+| | |
+|---|---|
+| the four steps together | **9.5 s** — of which **9.3 s** is the mirror direction |
+| the same four steps at 38 candidates | **17.6 ms** |
+| `build_context` (the only `O(N³)` piece, built once and shared) | 350.6 ms |
+| step 1, the whole ranking | **2.41 ms**, against **2402.6 ms** for one full re-solve per candidate — a factor of **997** |
+| step 2, the pair scan | 0.44 ms at `K = 8`, 3.4 ms at `K = 20`, 8.2 ms at `K = 30` |
+| step 3, the curve | 132 ms at `k = 12`, 237 ms at `k = 24`, **54.9 s** at `k = 0` (every candidate) |
 
 ### Running it — from Python
 
@@ -500,6 +658,22 @@ a rebuilt `TerminationSet`:
 | `sweep_mobius(...)` | `Z_ab` versus one element's impedance in **closed form**: both endpoints, the whole interval and the extremum, with no loop |
 | `transfer_ratio(...)` | the exact `-Z_ab/Z_aa` current-transfer ratio, and a loaded `-Z_ab/(Z_aa + Z_load)`, against the `M/L_a` Norton approximation |
 | `termination_impedance_diagonal` / `_shared_return` | the two `Zt` topologies behind `--attribute-ground-model` |
+
+The cold-start screen is the same module, and every step takes an optional `context=` so the
+one `O(N³)` factorisation is shared — `cold_start_report` does that for you and
+`format_cold_start` renders it:
+
+| Call | Answers |
+|------|---------|
+| `cold_start_context(Y, freqs, terminations, freq_hz, …)` | the shared context: the probes plus one ideal ground per candidate port |
+| `cold_start_bracket(...)` → `Bracket` | step 0 — all-open versus all-grounded, the dB between, and the caveat verbatim |
+| `cold_start_screen(...)` → `list[PortScreenRow]` | step 1 — every candidate, ranked by `\|Δ\|`, with **both** coupling columns kept separate |
+| `cold_start_pairs(..., top_k)` → `list[PairEffect]` | step 2 — every scanned pair, its non-additivity, the threshold it was judged against, and a `sign_flip` marker |
+| `cold_start_leave_one_out(...)` | the mirror direction, from all-grounded |
+| `cold_start_cumulative(..., max_k)` → `CumulativeCurve` | step 3 — the greedy curve, with `saturation_k` and the tolerance behind the word |
+| `name_family_suggestions(...)` → `list[FamilySuggestion]` | the tested proposal, never an assumption |
+| `cold_start_negative_result(rows, unit)` | *"the other N ports are all below X dB"*, as a sentence |
+| `cold_start_report(...)` / `format_cold_start(cs)` | all of the above with one shared context, and its rendering |
 
 ### Sign convention, stated on every report
 
@@ -630,7 +804,8 @@ on purpose rather than by default.
 - **AC small-signal only.** `vdd` is an alias for `ground` because at AC the supply is an ideal short. The distinction exists in the UI for documentation clarity; Mode 4 was retired for the same reason.
 - **Unlisted ports are OPEN, not grounded.** This is the most common source of wrong results. A forgotten GND ball floats and is Schur-eliminated, which preserves the behaviour at the kept ports but does *not* tie the port to the reference node.
 - **The mutual `Z_ab` is the open-circuit one.** `Z[a][b]` is defined with every *other* measurement port carrying no current — that is the textbook definition of M, and the right primitive to hand to a simulator, where the real loading is modelled. It is not the same number as a short-circuit transfer measurement.
-- **The termination spec is worth decibels, and there is a tool that says how many.** How you spell the ground field is not a detail: on `diff_pair_4port.s4p` three quarters of the extracted `M` comes from the two `ground` rows, and rewriting the same set as a shared return rather than independent leads moves `M` by 6.03 dB. [Port attribution](#port-attribution-where-a-coupling-number-comes-from) splits an extracted `Z_ab` into the bare EM coupling plus one signed term per declared termination, exactly, and answers the what-if exactly too. Read its three caveats before quoting it — in particular that it is **blind to ports you left open**, so its table ranks your declarations and never your ports.
+- **The termination spec is worth decibels, and there is a tool that says how many.** How you spell the ground field is not a detail: on `diff_pair_4port.s4p` three quarters of the extracted `M` comes from the two `ground` rows, and rewriting the same set as a shared return rather than independent leads moves `M` by 6.03 dB. [Port attribution](#port-attribution-where-a-coupling-number-comes-from) (**Analyze → Attribution…**) splits an extracted `Z_ab` into the bare EM coupling plus one signed term per declared termination, exactly, and answers the what-if exactly too. Read its three caveats before quoting it — in particular that it is **blind to ports you left open**, so its table ranks your declarations and never your ports.
+- **The ports you did *not* declare have their own screen, and it is where a new file starts.** Because the attribution table is blind to open ports, it is empty on a file where nothing has been declared yet — which is exactly the state you are in when you open an unfamiliar 153-port export. [`--cold-start`](#cold-start-which-ports-matter-before-you-have-a-spec) ranks every undeclared port from all-open by the *exact* effect of grounding it, with its coupling to the victim and its coupling to the aggressor as **two separate columns** (measured: the port with the largest coupling-to-the-victim in a file moved the answer by −0.378 pH against −395.369 pH for the real path), and it scans **pairs**, because a shield brought out as two ports reads +9.689 pH per end alone and −870.268 pH for both — 90× the largest single-port effect, opposite sign.
 - **Signs are physical and are never clipped.** `R / L / C / Q` and `M / C_c / k` all keep their sign (Cadence convention). `L` and `Q` go negative past SRF; `C_c` comes out negative whenever the coupling is inductive; `M` comes out negative when it is capacitive. Both readings are always computed — use the sign of `Im(Z_ab)` to pick which one to headline. `k` is `NaN` (with a note) where `L_a <= 0` or `L_b <= 0`, and `abs(k) > 1` is flagged rather than clamped.
 - **Content-based file detection.** Port count is inferred from token count and frequency monotonicity — extension is ignored. Files without an option line are assumed `# GHZ S MA R 50` and a warning is emitted.
 - **Numerical fallbacks.** Schur reduction uses `np.linalg.solve`; if `Y_oo` is singular, it falls back to `lstsq` and reports the offending frequency. The contraction onto the probe nodes uses `pinv`, so a fully floating differential structure works — see the next note.
@@ -653,14 +828,19 @@ SNP_RLC_Extractor/
   pkg_rlc_core.py            Touchstone parser, S->Y, termination model + DSL, Schur,
                              compute_z / compute_z_matrix, RLC + coupling extraction, fits
   pkg_rlc_attrib.py          Port attribution: splits one Z_ab into the bare EM coupling
-                             plus one term per declared termination, and answers the
-                             exact what-if. Imports pkg_rlc_core only (acyclic)
+                             plus one term per declared termination, answers the
+                             exact what-if, and carries the four-step cold-start port
+                             screen. Imports pkg_rlc_core only (acyclic)
+  pkg_rlc_attrib_gui.py      The Attribution window (Analyze -> Attribution...): a
+                             modeless Toplevel over pkg_rlc_attrib. pkg_rlc_gui holds
+                             only the menu / right-click / refresh hooks
   pkg_rlc_plot.py            Matplotlib plot panel with M / V / Delete / drag features
                              (R, L, C, |Z|, Re, Im, Q, k subplots)
   pkg_rlc_gui.py             Tkinter GUI with file/trace management, and the
                              JSON session format (Save / Load / Restore Config)
   pkg_rlc_help.py            In-app Help window (one tab per mode + syntax + examples)
-  pkg_rlc_extractor.py       Entry point (GUI + CLI), incl. the --attribute report
+  pkg_rlc_extractor.py       Entry point (GUI + CLI), incl. the --attribute and
+                             --cold-start reports
   reduce_snp.py              Standalone CLI: shrink a big .sNp to a few ports
   deploy.sh                  Red-zone update entry point (top level by design)
   tests/
@@ -672,6 +852,14 @@ SNP_RLC_Extractor/
                              plus a 4000-spec fuzz with a two-sided contract
     test_attrib_degenerate.py  Singular baselines, redundant specs, resonant returns —
                              the failures that produce a plausible number, not an error
+    test_attrib_coldstart.py   The four-step screen: the closed form against an honest
+                             re-solve, the red herring, the shield pair, the mirror
+    test_attrib_cli_coldstart.py  --cold-start on the CLI: flag refusals, the printed
+                             order (bracket before ranking), the CSV round trip
+    test_attrib_window.py    The Attribution window in isolation: the pure formatters
+                             with no display, and the Tk-driven layout / refusal / export
+    test_attrib_gui_integration.py  The same window end to end through the real app —
+                             Add File to a number on the table, and every hook
     test_golden_regression.py  Bit-exact replay of the pre-coupling behaviour
     test_port_parser.py
     test_content_sniffer.py

@@ -1,15 +1,40 @@
 """
 pkg_rlc_attrib.py -- where a mutual impedance comes from, and what would move it.
 
-This module answers two questions about ONE frequency of ONE spec:
+This module answers three questions about ONE frequency of ONE spec:
 
   Q2  an EXACT additive, signed decomposition of a mutual impedance Z_ab into
       "the bare EM coupling" plus one term per declared termination element;
   Q1  exact (not first-order) sensitivity of Z_ab to changing any of those
-      terminations.
+      terminations;
+  Q0  the COLD START -- which of the file's other 149 ports matter at all,
+      before a single termination has been decided.
 
 It imports `pkg_rlc_core` and nothing else from this repo -- acyclic, the same
 rule `pkg_rlc_plot` follows.  It never mutates anything it is handed.
+
+THE COLD START (Q0)
+-------------------
+Q1 and Q2 both start from a spec.  At the beginning of a job there is not one:
+the designer knows the victim and the aggressor and nothing about the other 149
+ports, and the all-open configuration -- which is what `compute_z_matrix`
+returns and which is exactly the configuration that produced the disputed
+number -- has no elements and therefore no terms.  Q1 does reach undecided
+ports, but it is framed as "check the robustness of the spec you already
+wrote", which is a different question.
+
+`cold_start_bracket` / `cold_start_screen` / `cold_start_pairs` /
+`cold_start_cumulative` answer the cold-start question in four exact, cheap
+steps and `cold_start_report` runs all four off one context.  The whole thing
+is READ OFF the machinery below rather than reimplemented: build an
+`AttribContext` whose spec is "the probes, plus one ideal ground on every other
+port", and `Dmat`, `Zop`, `Rmat`, `Pmat_b`, `Gm` and `_z_matrix` already are,
+respectively, the all-open answer, the all-grounded answer, the coupling to the
+victim, the coupling from the aggressor, the divisor, and every exact what-if.
+
+It is SECOND ORDER at best.  `COLD_START_BLIND_SPOT_TEXT` says so, on the
+report rather than in a footnote: anything that needs three or more ports to
+move together is invisible to all four steps.
 
 WHAT THE DECOMPOSITION IS
 -------------------------
@@ -80,6 +105,7 @@ from pkg_rlc_core import (  # noqa: F401  (Vdd/Signal used in isinstance checks)
     Ground,
     LumpedBetween,
     LumpedToGnd,
+    PortTermination,
     ShortPair,
     Signal,
     TerminationSet,
@@ -89,6 +115,7 @@ from pkg_rlc_core import (  # noqa: F401  (Vdd/Signal used in isinstance checks)
     compute_z_matrix,
     format_freq,
     format_si,
+    name_prefix,
     resolve_meas_ports,
 )
 
@@ -106,6 +133,33 @@ __all__ = [
     "CumulativeCurve",
     "Sweep",
     "TransferRatio",
+    # --- the cold-start screen (which ports matter, before any spec)
+    "COLD_START_BRACKET_CAVEAT",
+    "COLD_START_BLIND_SPOT_TEXT",
+    "COLD_START_SHOW",
+    "COLD_START_TOP_K",
+    "COLD_START_MAX_K",
+    "COLD_START_PAIR_REL",
+    "COLD_START_PAIR_FLOOR_REL",
+    "COLD_START_SATURATION_REL",
+    "COLD_START_MIN_FAMILY",
+    "COLD_START_LOCAL_DB",
+    "Bracket",
+    "PortScreenRow",
+    "PairEffect",
+    "FamilySuggestion",
+    "ColdStartContext",
+    "ColdStart",
+    "cold_start_context",
+    "cold_start_bracket",
+    "cold_start_screen",
+    "cold_start_pairs",
+    "cold_start_leave_one_out",
+    "cold_start_cumulative",
+    "cold_start_negative_result",
+    "name_family_suggestions",
+    "cold_start_report",
+    "format_cold_start",
     "DECOMPOSABLE",
     "NON_DECOMPOSABLE",
     "build_context",
@@ -2064,6 +2118,15 @@ class CumulativeCurve:
     sum_individual: tuple[complex, ...]
     non_additivity: tuple[complex, ...]
     notes: tuple[str, ...] = ()
+    #: The smallest k in `self.k` whose value is within `saturation_tol` of the
+    #: curve's LAST point, i.e. "how many of them actually matter".  -1 when the
+    #: curve never gets there (or has no points).  Filled in by
+    #: `cold_start_cumulative`, whose contract asks for the saturation point;
+    #: `cumulative_curve` leaves the default, because its k sequence is
+    #: 1,2,4,8,... and a saturation index over a doubling sequence would name a
+    #: k the curve never evaluated.
+    saturation_k: int = -1
+    saturation_tol: float = float("nan")
 
 
 def cumulative_curve(ctx: AttribContext, victim: int | str,
@@ -2154,6 +2217,1173 @@ def leave_one_out(ctx: AttribContext, victim: int | str,
             "removed (from all-ideal)", spec.name, spec.unit,
             base, new, new - base, _delta_db(base, new)))
     return out
+
+
+# ---------------------------------------------------------------------------
+# The COLD-START SCREEN: which ports matter, before anything has been decided
+# ---------------------------------------------------------------------------
+#
+# `decompose` ranks DECLARATIONS.  At the start of a job there are none: the
+# designer knows the victim and the aggressor and nothing about the other 149
+# ports, and the all-open configuration -- the one `compute_z_matrix` returns
+# and the one that produced the disputed number -- has no elements and
+# therefore no terms.  `sensitivity` does reach undecided ports, but it is
+# framed as "check the spec you already wrote", which is a different question.
+#
+# The four steps below answer the cold-start question instead, and every one of
+# them is READ OFF THE MACHINERY THAT IS ALREADY THERE.  Build one
+# AttribContext whose TerminationSet is "the probes, plus one ideal ground on
+# every other port" and the whole screen falls out of it:
+#
+#   ctx.Dmat                      Z with every non-probe port OPEN   (step 0 lo)
+#   ctx.Zop                       Z with every one of them GROUNDED  (step 0 hi)
+#   ctx.Rmat[e, a]                w_a^T Zbase u_e   = Zbase[a, p]    (step 1 col 1)
+#   ctx.Pmat_b[e, b]              u_e^T Zbase w_b   = Zbase[p, b]    (step 1 col 2)
+#   ctx.Gm[e, e]                  u_e^T Zbase u_e   = Zbase[p, p]    (step 1 divisor)
+#   _z_matrix(ctx, 0, (e,))       the exact one-port ground          (step 1 dM)
+#   _z_matrix(ctx, 0, (e, f))     the exact rank-2 pair              (step 2)
+#   _z_matrix(ctx, 0, top_k)      the exact k-port group             (step 3)
+#   leave_one_out(ctx, ...)       the mirror direction, from all-grounded
+#
+# `_z_matrix` with `live=(e,)` and an all-zero Zt IS the closed form the
+# contract names, spelled once:
+#
+#     Z = Dmat - R[e]^T P[e] / Gm[e, e]     i.e.
+#     dZ_ab = - Zbase[a, p] * Zbase[p, b] / Zbase[p, p]
+#
+# Measured against an HONEST re-solve through compute_z_matrix with a rebuilt
+# TerminationSet: 1.47e-11 worst relative on the planted 12-port case,
+# <= 5.8e-11 over every fixture in the repo (tests/test_attrib_coldstart.py).
+#
+# COST, measured on this box at one frequency (N = number of ports in the file,
+# 4 of them probes, the rest candidates):
+#
+#     N     build_context   screen(all)   pairs(K=8)   greedy(k=10)   engine
+#                                                                     re-solve
+#      32       1.3 ms        0.46 ms      0.42 ms        6.1 ms      5.0 ms
+#      64      11.2 ms        0.87 ms      0.43 ms       11.1 ms     14.5 ms
+#     153     350.6 ms        2.41 ms      0.44 ms       27.8 ms   2402.6 ms
+#
+# The last column is one `compute_z_matrix` per candidate port, which is what
+# the screen replaces: at 153 ports it is 2.41 ms against 2402.6 ms, a factor
+# of 997, and the 350.6 ms context is paid ONCE for all four steps (pass
+# `context=` or use `cold_start_report`).
+#
+# WHAT IT CANNOT FIND is stated in COLD_START_BLIND_SPOT_TEXT, is on the report
+# rather than in a footnote, and is repeated in every docstring below that
+# could be read on its own.
+
+#: The bracket's honesty clause.  ONE string so that every export -- the CLI
+#: report, a GUI pane, a CSV header -- carries it verbatim, the same rule
+#: SIGN_CONVENTION_TEXT follows.
+COLD_START_BRACKET_CAVEAT = (
+    "This bracket is over the OPEN..IDEAL-GROUND family ONLY. It is not a "
+    "bound over all possible terminations: a REACTIVE termination can put the "
+    "answer outside it, because a series ground inductance resonates with the "
+    "structure's shunt capacitance and the Mobius arc leaves the segment "
+    "between its two endpoints. Measured on diff_pair_4port.s4p, sweeping one "
+    "ground's series L over [0, inf) peaks at 9 mH of apparent M at "
+    "L = 505 nH, against a 1.01 nH open..ideal bracket. Use sweep_mobius for "
+    "the interval that is actually achieved over a range you can build."
+)
+
+#: What the screen is structurally blind to.  On the report, not in a footnote.
+COLD_START_BLIND_SPOT_TEXT = (
+    "What this screen CANNOT find: anything that needs THREE OR MORE ports to "
+    "move together. Step 1 is one port at a time, step 2 is exactly two, and "
+    "the greedy curve in step 3 can stumble onto a triple but has no "
+    "guarantee. That the second order is needed at all is measured: a shield "
+    "brought out as two ports reads +9.689 pH for either end grounded alone "
+    "and -870.268 pH for both -- 90x the largest single-port effect, with the "
+    "OPPOSITE SIGN -- because what matters is the closed loop, not the "
+    "grounding (shorting the two ends to each other, with no ground anywhere, "
+    "gives the identical -870.268 pH). A three-terminal version of the same "
+    "structure would be invisible to every step here."
+)
+
+#: How many ranked ports the report prints before it starts counting; also the
+#: default depth of the pair scan.  Not a layout number -- the pair scan is
+#: K*(K-1)/2 rank-2 solves and 8 gives 28 of them in 0.44 ms (measured, 153
+#: ports), so the cap is about how much of a table a person reads, not cost.
+COLD_START_SHOW = 10
+COLD_START_TOP_K = 8
+
+#: Below this the tail of the screen is called LOCAL in words as well as in
+#: numbers. It is anchored on the dispute this whole module exists to settle:
+#: the same M extracted twice from one EM solve came out 6.07 dB apart, so a
+#: port that can move the answer by less than 1 dB cannot be part of that
+#: argument. It changes no number -- only whether the sentence ends with "the
+#: coupling is LOCAL to the ports listed above" or with a full stop.
+COLD_START_LOCAL_DB = 1.0
+
+#: A pair is FLAGGED when |non-additivity| exceeds
+#:
+#:     max(COLD_START_PAIR_REL * (largest single-port |delta| in the scan),
+#:         COLD_START_PAIR_FLOOR_REL * |value with everything open|)
+#:
+#: The first term is the one that means something: a pair whose surprise is
+#: less than half the best single port's effect will not change which port you
+#: ground first, and one whose surprise is larger than that will. The second is
+#: a floor for the case where every single-port effect is ~0 -- which is the
+#: normal reading of a shield (both ends measured +9.689 pH) and of 60 ground
+#: balls from all-grounded -- so that the first term cannot collapse the
+#: threshold onto the noise and flag all 28 pairs.
+#:
+#: Measured: on the planted 12-port case the threshold is 197.7 pH and NO pair
+#: clears it (largest non-additivity 5.40 pH) -- the right answer, there is no
+#: pair mechanism planted. On the shield case the threshold is 4.84 pH and the
+#: one pair clears it at 889.6 pH, 184x.
+#:
+#: Nothing is HIDDEN by it: `cold_start_pairs` returns every pair it scanned,
+#: ranked, each carrying `flagged` and the threshold it was judged against.
+COLD_START_PAIR_REL = 0.5
+COLD_START_PAIR_FLOOR_REL = 0.01
+
+#: The greedy curve's default depth, and the fraction of the full
+#: open -> all-grounded span within which the curve counts as saturated.
+#: Measured on the planted 12-port case (2 ports planted to couple to both
+#: sides, 6 planted not to): k = 2. The tolerance is reported on the curve --
+#: `CumulativeCurve.saturation_tol` -- so a reader can see what "saturated"
+#: was taken to mean rather than having to trust the index.
+COLD_START_MAX_K = 12
+COLD_START_SATURATION_REL = 0.1
+
+#: A candidate port that a family suggestion may group with another. Two is the
+#: right minimum here and it is NOT the same rule as core's
+#: OPEN_CLUSTER_MIN_FAMILY = 4: that threshold keeps a REMNANT check from
+#: crying wolf about 'coil1'/'coil2', while the case this one exists for is
+#: exactly a two-member family -- the two ends of one guard ring.
+COLD_START_MIN_FAMILY = 2
+
+
+@dataclass(frozen=True)
+class Bracket:
+    """
+    Step 0: what the whole question is worth, before anything is computed.
+
+    `value_open` is the quantity with every non-probe port OPEN -- which is
+    what `compute_z_matrix` returns for a probes-only spec, i.e. the number
+    that starts the argument -- and `value_grounded` is the same quantity with
+    every one of them at ideal ground. `span_db` is 20*log10 of the ratio.
+
+    UNLESS `baseline_grounded` is non-empty, in which case the low end is NOT
+    all-open: on a structure with no reference the baseline has to ground
+    something, `baseline_note` says which and why, and `value_open` is the
+    quantity with everything open EXCEPT those. Printing that number under the
+    heading "every non-probe port OPEN" would be a false claim about a
+    different network, and the two genuinely differ -- see
+    `ColdStartContext.baseline_grounded` for the measurement.
+
+    `caveat` is COLD_START_BRACKET_CAVEAT verbatim and must be shown with the
+    numbers: the two endpoints bound the open..ideal-short family and NOTHING
+    else.
+
+    `reconciliation_rel` is |this module's all-grounded answer - the ENGINE's|
+    over |the engine's|, for free: `build_context` asks `compute_z_matrix`
+    about the all-grounded spec on the way in, so the top of the bracket has a
+    second opinion the bottom cannot have (no TerminationSet spells "all open"
+    with the probe sides merged AND every element removed -- that IS the
+    baseline).
+    """
+    victim: str
+    aggressor: str
+    freq_hz: float
+    requested_hz: float
+    quantity: str
+    unit: str
+    value_open: complex
+    value_grounded: complex
+    span_db: float
+    n_candidates: int
+    n_screenable: int
+    reconciliation_rel: float
+    caveat: str
+    baseline_grounded: tuple[int, ...] = ()
+    baseline_note: str = ""
+    notes: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PortScreenRow:
+    """
+    Step 1: one candidate port, with BOTH coupling columns and the exact effect.
+
+    `port` is 0-BASED, the same convention `Element.ports` uses; `label`
+    renders it 1-based, which is the only form that may reach a user.
+
+    THE TWO COUPLING COLUMNS ARE NOT DECORATION AND MUST NOT BE COLLAPSED INTO
+    THEIR PRODUCT. `z_ap` is how strongly the port talks to the VICTIM and
+    `z_pb` how strongly the AGGRESSOR talks to it; a port has to do both to be
+    a path. Measured on the planted 12-port case: the port with the LARGEST
+    |z_ap| in the whole file (34.777 Ohm, 67% more than the real path's
+    20.873) has |z_pb| = 0.038 and a true effect of -0.378 pH, against
+    -395.369 pH for the real one. Ranking on coupling-to-the-victim alone puts
+    that port FIRST and it is worthless -- it is the fifth of eight by |delta|,
+    which is the ranking this row is sorted on.
+
+    `delta` is exact, not first order: it is the closed form
+    -Zbase[a,p]*Zbase[p,b]/Zbase[p,p] mapped through the quantity, and it
+    agrees with an honest re-solve through compute_z_matrix to 1.5e-11.
+
+    `defined` is False for a port the screen cannot answer about -- one the
+    baseline had to absorb to have a reference at all, or one whose stamp is
+    outside the range of a pseudo-inverted baseline. Those rows are KEPT, with
+    `delta` non-finite and `note` saying which: a table of "which ports matter"
+    that silently omits the ports it could not evaluate is a wrong answer with
+    a plausible shape.
+    """
+    port: int                 # 0-based
+    name: str                 # the file's port name, or ""
+    z_ap: complex             # Zbase[victim, p]   -- couples to the victim
+    z_pb: complex             # Zbase[p, aggressor] -- couples to the aggressor
+    z_pp: complex             # Zbase[p, p]        -- the divisor
+    value: complex            # the quantity with THIS port grounded
+    delta: complex            # value - (the quantity with everything open)
+    #: 20*log10(|value| / |value with everything open|) -- how far grounding
+    #: this ONE port moves the ANSWER, not the size of the delta on its own.
+    #: The same convention SensitivityResult.delta_db uses, and the same
+    #: `_delta_db` helper, so the two tables can be read side by side.
+    delta_db: float
+    declared: str             # what the INPUT spec said here ("open" if silent)
+    defined: bool
+    note: str = ""
+
+    @property
+    def abs_delta(self) -> float:
+        return float(abs(self.delta))
+
+    @property
+    def label(self) -> str:
+        return (f"port {self.port + 1}"
+                + (f" ({self.name})" if self.name else ""))
+
+
+@dataclass(frozen=True)
+class PairEffect:
+    """
+    Step 2: two ports grounded TOGETHER, from all-open, against the sum of the
+    two one-at-a-time numbers.
+
+    `non_additivity` is the whole point of the step. `flagged` is
+    |non_additivity| > `threshold`; every scanned pair is returned whether or
+    not it is flagged, and the threshold is carried on each row so a reader
+    never has to go looking for what the filter was.
+
+    `sign_flip` is True when the joint effect points the other way from BOTH
+    singles -- the measured shield signature (+9.689 / +9.689 / -870.268).
+    """
+    port_i: int               # 0-based
+    port_j: int
+    name_i: str
+    name_j: str
+    delta_i: complex
+    delta_j: complex
+    delta_pair: complex
+    non_additivity: complex
+    ratio: float              # |delta_pair| / max(|delta_i|, |delta_j|)
+    sign_flip: bool
+    flagged: bool
+    threshold: float
+
+    @property
+    def label(self) -> str:
+        return f"ports {self.port_i + 1},{self.port_j + 1}"
+
+
+@dataclass(frozen=True)
+class FamilySuggestion:
+    """
+    A PROPOSAL the tool tested and is showing, never an assumption it folded in.
+
+    The requirement is explicit that the script must not guess which ports are
+    one structure -- that is a semantic judgement about the layout. So a name
+    family (core's `name_prefix`: 'guard_ring1' and 'guard_ring2' are one
+    'guard_ring') only ever produces a SENTENCE, with the numbers computed both
+    ways beside it, and the reader decides. Nothing in `Bracket`,
+    `PortScreenRow`, `PairEffect` or `CumulativeCurve` is affected by whether
+    port names were supplied at all -- `tests/test_attrib_coldstart.py` pins
+    that by running the whole report twice.
+
+    `tested` is False when no context was available to evaluate the family
+    jointly; then `together` and `non_additivity` are non-finite and `text`
+    says the grouping was not tested rather than implying it was.
+    """
+    prefix: str
+    ports: tuple[int, ...]        # 0-based
+    names: tuple[str, ...]
+    separate: complex             # sum of the one-at-a-time deltas
+    together: complex             # delta with the whole family grounded at once
+    non_additivity: complex
+    flagged: bool
+    threshold: float
+    tested: bool
+    text: str
+
+
+@dataclass
+class ColdStartContext:
+    """
+    The one AttribContext all four steps read, plus the candidate bookkeeping.
+
+    Build it with `cold_start_context` and hand it to every step as
+    `context=`; `cold_start_report` does that for you. The context costs
+    O(N^3) (measured 350.6 ms at 153 ports) and each step off it costs
+    microseconds to milliseconds, so building four of them is the only
+    expensive mistake available here.
+
+    `ctx.elements` is exactly one ideal `ground` per SCREENABLE candidate, in
+    ascending port order, which is what makes `leave_one_out(csc.ctx, ...)` the
+    mirror direction with no new code: it starts from every element ideal, i.e.
+    every candidate grounded, and removes one at a time.
+    """
+    ctx: AttribContext
+    candidates: tuple[int, ...]           # 0-based, every non-probe port
+    element_of_port: dict[int, int]
+    unreachable: dict[int, str]           # candidate -> why it has no delta
+    port_names: tuple[str, ...]
+    declared: dict[int, str]              # candidate -> what the INPUT spec said
+    #: Candidate ports the BASELINE had to ground, because with every non-probe
+    #: port open the node admittance is singular and there is no all-open
+    #: network to measure from.  Empty in the ordinary case.
+    #:
+    #: When it is NOT empty, "from all-open" is FALSE and every number here is
+    #: measured from "all open EXCEPT these".  That distinction is not
+    #: cosmetic: measured on coupled_4port_float.s4p probed differentially on
+    #: coil 1, `ground port 3` is folded in and grounding port 4 then moves
+    #: Im(Z_aa) by -6.8355 Ohm, while from the genuinely all-open network the
+    #: engine says it moves it by 2.8e-14, i.e. not at all. Both are right
+    #: about their own network; only one of them is the one the header claims.
+    baseline_grounded: tuple[int, ...] = ()
+    notes: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def screenable(self) -> tuple[int, ...]:
+        return tuple(p for p in self.candidates if p in self.element_of_port)
+
+    def name_of(self, port: int) -> str:
+        return (self.port_names[port]
+                if 0 <= port < len(self.port_names) else "")
+
+    def baseline_description(self) -> str:
+        """One sentence naming the configuration every delta is measured from."""
+        if not self.baseline_grounded:
+            return ("every non-probe port OPEN -- which is the configuration "
+                    "compute_z_matrix returns for a probes-only spec")
+        return (
+            "every non-probe port open EXCEPT port(s) "
+            + collapse_ports([p + 1 for p in self.baseline_grounded])
+            + ", which the baseline had to GROUND because the structure has no "
+              "reference without them. This is therefore NOT the all-open "
+              "configuration, and a delta here is not the delta from all-open: "
+              "on a floating structure those two differ completely.")
+
+
+def _declared_label(terminations: TerminationSet, port: int) -> str:
+    """What the INPUT spec said about `port`, for the screen's `declared` column."""
+    t = terminations.termination_of(port)
+    if isinstance(t, Vdd):
+        return "vdd"
+    if isinstance(t, Ground):
+        return "ground"
+    if isinstance(t, LumpedToGnd):
+        return "lumped_to_gnd"
+    if isinstance(t, Signal):
+        return "signal"
+    for cpl in terminations.couplings:
+        if isinstance(cpl, ShortPair) and port in (cpl.port_i, cpl.port_j):
+            other = cpl.port_j if port == cpl.port_i else cpl.port_i
+            return f"short_to {other + 1}"
+        if isinstance(cpl, LumpedBetween) and port in (cpl.port_i, cpl.port_j):
+            other = cpl.port_j if port == cpl.port_i else cpl.port_i
+            return f"lumped_between {other + 1}"
+    return "open"
+
+
+def cold_start_context(Y: np.ndarray,
+                       freqs: np.ndarray,
+                       terminations: TerminationSet,
+                       freq_hz: float,
+                       candidates: Sequence[int] | None = None,
+                       port_names: Sequence[str] | None = None
+                       ) -> ColdStartContext:
+    """
+    Build the one context every cold-start step reads.
+
+    THE SPEC IS REWRITTEN, ON PURPOSE, AND THE REWRITE IS REPORTED. The cold
+    start asks "which of these ports matter", so it starts from ALL-OPEN and
+    treats every non-probe port as undecided. Concretely it keeps
+
+      * every `Signal` termination -- that is the QUESTION, not a decision;
+      * every `ShortPair` whose union-find group carries a Signal -- a short
+        that ties several ports into one measurement-port SIDE is part of the
+        same question, and dropping it would make those ports look like
+        separate candidates whose grounding moves the answer;
+
+    and drops everything else, replacing it with one ideal `ground` per
+    candidate. Anything dropped is named in `notes`: a `ground`, a
+    `lumped_to_gnd` or a `short_to` in the input spec is a decision the caller
+    HAS taken, and the honest thing is to say it is not in force here and point
+    at `sensitivity` / `group_joint`, which is the "check the spec you wrote"
+    side of this module.
+
+    `candidates` narrows the scan (0-based port indices, the `Element.ports`
+    convention). The default is every port that is not part of a measurement
+    port. Ports outside `range(N)` and probe ports are refused by name rather
+    than silently ignored -- a typo'd candidate list that quietly screens
+    nothing is the failure this module exists to stop.
+
+    `port_names` is the file's `TouchstoneData.port_names` (0-based, "" where
+    unnamed). It is used ONLY for labels and for `name_family_suggestions`;
+    no number anywhere depends on it.
+    """
+    Y = np.asarray(Y)
+    if Y.ndim != 3 or Y.shape[1] != Y.shape[2]:
+        raise AttribError(f"Y must have shape (nfreqs, N, N), got {Y.shape}")
+    n = int(Y.shape[1])
+    names = list(port_names or [])
+    names = [str(x) for x in names[:n]] + [""] * max(0, n - len(names))
+
+    # Probe membership uses the SAME rule compute_z_matrix's merge_terms does
+    # (a shorted group carrying any Signal is that Signal's side in its
+    # entirety), so a port tied onto a probe is a probe here too and never
+    # becomes a candidate.  `_probe_side_of_port` is that rule, already written
+    # and already pinned by the reconciliation tests.
+    side_of = _probe_side_of_port(terminations, n)
+    probe_ports = {p for p in range(n) if side_of.get(p) is not None}
+    probe_ports |= {p for p in range(n)
+                    if isinstance(terminations.termination_of(p), Signal)}
+
+    notes: list[str] = []
+
+    if candidates is None:
+        cands = tuple(p for p in range(n) if p not in probe_ports)
+    else:
+        want = [int(p) for p in candidates]
+        bad = sorted({p for p in want if not 0 <= p < n})
+        if bad:
+            raise AttribError(
+                "candidate port index(es) "
+                + collapse_ports([p + 1 for p in bad])
+                + f" (1-based) are outside 1..{n} for this file")
+        onprobe = sorted({p for p in want if p in probe_ports})
+        if onprobe:
+            raise AttribError(
+                "candidate port(s) " + collapse_ports([p + 1 for p in onprobe])
+                + " carry a measurement port. A probe side is what is being "
+                  "measured, not a port to decide about; grounding it would "
+                  "ground the whole side (which is why "
+                  "build_terminations_coupling refuses the same overlap).")
+        cands = tuple(sorted(set(want)))
+
+    # --- the rewritten spec
+    keep_short: list[ShortPair] = []
+    dropped_decl: list[str] = []
+    groups = _shorted_groups(terminations, n)
+    group_of = {p: gi for gi, mem in enumerate(groups) for p in mem}
+    probe_groups = {group_of[p] for p in probe_ports if p in group_of}
+    for cpl in terminations.couplings:
+        if (isinstance(cpl, ShortPair)
+                and group_of.get(cpl.port_i) in probe_groups):
+            keep_short.append(cpl)
+        elif isinstance(cpl, ShortPair):
+            dropped_decl.append(f"short {cpl.port_i + 1}-{cpl.port_j + 1}")
+        else:
+            dropped_decl.append(
+                f"lumped_between {cpl.port_i + 1}-{cpl.port_j + 1}")
+
+    pp: dict[int, PortTermination] = {}
+    declared: dict[int, str] = {}
+    for p in range(n):
+        t = terminations.termination_of(p)
+        if isinstance(t, Signal):
+            pp[p] = t
+        elif isinstance(t, (Ground, Vdd, LumpedToGnd)) and p not in probe_ports:
+            dropped_decl.append(f"{_declared_label(terminations, p)} "
+                                f"on port {p + 1}")
+    for p in cands:
+        declared[p] = _declared_label(terminations, p)
+        pp[p] = Ground()
+
+    if dropped_decl:
+        notes.append(
+            "The cold-start screen answers the ALL-OPEN question, so these "
+            "declarations in the spec are NOT in force here -- they are not in "
+            "the baseline, and each candidate port is hypothesised as an ideal "
+            "ground one at a time instead: "
+            + "; ".join(dropped_decl)
+            + ". That is the difference between this screen and sensitivity() "
+              "/ group_joint(), which start from the spec as declared and ask "
+              "how robust it is.")
+
+    csc_ctx = build_context(
+        Y, freqs, TerminationSet(per_port=pp, couplings=list(keep_short)),
+        freq_hz)
+
+    element_of_port = {e.ports[0]: e.index for e in csc_ctx.elements
+                       if e.kind == "ground" and len(e.ports) == 1}
+    unreachable: dict[int, str] = {}
+    baseline_grounded: list[int] = []
+    for el in csc_ctx.folded:
+        if el.kind == "ground" and el.ports[0] in declared:
+            baseline_grounded.append(el.ports[0])
+            unreachable[el.ports[0]] = (
+                "in the BASELINE: the structure has no reference without it, "
+                "so 'every port open' is not a network that exists and this "
+                "port's own effect cannot be measured from it. Every OTHER "
+                "row is measured from a baseline that has this port grounded")
+    for el, why in csc_ctx.dropped:
+        if el.kind == "ground" and el.ports[0] in declared:
+            unreachable.setdefault(el.ports[0], why)
+    for p in cands:
+        if p not in element_of_port and p not in unreachable:
+            unreachable[p] = ("no ground element survived for this port; it "
+                              "contributes nothing to the network")
+
+    # There is deliberately NO per-element "is u_e in range(Ybase)" test here,
+    # and that is a measured claim about build_context rather than an omission.
+    # Its fold loop keeps folding while `rank < nr`, choosing each time the
+    # element with the LARGEST out-of-range residual, and only stops when the
+    # baseline is full rank or when NO remaining element has a residual above
+    # PROBE_RANGE_TOL.  Either way every element that survives into
+    # `ctx.elements` is in range of the FINAL Ybase, so such a test can execute
+    # but can never fire.  Measured: on coupled_4port_float.s4p probed
+    # differentially on coil 1 the baseline is still cond 1.30e16 after the
+    # fold, the surviving `ground port 4` passes the range test, and its delta
+    # agrees with an honest re-solve through compute_z_matrix to rel 0.0 -- the
+    # SVD cost O(N^3) to answer "fine".  The probes are a different matter and
+    # ARE checked, by build_context itself (`ctx.bad_probes`).
+    if unreachable:
+        notes.append(
+            "Port(s) "
+            + collapse_ports([p + 1 for p in sorted(unreachable)])
+            + " are on the screen but have NO delta -- see each row's note.")
+    if baseline_grounded:
+        notes.append(
+            "The baseline is " + collapse_ports(
+                [p + 1 for p in sorted(baseline_grounded)])
+            + "-grounded, NOT all-open: with every non-probe port open the "
+              "node admittance is singular, so those port(s) were folded in to "
+              "give the structure a reference. Every delta below is measured "
+              "from THAT configuration. Measured on coupled_4port_float.s4p "
+              "probed differentially on coil 1: grounding port 4 moves "
+              "Im(Z_aa) by -6.8355 Ohm from the folded baseline and by 2.8e-14 "
+              "from the genuinely all-open one, so the distinction decides the "
+              "answer.")
+    if not element_of_port:
+        notes.append(
+            "There is nothing to screen: every port either carries a "
+            "measurement port or could not be evaluated from the baseline.")
+
+    return ColdStartContext(
+        ctx=csc_ctx, candidates=cands, element_of_port=element_of_port,
+        unreachable=unreachable, port_names=tuple(names), declared=declared,
+        baseline_grounded=tuple(sorted(baseline_grounded)),
+        notes=list(csc_ctx.notes) + notes,
+        warnings=list(csc_ctx.warnings))
+
+
+def _cs_context(Y, freqs, terminations, freq_hz, context, candidates=None,
+                port_names=None) -> ColdStartContext:
+    """`context` if given, otherwise build one.  One line, four call sites."""
+    if context is not None:
+        return context
+    return cold_start_context(Y, freqs, terminations, freq_hz,
+                              candidates=candidates, port_names=port_names)
+
+
+def _cs_value(csc: ColdStartContext, spec: _QuantitySpec, a: int, b: int,
+              live: Sequence[int]) -> complex:
+    """
+    The quantity with exactly `live` grounded and every other candidate OPEN.
+
+    The scale is taken from THIS configuration's own (G, G) matrix, not frozen
+    at the declared spec -- `_scale_from` documents why (measured: freezing it
+    made `M/L_a` come out sign-flipped and 100x wrong on the first row of the
+    default sensitivity scan). For 'M' and 'ImZ' the scale is 1/omega and the
+    distinction does not arise; for 'k' and 'M/L_a' it decides the answer.
+    """
+    Z = _z_matrix(csc.ctx, csc.ctx.Zt, tuple(live))[0]
+    sc, _ = _scale_from(csc.ctx, spec, a, b, Z)
+    return _map_value(spec, sc, complex(Z[a, b]))
+
+
+def cold_start_bracket(Y: np.ndarray, freqs: np.ndarray,
+                       terminations: TerminationSet,
+                       victim: int | str, aggressor: int | str,
+                       freq_hz: float, quantity: str = "M",
+                       *, context: ColdStartContext | None = None,
+                       candidates: Sequence[int] | None = None,
+                       port_names: Sequence[str] | None = None) -> Bracket:
+    """
+    STEP 0. The quantity with every non-probe port OPEN against every one of
+    them at IDEAL GROUND, and the dB between them.
+
+    This is the first thing to put on screen, because it answers "are these 149
+    ports worth any of my time at all" before anything else is computed --
+    measured at 25.67 dB on the planted 12-port case, and at exactly 0 dB on a
+    file where nothing else is connected to anything.
+
+    It is NOT a bound over all terminations. See COLD_START_BRACKET_CAVEAT,
+    which is returned on the result so no caller can print the numbers without
+    it.
+    """
+    spec = _resolve_quantity(quantity)
+    csc = _cs_context(Y, freqs, terminations, freq_hz, context,
+                      candidates, port_names)
+    ctx = csc.ctx
+    a = ctx.port_index(victim)
+    b = ctx.port_index(aggressor)
+    live_all = tuple(sorted(csc.element_of_port.values()))
+
+    v_open = _cs_value(csc, spec, a, b, ())
+    v_gnd = _cs_value(csc, spec, a, b, live_all)
+
+    # A free second opinion on the TOP of the bracket: build_context asked
+    # compute_z_matrix about this very spec (probes + ground everywhere) on the
+    # way in.  The bottom cannot have one -- "every port open with the probe
+    # sides merged and no element at all" IS the baseline, and there is no
+    # second algorithm here that computes it.
+    ref = complex(ctx.Zref[a, b])
+    mine = complex(ctx.Zop_declared[a, b])
+    denom = abs(ref)
+    recon = (abs(mine - ref) / denom) if denom > 0 else float("nan")
+
+    notes = list(csc.notes)
+    if not live_all:
+        notes.append(
+            "No candidate port could be screened, so both ends of the bracket "
+            "are the same network and the span is 0 dB by construction, not by "
+            "measurement.")
+    return Bracket(
+        victim=ctx.port_names[a], aggressor=ctx.port_names[b],
+        freq_hz=ctx.freq_hz, requested_hz=ctx.requested_hz,
+        quantity=spec.name, unit=spec.unit,
+        value_open=v_open, value_grounded=v_gnd,
+        span_db=_delta_db(v_open, v_gnd),
+        n_candidates=len(csc.candidates), n_screenable=len(live_all),
+        reconciliation_rel=recon, caveat=COLD_START_BRACKET_CAVEAT,
+        baseline_grounded=csc.baseline_grounded,
+        baseline_note=csc.baseline_description(),
+        notes=tuple(notes), warnings=tuple(csc.warnings))
+
+
+def cold_start_screen(Y: np.ndarray, freqs: np.ndarray,
+                      terminations: TerminationSet,
+                      victim: int | str, aggressor: int | str,
+                      freq_hz: float, quantity: str = "M",
+                      *, context: ColdStartContext | None = None,
+                      candidates: Sequence[int] | None = None,
+                      port_names: Sequence[str] | None = None
+                      ) -> list[PortScreenRow]:
+    """
+    STEP 1. Every candidate port, with BOTH coupling columns and the exact
+    effect of grounding it, ranked by |delta| descending.
+
+    Two solves plus a diagonal, not one re-solve per port: measured 2.41 ms for
+    149 candidates against 2402.6 ms for the same 149 through
+    `compute_z_matrix`.
+
+    The two coupling columns are mandatory and must not be collapsed into their
+    product -- see `PortScreenRow`, where the measured red herring is written
+    down.
+
+    Rows the screen could not evaluate sort LAST and are never dropped: a
+    non-finite delta is a missing measurement, not a small number, the same
+    rule `rank_coupling_pairs` applies to an undefined coupling ratio.
+    """
+    spec = _resolve_quantity(quantity)
+    csc = _cs_context(Y, freqs, terminations, freq_hz, context,
+                      candidates, port_names)
+    ctx = csc.ctx
+    a = ctx.port_index(victim)
+    b = ctx.port_index(aggressor)
+    v_open = _cs_value(csc, spec, a, b, ())
+
+    rows: list[PortScreenRow] = []
+    for p in csc.candidates:
+        e = csc.element_of_port.get(p)
+        if e is None:
+            rows.append(PortScreenRow(
+                port=p, name=csc.name_of(p),
+                z_ap=_UNDEFINED, z_pb=_UNDEFINED, z_pp=_UNDEFINED,
+                value=_UNDEFINED, delta=_UNDEFINED, delta_db=float("nan"),
+                declared=csc.declared.get(p, "open"), defined=False,
+                note=csc.unreachable.get(p, "not evaluated")))
+            continue
+        v = _cs_value(csc, spec, a, b, (e,))
+        rows.append(PortScreenRow(
+            port=p, name=csc.name_of(p),
+            z_ap=complex(ctx.Rmat[e, a]), z_pb=complex(ctx.Pmat_b[e, b]),
+            z_pp=complex(ctx.Gm[e, e]),
+            value=v, delta=v - v_open, delta_db=_delta_db(v_open, v),
+            declared=csc.declared.get(p, "open"), defined=True))
+
+    rows.sort(key=lambda r: (0 if math.isfinite(r.abs_delta) else 1,
+                             -r.abs_delta if math.isfinite(r.abs_delta) else 0.0,
+                             r.port))
+    return rows
+
+
+def cold_start_negative_result(rows: Sequence[PortScreenRow],
+                               unit: str = "",
+                               top: int = COLD_START_SHOW,
+                               local_db: float = COLD_START_LOCAL_DB) -> str:
+    """
+    The NEGATIVE result as its own sentence: "the other N ports are all below
+    X dB, so the coupling is local".
+
+    This is a deliverable, not a leftover. A screen that names two ports and
+    says nothing about the remaining 147 has withheld the thing the user most
+    wanted, which is permission to stop looking.
+
+    The ports the screen could NOT evaluate are excluded from the claim and
+    counted separately -- "all below X dB" must not quietly mean "all the ones
+    I could measure".
+
+    Pure: it reads the ranked rows and nothing else, so it cannot move a
+    number and costs nothing to call.
+    """
+    tail = [r for r in rows[top:] if r.defined]
+    undef = [r for r in rows if not r.defined]
+    if not tail and not undef:
+        return ""
+    parts: list[str] = []
+    if tail:
+        worst = max(tail, key=lambda r: r.abs_delta)
+        db = abs(worst.delta_db) if math.isfinite(worst.delta_db) \
+            else float("nan")
+        parts.append(
+            f"The other {len(tail)} port(s) would each move the answer by at "
+            f"most {_fmt_q(worst.delta, unit)}"
+            + ("" if not math.isfinite(db) else f" ({db:.2f} dB)")
+            + f", the largest being {worst.label}"
+            + (" -- the coupling is LOCAL to the ports listed above."
+               if math.isfinite(db) and db < local_db else "."))
+    if undef:
+        parts.append(
+            f"{len(undef)} port(s) could not be evaluated and are NOT covered "
+            "by that statement: "
+            + collapse_ports([r.port + 1 for r in undef]) + ".")
+    return " ".join(parts)
+
+
+def cold_start_pairs(Y: np.ndarray, freqs: np.ndarray,
+                     terminations: TerminationSet,
+                     victim: int | str, aggressor: int | str,
+                     freq_hz: float, top_k: int = COLD_START_TOP_K,
+                     quantity: str = "M",
+                     *, context: ColdStartContext | None = None,
+                     screen: Sequence[PortScreenRow] | None = None,
+                     candidates: Sequence[int] | None = None,
+                     port_names: Sequence[str] | None = None
+                     ) -> list[PairEffect]:
+    """
+    STEP 2. Every pair among the top `top_k` of the screen, grounded TOGETHER,
+    from the same baseline step 1 used -- and this step is mandatory, not
+    optional.
+
+    (That baseline is all-open unless the structure had no reference without
+    help, in which case `ColdStartContext.baseline_grounded` names what the
+    baseline had to ground and every number here is measured from that.)
+
+    `screen` must be a screen of the SAME quantity off the SAME context; it is
+    an optimisation, and `cold_start_report` supplies one. Left out, one is
+    computed.
+
+    Measured blind spot of step 1: a shield or guard-ring segment brought out
+    as two ports. Grounding either end alone closes no loop and reads
+    +9.689 pH; grounding both closes it and reads -870.268 pH -- 90x the
+    largest single-port effect in the file, with the OPPOSITE SIGN, and
+    non-additivity -889.645 pH. A single-port ranking reports that structure as
+    two minor positive entries. (The mechanism is the LOOP, not the ground:
+    `5 short_to 6` with no ground anywhere gives the identical -870.268 pH.)
+
+    Cost: K*(K-1)/2 rank-2 Woodbury updates -- 0.44 ms for K=8 on a 153-port
+    file, i.e. the cap is about how much table a person reads, not cost.
+
+    Every scanned pair is returned, ranked by |non_additivity| descending, each
+    carrying `flagged` and the `threshold` it was judged against. See
+    COLD_START_PAIR_REL for how the threshold is built and what was measured.
+    """
+    spec = _resolve_quantity(quantity)
+    csc = _cs_context(Y, freqs, terminations, freq_hz, context,
+                      candidates, port_names)
+    ctx = csc.ctx
+    a = ctx.port_index(victim)
+    b = ctx.port_index(aggressor)
+    if screen is None:
+        screen = cold_start_screen(Y, freqs, terminations, victim, aggressor,
+                                   freq_hz, quantity, context=csc)
+    v_open = _cs_value(csc, spec, a, b, ())
+
+    usable = [r for r in screen if r.defined and r.port in csc.element_of_port]
+    scanned = usable[:max(0, int(top_k))]
+    scale = max([r.abs_delta for r in usable] + [0.0])
+    floor = (COLD_START_PAIR_FLOOR_REL * abs(v_open)
+             if math.isfinite(abs(v_open)) else 0.0)
+    threshold = max(COLD_START_PAIR_REL * scale, floor)
+
+    out: list[PairEffect] = []
+    for i in range(len(scanned)):
+        for j in range(i + 1, len(scanned)):
+            ri, rj = scanned[i], scanned[j]
+            ei = csc.element_of_port[ri.port]
+            ej = csc.element_of_port[rj.port]
+            v_pair = _cs_value(csc, spec, a, b, (ei, ej))
+            d_pair = v_pair - v_open
+            na = d_pair - ri.delta - rj.delta
+            big = max(ri.abs_delta, rj.abs_delta)
+            ratio = float(abs(d_pair) / big) if big > 0 else float("inf")
+            # "The other way from BOTH singles."  Taken on the real part of the
+            # mapped quantity, which for every decomposable-and-real quantity
+            # (M, ReZ, ImZ, M/L_a, k) IS the value; for the complex 'Z' it is
+            # the part a sign is defined on at all.
+            si, sj, sp = (ri.delta.real, rj.delta.real, d_pair.real)
+            flip = bool((si > 0 and sj > 0 and sp < 0)
+                        or (si < 0 and sj < 0 and sp > 0))
+            out.append(PairEffect(
+                port_i=ri.port, port_j=rj.port,
+                name_i=ri.name, name_j=rj.name,
+                delta_i=ri.delta, delta_j=rj.delta, delta_pair=d_pair,
+                non_additivity=na, ratio=ratio, sign_flip=flip,
+                flagged=bool(abs(na) > threshold), threshold=threshold))
+    out.sort(key=lambda pe: -abs(pe.non_additivity))
+    return out
+
+
+def cold_start_leave_one_out(Y: np.ndarray, freqs: np.ndarray,
+                             terminations: TerminationSet,
+                             victim: int | str, aggressor: int | str,
+                             freq_hz: float, quantity: str = "M",
+                             *, context: ColdStartContext | None = None,
+                             candidates: Sequence[int] | None = None,
+                             port_names: Sequence[str] | None = None
+                             ) -> list[SensitivityResult]:
+    """
+    STEP 2, THE MIRROR DIRECTION: start from EVERY candidate grounded and open
+    one at a time.
+
+    Both directions are needed because they catch OPPOSITE failures. From
+    all-open, a set of ports that only does something collectively reads ~0 one
+    at a time (the shield: +9.689 pH each, -870.268 pH together). From
+    all-grounded, a set that shares a return reads ~0 one at a time for the
+    opposite reason -- the other 59 balls still carry the current -- and the
+    same shield reads +879.956 pH per end, which is the number that says
+    "these two are one thing".
+
+    This is `leave_one_out` on the cold-start context and nothing else: the
+    context's elements ARE one ideal ground per candidate, so "from all-ideal"
+    already means "from all-grounded".
+    """
+    csc = _cs_context(Y, freqs, terminations, freq_hz, context,
+                      candidates, port_names)
+    return leave_one_out(csc.ctx, victim, aggressor, quantity)
+
+
+def cold_start_cumulative(Y: np.ndarray, freqs: np.ndarray,
+                          terminations: TerminationSet,
+                          victim: int | str, aggressor: int | str,
+                          freq_hz: float, max_k: int = COLD_START_MAX_K,
+                          quantity: str = "M",
+                          saturation_rel: float = COLD_START_SATURATION_REL,
+                          *, context: ColdStartContext | None = None,
+                          candidates: Sequence[int] | None = None,
+                          port_names: Sequence[str] | None = None
+                          ) -> CumulativeCurve:
+    """
+    STEP 3. Ground the best port, RE-RANK, ground the next best, and so on:
+    the quantity against k.
+
+    This answers "how many ports actually matter", which neither a ranking nor
+    a pair scan does. Measured on the planted 12-port case (2 of 8 candidates
+    planted to couple to both sides): the greedy order starts 5, 6 -- the two
+    planted ones -- and `saturation_k` is 2, meaning two grounded ports already
+    put the answer within 10% of the full open -> all-grounded span.
+
+    Re-ranking is what distinguishes this from `cumulative_curve`, which orders
+    ONCE by the one-at-a-time deltas and then evaluates k = 1, 2, 4, 8, ...
+    Both are greedy and neither is optimal -- the optimal-k subset is
+    combinatorial -- but re-ranking is the one that can walk into the pair
+    effects step 2 exists for: on the shield case it picks the second end at
+    k=2 and the curve falls off a cliff there. It has no GUARANTEE of doing so,
+    which is part of COLD_START_BLIND_SPOT_TEXT.
+
+    Cost: sum over j of (n_cand - j) rank-(j+1) solves -- measured 27.8 ms for
+    k=10 over 149 candidates.
+
+    `order` holds 0-BASED PORT indices, not element indices. That differs from
+    `cumulative_curve`, whose `order` is element indices, because there is no
+    element here that is not a port and a port number is the thing the caller
+    can act on.
+
+    `max_k <= 0` means "every candidate"; `saturation_rel` is stored on the
+    result as `saturation_tol` so a reader can see what "saturated" was taken
+    to mean instead of having to trust the index.
+    """
+    spec = _resolve_quantity(quantity)
+    csc = _cs_context(Y, freqs, terminations, freq_hz, context,
+                      candidates, port_names)
+    ctx = csc.ctx
+    a = ctx.port_index(victim)
+    b = ctx.port_index(aggressor)
+
+    v_open = _cs_value(csc, spec, a, b, ())
+    pool = list(csc.screenable)
+    live_all = tuple(sorted(csc.element_of_port.values()))
+    v_all = _cs_value(csc, spec, a, b, live_all)
+
+    singles = {p: _cs_value(csc, spec, a, b,
+                            (csc.element_of_port[p],)) - v_open for p in pool}
+
+    chosen: list[int] = []
+    vals: list[complex] = []
+    cur = v_open
+    depth = min(int(max_k), len(pool)) if max_k and max_k > 0 else len(pool)
+    for _ in range(depth):
+        best_p = None
+        best_v = None
+        best_move = -1.0
+        for p in pool:
+            if p in chosen:
+                continue
+            v = _cs_value(csc, spec, a, b,
+                          tuple(csc.element_of_port[q] for q in chosen + [p]))
+            move = abs(v - cur)
+            # `>` not `>=`: ties keep the lower port index, which is the order
+            # `pool` is already in, so the curve is deterministic on a
+            # symmetric structure (the shield's two ends are exactly tied).
+            if best_p is None or move > best_move:
+                best_p, best_v, best_move = p, v, move
+        if best_p is None:                               # pragma: no cover
+            break
+        chosen.append(best_p)
+        cur = best_v
+        vals.append(best_v)
+
+    ks = tuple(range(1, len(vals) + 1))
+    deltas = tuple(v - v_open for v in vals)
+    sums = tuple(sum((singles[p] for p in chosen[:k]), start=complex(0.0))
+                 for k in ks)
+    nonadd = tuple(d - s for d, s in zip(deltas, sums))
+
+    # Saturation is measured against the ALL-CANDIDATES-GROUNDED value, not
+    # against the last point the curve happened to reach: with `max_k` short of
+    # the candidate count those are different numbers, and "the rest change it
+    # by less than that TOGETHER" is only true of the first.  Normalised by the
+    # full open -> all-grounded span so the tolerance means the same thing in
+    # henries, in ohms and in the dimensionless k.
+    span = abs(v_all - v_open)
+    tol = float(saturation_rel)
+    sat = -1
+    if span > 0 and math.isfinite(span):
+        for k, v in zip(ks, vals):
+            if abs(v - v_all) <= tol * span:
+                sat = k
+                break
+
+    notes: list[str] = []
+    if sat > 0:
+        notes.append(
+            f"Saturation: {sat} of {len(pool)} candidate port(s) already put "
+            f"the answer within {100.0 * tol:.0f}% of the full "
+            "open -> all-grounded span. The rest change it by less than that "
+            "TOGETHER.")
+    elif vals:
+        notes.append(
+            f"No saturation within k <= {len(vals)}: the answer is still more "
+            f"than {100.0 * tol:.0f}% of the full span away from the "
+            "all-grounded value, so more ports matter than were scanned.")
+    # Short here, not COLD_START_BLIND_SPOT_TEXT verbatim: a CumulativeCurve
+    # can be rendered on its own, so it must carry the caveat, but
+    # `format_cold_start` prints the full text once at the end and having the
+    # same paragraph twice on one page is how a reader learns to skip it.
+    notes.append(
+        "Greedy with re-ranking, not optimal: the true best-k subset is "
+        "combinatorial, and a group of THREE or more that only acts together "
+        "is not guaranteed to appear on this curve at all (see "
+        "COLD_START_BLIND_SPOT_TEXT).")
+
+    # The `alternative` string is what a plotter puts on the axis, so it names
+    # the baseline rather than assuming all-open -- the same reason
+    # `format_cold_start` re-labels the bracket's low end.
+    return CumulativeCurve(
+        spec.name, spec.unit,
+        "ideal ground (from all-open)" if not csc.baseline_grounded
+        else ("ideal ground (from all open except port(s) "
+              + collapse_ports([p + 1 for p in csc.baseline_grounded]) + ")"),
+        v_open,
+        tuple(chosen), ks, tuple(vals), deltas, sums, nonadd,
+        tuple(notes), sat, tol)
+
+
+def name_family_suggestions(port_names: Sequence[str],
+                            screen_rows: Sequence[PortScreenRow],
+                            *, context: ColdStartContext | None = None,
+                            victim: int | str | None = None,
+                            aggressor: int | str | None = None,
+                            quantity: str = "M",
+                            threshold: float | None = None
+                            ) -> list[FamilySuggestion]:
+    """
+    Group the screened ports by NAME FAMILY, test each grouping, and SUGGEST.
+
+    The requirement this implements is a rule about honesty, not about
+    grouping: which ports are one physical structure is a semantic judgement
+    about the layout, and the script must not guess it. Grouping by name WOULD
+    have caught the shield case -- the two ends of a guard ring normally share
+    a name family -- but folding that into an answer means a port name silently
+    decided what got reported.
+
+    So: the NUMBERS are computed both ways and printed, the GROUPING is a
+    sentence the user accepts or ignores, and NOTHING ELSE IN THE COLD-START
+    OUTPUT DEPENDS ON IT. `tests/test_attrib_coldstart.py` pins that by running
+    the whole report with and without names and comparing every number.
+
+    Families come from core's `name_prefix`, which strips only a TRAILING run
+    of digits: 'guard_ring1' / 'guard_ring2' are one family, 'c1_p' / 'c2_p'
+    are two (they are different coils, and that false alarm is exactly what the
+    trailing-only rule exists to avoid).
+
+    With `context` (plus `victim` / `aggressor`) the family is evaluated
+    jointly and `tested` is True. Without one there is nothing to test with, so
+    `together` is non-finite, `tested` is False and the text says the grouping
+    was not tested rather than implying it was.
+    """
+    names = list(port_names or [])
+    rows = {r.port: r for r in screen_rows}
+    fams: dict[str, list[int]] = {}
+    for p, r in rows.items():
+        nm = names[p] if 0 <= p < len(names) else ""
+        pre = name_prefix(nm)
+        if not pre:
+            continue
+        fams.setdefault(pre, []).append(p)
+
+    scale = max([r.abs_delta for r in screen_rows
+                 if r.defined and math.isfinite(r.abs_delta)] + [0.0])
+    thr = (float(threshold) if threshold is not None
+           else COLD_START_PAIR_REL * scale)
+
+    spec = _resolve_quantity(quantity)
+    out: list[FamilySuggestion] = []
+    for pre, ports in fams.items():
+        ports = sorted(ports)
+        if len(ports) < COLD_START_MIN_FAMILY:
+            continue
+        sep = sum((rows[p].delta for p in ports
+                   if rows[p].defined), start=complex(0.0))
+        together = _UNDEFINED
+        na = _UNDEFINED
+        tested = False
+        why_untested = "no context was supplied"
+        if (context is not None and victim is not None
+                and aggressor is not None):
+            live = [context.element_of_port[p] for p in ports
+                    if p in context.element_of_port]
+            if len(live) == len(ports):
+                a = context.ctx.port_index(victim)
+                b = context.ctx.port_index(aggressor)
+                v_open = _cs_value(context, spec, a, b, ())
+                together = _cs_value(context, spec, a, b, live) - v_open
+                na = together - sep
+                tested = True
+            else:
+                # Naming the real reason matters: "no context was supplied" on
+                # a call that DID supply one sends the reader looking for a
+                # missing argument instead of at the folded baseline.
+                why_untested = (
+                    "the screen could not evaluate port(s) "
+                    + collapse_ports([p + 1 for p in ports
+                                      if p not in context.element_of_port])
+                    + " of it")
+        nm = tuple(names[p] if 0 <= p < len(names) else "" for p in ports)
+        plist = collapse_ports([p + 1 for p in ports])
+        if tested:
+            text = (
+                f"ports {plist} share the name family '{pre}'; tested TOGETHER "
+                f"they are {_fmt_q(together, spec.unit)}, tested SEPARATELY "
+                f"they sum to {_fmt_q(sep, spec.unit)}"
+                + (" -- if they are one structure, group them."
+                   if abs(na) > thr else
+                   f" -- they differ by {_fmt_q(na, spec.unit)}, under the "
+                   f"{_fmt_q(complex(thr), spec.unit)} threshold, so grouping "
+                   "them would not change the conclusion.")
+                + " The numbers are computed; the grouping is a suggestion "
+                  "from the port NAMES and nothing here assumed it.")
+        else:
+            text = (
+                f"ports {plist} share the name family '{pre}'. This grouping "
+                f"was NOT tested ({why_untested}), so there is no joint number "
+                "beside the separate one; it is a suggestion from the port "
+                "NAMES only.")
+        out.append(FamilySuggestion(
+            prefix=pre, ports=tuple(ports), names=nm,
+            separate=sep, together=together, non_additivity=na,
+            flagged=bool(tested and math.isfinite(abs(na)) and abs(na) > thr),
+            threshold=thr, tested=tested, text=text))
+    out.sort(key=lambda fs: (0 if math.isfinite(abs(fs.non_additivity)) else 1,
+                             -abs(fs.non_additivity)
+                             if math.isfinite(abs(fs.non_additivity)) else 0.0,
+                             fs.prefix))
+    return out
+
+
+@dataclass
+class ColdStart:
+    """All four steps plus the suggestions, off ONE context."""
+    bracket: Bracket
+    screen: list[PortScreenRow]
+    pairs: list[PairEffect]
+    mirror: list[SensitivityResult]
+    curve: CumulativeCurve
+    families: list[FamilySuggestion]
+    negative_result: str
+    blind_spot: str
+    notes: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+def cold_start_report(Y: np.ndarray, freqs: np.ndarray,
+                      terminations: TerminationSet,
+                      victim: int | str, aggressor: int | str,
+                      freq_hz: float, quantity: str = "M",
+                      top_k: int = COLD_START_TOP_K,
+                      max_k: int = COLD_START_MAX_K,
+                      candidates: Sequence[int] | None = None,
+                      port_names: Sequence[str] | None = None,
+                      *, context: ColdStartContext | None = None
+                      ) -> ColdStart:
+    """
+    All four steps and the name-family suggestions, off ONE O(N^3) context.
+
+    This is what a CLI or a GUI should call: building a context per step costs
+    350.6 ms each at 153 ports (measured) and buys nothing.
+    """
+    csc = _cs_context(Y, freqs, terminations, freq_hz, context,
+                      candidates, port_names)
+    br = cold_start_bracket(Y, freqs, terminations, victim, aggressor,
+                            freq_hz, quantity, context=csc)
+    rows = cold_start_screen(Y, freqs, terminations, victim, aggressor,
+                             freq_hz, quantity, context=csc)
+    pairs = cold_start_pairs(Y, freqs, terminations, victim, aggressor,
+                             freq_hz, top_k, quantity, context=csc,
+                             screen=rows)
+    mirror = cold_start_leave_one_out(Y, freqs, terminations, victim,
+                                      aggressor, freq_hz, quantity,
+                                      context=csc)
+    curve = cold_start_cumulative(Y, freqs, terminations, victim, aggressor,
+                                  freq_hz, max_k, quantity, context=csc)
+    fams = name_family_suggestions(csc.port_names, rows, context=csc,
+                                   victim=victim, aggressor=aggressor,
+                                   quantity=quantity)
+    return ColdStart(
+        bracket=br, screen=rows, pairs=pairs, mirror=mirror, curve=curve,
+        families=fams,
+        negative_result=cold_start_negative_result(rows, br.unit),
+        blind_spot=COLD_START_BLIND_SPOT_TEXT,
+        notes=list(csc.notes), warnings=list(csc.warnings))
 
 
 # ---------------------------------------------------------------------------
@@ -2839,6 +4069,144 @@ def format_decomposition(dec: Decomposition) -> list[str]:
         out.append("  note: " + n)
     for w in dec.warnings:
         out.append("  WARN: " + w)
+    out.append("  " + SIGN_CONVENTION_TEXT)
+    return out
+
+
+def format_cold_start(cs: ColdStart) -> list[str]:
+    """
+    The cold-start screen as plain lines, so the CLI, a GUI pane and any export
+    print the same thing -- and all carry the bracket caveat and the blind
+    spot, which are on the page and not in a footnote.
+    """
+    br = cs.bracket
+    u = br.unit
+    out: list[str] = []
+    out.append(f"Cold-start port screen: {br.quantity} "
+               f"({br.victim} <- {br.aggressor}) at {format_freq(br.freq_hz)}")
+    out.append(f"  {br.n_candidates} candidate port(s), "
+               f"{br.n_screenable} of them screenable.")
+    out.append("  Every number below is measured from: " + br.baseline_note)
+    out.append("")
+
+    # --- step 0
+    out.append("STEP 0  the bracket -- is any of this worth your time?")
+    # The low end's LABEL changes with the baseline, for the same reason
+    # format_decomposition re-labels `total_reference` under a what-if: the
+    # number does not mean the same thing, and printing it under a heading that
+    # claims all-open is a false claim about a different network.
+    lo_label = ("every non-probe port OPEN     " if not br.baseline_grounded
+                else "all open EXCEPT "
+                     + collapse_ports([p + 1 for p in br.baseline_grounded]))
+    out.append(f"  {lo_label:<30}: {_fmt_q(br.value_open, u)}")
+    out.append(f"  {'every non-probe port GROUNDED':<30}: "
+               f"{_fmt_q(br.value_grounded, u)}")
+    out.append(f"  {'the whole question is worth':<30}: {br.span_db:+.2f} dB")
+    if math.isfinite(br.reconciliation_rel):
+        out.append(f"  (the grounded end agrees with compute_z_matrix to "
+                   f"{br.reconciliation_rel:.3g} relative)")
+    # `Bracket.notes` deliberately carries the shared context notes too, so a
+    # caller using cold_start_bracket on its own gets the whole story; here the
+    # shared half is printed once at the bottom, so only the bracket's own
+    # notes belong under step 0.  Both lists are built from the SAME
+    # ColdStartContext.notes, so the membership test compares strings that came
+    # from one place and cannot drift apart in whitespace.
+    for n in br.notes:
+        if n not in cs.notes:
+            out.append("  note: " + n)
+    out.append("  " + br.caveat)
+    out.append("")
+
+    # --- step 1
+    out.append("STEP 1  every candidate port, ranked by the exact effect of "
+               "grounding it")
+    out.append("  |Z_ap| and |Z_pb| are SEPARATE columns on purpose: a port "
+               "has to talk to")
+    out.append("  BOTH sides to be a path, and the port with the largest "
+               "|Z_ap| in a file can")
+    out.append("  have a negligible effect (measured: 34.777 Ohm to the "
+               "victim, -0.378 pH).")
+    head = (f"  {'port':<22} {'|Z_ap|/Ohm':>11} {'|Z_pb|/Ohm':>11} "
+            f"{'delta':>16} {'dB':>8}  declared")
+    out.append(head)
+    for r in cs.screen[:COLD_START_SHOW]:
+        if not r.defined:
+            out.append(f"  {r.label:<22} {'--':>11} {'--':>11} "
+                       f"{'undefined':>16} {'--':>8}  {r.declared}")
+            out.append(f"      ^ {r.note}")
+            continue
+        db = f"{r.delta_db:+.2f}" if math.isfinite(r.delta_db) else "--"
+        out.append(f"  {r.label:<22} {abs(r.z_ap):11.4g} {abs(r.z_pb):11.4g} "
+                   f"{_fmt_q(r.delta, u):>16} {db:>8}  {r.declared}")
+    if cs.negative_result:
+        out.append("  " + cs.negative_result)
+    out.append("")
+
+    # --- step 2
+    # "from the baseline above", not "from all-open": on a folded baseline the
+    # latter is false, and step 0 has just said what the baseline is.
+    out.append("STEP 2  pairs, grounded together, from the baseline above "
+               "(and the mirror: opened one at a time from all-grounded)")
+    flagged = [p for p in cs.pairs if p.flagged]
+    if cs.pairs:
+        out.append(f"  {len(cs.pairs)} pair(s) scanned; non-additivity "
+                   f"threshold {_fmt_q(complex(cs.pairs[0].threshold), u)}")
+    if flagged:
+        out.append(f"  {'pair':<16} {'single i':>14} {'single j':>14} "
+                   f"{'together':>14} {'non-add':>14}")
+        for p in flagged:
+            out.append(f"  {p.label:<16} {_fmt_q(p.delta_i, u):>14} "
+                       f"{_fmt_q(p.delta_j, u):>14} "
+                       f"{_fmt_q(p.delta_pair, u):>14} "
+                       f"{_fmt_q(p.non_additivity, u):>14}"
+                       + ("   SIGN FLIP" if p.sign_flip else ""))
+            out.append(f"      together they are {p.ratio:.1f}x the larger "
+                       "single-port effect"
+                       + (", and the other way round" if p.sign_flip else ""))
+    elif cs.pairs:
+        out.append("  No pair exceeds the threshold: within the ports "
+                   "scanned, grounding two together does what grounding them "
+                   "one at a time predicts.")
+    else:
+        out.append("  No pair could be scanned (fewer than two screenable "
+                   "ports).")
+    mirror = sorted(cs.mirror, key=lambda s: -s.abs_delta)[:COLD_START_SHOW]
+    if mirror:
+        out.append("  mirror (from ALL-GROUNDED, opening one):")
+        for s in mirror:
+            out.append(f"      {s.label:<22} {_fmt_q(s.delta, u):>16}")
+    out.append("")
+
+    # --- step 3
+    cv = cs.curve
+    out.append("STEP 3  the greedy cumulative curve -- how many ports "
+               "actually matter")
+    if cv.k:
+        out.append(f"  {'k':>3}  {'port grounded':<22} {'value':>16} "
+                   f"{'delta':>16} {'non-add':>16}")
+        labels = {r.port: r.label for r in cs.screen}
+        for i, k in enumerate(cv.k):
+            p = cv.order[i]
+            out.append(f"  {k:>3}  {labels.get(p, 'port ' + str(p + 1)):<22} "
+                       f"{_fmt_q(cv.values[i], u):>16} "
+                       f"{_fmt_q(cv.deltas[i], u):>16} "
+                       f"{_fmt_q(cv.non_additivity[i], u):>16}")
+    for n in cv.notes:
+        out.append("  note: " + n)
+    out.append("")
+
+    # --- suggestions, which change nothing
+    if cs.families:
+        out.append("NAME-FAMILY SUGGESTIONS (a proposal, never an assumption)")
+        for fs in cs.families:
+            out.append("  " + ("* " if fs.flagged else "- ") + fs.text)
+        out.append("")
+
+    for n in cs.notes:
+        out.append("  note: " + n)
+    for w in cs.warnings:
+        out.append("  WARN: " + w)
+    out.append("  " + cs.blind_spot)
     out.append("  " + SIGN_CONVENTION_TEXT)
     return out
 
