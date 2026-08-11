@@ -458,9 +458,10 @@ in all four cases on purpose: a greyed entry cannot say why.
 | Banner | provenance — `from run #7 @ 5.600 GHz`. It turns into a warning the moment you edit the spec in the main window. |
 | Sign strip | the convention, once, above any signed number: a negative term **opposes** the total and the terms sum to it exactly; shares are of the **signed** total, so they exceed 100 % and go negative wherever terms cancel. |
 | Reconciliation | the cross-check against `compute_z_matrix`, in the **header** and not the footer because it gates trust in everything under it: `reconciled  rel diff 3.1e-13 (floor 4.3e-10)`. If it fails, the per-element **split** is withheld and the **total** is still shown. |
-| Across-frequency badge | one line saying whether the ranking holds elsewhere in the band, with an expander that opens it in place. |
+| Across-frequency badge | one line whose **off** state carries the action: a ranking read off one frequency is a statement about that frequency, so the badge says what checking would **cost on this file** and does it in one click. Checked, it names what **moved** — which elements changed rank, at which frequency — or says the ranking is **stable** across the band, which is a result and not an absence. It is a one-shot: the verdict is the answer, so the button greys out until the next **[Recompute]**. |
+| Ground model | `diag` (as declared) / `diag:SPEC` (each shunt lead on its own **independent** lead) / `shared:SPEC` (every lead keeps what it declares and they **also** share `SPEC` back to the reference) — the same spelling the CLI takes, with one line beside it saying why the default is not obviously right. It takes effect on **[Recompute]** like every other input. If the spec declares no shunt lead to model at all (every ground written as `short_to`, say) the model **cannot** be applied — the strip reads `NOT APPLIED` and the line beside the field says why, rather than leaving an unchanged number to be read as "the shared return is worth 0 dB". See [the ground field](#the-ground-field-independent-leads-understate-the-return-inductance). |
 | Table | `(•) Contributions  ( ) Sensitivity` — one pane, two views. Rows are coloured by element **kind**, in the Ports & Roles palette; never by sign, because red means *warning* everywhere else in this tool and a red negative would make a correct answer look like a fault. Click a row to drill in. |
-| Detail pane | for the selected row: its element current, its transimpedance to the victim, what it would be worth as each candidate you list (`open`, `ideal`, or `R=`/`L=`/`C=`), and the **closed-form** sweep of that one element plotted beside it with both asymptotes and the current spec marked. |
+| Detail pane | for the selected row: its element current, its transimpedance to the victim, what it would be worth as each candidate you list (`open`, `ideal`, or `R=`/`L=`/`C=`), and the **closed-form** sweep of that one element plotted beside it with both asymptotes, the current spec marked and any **pole labelled** ([how to read it](#reading-the-sweep-plot-and-its-pole)). It is prose and it **wraps**; it never scrolls sideways, and the split above it opens sized to the table's own row count. Drag the sash and it stays where you put it. |
 | Footer | Copy report / Export CSV… / Close. Both carry the full provenance: run number, the frequency and whether it was snapped to the file's grid, the whole sign convention, the ground model, and the termination spec verbatim. |
 
 **Why there is a [Recompute] button and no auto-refresh.** A trace's numbers are written by
@@ -471,13 +472,66 @@ typed, and — by the reconciliation rule above — would blank its own table. I
 itself while you type. So an edit moves the banner and nothing else, which is what makes the
 button honest.
 
-The window does not offer the shared-return ground model: that is a dense element-impedance
-matrix, it cannot be written as a `TerminationSet`, and it lives on the CLI
-(`--attribute-ground-model shared:…`). Every export names the model its numbers came out of
-rather than letting you assume one.
+**The ground model is on the window**, in the CLI's own spelling so the two cannot drift, and
+changing it goes through `[Recompute]` like every other input. One thing about it is unlike
+everything else here: the dense (`shared`) model is a network `compute_z_matrix` **cannot be
+handed** — a shared return is a mutual impedance *between* ground leads and the connection
+table has no node to hang one on — so there is no second opinion on its total. What is still
+checked is the **arithmetic**: the reconciliation line is always of the spec **as declared**
+through the same machinery, so choosing a model does not quietly cost you the cross-check.
+The sign strip and both exports name the model the numbers came out of rather than letting you
+assume one.
 
-**Save Config remembers which pair you were reading** — victim, aggressor, quantity, frequency
-and view — but does not reopen the window on Load. A config carries the setup and never the
+#### Reading the sweep plot, and its pole
+
+Clicking a row sweeps **that** element's series inductance from ideal (`L = 0`) to open
+(`L = ∞`), in closed form. Two numbers on it are the ones you came for — `M(0)`, the
+termination made ideal, and `M(∞)`, the termination not there at all — and the plot's **y
+limits are set from them** plus a margin, so the two readings you are comparing are always on
+screen at a readable size.
+
+Between them the curve may have **one pole**, and on a package it usually does. A pole is not a
+numerical artefact and it is not hidden: it is drawn as a **labelled vertical line** at the `L`
+where it sits, with the element's value there, because it is a physical event — the `L` you are
+adding **resonates with the reactance the network itself presents at that node**. Measured on
+`diff_pair_4port.s4p` at 5 GHz with grounds on 3 and 4, sweeping `ground port 3`:
+
+```
+M(0)   ideal                1.01 nH        <- the two numbers you came for
+M(inf) open                503.7 pH
+pole at L = 505.25 nH   <- the network looks like 2.005 fF at that ball, and 505.25 nH
+                           series-resonates with 2.005 fF at 5.0005 GHz — the frequency
+                           being read, to five digits
+over all L >= 0        [-10.28 mH, +10.28 mH]     <- the pole, i.e. arithmetic
+away from the pole     [-2.5 pH,   1.52 nH]       <- the answer
+```
+
+So the **headline interval is the pole-free one** and the pole is stated separately, in words.
+`M lies in [−2.5 pH, 1.52 nH] over any ground inductance more than a factor of two away from
+the 505 nH resonance` is a sentence a budget can be written against; `M lies in
+[−10.3 mH, +10.3 mH]` is the tool reading its own arithmetic back to you — same curve, same
+numbers, ten million times the endpoint bracket, and reached only within femtohenries of a
+505 nH inductor nobody is putting on a ground ball. Note the pole-free range is **still wider
+than the two endpoints**, and stays wider well away from the resonance (at a factor-of-**ten**
+guard band it reads `[447.5 pH, 1.066 nH]`, outside `[503.7 pH, 1.01 nH]` at both ends) — a
+series `L` resonates with the structure's shunt `C`, so `[ideal, open]` is not a bound.
+
+The y axis is **symlog** (linear in a band around zero, logarithmic outside it) because `M`
+crosses zero here and a log axis cannot draw that. The linear band's width comes from the
+**data**, not from a constant: the main plot panel's `linthresh = 1e-6` is right for R/L/C and
+useless here — 1 µH is a thousand times the whole curve above, so every point would land inside
+the linear band and symlog would degenerate into the linear axis it exists to replace. Both
+axes are labelled in **engineering units** (`500 pH`, not `5.0` under a `1e-10` in the corner),
+the same `format_si` the table, the caption and the main plot's cursor readout use. With no
+pole in range, none of this appears and the plot is what it always was.
+
+A sweep that does not move at all — every residue zero, so `M(0) == M(∞)` — gets an axis sized
+to **its own value**, not to a fixed span: it happens on real files (`decap_4port.s4p` reads a
+flat −506.755 nH), and an axis a hundred thousand times the number on it is the same
+uninformative picture from the other direction.
+
+**Save Config remembers which pair you were reading** — victim, aggressor, quantity, frequency,
+the view and the Candidates field — but does not reopen the window on Load. A config carries the setup and never the
 results, so a just-loaded trace has no numbers and the window could only open on its own
 refusal; the Results pane names each entry it did not reopen. Calculate, then
 **Analyze → Attribution…**, and you land back where you were.
@@ -731,16 +785,22 @@ nothing.
 ### The ground field: independent leads understate the return inductance
 
 This is the single most expensive modelling choice in the whole flow, and it is easy to make
-by accident. A GND field written as *N* independent `lumped_to_gnd` inductors says the balls
-have *N* independent return paths. Real package ground balls **share a return plane**. *N*
-independent `z` in parallel is `z/N`; *N* balls sharing one `z` is `z` — so the independent
-spelling understates the common-mode return inductance by roughly `(1 + (N−1)·k_ret)`.
+by accident, because the obvious spelling is the wrong one. A GND field written as *N*
+independent `lumped_to_gnd` inductors says the balls have *N* independent return paths. Real
+package ground balls **share a return plane**. *N* independent `z` in parallel is `z/N`; *N*
+balls sharing one `z` is `z` — so the independent spelling understates the common-mode return
+inductance by roughly `(1 + (N−1)·k_ret)`, where `k_ret` is how strongly the return paths
+couple to each other.
+
+That factor is why "independent" is not a conservative default: at 20 balls with a realistic
+`k_ret = 0.2` it is `4.8x`, i.e. **13.6 dB** of `M`, and it **grows with the ball count** — the
+bigger and better your ground field, the more the independent spelling flatters it.
 
 Measured three times, on three different networks:
 
 | Network | Independent vs shared |
 |---|---|
-| Synthetic 4-ball cluster (review) | **9.60 dB** |
+| Synthetic 4-ball cluster — four leads at 1 nH each independently, against the same four tied through **one** shared 1 nH | **9.60 dB** |
 | Independently constructed 6-node 4-ball cluster, 5 GHz (`docs/design_port_attribution.md` §5.2) | **8.09 dB** |
 | `tests/fixtures/diff_pair_4port.s4p`, `agg = 1`, `vic = 2`, grounds 3 and 4, 5 GHz | **6.03 dB** |
 
@@ -748,8 +808,12 @@ All three are **larger than the 6.07 dB discrepancy this feature exists to settl
 effect is monotone in the return coupling with no threshold behaviour, so there is no safe
 default and the tool refuses to pick one for you.
 
-On the CLI it is one flag. Run the same command twice — the report gets a section 3b for
-whichever model you asked for, measured against the spec as declared:
+**In the Attribution window** it is the `Ground model` field, in the same `diag` / `diag:SPEC`
+/ `shared:SPEC` spelling as the flag below so the two cannot drift; it takes effect on
+`[Recompute]`, and the sign strip states which model is in force. On the CLI it is one flag.
+Either way, run it **both** ways — `diag` and `shared` are not a refinement of each other, they
+are different answers. The report gets a section 3b for whichever model you asked for, measured
+against the spec as declared:
 
 ```
 --attribute-ground-model diag:L=1n        --attribute-ground-model shared:L=1n

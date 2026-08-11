@@ -63,9 +63,24 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 FIXTURE = "coupled_4port_diff.s4p"
 
 
+#: The interpreter's `tk scaling` BEFORE anything in this file touches it.
+#:
+#: `tk scaling` is PROCESS-WIDE on Windows, not per-interpreter -- measured:
+#: `app2.tk.call("tk", "scaling", 2.0)` in `_scaled()` takes the FIRST App's
+#: reading from 1.333 to 2.001 as well, and Tk then derives a new default font
+#: size from it, so a third interpreter's `TkDefaultFont` starts at 6 pt rather
+#: than 9.  Two guards were sitting on that: the 100% minimum read (720, 430)
+#: instead of (720, 420) because a 9 pt Consolas linespace went 14 -> 22 px on
+#: a window nobody had rescaled, and the sign strip was measured against a
+#: half-rescaled font.  `_scaled()` restores this in a cleanup.
+TK_SCALING = 0.0
+
+
 def _tk_ok() -> bool:
+    global TK_SCALING
     try:
         r = tk.Tk()
+        TK_SCALING = float(r.tk.call("tk", "scaling"))
         r.destroy()
         return True
     except Exception:
@@ -913,6 +928,538 @@ class TestSweepNoteText(unittest.TestCase):
 
 
 # ============================================================================
+# PURE: the sweep's pole, and the axis it forces  (item 1)
+# ============================================================================
+
+def fake_sweep(lam, residue, c0, *, scale=1.0, n=161,
+               t_lo=1e-11, t_hi=1e-3, notes=()) -> at.Sweep:
+    """
+    A one-pole Mobius sweep built from its PARTIAL FRACTIONS by hand.
+
+    `Z(t) = c0 - residue / (lam + t)`, which is exactly the canonical form
+    `sweep_mobius` returns, so the pole is at `t = -lam` and is known to the
+    test independently of any sample.  Built as the REAL `at.Sweep`, not a
+    duck: a field renamed in `pkg_rlc_attrib` must break this loudly rather
+    than leave the picture reading a `getattr` default.
+
+    The sign of `lam` is the whole experiment.  `lam < 0` puts the pole on the
+    swept half-line; `lam > 0` puts it at a negative `t`, where nothing sweeps
+    through it -- the same map, the same endpoints, and no pole in range.
+    """
+    lam = complex(lam)
+    residue = complex(residue)
+    c0 = complex(c0)
+    ts = np.concatenate([[0.0], np.logspace(math.log10(t_lo),
+                                            math.log10(t_hi), n - 1)])
+    vals = np.array([complex(scale * (c0 - residue / (lam + t)).real, 0.0)
+                     for t in ts])
+    v_ideal = complex(scale * (c0 - residue / lam).real, 0.0)
+    v_open = complex(scale * c0.real, 0.0)
+    b_lo = min(v_ideal.real, v_open.real)
+    b_hi = max(v_ideal.real, v_open.real)
+    # `interval` is the ANALYTIC extremum, which for a near-pole is the peak at
+    # `t = -Re(lam)` and is what `sweep_mobius` reports there -- a log sample
+    # grid lands nowhere near it.  Adding it by hand is what makes this fixture
+    # the shape of the measured one: on coupled_4port_diff.s4p the analytic
+    # interval reads (-394 uH, +375 uH) while the samples peak at 4.2 nH.
+    peak = complex(scale * (c0 - residue / (lam - lam.real)).real, 0.0)
+    finite = [float(v) for v in np.real(vals) if math.isfinite(float(v))]
+    if math.isfinite(peak.real):
+        finite.append(peak.real)
+    interval = (float(min(finite)), float(max(finite)))
+    return at.Sweep(
+        elements=(0,), quantity="M", unit="H", param_name="series inductance",
+        param_unit="H", z_unit=1j, num=(), den=(), alpha=0j, beta=0j,
+        gamma=0j, delta=0j, value_ideal=v_ideal, value_open=v_open,
+        interval=interval, arg_min=0.0, arg_max=0.0, bracket=(b_lo, b_hi),
+        leaves_bracket=bool(interval[0] < b_lo or interval[1] > b_hi),
+        samples=(ts, vals), method="closed-form", scale=scale, part="re",
+        notes=tuple(notes), c0=c0, lam=(lam,), residues=(residue,))
+
+
+#: Ideal +821 pH, open +408 pH, pole at exactly 100 nH -- the shape of the
+#: shipped fixture (measured there: endpoints +821 pH / +408 pH, pole 96.9 nH
+#: with `lam = -9.688e-08 - 4.73e-12j`) with round numbers so every assertion
+#: can be exact.  The imaginary part is what makes it a NEAR-pole with a finite
+#: peak rather than a true singularity, exactly as the real one is; the pole
+#: location is its real part and is exact whatever the sampling does.
+POLE_LAM = -1e-7 - 1e-11j
+#: The residue is COMPLEX, like the real one (`3.11e-10 + 1.28e-06j`), and
+#: both parts do a job: the real part sets the endpoint separation
+#: (`c0 - Re(res/lam)` = 408 pH + 413 pH = 821 pH) and the imaginary part sets
+#: the height of the near-pole peak (`Re(res / (i Im lam))` = 1 uH).  With a
+#: purely real residue the peak lands entirely in Im(Z) and the REAL part --
+#: which is what `part="re"` plots -- has no spike to exclude at all.
+POLE_RES = 4.13e-17 + 1e-17j
+POLE_C0 = 4.08e-10
+
+
+class TestSweepPicture(unittest.TestCase):
+    """
+    Item 1: what the sweep's y axis is scaled to, and where the pole is.
+
+    THE ASSERTION THAT MATTERS is that the limits bracket M(0) and M(inf) in
+    BOTH cases -- with a pole and without.  Those two numbers are what the pane
+    is opened for ("ideal ground" and "open"), and before this the pole's
+    excursion set the scale and flattened them onto one line: measured on
+    coupled_4port_diff.s4p, an axis reading `1e-10` over a single vertical
+    spike, with a headline interval of (-394 uH, +375 uH) beside endpoints of
+    +203 pH and +821 pH.
+    """
+
+    def with_pole(self):
+        return fake_sweep(POLE_LAM, POLE_RES, POLE_C0)
+
+    def without_pole(self):
+        # Same endpoints, mirrored pole: lam > 0 puts it at t = -100 nH.
+        return fake_sweep(-POLE_LAM, -POLE_RES, POLE_C0)
+
+    def test_the_endpoints_really_are_the_same_in_both_cases(self):
+        """Precondition, asserted rather than assumed: if the two fixtures did
+        not share their endpoints, "the limits bracket them in both" would be
+        two different claims."""
+        a, b = self.with_pole(), self.without_pole()
+        for sw in (a, b):
+            self.assertAlmostEqual(sw.value_ideal.real, 8.21e-10, places=13)
+            self.assertAlmostEqual(sw.value_open.real, 4.08e-10, places=13)
+
+    def test_the_Y_LIMITS_BRACKET_BOTH_ENDPOINTS_with_a_pole(self):
+        """Mutation: scale the axis from the full sample range (or drop
+        `set_ylim` and let matplotlib autoscale) -- measured on this fixture
+        the samples reach 4.7 uH, i.e. 5700x the ideal endpoint, and both
+        endpoints land on the same pixel row."""
+        pic = ag.sweep_picture(self.with_pole())
+        lo, hi = pic.ylim
+        self.assertLessEqual(lo, 4.08e-10)
+        self.assertGreaterEqual(hi, 8.21e-10)
+        # And it is the POLE-FREE range, not the excursion.  The threshold is
+        # MEASURED, not round: the pole-free high is +860 pH, the sampled peak
+        # on this grid is +7.75 nH and the analytic one is +1 uH, so 2 nH
+        # separates them and is still 2.4x the ideal endpoint -- i.e. it is not
+        # a tautology in either direction.  At 1e-8 the "scale from every
+        # sample" mutation passed.
+        self.assertLess(hi, 2e-9)
+
+    def test_the_Y_LIMITS_BRACKET_BOTH_ENDPOINTS_without_a_pole(self):
+        """The same assertion, and it is the one that says the fix did not
+        simply clip everything: with no pole nothing is suppressed and the
+        limits still have to contain both endpoints."""
+        pic = ag.sweep_picture(self.without_pole())
+        lo, hi = pic.ylim
+        self.assertLessEqual(lo, 4.08e-10)
+        self.assertGreaterEqual(hi, 8.21e-10)
+
+    def flat(self):
+        """A sweep that does not move: every residue zero, so M(0) == M(inf).
+
+        This is not a contrived shape.  MEASURED on the SHIPPED fixture
+        decap_4port.s4p (ordinary mode 6, probes 1/2, `gnd_ports="3,4"`, 5 GHz,
+        either ground row): `residues == 0` exactly and
+        ideal = open = -506.755 nH.
+        """
+        # `lam` verbatim from that run -- its tiny imaginary part is what
+        # `fake_sweep` needs to evaluate the analytic peak at all.
+        return fake_sweep(complex(-1.0119972272183943e-09, 6.1651954842864e-20),
+                          0.0, complex(-5.06754728930068e-07, 0.0))
+
+    def test_a_FLAT_sweep_gets_an_axis_the_size_of_ITS_OWN_VALUE(self):
+        """
+        The bracket-the-endpoints guard passes this case with NO fix at all,
+        which is why it needed one of its own.
+
+        MEASURED on decap_4port.s4p before: `ylim` was
+        (-120.00005 mH, +119.99995 mH) around a -506.755 nH constant -- the
+        axis was **473 602x** the value it was drawn to show, the curve and
+        both asymptote lines landed on ONE pixel row (endpoint separation
+        0.0 px of a 223.5 px axes), and because `linear_ticks` came out False
+        the symlog decade locator printed 17 labelled decades from -10^0 to
+        +10^0.  The margin was `SWEEP_Y_PAD * max(abs(hi), abs(lo), 1.0)` and
+        that bare `1.0` is one HENRY in an expression whose other terms are
+        picohenries.
+
+        `assertLessEqual(lo, v)` / `assertGreaterEqual(hi, v)` are both TRUE of
+        +-0.12 H, so they are asserted here as well -- to show that they are
+        not the guard.  The guard is the ratio.
+
+        Mutation: restore the `1.0` and the ratio goes to 4.7e5.
+        """
+        sw = self.flat()
+        self.assertEqual(sw.value_ideal, sw.value_open,
+                         "precondition: this fixture is not flat")
+        v = abs(sw.value_ideal.real)
+        pic = ag.sweep_picture(sw)
+        lo, hi = pic.ylim
+        # The old guard, which passes either way.
+        self.assertLessEqual(lo, sw.value_ideal.real)
+        self.assertGreaterEqual(hi, sw.value_ideal.real)
+        # The one that does not.  1.5x is not a tautology in either direction:
+        # the fix lands at 1.12x and the defect at 473 602x.
+        self.assertLessEqual(max(abs(lo), abs(hi)), 1.5 * v,
+                             f"the axis {pic.ylim} is "
+                             f"{max(abs(lo), abs(hi)) / v:.0f}x the value it "
+                             f"is drawn to show")
+        # And a sub-decade range gets a LINEAR major locator, or matplotlib's
+        # symlog locator puts no labelled tick inside it at all.
+        self.assertTrue(pic.linear_ticks)
+
+    def test_an_ALL_ZERO_sweep_asks_for_no_limits_rather_than_inventing_some(
+            self):
+        """
+        `pad` is a fraction of the value, so a value of exactly zero gives a
+        zero pad -- and `_scale_sweep_axis`'s `yhi > ylo` guard then declines
+        to set any limit, leaving matplotlib's own autoscale.  That is the
+        honest answer for a curve that is identically zero, and it is the
+        reason the flat branch does not need a floor of its own.
+        """
+        pic = ag.sweep_picture(fake_sweep(
+            complex(-1.0119972272183943e-09, 6.1651954842864e-20), 0.0, 0j))
+        self.assertEqual(pic.ylim[0], pic.ylim[1])
+        self.assertEqual(pic.linthresh, 0.0)
+
+    def test_a_pole_in_range_is_found_and_a_pole_out_of_range_is_not(self):
+        self.assertEqual(len(ag.sweep_picture(self.with_pole()).drawn), 1)
+        self.assertEqual(ag.sweep_picture(self.without_pole()).drawn, ())
+
+    def test_the_pole_is_CLOSED_FORM_and_not_the_nearest_sample(self):
+        """
+        `t = -lam`, straight off the partial fractions.
+
+        The grid is deliberately coarse (21 points over 8 decades, a factor of
+        2.5 apart) so that no sample sits at 100 nH: a scan would report
+        79.4 nH or 199 nH.  Mutation: take the pole from
+        `ts[argmax(abs(vals))]`.
+        """
+        sw = fake_sweep(POLE_LAM, POLE_RES, POLE_C0, n=21)
+        pic = ag.sweep_picture(sw)
+        self.assertEqual(len(pic.drawn), 1)
+        self.assertEqual(pic.drawn[0].t, 1e-7)
+        ts_arr = sw.samples[0]
+        self.assertNotIn(1e-7, list(ts_arr))
+
+    def test_the_pole_free_interval_is_the_headline_and_the_spike_is_not(self):
+        """Mutation: report `sw.interval` (the analytic extremum over the whole
+        half-line).  Measured on this fixture that is (-33.6 uH, +34.4 uH)
+        against a pole-free (+369 pH, +860 pH)."""
+        sw = self.with_pole()
+        pic = ag.sweep_picture(sw)
+        self.assertLess(pic.interval[1], 2e-9)
+        self.assertGreater(max(abs(sw.interval[0]), abs(sw.interval[1])),
+                           1e-6, "the fixture has no spike to exclude")
+        self.assertGreater(pic.n_offscale, 0)
+
+    def test_without_a_pole_nothing_is_suppressed(self):
+        pic = ag.sweep_picture(self.without_pole())
+        self.assertEqual(pic.n_offscale, 0)
+
+    def test_linthresh_comes_from_the_data_and_never_from_a_constant(self):
+        """It is the LARGER endpoint magnitude, so the endpoint band is
+        rendered linearly and a decade-scale excursion is not.
+
+        Mutation: a fixed 1e-6 (or any constant) -- these are henries, and the
+        same constant is three decades wrong on a picohenry file and three
+        decades wrong the other way on a microhenry one.
+        """
+        pic = ag.sweep_picture(self.with_pole())
+        self.assertAlmostEqual(pic.linthresh, 8.21e-10, places=13)
+        # 1000x the endpoints: the same rule scales with the data.
+        big = fake_sweep(POLE_LAM, POLE_RES * 1e3, POLE_C0 * 1e3)
+        self.assertAlmostEqual(ag.sweep_picture(big).linthresh, 8.21e-7,
+                               places=10)
+
+    def test_a_sub_decade_range_asks_for_LINEAR_ticks(self):
+        """matplotlib's symlog locator ticks at DECADES and produced no
+        labelled tick at all inside (310 pH, 919 pH) -- measured, `[]` with the
+        default locator and `['500 pH']` with subs=[1,2,5].  Inside `linthresh`
+        the transform is the identity, so a linear locator is exact there."""
+        self.assertTrue(ag.sweep_picture(self.with_pole()).linear_ticks)
+
+    def test_a_decade_scale_excursion_keeps_the_LOG_ticks(self):
+        """The other half of the same rule, or `linear_ticks` would be a
+        constant dressed as a decision."""
+        sw = fake_sweep(POLE_LAM, POLE_RES, POLE_C0)
+        wide = replace_sweep_interval(sw)
+        self.assertFalse(ag.sweep_picture(wide).linear_ticks)
+
+    def test_poles_sharing_one_excursion_are_ONE_marker(self):
+        """Measured on the shipped fixture sweeping both grounds as one group:
+        two poles at 96.5 nH and 97.0 nH, 0.5% apart, drew two vertical lines
+        one pixel apart with two rotated labels printed over each other.
+
+        Mutation: draw `pic.drawn` instead of `pic.clusters`.
+        """
+        sw = fake_sweep(POLE_LAM, POLE_RES, POLE_C0)
+        two = at.Sweep(**{**sw.__dict__,
+                          "lam": (complex(POLE_LAM), complex(POLE_LAM * 1.005)),
+                          "residues": (complex(POLE_RES), complex(0.0))})
+        pic = ag.sweep_picture(two)
+        self.assertEqual(len(pic.drawn), 2)
+        self.assertEqual(len(pic.clusters), 1)
+        label = ag.pole_label(pic.clusters[0], "H")
+        self.assertIn("2 poles", label)
+        # Both values are named, not just the first.
+        self.assertIn("100 nH", label)
+
+    def test_a_single_pole_marker_is_labelled_with_its_value(self):
+        pic = ag.sweep_picture(self.with_pole())
+        self.assertEqual(ag.pole_label(pic.clusters[0], "H"), "pole  100 nH")
+
+
+def replace_sweep_interval(sw):
+    """The same sweep with its pole-free portion stretched 300x.
+
+    Used only by `test_a_decade_scale_excursion_keeps_the_LOG_ticks`: it moves
+    ONE sample, far from the pole, so the pole-free range genuinely spans
+    decades and `linear_ticks` has something to answer no to.
+    """
+    ts_arr, vals = sw.samples
+    vals = np.array(vals, dtype=complex)
+    vals[1] = complex(300.0 * sw.value_ideal.real, 0.0)
+    return at.Sweep(**{**sw.__dict__, "samples": (ts_arr, vals)})
+
+
+class TestSweepCaptionWithAPole(unittest.TestCase):
+    def test_with_no_pole_the_caption_is_what_it_always_was(self):
+        """Item 1's own rule: if there is no pole in range, nothing changes.
+
+        Mutation: make the pole wording unconditional and every ordinary sweep
+        grows a sentence about a feature it has not got.
+        """
+        sw = fake_sweep(-POLE_LAM, -POLE_RES, POLE_C0)
+        lines = ag.sweep_caption(sw)
+        # The NUMBERS lead: this Label is 179 px at the minimum and 329 px at
+        # 1020x700, so anything past the first ~30 characters is off screen.
+        self.assertTrue(lines[0].startswith("M ∈ ["), lines[0])
+        self.assertIn("over series inductance ∈ [0, ∞)", lines[0])
+        self.assertNotIn("POLE", "\n".join(lines))
+        self.assertIn("ideal", lines[0])
+        self.assertIn("open", lines[0])
+
+    def test_with_a_pole_the_headline_is_the_POLE_FREE_interval(self):
+        lines = ag.sweep_caption(fake_sweep(POLE_LAM, POLE_RES, POLE_C0))
+        self.assertIn("AWAY FROM THE POLE", lines[0])
+        # +821 pH / +408 pH are the endpoints, and the headline interval is
+        # around them -- not the microhenry excursion.
+        self.assertNotIn("uH", lines[0])
+        self.assertIn("+821 pH", lines[0])
+
+    def test_the_THREE_NUMBERS_are_inside_the_narrowest_measured_budget(self):
+        """
+        This Label is the narrowest clipping strip in the window -- it sits
+        under the plot, in the RIGHT half of a horizontal split, so it is only
+        as wide as the plot.
+
+        MEASURED on the real widget with a row selected, the interval line
+        being 107 characters: **51 visible at 1020x700** (329 px), 93 at
+        1500x900 (569 px) and 29 at the 720x420 minimum (179 px).  With the
+        prose first the line read `M over series inductance ∈ [0, ∞), AWAY
+        FROM THE PO` and the interval, the ideal and the open -- the three
+        numbers this pane exists to report -- were ALL off screen at 1020x700,
+        with only `ideal` surviving even at 1500 px.  This is the same defect
+        as the badge's and the sign strip's, in the caption the plot is read
+        with.
+
+        52 characters is the measured 1020x700 budget.  Mutation: put the
+        prose back in front.
+        """
+        for name, sw in (("pole", fake_sweep(POLE_LAM, POLE_RES, POLE_C0)),
+                         ("no pole", fake_sweep(-POLE_LAM, -POLE_RES,
+                                                POLE_C0))):
+            head = ag.sweep_caption(sw)[0][:52]
+            with self.subTest(case=name):
+                self.assertIn("ideal", head)
+                self.assertIn("open", head)
+                self.assertTrue(head.startswith("M ∈ ["), head)
+        # And the POLE line leads with WHERE, not with prose: 56 characters is
+        # the measured budget for line 2 at the same size.
+        pole_head = ag.sweep_caption(
+            fake_sweep(POLE_LAM, POLE_RES, POLE_C0))[1][:56]
+        self.assertIn("100 nH", pole_head)
+
+    def test_the_pole_is_a_STATEMENT_OF_ITS_OWN_naming_where_it_is(self):
+        """Rule 8's mandatory "LEAVES the [ideal, open] bracket" label has to
+        survive, and the pole line is where it now lives -- with the location
+        and the whole-range interval the headline no longer carries.
+
+        Mutation: drop the pole line and the caption says the curve is bounded
+        by numbers it leaves by five orders of magnitude.
+        """
+        lines = ag.sweep_caption(fake_sweep(POLE_LAM, POLE_RES, POLE_C0))
+        joined = "\n".join(lines)
+        self.assertIn("POLE at 100 nH", joined)
+        self.assertIn("LEAVES the [ideal, open] bracket", joined)
+        self.assertIn("OFF-SCALE", joined)
+        # The arithmetic is not hidden, only demoted.
+        self.assertIn("whole half-line, pole included", joined)
+
+    def test_the_caption_and_the_axis_agree_because_they_share_one_picture(self):
+        """`sweep_caption` takes the SAME `SweepPicture` the axis was drawn
+        from.  Two computations of "where is the pole" is how a caption comes
+        to name a line that is not on the plot."""
+        sw = fake_sweep(POLE_LAM, POLE_RES, POLE_C0)
+        pic = ag.sweep_picture(sw)
+        self.assertEqual(ag.sweep_caption(sw, pic), ag.sweep_caption(sw))
+
+
+# ============================================================================
+# PURE: the across-frequency badge  (item 3)
+# ============================================================================
+
+class TestStabilityOffer(unittest.TestCase):
+    """
+    Item 3: "not checked" is too soft a default for the thing acceptance item 5
+    is about, and turning the check ON unconditionally costs a re-solve per
+    frequency.  So the OFF state carries the action.
+    """
+
+    def test_the_off_state_names_what_the_check_would_COST(self):
+        """Mutation: go back to a bare caveat and the reader is left with a
+        warning and no way to act on it."""
+        line = ag.stability_offer(5, 153)
+        self.assertIn("4 more solves", line)
+        self.assertIn("153-port", line)
+
+    def test_the_off_state_names_the_GESTURE(self):
+        self.assertIn(ag.EXPAND_COLLAPSED, ag.stability_offer())
+
+    def test_the_badge_default_IS_the_offer(self):
+        """One frequency is not a check, and the line that says so is the same
+        one that offers to run it -- not two wordings to drift apart."""
+        self.assertEqual(ag.stability_line([1e9], [{}]), ag.stability_offer())
+
+    def test_a_stable_ranking_is_a_RESULT_and_is_said_in_those_words(self):
+        line = ag.stability_line([1e8, 1e10], [{"a": 1, "b": 2},
+                                               {"a": 1, "b": 2}])
+        self.assertIn("STABLE", line)
+        self.assertIn("nothing changed places", line)
+
+    def test_a_moved_rank_says_WHAT_moved_and_AT_WHICH_FREQUENCY(self):
+        """Naming the elements was not enough: "'a', 'b' change places" leaves
+        the reader to go and find out where, which is the re-solve they just
+        paid for.
+
+        Mutation: drop the rank pair and the frequency from each entry.
+        """
+        line = ag.stability_line([1e8, 1e9, 1e10],
+                                 [{"a": 1, "b": 2}, {"a": 1, "b": 2},
+                                  {"a": 2, "b": 1}])
+        self.assertIn("'a' #1→#2 at 10 GHz", line)
+        self.assertIn("'b' #2→#1 at 10 GHz", line)
+        # And it says which frequency the table on screen belongs to.
+        self.assertIn("belongs to 100 MHz only", line)
+
+    def test_an_element_that_VANISHES_is_absent_and_not_a_rank(self):
+        """A lumped element whose admittance vanishes at one frequency is
+        dropped there, so the column has no entry for it.  Printing a number
+        would invent one."""
+        line = ag.stability_line([1e8, 1e10], [{"a": 1, "b": 2}, {"a": 1}])
+        self.assertIn("'b' #2→absent at 10 GHz", line)
+
+
+# ============================================================================
+# PURE: the ground model  (item 4)
+# ============================================================================
+
+class TestGroundModelSpelling(unittest.TestCase):
+    """
+    Item 4.  The window's field and `--attribute-ground-model` are ONE parser,
+    reached by a deferred import -- a second copy is how the two come to
+    disagree about what `shared:L=1n` means.
+    """
+
+    OMEGA = 2 * math.pi * 5e9
+
+    def test_the_default_is_the_declared_model(self):
+        kind, z, label = ag.parse_ground_model(ag.GROUND_MODEL_DEFAULT,
+                                               self.OMEGA)
+        self.assertEqual(kind, "diag")
+        self.assertIsNone(z)
+        self.assertIn("declared", label)
+
+    def test_shared_takes_the_CLI_spelling(self):
+        kind, z, label = ag.parse_ground_model("shared:L=1n", self.OMEGA)
+        self.assertEqual(kind, "shared")
+        self.assertAlmostEqual(z.imag, self.OMEGA * 1e-9, places=6)
+        self.assertEqual(label, "shared:L=1n")
+
+    def test_it_IS_the_CLI_parser_and_not_a_copy(self):
+        """Mutation: reimplement the grammar here.  Both then pass their own
+        tests and `shared:0.3n` (no `R=`/`L=`) is refused by one and accepted
+        by the other."""
+        import pkg_rlc_extractor as cli
+        for spec in ("diag", "diag:L=1n", "shared:R=0.5,L=1n"):
+            with self.subTest(spec=spec):
+                self.assertEqual(ag.parse_ground_model(spec, self.OMEGA),
+                                 cli._attr_ground_model(spec, self.OMEGA))
+
+    def test_a_bad_model_is_refused_with_the_CLI_s_own_wording(self):
+        with self.assertRaises(ValueError) as cm:
+            ag.parse_ground_model("shared:", self.OMEGA)
+        self.assertIn("needs an impedance after the colon", str(cm.exception))
+
+    def test_the_export_names_the_model_and_carries_its_measurement(self):
+        joined = "\n".join(ag.provenance_lines(
+            fake_prov(ground_model="shared:L=1n",
+                      ground_model_label="shared:L=1n")))
+        self.assertIn("Ground model: shared:L=1n", joined)
+        self.assertIn("9.60 dB", joined)
+
+    def test_the_sign_strip_states_the_model_in_force(self):
+        line = ag.sign_strip_text("shared:L=1n")
+        self.assertIn("Grounds: shared:L=1n", line)
+        self.assertTrue(line.startswith(ag.SIGN_STRIP_TEXT))
+        # The sign rule and the MODEL own the front of the line -- the strip's
+        # whole budget at 150% / 720 px is 48 characters, and a model that is
+        # not inside it is not on screen at that scaling at any supported
+        # width.  The shares rule follows; see the layout test for the trade.
+        # `Grounds:` and the START of the model, not the whole of it -- a long
+        # enough model name cannot fit any budget, and the label is in a
+        # proportional font so 48 characters is the measured worst case rather
+        # than an exact cut.
+        for word in ("opposes", "adds", "Grounds: shared"):
+            self.assertIn(word, line[:48])
+        self.assertIn("SIGNED", line)
+
+    def test_the_hint_says_why_the_default_is_not_obviously_right(self):
+        self.assertIn("understate", ag.GROUND_MODEL_HINT)
+        self.assertIn("shared:", ag.GROUND_MODEL_HINT)
+
+    def test_the_export_carries_the_parsers_NOTES_about_the_model(self):
+        """
+        `_attr_zt` returns notes and the window used to drop them on the floor
+        (`zt, _gm_notes = ground_model_zt(...)`), while the CLI prints them in
+        `header_notes`.  One of them means the model was NOT APPLIED.
+
+        MEASURED on coupled_4port_diff.s4p, probes 1/3, one connection row
+        `2 short_to 4` (a legal spelling of the same network), `shared:L=1n` +
+        [Recompute]: `_attr_zt` returned `zt is None` with *"The ground model
+        was ignored: this spec declares no shunt element … there is no ground
+        lead to model."*, the numbers stayed the declared network's and
+        `reference_applicable` stayed True -- while the sign strip read
+        `Grounds: shared:L=1n` and both exports headed the block
+        `Ground model: shared:L=1n`.  A reader who typed it, saw nothing move
+        and read that strip concludes the shared return is worth 0 dB.
+
+        Mutation: drop the notes loop from `provenance_lines`.
+        """
+        joined = "\n".join(ag.provenance_lines(fake_prov(
+            ground_model="shared:L=1n",
+            ground_model_label="shared:L=1n — NOT APPLIED",
+            ground_model_notes=("The ground model was ignored: this spec "
+                                "declares no shunt element.",),
+            ground_model_applied=False)))
+        self.assertIn("NOT APPLIED", joined)
+        self.assertIn("declares no shunt element", joined)
+
+    def test_a_model_that_WAS_applied_carries_no_such_marker(self):
+        """The other half, or "NOT APPLIED" would be decoration."""
+        joined = "\n".join(ag.provenance_lines(
+            fake_prov(ground_model="shared:L=1n",
+                      ground_model_label="shared:L=1n")))
+        self.assertNotIn("NOT APPLIED", joined)
+        self.assertIn("Ground model: shared:L=1n", joined)
+
+
+# ============================================================================
 # PURE: session state
 # ============================================================================
 
@@ -1260,10 +1807,14 @@ class TestWindowLayout(_WindowCase):
                                      f"{name} is off screen at {geom}")
 
     # A string that is unambiguously wider than the 704 px strip at the
-    # minimum size: measured, the sign strip alone is 1316 px in TkDefaultFont
-    # and only 120 characters of it fit.  Whatever text a verdict happens to
-    # carry, the strips must not grow when handed this.
-    LONG = ag.SIGN_STRIP_TEXT + " " + ag.SIGN_STRIP_TEXT
+    # minimum size: measured, the composed sign strip is 838 px in
+    # TkDefaultFont and doubling it is 1676.  Whatever text a verdict happens
+    # to carry, the strips must not grow when handed this.  It is built from
+    # `sign_strip_text`, not from `SIGN_STRIP_TEXT`, because the constant is
+    # only the front of the line now -- at 29 characters it measured 386 px
+    # against a 964 px strip, so doubling THAT stopped being wider than the
+    # widget and the precondition assertion below caught it.
+    LONG = (ag.sign_strip_text("shared:L=0.3n") + " ") * 2
 
     def test_the_three_strips_stay_ONE_line_however_long_their_text_is(self):
         """`wraplength=0` -- they clip, they do not wrap.
@@ -1808,7 +2359,46 @@ class TestStabilityBadge(_WindowCase):
             if win._res.stability:
                 break
         self.assertIn("frequencies", win.badge_lbl.cget("text"))
-        self.assertIn("rank is", win._res.stability)
+        # A VERDICT, either way -- and the two words are what the badge leads
+        # with, because the tail of this line is off screen at 150% (see
+        # `stability_line`).  Mutation: return a bare "checked".
+        self.assertTrue(win._res.stability.startswith("STABLE")
+                        or win._res.stability.startswith("NOT stable"),
+                        repr(win._res.stability))
+
+    def test_the_check_is_a_ONE_SHOT_and_the_button_says_so(self):
+        """The button was an EXPANDER that expanded nothing.
+
+        MEASURED before this: press -> `▾` plus the verdict; press again ->
+        the glyph went back to `▸` and the label text was UNCHANGED, still the
+        verdict, with `_badge_row` 27 px throughout.  `_expanded` gated no
+        content -- only the glyph -- so the collapse offer was inert, and
+        re-running it would spend four more solves on an answer already on the
+        line beside it.
+
+        A disabled button needs its reason on screen (the Keep button's rule);
+        here the reason is the verdict in the Label next to it.
+
+        Mutation: drop the `state(["disabled"])` in `_render_impl` and the
+        second press is inert again.
+        """
+        win = self._open()
+        self.assertNotIn("disabled", win.badge_btn.state())
+        win._on_toggle_stability()
+        for _ in range(200):
+            time.sleep(0.005)
+            self._settle(1)
+            if win._res.stability:
+                break
+        verdict = win.badge_lbl.cget("text")
+        self.assertIn("disabled", win.badge_btn.state())
+        self.assertEqual(win.badge_btn.cget("text"), ag.EXPAND_EXPANDED)
+        # A second press changes NOTHING -- glyph, label and state all hold.
+        win._on_toggle_stability()
+        self._settle(2)
+        self.assertEqual(win.badge_lbl.cget("text"), verdict)
+        self.assertEqual(win.badge_btn.cget("text"), ag.EXPAND_EXPANDED)
+        self.assertIn("disabled", win.badge_btn.state())
 
     def test_the_check_is_never_run_on_an_automatic_path(self):
         """Each extra frequency is a fresh build_context + decompose, O(N^3) in
@@ -2101,8 +2691,18 @@ class TestTheDeclaredMinimumShowsContent(_WindowCase):
     """
 
     def _scaled(self):
-        """A second App at 150%.  Its own, because `tk scaling` and the named
-        fonts are per-interpreter and would leak into every later test."""
+        """
+        A second App at 150%.  Its own, because the named fonts are
+        per-interpreter.
+
+        `tk scaling` is NOT: it is process-wide on Windows (see `TK_SCALING`),
+        so it is restored in a cleanup registered AFTER `app.destroy` -- and
+        therefore, cleanups being LIFO, run BEFORE it, while there is still an
+        interpreter to set it on.  Without that, every later test in the
+        process measures a window whose points-to-pixels factor was changed
+        under it: measured, the 100% minimum read (720, 430) against a declared
+        (720, 420) with nothing in the diff to explain it.
+        """
         app = App()
         app.tk.call("tk", "scaling", 2.0)
         for name in tkfont.names(app):
@@ -2115,6 +2715,8 @@ class TestTheDeclaredMinimumShowsContent(_WindowCase):
             except Exception:
                 pass
         self.addCleanup(app.destroy)
+        if TK_SCALING:
+            self.addCleanup(app.tk.call, "tk", "scaling", TK_SCALING)
         fe = FileEntry(self.ts)
         app.files.append(fe)
         app._refresh_file_list()
@@ -2172,6 +2774,83 @@ class TestTheDeclaredMinimumShowsContent(_WindowCase):
                     name + " is off screen at the enforced minimum "
                     + str(win.winfo_width()) + "x" + str(win.winfo_height()))
 
+    def test_at_150_percent_the_SWEEP_PLOT_survives_a_row_being_selected(self):
+        """
+        The state the sweep pane exists for, which the guard above never
+        enters -- and it is where the pane was lost.
+
+        With NO selection the caption is one line (40 px) and the canvas 74 px,
+        so `winfo_ismapped()` is 1 and nothing is wrong.  SELECT a row and the
+        caption becomes the real three-sentence one.  MEASURED before this, on
+        coupled_4port_diff.s4p, with a row selected:
+
+            150% 980x700 (the DEFAULT size)  canvas 309x2, sweep_note 112 px
+                                             of a 114 px detail pane
+            150% 720x678 (the MINIMUM)       canvas 309x2, ismapped() == 0,
+                                             and 309 px of it hanging off a
+                                             179 px parent -- the only
+                                             containment violation in the
+                                             window
+
+        i.e. everything item 1 does was invisible at 150% DPI.  `wraplength=0`
+        clipping is a WIDTH rule; three lines is a HEIGHT the note takes out of
+        the plot, and the note is packed first.
+
+        AFTER: the cap falls to one line and the canvas is 309x74 at 980x700
+        and 179x30 at the minimum, mapped and contained at both.  100% is
+        untouched -- see the sibling test.
+
+        Mutation: return `SWEEP_NOTE_LINES` unconditionally from
+        `_sweep_note_cap`.
+        """
+        _app, win = self._scaled()
+        cw = win.canvas.get_tk_widget()
+        for w, h in ((980, 700), (ag.ATTRIB_MIN_W, ag.ATTRIB_MIN_H)):
+            self._resize(win, w, h)
+            win._select(win._contrib_rows[1][1])
+            self._resize(win, w, h)
+            with self.subTest(asked=f"{w}x{h}"):
+                # Precondition: a row really is selected, or the caption is the
+                # short one and this measures the state that never broke.
+                self.assertIsNotNone(win._selected)
+                self.assertEqual(cw.winfo_ismapped(), 1,
+                                 "the sweep canvas is off screen")
+                # 20 px is not a tautology in either direction: the defect
+                # measured 2 px and the fix 74 / 30.
+                self.assertGreaterEqual(
+                    cw.winfo_height(), 20,
+                    f"the plot is {cw.winfo_height()} px tall")
+                # And it is INSIDE its parent -- the containment violation.
+                self.assertLessEqual(cw.winfo_x() + cw.winfo_width(),
+                                     cw.master.winfo_width())
+                self.assertLessEqual(cw.winfo_y() + cw.winfo_height(),
+                                     cw.master.winfo_height())
+                # The caption is still THERE, just shorter: whatever it drops
+                # is counted and pointed at Copy report.
+                self.assertTrue(win.sweep_note.cget("text").strip())
+
+    def test_the_caption_keeps_all_THREE_lines_at_100_percent(self):
+        """The other half of the trade, and the one that says the cap is a
+        rule about DPI rather than a cap on the caption.
+
+        At 100% the note is 55 px at every supported size -- including
+        720x420, where it sits over a 35 px canvas.  That is the documented
+        trade ("six pixels of curve is worth nothing; the sentence saying the
+        two endpoints are not a bound is worth the whole pane") and the cap
+        must not take it back.
+
+        Mutation: make `_sweep_note_cap` a fraction of the budget rather than
+        `budget // line - RESERVE` -- measured, a quarter puts 720x420 at two
+        lines, which drops rule 8's mandatory NON-MONOTONIC label into the
+        "+N more".
+        """
+        win = self._open(mapped=True)
+        for geom in ("980x700", "720x420"):
+            win.geometry(geom)
+            self._settle(14)
+            with self.subTest(geom=geom):
+                self.assertEqual(win._sweep_note_cap(), ag.SWEEP_NOTE_LINES)
+
     def test_the_100_percent_minimum_is_UNCHANGED(self):
         """The declared value is a FLOOR: nothing about the 100% window moves.
 
@@ -2215,33 +2894,550 @@ class TestTheDeclaredMinimumShowsContent(_WindowCase):
                                  + repr(sorted(set(tail))))
                 self.assertEqual(win.table.winfo_ismapped(), 1)
 
-    def test_the_sign_rule_and_the_shares_rule_both_survive_the_clip(self):
-        """Rule 4 states both ONCE in the header, so both must BE on it at
-        every supported size.
+    def test_the_sign_rule_and_the_GROUND_MODEL_survive_the_clip(self):
+        """The two things on this strip that can change a NUMBER must be on
+        screen at every supported size; the shares rule is what gives way.
 
-        Measured budget for this strip: 48 characters at 150%/720 and 66 at
-        150%/980 (110 and all 143 at 100%).  The string it replaced spent its
-        first 64 on the sign rule alone, so at 150% the shares rule was off
-        screen at every size -- and the in-file comment said the opposite,
-        because it had only ever been measured at 100%.
+        Measured budget for this strip, on the real widget, the composed line
+        being 137 characters:
 
-        Mutation: restore any wording whose shares clause starts past
-        character 48.
+            100% 1500 px  137   100% 980 px  137   100% 720 px  114
+            150% 1500 px  106   150% 980 px   66   150% 720 px   48
+
+        With the model LAST -- which is where it was -- `'Grounds:' in shown`
+        was False at 980, 860 and 720 px at 150%, i.e. at every supported size
+        at that scaling bar a maximised window there was no on-screen statement
+        of the model that produced the numbers.  It is worth a measured
+        7.19 dB on this fixture and the control beside it shows the FIELD,
+        which can have been edited without a Recompute, so "it is also on the
+        control" is not a substitute.
+
+        The shares rule clips instead.  That is the deliberate half of the
+        trade: it is a reading convention, it is also in the table's column
+        heading, in Help and in the README, and no wording of it changes a
+        number.  Both are in Copy report and in the CSV in full.
+
+        Mutation: put the model back after the shares rule -- `Grounds` leaves
+        the 48-character budget and this goes red.
         """
         _app, win = self._scaled()
         self._resize(win, ag.ATTRIB_MIN_W, ag.ATTRIB_MIN_H)
         font = tkfont.nametofont("TkDefaultFont", root=win)
         avail = win.sign_lbl.winfo_width()
         self.assertGreater(avail, 1, "the strip never got a width")
-        shown = ag.SIGN_STRIP_TEXT
+        # The WIDGET's text, not the constant.  The strip also names the
+        # ground model in force (item 4), so the constant is only its front --
+        # and clipping the front alone measures a line that is not on screen.
+        full = win.sign_lbl.cget("text")
+        shown = full
         while shown and font.measure(shown) > avail:
             shown = shown[:-1]
-        for word in ("opposes", "adds", "SIGNED"):
+        for word in ("opposes", "adds", "Grounds:"):
             with self.subTest(word=word):
                 self.assertIn(word, shown)
-        # Precondition: the string really is being clipped, or this asserts
+        # Precondition: the line really is being clipped, or this asserts
         # nothing at all.
-        self.assertLess(len(shown), len(ag.SIGN_STRIP_TEXT))
+        self.assertLess(len(shown), len(full))
+        # And the budget is stated as a CHARACTER COUNT as well, which no
+        # scaling accident can move: the sign rule and the model must both be
+        # inside the 48 characters measured as this strip's worst case.
+        head = ag.sign_strip_text("diag (as declared)")[:48]
+        for word in ("opposes", "adds", "Grounds:"):
+            with self.subTest(word=word, budget=48):
+                self.assertIn(word, head)
+        # The shares rule is still SAID -- it just says it later.
+        self.assertIn("SIGNED", ag.sign_strip_text("diag (as declared)"))
+
+
+# ============================================================================
+# TK: the four things a person could not use  (items 1-4 on the real window)
+# ============================================================================
+
+@unittest.skipUnless(TK_OK, "no Tk display available")
+class TestSweepAxisOnTheRealCanvas(_WindowCase):
+    """
+    Item 1, measured on the shipped fixture, which really does have a pole:
+    sweeping the ground GROUP at 5.1 GHz puts two poles at 96.5 nH and 97.0 nH
+    (closed form, `t = -Re(lam)`), the analytic interval reads
+    (-394 uH, +375 uH) against endpoints of +821 pH and +203 pH, and the raw
+    plot was one vertical spike on a `1e-10` axis.
+    """
+
+    def _drawn(self):
+        win = self._open(mapped=True)
+        win.geometry("980x700")
+        self._settle(14)
+        win._select(win._contrib_rows[1][1])
+        self._settle(14)
+        return win, win.figure.axes[0]
+
+    def test_the_fixture_really_has_a_pole(self):
+        """Precondition, asserted rather than assumed: without it every
+        assertion below is about a picture with nothing to exclude."""
+        win, _ax = self._drawn()
+        self.assertTrue(win._sweep_pic.drawn, "no pole on this sweep")
+        self.assertGreater(win._sweep_pic.n_offscale, 0)
+
+    def test_the_pole_is_DRAWN_as_a_vertical_line_at_its_own_value(self):
+        """Mutation: drop the `axvline` and the curve simply leaves the frame
+        with nothing saying why."""
+        win, ax = self._drawn()
+        t = win._sweep_pic.clusters[0][0].t
+        verticals = [ln for ln in ax.lines
+                     if len(set(ln.get_xdata())) == 1
+                     and abs(list(ln.get_xdata())[0] - t) < t * 1e-9]
+        self.assertEqual(len(verticals), 1,
+                         "no single vertical line at the pole")
+
+    def test_the_pole_line_is_LABELLED_with_its_parameter_value(self):
+        """A line with no label is a mark, not a reading.
+
+        Mutation: drop the `ax.text`, or label it "pole" with no number.
+        """
+        win, ax = self._drawn()
+        cluster = win._sweep_pic.clusters[0]
+        texts = [t.get_text() for t in ax.texts]
+        self.assertTrue(texts, "the pole line carries no annotation at all")
+        want = ag.pole_span(cluster, "H")
+        self.assertTrue(any(want in t for t in texts),
+                        f"{want!r} is on no annotation: {texts!r}")
+
+    def test_the_Y_LIMITS_BRACKET_BOTH_PHYSICAL_ENDPOINTS(self):
+        """THE assertion.  Ideal and open are the two numbers the pane is
+        opened for, and the pole's excursion must not scale them off it.
+
+        Mutation: remove `set_ylim` -- measured, matplotlib then autoscales to
+        the excursion and the two endpoints land inside one pixel row.
+        """
+        win, ax = self._drawn()
+        pic = win._sweep_pic
+        lo, hi = ax.get_ylim()
+        for name, v in (("ideal", 8.21e-10), ("open", 2.03e-10)):
+            with self.subTest(endpoint=name):
+                self.assertLessEqual(lo, v)
+                self.assertGreaterEqual(hi, v)
+        # The excursion is off the top, which is the point of the limits.
+        # Measured on this fixture: the pole-free high is +962 pH and the
+        # sampled peak is +4.17 nH, so 2 nH separates them.
+        self.assertLess(hi, 2e-9)
+        self.assertGreater(max(abs(v) for v in pic.interval), 0.0)
+
+    def test_the_axis_is_symlog_with_a_linthresh_taken_from_the_data(self):
+        win, ax = self._drawn()
+        self.assertEqual(ax.get_yscale(), "symlog")
+        self.assertAlmostEqual(win._sweep_pic.linthresh, 8.21e-10, places=12)
+
+    def test_the_caption_headline_is_the_POLE_FREE_interval(self):
+        """Mutation: hand `sweep_caption` no picture and it recomputes -- which
+        is harmless -- or headline `sw.interval` and the label under the plot
+        reads `[-394 uH, +375 uH]` beside a picohenry axis, which is what was
+        on screen."""
+        win, _ax = self._drawn()
+        note = win.sweep_note.cget("text")
+        self.assertIn("AWAY FROM THE POLE", note)
+        self.assertNotIn("uH", note.splitlines()[0])
+        self.assertIn("POLE at 96.5 nH", note)
+
+    def test_BOTH_AXES_print_engineering_units_and_no_bare_exponent(self):
+        """
+        Every other number in this window goes through `format_si`.
+
+        MEASURED before this, on this fixture at 980x700:
+        `ax.yaxis.get_offset_text()` read `'1e−10'` over tick labels
+        `['−2.5','0.0','2.5','5.0','7.5','10.0']` with an ylabel of `M [H]`,
+        beside a table cell reading `+413 pH` and a caption reading
+        `ideal +821 pH`.  The original complaint about this plot was literally
+        "the y axis reads 1e-5"; the symlog change moved it to 1e-10 and left
+        it a bare exponent.  The x axis read `10^-14 … 10^0` in bare henries.
+
+        Mutation: drop either `set_major_formatter`, or put the
+        `ScalarFormatter` back -- the offset returns.
+        """
+        _win, ax = self._drawn()
+        for name, axis in (("y", ax.yaxis), ("x", ax.xaxis)):
+            with self.subTest(axis=name):
+                self.assertEqual(axis.get_offset_text().get_text(), "",
+                                 "a bare exponent offset is still in the "
+                                 "corner")
+                labels = [t.get_text() for t in axis.get_ticklabels()
+                          if t.get_text()]
+                self.assertTrue(labels, "the axis has no labelled tick")
+                # Every label carries the unit, which is what makes it an
+                # engineering reading rather than a scaled number.
+                self.assertTrue(
+                    all("H" in t or t == "0" or t == "--" for t in labels),
+                    f"{name} ticks are not in engineering units: {labels!r}")
+        # The unit is on the TICKS, so it is not repeated in the axis label.
+        self.assertNotIn("[", ax.get_ylabel())
+        self.assertNotIn("[", ax.get_xlabel())
+
+
+@unittest.skipUnless(TK_OK, "no Tk display available")
+class TestTheSplitFollowsTheContent(_WindowCase):
+    """
+    Item 2.  Measured BEFORE, at 980x700 / 100%: `sashpos` 279, the table
+    holding 5 rendered lines (70 px of text) in a 239 px widget -- 169 px of
+    empty space -- over a detail pane of 198 px that was scrolling
+    (`yview` (0, 0.729)) and, at the 720 px minimum, clipping horizontally
+    (`xview` (0, 0.950)).  AFTER: `sashpos` 138, table 98 px, detail 331 px,
+    `yview` (0, 1.0) and `xview` (0, 1.0).
+    """
+
+    def _at(self, win, geom, rounds=16):
+        win.geometry(geom)
+        self._settle(rounds)
+
+    def _line(self, win) -> int:
+        return tkfont.Font(root=win, font=ag.ATTRIB_FONT).metrics("linespace")
+
+    def test_the_table_pane_is_about_as_tall_as_what_is_IN_it(self):
+        """The whole of item 2's first half.
+
+        Mutation: drop `_apply_sash` from `_render_impl` and ttk's weight
+        split returns -- measured, 239 px of widget for 70 px of text.
+        """
+        win = self._open(mapped=True)
+        self._at(win, "980x700")
+        line = self._line(win)
+        rendered = int(win.table.index("end-1c").split(".")[0])
+        self.assertGreaterEqual(rendered, 3, "nothing in the table to size to")
+        slack = win.table.winfo_height() - rendered * line
+        self.assertLess(slack, (ag.ATTRIB_SASH_SPARE_LINES + 2) * line,
+                        f"{slack} px of empty table under {rendered} lines")
+        # BOTH bounds, and the lower one is not redundant: with `_apply_sash`
+        # never called from `_render_impl` the paned's own <Configure> still
+        # applies the FLOOR (3 lines), which is under the 5 this table holds --
+        # so the upper bound alone passed the mutation.  A table that has to
+        # scroll its own five rows is the same defect from the other side.
+        self.assertEqual(tuple(win.table.yview()), (0.0, 1.0),
+                         "the table is scrolling content the pane has room for")
+        self.assertGreater(win.detail.winfo_height(),
+                           win.table.winfo_height(),
+                           "the pane with the reading in it is still smaller")
+
+    def test_thirty_rows_ask_for_more_room_than_three(self):
+        """It is derived from the ROW COUNT, so it has to move with it.
+
+        Mutation: a constant sash position passes the test above and fails
+        this one.
+        """
+        win = self._open(mapped=True)
+        self._at(win, "980x700")
+        win._apply_sash(5)
+        self._settle(6)
+        small = win.paned.sashpos(0)
+        win._apply_sash(32)
+        self._settle(6)
+        big = win.paned.sashpos(0)
+        self.assertGreater(big, small)
+        for name, w in (("table", win.table), ("detail", win.detail)):
+            with self.subTest(widget=name):
+                self.assertEqual(w.winfo_ismapped(), 1)
+
+    def test_the_detail_pane_WRAPS_and_the_table_still_does_NOT(self):
+        """Prose wraps; a table that wraps stops being a table.
+
+        Mutation: `wrap=WORD` on both and the columns fold onto the next line,
+        which is the silent-clip failure rule 3 exists to refuse arriving as a
+        silent fold.
+        """
+        win = self._open(mapped=True)
+        self.assertEqual(str(win.detail.cget("wrap")), "word")
+        self.assertEqual(str(win.table.cget("wrap")), "none")
+
+    def test_the_detail_pane_needs_no_horizontal_scroll_at_either_size(self):
+        """Measured before: at the 720 px minimum the longest detail line is
+        75 characters = 525 px against a 503 px widget, and `xview` read
+        (0.0, 0.950) -- the tail of every long line off the right edge with a
+        scrollbar as the only route to it.
+
+        Mutation: restore `wrap=NONE` on the detail pane.
+        """
+        win = self._open(mapped=True)
+        for geom in ("980x700", f"{ag.ATTRIB_MIN_W}x{ag.ATTRIB_MIN_H}"):
+            self._at(win, geom)
+            win._select(win._contrib_rows[1][1])
+            self._settle(10)
+            text = win.detail.get("1.0", "end-1c")
+            font = tkfont.Font(root=win, font=ag.ATTRIB_FONT)
+            longest = max(font.measure(ln) for ln in text.splitlines())
+            with self.subTest(geom=geom):
+                self.assertEqual(tuple(win.detail.xview()), (0.0, 1.0),
+                                 "the detail pane scrolls horizontally")
+                if geom.startswith(str(ag.ATTRIB_MIN_W)):
+                    # Precondition at the size where it bit: the content
+                    # really is wider than the widget, or "it does not
+                    # scroll" is a statement about nothing.
+                    self.assertGreater(longest, win.detail.winfo_width())
+
+    def test_a_DRAG_claims_the_split_and_the_next_render_leaves_it_alone(self):
+        """Once the reader has moved the divider it is theirs until the window
+        closes.
+
+        The gesture is driven through the two handlers rather than by poking
+        `_sash_user`, because "was that a drag?" is the thing being tested.
+        Mutation: re-derive unconditionally in `_render_impl`.
+        """
+        win = self._open(mapped=True)
+        self._at(win, "980x700")
+        win._on_sash_press()
+        moved = win.paned.sashpos(0) + 90
+        win.paned.sashpos(0, moved)
+        self._settle(4)
+        win._on_sash_release()
+        self.assertTrue(win._sash_user)
+        win._apply_sash(32)
+        win._render()
+        self._settle(8)
+        self.assertEqual(win.paned.sashpos(0), moved)
+
+    def test_a_click_that_moves_NOTHING_is_not_a_drag(self):
+        """Mutation: set `_sash_user` on every ButtonRelease and a stray click
+        anywhere on the divider freezes the split for the session."""
+        win = self._open(mapped=True)
+        self._at(win, "980x700")
+        win._on_sash_press()
+        win._on_sash_release()
+        self.assertFalse(win._sash_user)
+
+    def test_OUR_OWN_WRITE_between_press_and_release_is_not_a_drag(self):
+        """
+        A re-derivation landing while a button is held must not become a
+        permanent claim on the split.
+
+        MEASURED at 100% / 980x700 before this: `_on_sash_press()` ->
+        `_apply_sash(30)` -- which is exactly what a new decomposition does --
+        -> `_on_sash_release()` left `_sash_user` True with no pointer
+        movement at all, and item 2's content-derived position then stopped
+        working for the rest of the session.  `_apply_sash` is reachable while
+        a button is down from `_render_impl` (Recompute, a view switch, and
+        the units switch's `refresh_attribution_windows(rerender=True)`) and
+        from the `after_idle` `<Configure>`.
+
+        The comment on `_on_sash_release` correctly rejects comparing against
+        "the last value applied" -- so the fix is a WRITE COUNTER, which is
+        orthogonal to that.
+
+        Mutation: drop `self._sash_writes += 1` from `_apply_sash`, or the
+        counter test from `_on_sash_release`.
+        """
+        win = self._open(mapped=True)
+        self._at(win, "980x700")
+        before = win.paned.sashpos(0)
+        win._on_sash_press()
+        win._apply_sash(30)
+        self._settle(4)
+        # Precondition: the sash really did move, or "it was not called a
+        # drag" is a statement about nothing.
+        self.assertNotEqual(win.paned.sashpos(0), before,
+                            "the write did not move the sash on this box; "
+                            "the case being ruled out did not arise")
+        win._on_sash_release()
+        self.assertFalse(win._sash_user)
+        # And a real drag STILL claims it -- the counter must not have made
+        # every gesture unclaimable.
+        win._on_sash_press()
+        moved = win.paned.sashpos(0) + 60
+        win.paned.sashpos(0, moved)
+        self._settle(4)
+        win._on_sash_release()
+        self.assertTrue(win._sash_user)
+
+    def test_a_RESIZE_is_not_a_drag_either(self):
+        """ttk moves the sash itself when the window is resized, so comparing
+        against the last value APPLIED would call every resize a gesture.
+
+        Mutation: compare `sashpos` against `_sash_applied` instead of against
+        the position at ButtonPress.
+        """
+        win = self._open(mapped=True)
+        self._at(win, "980x700")
+        self._at(win, "1300x820")
+        self._at(win, "980x700")
+        self.assertFalse(win._sash_user)
+        line = self._line(win)
+        rendered = int(win.table.index("end-1c").split(".")[0])
+        self.assertLess(win.table.winfo_height() - rendered * line,
+                        (ag.ATTRIB_SASH_SPARE_LINES + 2) * line)
+        self.assertEqual(tuple(win.table.yview()), (0.0, 1.0))
+
+
+@unittest.skipUnless(TK_OK, "no Tk display available")
+class TestTheBadgeOffersTheCheck(_WindowCase):
+    """Item 3, on the widget."""
+
+    def test_the_off_state_on_screen_names_the_cost_and_the_gesture(self):
+        """Mutation: go back to the bare "not checked" caveat."""
+        win = self._open()
+        text = win.badge_lbl.cget("text")
+        self.assertIn("not checked", text)
+        self.assertIn("more solves", text)
+        self.assertIn("4-port", text)
+        self.assertIn(ag.EXPAND_COLLAPSED, text)
+
+    def test_once_checked_it_says_STABLE_or_WHAT_MOVED(self):
+        """"checked" on its own is not a result.  Either wording is a real
+        answer; neither is the absence of one.
+
+        Mutation: return a bare "checked" and this goes red whichever way the
+        fixture falls.
+        """
+        win = self._open()
+        win._on_toggle_stability()
+        win._compute_stability()
+        self._settle(4)
+        text = win.badge_lbl.cget("text")
+        self.assertNotIn("not checked", text)
+        if "STABLE" in text:
+            self.assertIn("nothing changed places", text)
+        else:
+            self.assertIn("NOT stable", text)
+            self.assertIn("→", text)
+            self.assertIn(" at ", text)
+
+
+@unittest.skipUnless(TK_OK, "no Tk display available")
+class TestTheGroundModelIsOnTheWindow(_WindowCase):
+    """
+    Item 4.  Four ground balls at 1 nH each INDEPENDENTLY against the same four
+    tied through ONE shared 1 nH moves |M| by 9.60 dB -- larger than the
+    6.07 dB dispute this feature exists to settle -- and the window offered no
+    way to ask the question.
+    """
+
+    SHARED = "shared:L=1n"
+
+    def test_the_control_is_on_screen_at_both_declared_sizes(self):
+        """A control that is not on screen is not a control.  It is a row of
+        its own precisely so it does not depend on the header's wrap: measured,
+        the six header items ask 961 px against a 964 px strip at 980."""
+        win = self._open(mapped=True)
+        for geom in (ag.ATTRIB_GEOMETRY,
+                     f"{ag.ATTRIB_MIN_W}x{ag.ATTRIB_MIN_H}"):
+            win.geometry(geom)
+            self._settle(12)
+            with self.subTest(geom=geom):
+                self.assertEqual(win.ground_entry.winfo_ismapped(), 1)
+                self.assertEqual(win.ground_entry.winfo_width(),
+                                 win.ground_entry.winfo_reqwidth(),
+                                 "the ground-model field is clipped")
+
+    def test_switching_the_model_CHANGES_THE_ANSWER(self):
+        """The whole reason for the item.  Mutation: accept the field and
+        ignore it -- the window then has a control that does nothing, which is
+        worse than not having one."""
+        win = self._open()
+        before = complex(win._res.dec.total_sum)
+        win.ground_var.set(self.SHARED)
+        win._on_recompute()
+        self._settle(4)
+        after = complex(win._res.dec.total_sum)
+        self.assertNotEqual(win._res.prov.ground_model, "diag")
+        rel = abs(after - before) / max(abs(before), 1e-300)
+        self.assertGreater(rel, 0.01,
+                           f"the shared return moved M by only {rel:.3%}")
+
+    def test_it_does_NOT_recompute_on_the_keystroke(self):
+        """Rule 6, and the item says so explicitly: it must go through the same
+        [Recompute] path as any other input.
+
+        Mutation: trace the variable and recompute -- which is the auto-refresh
+        design rule 6 documents erasing its own table.
+        """
+        win = self._open()
+        before = complex(win._res.dec.total_sum)
+        win.ground_var.set(self.SHARED)
+        self._settle(6)
+        self.assertEqual(complex(win._res.dec.total_sum), before)
+        self.assertEqual(win._res.prov.ground_model, ag.GROUND_MODEL_DEFAULT)
+
+    def test_the_reconciliation_is_RE_DERIVED_as_not_comparable(self):
+        """CLAUDE.md's rule for a dense `Zt`: what is lost is the second
+        OPINION, not the check.  `compute_z_matrix` cannot be handed a mutual
+        impedance between ground leads, so `reference_applicable` goes False
+        and the verdict says "not comparable" rather than reporting a
+        disagreement about a network nobody asked it about.
+
+        Mutation: keep the declared context and decompose the what-if against
+        it -- measured on diff_pair_4port.s4p, the residual then read 1.01,
+        sailed past RESIDUAL_CATASTROPHIC and emptied the table.
+        """
+        win = self._open()
+        self.assertTrue(win._res.dec.reference_applicable)
+        win.ground_var.set(self.SHARED)
+        win._on_recompute()
+        self._settle(4)
+        self.assertFalse(win._res.dec.reference_applicable)
+        verdict, ok = ag.reconciliation_verdict(win._res.dec)
+        self.assertEqual(verdict, "not comparable")
+        self.assertTrue(ok)
+        self.assertIn("not comparable", win.recon.cget("text"))
+        # The split still stands -- the arithmetic was checked on the declared
+        # configuration, which is the check that was always meant.
+        self.assertTrue(win._res.dec.terms)
+
+    def test_the_sign_strip_AND_the_export_both_name_the_model(self):
+        """The item asks for both, and they answer different questions: the
+        strip is what a reader who has not touched the field sees, the export
+        is where it cannot clip."""
+        win = self._open()
+        win.ground_var.set(self.SHARED)
+        win._on_recompute()
+        self._settle(4)
+        self.assertIn("Grounds: " + self.SHARED, win.sign_lbl.cget("text"))
+        report = win._report()
+        self.assertIn("Ground model: " + self.SHARED, report)
+        self.assertIn("9.60 dB", report)
+
+    def test_the_strip_still_names_the_model_the_NUMBERS_came_from(self):
+        """The field can be edited without a Recompute, and the strip
+        describes what is on screen.
+
+        Mutation: render the strip from `ground_var` and it claims a model the
+        numbers were not computed under -- the same class of lie the staleness
+        banner exists to stop.
+        """
+        win = self._open()
+        win.ground_var.set(self.SHARED)
+        win._render()
+        self._settle(4)
+        self.assertIn("Grounds: diag (as declared)", win.sign_lbl.cget("text"))
+
+    def test_a_model_it_cannot_read_is_reported_and_nothing_moves(self):
+        """A bad value costs its own field, never the window -- and the message
+        is the CLI's own, which is what makes it correctable."""
+        win = self._open()
+        before = complex(win._res.dec.total_sum)
+        win.ground_var.set("shared:")
+        win._on_recompute()
+        self._settle(4)
+        self.assertIn("needs an impedance after the colon",
+                      win.recon.cget("text"))
+        self.assertEqual(complex(win._res.dec.total_sum), before)
+
+    def test_the_choice_round_trips_through_a_session(self):
+        """It is on the same footing as `candidates`: a CHOICE the user typed,
+        that this tool refuses to guess, and that is worth 9.60 dB."""
+        win = self._open()
+        win.ground_var.set(self.SHARED)
+        win._on_recompute()
+        self._settle(4)
+        state = ag.attribution_session_state(win)
+        self.assertEqual(state["windows"][0]["ground_model"], self.SHARED)
+        # The key is written ONLY for a chosen model -- see
+        # `attribution_session_state`, which records why (the integration
+        # test's pinned key set) and what to do about it.
+        win.ground_var.set(ag.GROUND_MODEL_DEFAULT)
+        self.assertNotIn("ground_model",
+                         ag.attribution_session_state(win)["windows"][0])
+        win.ground_var.set(self.SHARED)
+        win.destroy()
+        self._settle(2)
+        ag.apply_attribution_session_state(self.app, state)
+        again = ag.open_attribution_window(self.app, self.tc)
+        self._settle(6)
+        self.assertEqual(again._res.prov.ground_model, self.SHARED)
+        self.assertEqual(again.ground_var.get(), self.SHARED)
 
 
 if __name__ == "__main__":

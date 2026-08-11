@@ -40,8 +40,8 @@ listed in `_gui()`'s docstring; the alternative -- a second copy of
 renderings of the same spec come to disagree, which this repo has already been
 bitten by more than once.
 
-THE TWELVE DECISIONS, and the measurement behind each
------------------------------------------------------
+THE FIFTEEN DECISIONS, and the measurement behind each
+------------------------------------------------------
 1.  MODELESS, and deliberately NOT `transient(app)`.  No `grab_set` anywhere:
     a modal Toplevel that outlives its opener blocks event delivery and
     `update()` never returns, which takes the GUI and the test suite down
@@ -108,6 +108,14 @@ THE TWELVE DECISIONS, and the measurement behind each
     mouse toward [Recompute] would lose the rest of the keystrokes.  And it is
     drawn LAZILY on first reveal -- a canvas in an unmapped pane has no size,
     so `draw()`/`tight_layout` there lays out for a 1x1 widget.
+    THE Y AXIS IS SCALED TO THE PHYSICAL ENDPOINTS AND THE POLE IS LABELLED
+    (`sweep_picture`).  A Mobius map has a pole, and drawn raw the pole owns
+    the picture: measured on the shipped fixture, one vertical spike over a
+    `1e-10` axis with a headline interval of (-394 uH, +375 uH) -- the tool
+    describing its own arithmetic.  A pole is a real feature, so it is drawn as
+    a labelled vertical line at its (closed-form) parameter value and the
+    headline is the pole-free interval; what changes is only what the axis is
+    scaled to.
 9.  NO ACCELERATOR.  `bind_all` reaches every Toplevel: measured, Ctrl+S typed
     into a Toplevel Entry fires the App's `_on_save_config`, and Ctrl+O would
     open Load Config and replace every trace including the one this window
@@ -131,6 +139,42 @@ THE TWELVE DECISIONS, and the measurement behind each
     note, the complete sign-convention declaration, the ground model, and the
     termination spec verbatim.  The frozen-trace CSV precedent is explicit that
     a block attributed to the wrong run is a real bug.
+13. THE SPLIT IS DERIVED FROM THE ROW COUNT, and then belongs to the user.
+    `ttk.Panedwindow` sizes its panes from their requested heights and shares
+    the spare by weight, and both panes request the same 8-line Text -- so the
+    divider had nothing to do with what was in the table.  Measured at 980x700:
+    three element rows in a 239 px widget (169 px of empty space) over a detail
+    pane that was scrolling, and horizontally clipping at 720.  The position is
+    computed from CONTENT and never from a measured pane height (that shape is
+    the documented limit cycle); the paned window's own height is read only as
+    a clamp, and cannot feed back -- measured, it is 522 px at every sash
+    position from 0 to 900.  A DRAG claims it permanently.
+14. THE GROUND MODEL IS ON THE WINDOW, not only on the CLI.  Independent
+    per-lead impedances against one shared return moves |M| by 9.60 dB --
+    larger than the 6.07 dB dispute this feature exists to settle -- and real
+    package grounds share a return plane, so the default is the one that
+    UNDERSTATES the return inductance.  The field takes the CLI's spelling and
+    is parsed by the CLI's own parser; a change goes through [Recompute] like
+    any other input, and because a dense `Zt` is a network `compute_z_matrix`
+    was never asked about, the reconciliation degrades to "not comparable"
+    through `build_context`'s own `reference_applicable`, not through a second
+    rule here.  What `_attr_zt` says about applying it is CARRIED, not
+    discarded: its first note means the model was NOT applied, and a reader who
+    typed `shared:L=1n`, saw nothing move and read a strip still claiming that
+    model would conclude the shared return is worth 0 dB.
+15. EVERY CLIPPING STRIP LEADS WITH ITS NUMBERS.  Five one-line Labels here are
+    `wraplength=0` -- they clip rather than wrap, because a wrapping strip
+    costs plot height (the `_footer_strip_text` rule) -- and the corollary is
+    that whatever is written LAST is not on screen.  Measured on the real
+    widgets, worst case at 150% DPI / 980 px: the across-frequency badge showed
+    64 of 238 characters, the sign strip 66 of 137, and the sweep caption -- the
+    narrowest of them, at 329 px even in a 1020 px window, because it sits
+    under the plot in the right half of a horizontal split -- 51 of 107.  In
+    each case the part that went was the part the strip exists for: the check's
+    cost and gesture, the ground model in force, and the interval with its two
+    endpoints.  So the order is number/verdict first, prose last, everywhere;
+    the full text is in Copy report and in the CSV, which is what rule 12
+    carries it for.
 """
 
 from __future__ import annotations
@@ -144,6 +188,7 @@ from tkinter import filedialog, font as tkfont, messagebox, ttk
 from typing import Optional, Sequence
 
 import numpy as np
+import matplotlib.ticker as mticker
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
@@ -181,8 +226,20 @@ __all__ = [
     "candidate_list",
     "CSV_FIELDS",
     "GROUND_MODEL_TEXT",
+    "GROUND_MODEL_DEFAULT",
+    "GROUND_MODEL_HINT",
+    "parse_ground_model",
+    "ground_model_zt",
+    "sign_strip_text",
     "SIGN_STRIP_TEXT",
     "QUANTITIES",
+    "SweepPole",
+    "SweepPicture",
+    "sweep_pole_locations",
+    "sweep_picture",
+    "pole_label",
+    "pole_span",
+    "stability_offer",
     "attribution_session_state",
     "apply_attribution_session_state",
     "spec_signature",
@@ -270,6 +327,36 @@ ATTRIB_MIN_H = 420
 #: the last twenty rounds byte-identical.
 ATTRIB_SPLIT_FLOOR_LINES = 9
 
+#: The split's INITIAL position, in lines of the table font (item 2).
+#:
+#: WHAT WAS WRONG.  `ttk.Panedwindow` sizes its panes from their requested
+#: heights at `add()` time and then shares out the spare by weight (3:2 here),
+#: and both panes request the same 8-line Text -- so the position had nothing
+#: to do with what was IN the table.  Measured at 980x700, 100%: the table held
+#: 5 rendered lines (2 of heading + 3 elements = 70 px of text) in a 239 px
+#: widget -- 169 px of empty space -- while the detail pane under it was
+#: 198 px against 19 lines of prose, i.e. scrolling, and at the 720 px minimum
+#: it was ALSO clipping horizontally (`xview` (0.0, 0.950)).  The pane with
+#: nothing in it had the room and the pane with the reading in it did not.
+#:
+#: The position is derived from the ROW COUNT and nothing else -- never from a
+#: measured pane height, which is the shape of the documented limit cycle (a
+#: layout rule that reads a size it can itself change flips forever and
+#: `update()` never returns).  The one measured quantity is the paned window's
+#: OWN height, used only as a CLAMP so the detail pane keeps a floor, and that
+#: cannot feed back: measured, `paned.winfo_height()` read 522 px at every
+#: sash position from 0 to 900, because the height comes from `pack` in the
+#: Toplevel and a divider inside it moves nothing outside it.
+#:
+#: `SPARE` is what stops the last row sitting against the divider; `MAX` keeps
+#: a 60-ball ground spec from swallowing the drill-down (past it the table
+#: scrolls, which is what its scrollbar is for); the two FLOORs are what the
+#: clamp protects at the enforced minimum, where there is not room for both.
+ATTRIB_SASH_SPARE_LINES = 2
+ATTRIB_SASH_MAX_LINES = 16
+ATTRIB_TABLE_FLOOR_LINES = 3
+ATTRIB_DETAIL_FLOOR_LINES = 6
+
 #: The only font any table in this window is rendered in.  Every glyph the
 #: tables emit measures exactly 7 px in it (see the module docstring), which is
 #: the entire reason the columns line up.
@@ -296,6 +383,14 @@ EXPAND_EXPANDED = "▾"
 #: or a column of mixed signs shifts by one cell per row.
 MINUS = "−"
 PLUS = "+"
+
+#: The pole marker on the sweep.  A colour, on a plot, is NOT the "colour never
+#: means sign" rule -- that rule is about the tables, where a red negative
+#: makes a correct answer look like a fault.  Here it distinguishes an
+#: ANNOTATION from the two data curves and from the two asymptote lines, which
+#: already carry green (ideal) and amber (open); it is deliberately not
+#: `WARN_FG`, because a pole is a feature of the structure and not a fault.
+POLE_LINE_FG = "#b03030"
 
 #: Text-column caps, in characters.  Numeric columns are auto-sized from their
 #: widest cell OR their header (the readout's rule: sizing on the values alone
@@ -351,22 +446,44 @@ ELEMENT_KIND_ROLE = {
 #: be offering something that always fails.
 QUANTITIES = ("M", "ImZ", "ReZ", "Z", "M/L_a", "k")
 
-#: What the window models the declared terminations as.  It does NOT offer the
-#: shared-return ground model: that is a dense element-impedance matrix, which
-#: is not expressible as a TerminationSet, and the header is already over
-#: budget at 980 px (see ATTRIB_GEOMETRY) so a seventh control would push
-#: [Recompute] onto a third line.  The number is not small -- measured, four
-#: ground balls at 1 nH each independently versus the same four tied through
-#: one shared 1 nH moved |M| by 9.60 dB, which is larger than the 6 dB dispute
-#: the feature exists to settle -- so the export says so in full rather than
-#: letting the reader assume the model was chosen.
+#: The ground model the window opens on, in the CLI's own spelling.
+#: `diag` = every element on the impedance its own row declares.
+GROUND_MODEL_DEFAULT = "diag"
+
+#: What the ground-model field means, in full, for the export (rule 12).
+#:
+#: THE WINDOW NOW OFFERS THE SHARED-RETURN MODEL.  It did not, and the reason
+#: recorded here was that a dense element-impedance matrix is not expressible
+#: as a `TerminationSet` and that a seventh header control would push
+#: [Recompute] onto a third row.  The first half is true and is exactly why
+#: `reference_applicable` exists (see `parse_ground_model`); the second is a
+#: layout fact about the HEADER, and the control is not in the header -- it has
+#: a row of its own, measured at 25 px (100%) / 37 px (150%), against a wrap of
+#: the header ReflowRow which measured 29 px at 980 and 58 px at 720.  What
+#: made the omission untenable is the number: four ground balls at 1 nH each
+#: INDEPENDENTLY against the same four tied through ONE shared 1 nH moves |M|
+#: by **9.60 dB** -- larger than the 6.07 dB dispute this whole feature exists
+#: to settle -- and real package grounds share a return plane, so the default
+#: is the one that understates the return inductance, by (1 + (n-1)k_ret).
 GROUND_MODEL_TEXT = (
-    "declared: every element on the impedance its own row declares (0 for an "
+    "'diag' puts every element on the impedance its own row declares (0 for an "
     "ideal ground / short, 1/y_series_rlc(omega) for a lumped one), each "
-    "independent of the others. A shared ground-return plane is NOT modelled "
-    "here: measured on decap_4port.s4p, four balls at 1 nH each independently "
-    "versus the same four tied through one shared 1 nH moved |M| by 9.60 dB. "
-    "For that model use the CLI: --attribute-ground-model shared:L=1n."
+    "INDEPENDENT of the others. 'shared:SPEC' (e.g. shared:L=0.3n) keeps those "
+    "declared impedances and adds ONE shared return impedance across every "
+    "shunt element, which is what a real package ground plane is: measured on "
+    "decap_4port.s4p, four balls at 1 nH each independently versus the same "
+    "four tied through one shared 1 nH moved |M| by 9.60 dB. 'diag:SPEC' "
+    "overrides every shunt lead with SPEC and leaves them independent. The "
+    "spelling is the CLI's, verbatim: --attribute-ground-model diag|diag:SPEC|"
+    "shared:SPEC."
+)
+
+#: The one line beside the control.  It says why the default is not obviously
+#: right and stops there; `wraplength=0`, so it CLIPS like every other strip
+#: here and the full statement is in Copy report and in the CSV.
+GROUND_MODEL_HINT = (
+    "independent leads understate a shared return by (1+(n−1)k) — "
+    "try shared:L=0.3n"
 )
 
 SIGN_NOTE_TERMS = (
@@ -400,11 +517,46 @@ SIGN_NOTE_SHARES = (
 #: rather than dropped -- naming it is what rule 4 asks for, and every word of
 #: the long form is in Copy report and in the CSV header, which is where rule
 #: 12 requires the complete declaration anyway.
-SIGN_STRIP_TEXT = (
-    "− opposes, + adds, sum EXACT. Shares SIGNED: >100% and negative are "
-    "normal. Grounds as declared, independent — full declaration in Copy "
-    "report."
-)
+#:
+#: The GROUND MODEL is no longer baked into this constant: it is a choice now,
+#: so the strip has to say which one is IN FORCE rather than assert the
+#: default.  It goes SECOND -- see `sign_strip_text`.
+SIGN_STRIP_TEXT = "− opposes, + adds, sum EXACT."
+
+#: The second sign rule, which is what gives way when the strip clips.
+SIGN_STRIP_SHARES = "Shares SIGNED: >100% and negative are normal."
+
+
+def sign_strip_text(ground_label: str = "") -> str:
+    """
+    The header strip: the sign rule, the GROUND MODEL IN FORCE, then the rest.
+
+    THE MODEL IS SECOND, NOT LAST, AND THAT IS A MEASURED TRADE.  It used to
+    follow both sign rules, on the argument that the model is also on its own
+    control -- but the control shows the FIELD, which can have been edited
+    without a Recompute, while this strip shows what produced the numbers on
+    screen.  MEASURED on the real Label (137 characters, the strip's own font)
+    at the window widths this tool is used at:
+
+        100% 1500 px  137 chars   100% 980 px  137   100% 720 px  114
+        150% 1500 px  106 chars   150% 980 px   66   150% 720 px   48
+
+    `'Grounds:' in shown` was **False at 980, 860 and 720 px at 150%**, i.e. at
+    every supported size at that scaling except a maximised window there was no
+    on-screen statement of the model at all -- for a choice worth a measured
+    7.19 dB on the shipped fixture, in the flow that exists to settle a 6.07 dB
+    dispute.  With the model second it survives at 66 characters (`… sum
+    EXACT. Grounds: diag (as declared). Share`), and what clips instead is the
+    SHARES rule, which is also in the table's own column heading, in Help and
+    in the README, and which cannot change a number.
+
+    Both are in Copy report and in the CSV in full, where nothing clips
+    (rule 12).
+    """
+    label = str(ground_label or "").strip()
+    mid = f" Grounds: {label}." if label else ""
+    return (SIGN_STRIP_TEXT + mid + " " + SIGN_STRIP_SHARES
+            + " Full declaration in Copy report.")
 
 #: The two candidates this tool will assume on the user's behalf, and the only
 #: two.  They need no engineering judgement -- "the element is not there" and
@@ -451,6 +603,41 @@ def spec_signature(trace) -> tuple:
     when the other says it is not.
     """
     return _gui()._config_signature(trace)
+
+
+def parse_ground_model(text: str, omega: float) -> tuple:
+    """
+    'diag' | 'diag:SPEC' | 'shared:SPEC'  ->  (kind, impedance, label).
+
+    STRAIGHT THROUGH THE CLI'S OWN PARSER, lazily imported, and that is the
+    whole point of this three-line function.  `--attribute-ground-model` has
+    shipped this grammar, these error messages and this label format since
+    stage 3; a second copy here is precisely how the window and the CLI come to
+    disagree about what `shared:L=1n` means, and this repo has been bitten by
+    two renderings of one spec more than once.  `pkg_rlc_extractor` imports
+    numpy, `pkg_rlc_attrib` and `pkg_rlc_core` at module level and nothing
+    else -- `pkg_rlc_gui` is imported inside `main()` -- so this is not a
+    cycle, and it is the same deferred-private-import shape as `_gui()`.
+
+    Raises `ValueError` with the CLI's own wording on anything it cannot read.
+    """
+    import pkg_rlc_extractor                              # noqa: PLC0415
+    return pkg_rlc_extractor._attr_ground_model(text, omega)
+
+
+def ground_model_zt(ctx, kind: str, z):
+    """
+    (the (m, m) element-impedance matrix this model asks for, notes), or
+    (None, notes) to keep the one the spec itself declares.
+
+    The CLI's `_attr_zt`, lazily imported for the reason above.  It is the one
+    place that knows the dense block is built over the SHUNT sub-block only:
+    `termination_impedance_shared_return` assumes every element it is handed is
+    a ball sharing the return plane, so giving it a `short_to` as well would
+    quietly stop that being a short.
+    """
+    import pkg_rlc_extractor                              # noqa: PLC0415
+    return pkg_rlc_extractor._attr_zt(ctx, kind, z)
 
 
 def _role_colour(kind: str) -> str:
@@ -1034,25 +1221,425 @@ def detail_lines(dec, key, sens: Sequence = (),
     return out
 
 
-def sweep_caption(sw) -> list[str]:
+# ---------------------------------------------------------------------------
+# Pure rendering: the sweep's POLE, and the axis it forces
+# ---------------------------------------------------------------------------
+#
+# WHY ANY OF THIS EXISTS.  The sweep is a Mobius map of the added series
+# impedance, so it has one pole per swept element, and at that pole the added
+# element ANTI-RESONATES with the network's own reactance.  Drawn raw, the pole
+# owns the picture: measured on the shipped fixture (coupled_4port_diff.s4p,
+# probes 1/3, grounds 2/4, 5.1 GHz, sweeping BOTH grounds as one group) the
+# analytic interval is (-394 uH, +375 uH) against endpoints of +821 pH and
+# +203 pH, the y axis read `1e-10` over a single vertical spike, and the
+# headline number under it was the tool describing its own arithmetic rather
+# than the structure.  A picture that conveys nothing beside a correct sentence
+# is worse than no picture.
+#
+# A POLE IS A REAL FEATURE, SO IT IS LABELLED, NEVER HIDDEN.  What changes is
+# only which part of the curve the axis is scaled to.
+
+#: A sample counts as "at the pole" while it is outside the [ideal, open]
+#: bracket by more than this fraction of the bracket's own span.
+#:
+#: A tolerance is needed and cannot be zero: the curve APPROACHES both
+#: endpoints asymptotically from outside, so "outside the bracket" is true of
+#: very nearly every sample and the contiguous run around the pole then ran
+#: from the first sample to the last.  Measured on the fixture above, sweeping
+#: ground port 2: with no tolerance the excluded window was
+#: [9.69 pH, 969 uH] -- the whole swept range -- and at 5% it is
+#: [9.41 nH, 997 nH], i.e. about one decade either side of a pole at 96.9 nH.
+POLE_BRACKET_TOL = 0.05
+
+#: How far either side of the CLOSED-FORM pole location the seed sample is
+#: looked for, as a factor in the swept parameter.  The pole itself is never
+#: found by scanning -- it is `t = -lam_j`, straight off the partial fractions
+#: `sweep_mobius` already returns -- but the WIDTH of its excursion on a log
+#: sample grid is a rendering question, and a grid of 160 points over 8 decades
+#: puts about 20 samples inside this factor.
+POLE_SEED_FACTOR = 2.0
+
+#: Margin added above and below the pole-free interval, as a fraction of it.
+SWEEP_Y_PAD = 0.12
+
+#: What a CONSTANT sweep's margin is a fraction of, when there is no span to
+#: take a fraction of.
+#:
+#: A number, not a quantity -- and that is the whole point of it having a name.
+#: The margin used to fall back to `max(abs(hi), abs(lo), 1.0)`, and that bare
+#: `1.0` is one HENRY in an expression whose other terms are picohenries.
+#: MEASURED on decap_4port.s4p (ordinary mode 6, probes 1/2, `gnd_ports="3,4"`,
+#: 5 GHz, either ground row): the sweep is exactly constant -- every residue is
+#: 0, so ideal = open = -506.755 nH -- and the axis came out
+#: (-120.00005 mH, +119.99995 mH), i.e. **473 602x** the value it was drawn to
+#: show.  The curve, the ideal line and the open line all landed on one pixel
+#: row, `linear_ticks` was False so the symlog decade locator printed 17
+#: labelled decades from -10^0 to +10^0, and the caption beside it correctly
+#: read `[-507 nH, -507 nH]  ideal -507 nH  open -507 nH`.  That is item 1's own
+#: failure -- a correct sentence beside a picture that conveys nothing -- on a
+#: shipped fixture, and the bracket-the-endpoints guard passed it trivially
+#: because +-0.12 H brackets everything.
+#:
+#: With the margin taken as a fraction of the VALUE the same case reads
+#: (-567.6 nH, -445.9 nH), 1.24x the value, and `linear_ticks` becomes True.
+#: When the value is exactly zero as well the pad is zero, `_scale_sweep_axis`'s
+#: `yhi > ylo` guard declines to set any limit, and matplotlib's own autoscale
+#: is left in place -- which is the honest answer for a curve that is
+#: identically zero.
+SWEEP_Y_PAD_FLAT = 0.12
+
+#: While the visible y range reaches no further than this multiple of
+#: `linthresh`, the symlog axis is given a LINEAR major locator.
+#:
+#: MEASURED, and it is not a preference.  matplotlib's symlog locator ticks at
+#: DECADES, so on a sub-decade range it produces no labelled tick at all: with
+#: ylim (310 pH, 919 pH) the ticks inside the range were `[]` with the default
+#: locator and `['500 pH']` with subs=[1,2,5], against
+#: `['450 pH', '600 pH', '750 pH', '900 pH']` from MaxNLocator.  Inside
+#: `linthresh` the symlog transform IS the identity, so a linear locator places
+#: its ticks exactly right there -- this buys the ticks back without changing
+#: the axis, and the moment the data really does span decades (a pole-free
+#: excursion of 300x was rendered as a check) the decade locator takes over
+#: and both endpoints stay distinguishable.
+SYMLOG_LINEAR_DECADES = 10.0
+
+_TINY = 1e-300
+
+
+@dataclass(frozen=True)
+class SweepPole:
+    """
+    One pole of the sweep, at a POSITIVE value of the swept parameter.
+
+    `t` is closed form -- the partial-fraction expansion puts the poles at
+    `t = -lam_j` and `sweep_mobius` returns `lam` -- so it is exact whatever
+    the sample grid does.  `t_lo` / `t_hi` are the sampled extent of the
+    excursion around it and are what the interval excludes; they are a
+    RENDERING decision, which is why they are separate fields and not `t`.
+
+    `visible` is False for a pole whose excursion never leaves the bracket in
+    this sampling (an over-damped one, or one outside the sampled range).  Such
+    a pole is not drawn -- there is nothing on the curve to point at -- but it
+    is still in `poles`, because "there are two poles and one of them is off
+    the left edge" is a different statement from "there is one pole".
+    """
+    t: float
+    t_lo: float
+    t_hi: float
+    index: int
+    visible: bool
+
+
+@dataclass(frozen=True)
+class SweepPicture:
+    """
+    Everything the axis and the caption need, resolved once from one `Sweep`.
+
+    Pure: no Tk, no matplotlib, no widget.  The window draws it; the caption
+    reads it; the test asserts on it without a display.
+    """
+    poles: tuple[SweepPole, ...]
+    #: The interval over the POLE-FREE portion, in the sweep's own unit.  It
+    #: ALWAYS contains both physical endpoints, because `t = 0` and
+    #: `t -> infinity` are pole-free by construction and both are added to the
+    #: candidate set as exact closed-form values rather than as samples.
+    interval: tuple[float, float]
+    ylim: tuple[float, float]
+    linthresh: float
+    linear_ticks: bool
+    #: Samples suppressed as pole excursion -- what "runs off the top" means,
+    #: counted so the caption can say the curve is off-scale rather than leave
+    #: the reader to infer it from a line that leaves the frame.
+    n_offscale: int
+
+    @property
+    def drawn(self) -> tuple:
+        return tuple(p for p in self.poles if p.visible)
+
+    @property
+    def clusters(self) -> tuple:
+        """
+        The visible poles grouped by the EXCURSION they share -- one entry per
+        thing to draw, not one per pole.
+
+        Measured on the shipped fixture sweeping both grounds as one group: the
+        two poles sit at 96.5 nH and 97.0 nH, 0.5% apart, and produced two
+        vertical lines one pixel apart with two rotated labels printed over
+        each other -- illegible, and claiming two features where the curve has
+        one. They are one excursion by construction (identical `t_lo` /
+        `t_hi`), which is exactly the key used here.
+
+        The poles themselves are NOT merged: `poles` still carries both,
+        because "there are two poles half a percent apart" is a fact about the
+        network and the caption says how many.
+        """
+        out: list[list[SweepPole]] = []
+        for p in self.drawn:
+            if out and out[-1][0].t_lo == p.t_lo and out[-1][0].t_hi == p.t_hi:
+                out[-1].append(p)
+            else:
+                out.append([p])
+        return tuple(tuple(c) for c in out)
+
+
+def sweep_pole_locations(sw) -> list[tuple[int, float]]:
+    """
+    Every pole of the sweep at a POSITIVE parameter value, in closed form.
+
+    `Sweep` is canonically a partial fraction
+    `Z(t) = c0 - sum_j residues[j] / (lam[j] + t)`, so the poles are exactly
+    `t = -lam[j]` and nothing here looks at a sample.  Only `Re(lam) < 0` puts
+    one on the swept half-line; a complex `lam` makes it a near-pole rather
+    than a true one, which is why the value is taken from the real part and the
+    excursion's width is measured separately.
+    """
+    out: list[tuple[int, float]] = []
+    for j, lam in enumerate(getattr(sw, "lam", ()) or ()):
+        t = -complex(lam).real
+        if math.isfinite(t) and t > 0.0:
+            out.append((j, t))
+    out.sort(key=lambda p: p[1])
+    return out
+
+
+def sweep_picture(sw) -> SweepPicture:
+    """
+    Where the poles are, what the curve does away from them, and the y axis
+    that shows both.
+
+    The y limits come from the PHYSICAL ENDPOINTS -- `M(0)` (ideal) and
+    `M(inf)` (open), the two numbers a reader opens this pane for -- together
+    with the pole-free samples, plus a margin.  The pole is then allowed to run
+    off the top, which is the only way both endpoints stay distinguishable on
+    the same axis.
+
+    `linthresh` is the LARGER of the two endpoint magnitudes: everything up to
+    the biggest number the reader came for is rendered linearly, so an ordinary
+    sweep looks exactly as it did, and anything beyond it -- a pole-free
+    excursion of decades, or a curve that crosses zero on its way between the
+    endpoints -- is compressed logarithmically instead of flattening the
+    endpoint band to a line.  It is derived from the data, never a constant.
+    """
+    complex_q = str(getattr(sw, "part", "re")) == "complex"
+    ends = [complex(sw.value_ideal), complex(sw.value_open)]
+    end_vals = [v.real for v in ends]
+    if complex_q:
+        end_vals += [v.imag for v in ends]
+    end_vals = [float(v) for v in end_vals if math.isfinite(v)]
+
+    poles: list[SweepPole] = []
+    keep_vals: list[float] = []
+    n_off = 0
+    samples = getattr(sw, "samples", None)
+    if samples is not None and len(samples) == 2 and np.size(samples[0]):
+        ts_arr = np.asarray(samples[0], dtype=float)
+        raw = np.asarray(samples[1])
+        probe = np.abs(raw) if complex_q else np.real(raw)
+        lo_b, hi_b = float(sw.bracket[0]), float(sw.bracket[1])
+        tol = POLE_BRACKET_TOL * max(hi_b - lo_b, abs(hi_b), abs(lo_b), _TINY)
+        finite = np.isfinite(probe)
+        # A NaN sample is NOT "outside the bracket" -- it is no reading at all,
+        # and folding it into a pole window would attribute a missing number to
+        # a resonance.  It is dropped from the candidate set instead.
+        outside = finite & ((probe > hi_b + tol) | (probe < lo_b - tol))
+        mask = np.ones(ts_arr.shape, dtype=bool)
+        for j, t_p in sweep_pole_locations(sw):
+            near = np.where((ts_arr > t_p / POLE_SEED_FACTOR)
+                            & (ts_arr < t_p * POLE_SEED_FACTOR) & outside)[0]
+            if near.size == 0:
+                poles.append(SweepPole(t_p, t_p, t_p, j, False))
+                continue
+            seed = int(near[int(np.argmax(np.abs(probe[near])))])
+            i0 = i1 = seed
+            while i0 - 1 >= 0 and outside[i0 - 1]:
+                i0 -= 1
+            while i1 + 1 < ts_arr.size and outside[i1 + 1]:
+                i1 += 1
+            mask[i0:i1 + 1] = False
+            poles.append(SweepPole(t_p, float(ts_arr[i0]), float(ts_arr[i1]),
+                                   j, True))
+        keep = mask & (ts_arr > 0) & finite
+        n_off = int(np.count_nonzero(~mask))
+        kept = raw[keep]
+        vals = list(np.real(kept))
+        if complex_q:
+            vals += list(np.imag(kept))
+        keep_vals = [float(v) for v in vals if math.isfinite(float(v))]
+
+    cands = end_vals + keep_vals
+    if cands:
+        lo, hi = float(min(cands)), float(max(cands))
+    else:                                                # pragma: no cover
+        lo = hi = 0.0
+    span = hi - lo
+    # A CONSTANT sweep has no span, so the margin is a fraction of the VALUE --
+    # never of a bare 1.0, which is one henry.  See `SWEEP_Y_PAD_FLAT`.
+    pad = (SWEEP_Y_PAD * span if span > 0
+           else SWEEP_Y_PAD_FLAT * max(abs(hi), abs(lo)))
+    ylim = (lo - pad, hi + pad)
+
+    mag = max([abs(v) for v in end_vals] or [0.0])
+    if mag <= 0.0:
+        # Both endpoints are exactly zero (or unreadable).  Fall back to the
+        # pole-free portion, so a curve that is zero at both ends and non-zero
+        # in between still gets an axis; a zero linthresh means "leave it
+        # linear", which is what the caller does with it.
+        mag = max([abs(v) for v in cands] or [0.0])
+    linear = (mag <= 0.0
+              or max(abs(ylim[0]), abs(ylim[1])) <= SYMLOG_LINEAR_DECADES * mag)
+    return SweepPicture(tuple(poles), (lo, hi), ylim, float(mag), bool(linear),
+                        n_off)
+
+
+def si_tick(value: float, unit: str) -> str:
+    """
+    One axis tick of the sweep plot, in engineering units.
+
+    Pure, so the formatter's decisions are testable without a figure.  `0` is
+    special-cased to a bare `0`: `format_si(0.0, 'H')` is `'0.00 H'`, and a
+    zero crossing on a symlog axis wants a tick mark, not three characters of
+    false precision.  A non-finite tick reads `--`, the readout's own
+    no-reading marker, rather than `nan H`.
+    """
+    v = float(value)
+    if not math.isfinite(v):
+        return "--"
+    if v == 0.0:
+        return "0"
+    s = format_si(v, unit)
+    return MINUS + s[1:] if s[:1] == "-" else s
+
+
+def _si_formatter(unit: str):
+    """
+    `si_tick` as a matplotlib formatter.
+
+    A `FuncFormatter`'s `get_offset()` is `''`, so installing one also clears
+    the exponent offset the ScalarFormatter parks in the corner -- which is
+    checked by measurement (`get_offset_text().get_text()`), not assumed.
+    """
+    return mticker.FuncFormatter(lambda v, _pos: si_tick(v, unit))
+
+
+def pole_label(cluster: Sequence[SweepPole], unit: str) -> str:
+    """
+    What one drawn pole marker is called: its parameter value, or the range and
+    the count when several poles share one excursion.
+    """
+    if not cluster:                                      # pragma: no cover
+        return ""
+    # The prefix is only for the singleton: `pole_span` already spells the
+    # plural as "…(2 poles)", and "poles  96.5 nH…97 nH (2 poles)" says it
+    # twice.
+    span = pole_span(cluster, unit)
+    return span if len(cluster) > 1 else f"pole  {span}"
+
+
+def pole_span(cluster: Sequence[SweepPole], unit: str) -> str:
+    """
+    The parameter value one drawn marker stands for, in words: a single value,
+    or the range and the count when several poles share one excursion.
+    """
+    if not cluster:                                      # pragma: no cover
+        return ""
+    if len(cluster) == 1:
+        return format_si(cluster[0].t, unit)
+    lo = min(p.t for p in cluster)
+    hi = max(p.t for p in cluster)
+    return (f"{format_si(lo, unit)}…{format_si(hi, unit)} "
+            f"({len(cluster)} poles)")
+
+
+def sweep_caption(sw, pic: Optional[SweepPicture] = None) -> list[str]:
     """
     The two facts a sweep curve is read for, plus whatever it warns about.
 
     `interval` is the headline -- "M lies in [a, b] over any physical ground
     inductance" is something a budget can be written against, in a way a single
-    number at one guessed L is not.  `leaves_bracket` is the case a two-point
-    best/worst estimate gets WRONG, so it is stated in words and not left to
-    the reader to spot on the curve.
+    number at one guessed L is not.
+
+    WHEN THERE IS A POLE IN RANGE THE HEADLINE IS THE POLE-FREE INTERVAL, and
+    the pole is a statement of its own.  `Sweep.interval` is the analytic
+    extremum over the WHOLE half-line, so at a pole it is the resonance:
+    measured on coupled_4port_diff.s4p at 5.1 GHz, sweeping both grounds as one
+    group, it reads (-394 uH, +375 uH) beside endpoints of +203 pH and
+    +821 pH.  Those microhenries are arithmetically exact and are a property of
+    the pole, not a range a budget can be written against -- so they are still
+    reported, in the pole line, named as what they are.
+
+    With NO pole in range this returns exactly what it always did.
+
+    THE TWO ENDPOINTS ARE PRINTED THE WAY THE INTERVAL BESIDE THEM IS
+    COMPUTED.  For a complex quantity (`Z`) `Sweep.interval` and
+    `Sweep.bracket` are over the MAGNITUDE, while the endpoints were printed as
+    `.real` unconditionally -- measured on coupled_4port_diff.s4p at 5.1 GHz,
+    the line read `Z over series inductance … [−2.15 mΩ, +27.5 Ω]
+    ideal +6.41 mΩ   open +785 µΩ` while `|value_ideal|` is **26.3 Ω**, i.e.
+    the ideal endpoint was reported four orders of magnitude below the interval
+    that is supposed to contain it.  A magnitude is labelled `|Z|` so no sign is
+    being suppressed -- there is none to suppress -- and every real-valued
+    quantity (M, Re Z, Im Z, …) is untouched.
+
+    EVERY LINE LEADS WITH ITS NUMBERS, because this Label is the narrowest
+    clipping strip in the window: it sits under the plot, in the RIGHT half of
+    a horizontal split, so it is only as wide as the plot is.  MEASURED on the
+    real widget with a row selected -- 329 px at 1020x700, 569 px at 1500x900,
+    179 px at the 720x420 minimum -- the interval line was 107 characters and
+    51 / 93 / 29 of them were visible, i.e. at every size below 1500 px it read
+    `M over series inductance ∈ [0, ∞), AWAY FROM THE PO` and the interval, the
+    ideal and the open -- the three numbers this pane exists to report -- were
+    all off screen, with only `ideal` making it even at 1500 px.  The prose is
+    what can go; it is in Copy report in full (rule 12).  Same treatment for
+    the pole line, whose LOCATION now comes before its explanation.
     """
-    lo, hi = sw.interval
+    if pic is None:
+        pic = sweep_picture(sw)
     u = _display_unit(sw.unit)
-    out = [f"{sw.quantity} over {sw.param_name} ∈ [0, ∞):  "
-           f"[{signed_str(format_si(lo, u))}, {signed_str(format_si(hi, u))}]"
-           f"     ideal {signed_str(format_si(sw.value_ideal.real, u))}"
-           f"   open {signed_str(format_si(sw.value_open.real, u))}"]
-    if sw.leaves_bracket:
-        out.append("NON-MONOTONIC: the curve LEAVES the [ideal, open] "
-                   "bracket, so those two endpoints are not a bound.")
+    drawn = pic.drawn
+    if str(getattr(sw, "part", "re")) == "complex":
+        mark = f"|{sw.quantity}| "
+        e_val, o_val = abs(sw.value_ideal), abs(sw.value_open)
+    else:
+        mark = ""
+        e_val, o_val = sw.value_ideal.real, sw.value_open.real
+    ideal_open = (f"  ideal {mark}{signed_str(format_si(e_val, u))}"
+                  f"  open {mark}{signed_str(format_si(o_val, u))}")
+    if drawn:
+        lo, hi = pic.interval
+        out = [f"{sw.quantity} ∈ [{signed_str(format_si(lo, u))}, "
+               f"{signed_str(format_si(hi, u))}]" + ideal_open
+               + f"  — AWAY FROM THE POLE, over {sw.param_name} ∈ [0, ∞)"]
+        where = ", ".join(pole_span(c, sw.param_unit)
+                          for c in pic.clusters[:3])
+        full_lo, full_hi = sw.interval
+        out.append(
+            # The parameter is NOT named again here: the value carries its own
+            # unit, the x axis two inches away is labelled with it, and the
+            # line above says `over <param> ∈ [0, ∞)`.  Naming it a fourth time
+            # cost 21 characters of a 56-character budget.
+            f"POLE at {where}: the added element "
+            "ANTI-RESONATES with the structure there, so the curve LEAVES the "
+            "[ideal, open] bracket around it and runs OFF-SCALE — it is drawn "
+            "as a vertical line and the interval above excludes it. Over the "
+            f"whole half-line, pole included, it is "
+            f"[{signed_str(format_si(full_lo, u))}, "
+            f"{signed_str(format_si(full_hi, u))}].")
+        lo_b, hi_b = sw.bracket
+        tol = POLE_BRACKET_TOL * max(hi_b - lo_b, abs(hi_b), abs(lo_b), _TINY)
+        if lo < lo_b - tol or hi > hi_b + tol:
+            # The pole is not the only thing taking it out of the bracket, so
+            # rule 8's label is still owed in its own right.
+            out.append("NON-MONOTONIC away from the pole as well: the curve "
+                       "LEAVES the [ideal, open] bracket, so those two "
+                       "endpoints are not a bound.")
+    else:
+        lo, hi = sw.interval
+        out = [f"{sw.quantity} ∈ [{signed_str(format_si(lo, u))}, "
+               f"{signed_str(format_si(hi, u))}]" + ideal_open
+               + f"  — over {sw.param_name} ∈ [0, ∞)"]
+        if sw.leaves_bracket:
+            out.append("NON-MONOTONIC: the curve LEAVES the [ideal, open] "
+                       "bracket, so those two endpoints are not a bound.")
     out.extend(sw.notes)
     return out
 
@@ -1073,6 +1660,47 @@ def sweep_caption(sw) -> list[str]:
 #: interval + the warning + the pointer.  The full caption is in Copy report,
 #: which is what `report_text` carries it for.
 SWEEP_NOTE_LINES = 3
+
+#: How many lines of the caption's own font the note must leave for the table
+#: and the plot to share, whatever the window size.  SEVEN, and every one of
+#: the four numbers it is calibrated against was measured on a mapped window.
+#:
+#: `SWEEP_NOTE_LINES = 3` is a count, and a count is not a budget: the note is
+#: packed `side=BOTTOM` against the `expand=True` canvas, so it takes its whole
+#: request and the plot gets the remainder.  At 100% three lines are 55 px; at
+#: 150% they are 112 px, and the pane they are taking it out of got SMALLER,
+#: not bigger, because the chrome above scales too.  MEASURED on
+#: coupled_4port_diff.s4p (probes 1/3, grounds 2,4, 5.1 GHz) with an element
+#: row SELECTED -- which is the state the pane exists for, and which the
+#: existing 150% guard never enters:
+#:
+#:     scaling  window     paned  detail  note   CANVAS
+#:      100%    980x700     497    331     55    309x276
+#:      100%    720x420     188     90     55    179x35
+#:      150%    980x700     268    114    112    309x2      <- the DEFAULT size
+#:      150%    720x678     198     70    112    309x2, winfo_ismapped() == 0
+#:
+#: Two of those are a plot that conveys nothing -- item 1's whole subject --
+#: and the last one also overhangs its 179 px parent by 130 px, the only
+#: containment violation in the window.
+#:
+#: The cap is therefore `budget // line - 7`, where `budget` is
+#: `winfo_height() - _chrome_height()`.  Both terms are INDEPENDENT OF THE
+#: NOTE -- `_chrome_height` enumerates seven fixed widgets and the note is not
+#: among them -- and that is the whole reason the rule is written against the
+#: window rather than against the sweep pane, which would have been the obvious
+#: place to read it: the pane's height comes from the sash, `_sash_target`
+#: reads the bottom pane's REQUESTED height, and the note's request is part of
+#: it.  A cap read from the pane would therefore be a rule that changes the
+#: size it is measured from -- the `_apply_editor_scrollbars` limit cycle, in
+#: which `update()` never returns and the GUI and the test suite hang together.
+#: This one cannot: nothing it writes can change `winfo_height()`.
+#:
+#: Against the table above the cap gives 3 / 3 / 1 / 1 lines, i.e. the two
+#: 100% cases are untouched -- including 720x420, where three lines against a
+#: 35 px canvas is the documented trade (`the caption is worth the whole
+#: pane`) -- and the two broken 150% cases get the plot back.
+ATTRIB_SWEEP_NOTE_RESERVE_LINES = 7
 
 
 def sweep_note_text(caption: Sequence[str], problems: Sequence[str] = (),
@@ -1203,6 +1831,33 @@ class Provenance:
     actual_hz: float
     spec_text: str
     units_mode: str
+    #: The ground model IN FORCE, twice over: the SPEC is what the user typed
+    #: (and what the field is reloaded with), the LABEL is what the CLI's
+    #: parser resolved it to.  Both are frozen at compute time like every other
+    #: field here except the units -- a window whose field has been edited but
+    #: not Recomputed must still say which model produced the numbers on
+    #: screen, which is the whole reason [Recompute] exists.
+    ground_model: str = GROUND_MODEL_DEFAULT
+    ground_model_label: str = "diag (as declared)"
+    #: What `_attr_zt` said about applying it -- the CLI prints these in
+    #: `header_notes` and the window used to throw them away
+    #: (`zt, _gm_notes = ground_model_zt(...)`).  They are not decoration: the
+    #: first of them means the model was NOT APPLIED.  MEASURED on
+    #: coupled_4port_diff.s4p, probes 1/3, one connection row `2 short_to 4`
+    #: (a legal spelling of the same network) with `shared:L=1n` and
+    #: [Recompute]: `_attr_zt` returned `zt is None` with *"The ground model
+    #: was ignored: this spec declares no shunt element … there is no ground
+    #: lead to model."*, so the numbers stayed the declared network's and
+    #: `reference_applicable` stayed True -- while the sign strip read
+    #: `Grounds: shared:L=1n` and both exports headed the block
+    #: `Ground model: shared:L=1n`.  A reader who typed `shared:L=1n`, saw the
+    #: number not move and read that strip concludes the shared return is
+    #: worth 0 dB, in the one flow that exists to settle a 6.07 dB dispute.
+    ground_model_notes: tuple = ()
+    #: False when a model was asked for and `_attr_zt` declined to build it.
+    #: The discriminator is free (`gm_z is not None and zt is None`) and it is
+    #: what `ground_model_label` renders the IGNORED marker from.
+    ground_model_applied: bool = True
     #: `spec_signature(trace)` as it stood when this was computed.  The one
     #: field here that is not a rendered string, and it earns its place: it is
     #: what `staleness_text` compares against on every editor keystroke, and
@@ -1239,7 +1894,15 @@ def provenance_lines(prov: Provenance) -> list[str]:
         f"Read at : {_freq_phrase(prov)}",
         f"Units   : {prov.units_mode}",
         "",
-        "Ground model: " + GROUND_MODEL_TEXT,
+        f"Ground model: {prov.ground_model_label}  (field: "
+        f"{prov.ground_model})",
+    ]
+    # The parser's own notes, verbatim, ahead of the standing explanation --
+    # one of them means the model on the line above was NOT the one applied.
+    for note in prov.ground_model_notes:
+        out.append("    ! " + str(note))
+    out += [
+        "    " + GROUND_MODEL_TEXT,
         "",
         attrib.SIGN_CONVENTION_TEXT,
         SIGN_NOTE_TERMS + " " + SIGN_NOTE_SHARES,
@@ -1311,6 +1974,46 @@ def header_trace_text(prov: Provenance) -> str:
             f"   ·   {_fit(prov.file_label, HEADER_LABEL_CHARS)}")
 
 
+def stability_offer(n_points: int = STABILITY_POINTS, n_ports: int = 0) -> str:
+    """
+    The OFF state, and it CARRIES THE ACTION rather than only the caveat.
+
+    "across frequency: not checked" is too soft a default for something the
+    acceptance criteria are about: a ranking read off one frequency is a
+    statement about that frequency, and the window ships with the check off
+    because it costs a re-solve per frequency.  Turning it on unconditionally
+    would spend that on every window nobody asks the question of; leaving it as
+    a bare caveat leaves the reader with a warning and no way to act on it.  So
+    the badge says what the check COSTS and that one click runs it.
+
+    The cost is stated as what it actually is -- N extra `build_context` +
+    `decompose` passes, each O(N^3) in the PORT count -- rather than as a time,
+    which depends on the box and would be a promise this cannot keep.
+
+    THE ACTION AND THE COST COME FIRST, because the tail of this line is not
+    on screen.  The Label is `wraplength=0`, i.e. it CLIPS (that is the
+    `_footer_strip_text` rule, and it is right -- a wrapping strip costs plot
+    height).  MEASURED on the real widget, the sentence being 238 characters:
+
+        100% 1500 px  238 chars   100% 980 px  156   100% 720 px  111
+        150% 1500 px  104 chars   150% 980 px   64   150% 720 px   46
+
+    With the caveat first, at 150% / 980 px -- the DEFAULT size -- the reader
+    saw `across frequency: not checked — a ranking read off ONE frequency` and
+    nothing else: the gesture and the cost, which are the whole of what item 3
+    asked for, were both off screen, and at 100% / 980 px the cost was too
+    (the visible text ended `… across the band: 4`).  A badge that carries only
+    the caveat is the "not checked" default this was supposed to replace.
+    """
+    extra = max(0, int(n_points) - 1)
+    where = f" ({int(n_ports)}-port file)" if n_ports else ""
+    return (f"not checked — press {EXPAND_COLLAPSED}: {extra} more "
+            f"solves{where}, re-ranking at {int(n_points)} frequencies across "
+            f"the band. A ranking read off ONE frequency is a statement about "
+            f"that frequency; this line will then say which ranks moved and "
+            f"where.")
+
+
 def stability_line(freqs: Sequence[float], ranks: Sequence[dict]) -> str:
     """
     The across-frequency badge's verdict, from one ranking per frequency.
@@ -1318,10 +2021,26 @@ def stability_line(freqs: Sequence[float], ranks: Sequence[dict]) -> str:
     A ranking read off one frequency is a statement about that frequency.  The
     badge says which of the two it is in one line, because as a TAB it would
     never be opened -- which is the whole argument against the notebook.
+
+    ONCE CHECKED IT SAYS WHAT MOVED, not merely that something did.  Naming the
+    elements was not enough: "'ground port 2', 'ground port 4' change places"
+    leaves the reader to go and find out WHERE, which is the same re-solve they
+    just paid for.  Each moved element therefore carries its rank change and
+    the FIRST frequency at which it happened.  A stable ranking is a RESULT and
+    is said in those words -- an absence of complaint would read as an absence
+    of a check.
+
+    BOTH VERDICTS LEAD WITH THE THING THE READER PAID FOR, for the same
+    measured reason as `stability_offer`.  MEASURED on the real widget:
+    the STABLE verdict is 152 characters and 65 of them are visible at
+    150% / 980 px, so `nothing changed places` -- the words item 3 requires --
+    clipped; a real NOT-stable verdict off a 32-port file is 219 characters
+    with 65 visible, so the moved ranks and their frequencies, which are the
+    entire point of the check, were exactly the part that went.  The span and
+    the "belongs to <f> only" tail are the parts that can go instead.
     """
     if len(freqs) < 2:
-        return ("not checked — a ranking read off one frequency is a "
-                "statement about that frequency only")
+        return stability_offer()
     labels: list[str] = []
     for col in ranks:
         for lab in col:
@@ -1331,16 +2050,31 @@ def stability_line(freqs: Sequence[float], ranks: Sequence[dict]) -> str:
         return ("no ranking is available at any of these frequencies — the "
                 "per-element split was withheld (see the reconciliation "
                 "above)")
-    moved = [lab for lab in labels
-             if len({col.get(lab) for col in ranks}) > 1]
+    primary = format_freq(freqs[0])
     span = f"{format_freq(min(freqs))} … {format_freq(max(freqs))}"
+    moved: list[str] = []
+    for lab in labels:
+        base = ranks[0].get(lab)
+        for k in range(1, len(ranks)):
+            here = ranks[k].get(lab)
+            if here == base:
+                continue
+            # "absent" is not rank 0 and is not a tie for last: an element
+            # whose admittance vanishes at that frequency is DROPPED there, so
+            # `stability_ranks` keys on the description and the column simply
+            # has no entry.  Printing a number for it would invent one.
+            was = "absent" if base is None else f"#{base}"
+            now = "absent" if here is None else f"#{here}"
+            moved.append(f"'{lab}' {was}→{now} at {format_freq(freqs[k])}")
+            break
     if not moved:
-        return f"rank is STABLE across {len(freqs)} frequencies ({span})"
-    return ("rank is NOT stable across " + span + ": "
-            + ", ".join(f"'{m}'" for m in moved[:4])
-            + (" …" if len(moved) > 4 else "")
-            + " change places, so the ranking above belongs to this "
-              "frequency only")
+        return (f"STABLE — nothing changed places across {len(freqs)} "
+                f"frequencies ({span}), so the order above is not a property "
+                f"of {primary} alone")
+    return ("NOT stable — " + ", ".join(moved[:3])
+            + (f" … +{len(moved) - 3} more" if len(moved) > 3 else "")
+            + f"; checked across {span}, so the ranking above belongs to "
+            + f"{primary} only")
 
 
 # ---------------------------------------------------------------------------
@@ -1558,7 +2292,9 @@ class AttribResult:
 
 
 def compute_attribution(app, trace, file_entry, victim: str, aggressor: str,
-                        quantity: str, freq_hz: float) -> AttribResult:
+                        quantity: str, freq_hz: float,
+                        ground_model: str = GROUND_MODEL_DEFAULT
+                        ) -> AttribResult:
     """
     Build the context and decompose, with no widget anywhere in sight.
 
@@ -1570,6 +2306,19 @@ def compute_attribution(app, trace, file_entry, victim: str, aggressor: str,
     one-digit typo becoming a plausible wrong number), and the second is the
     ONE definition of which row declared a port, so the From column here says
     what the Ports & Roles window says.
+
+    THE GROUND MODEL IS A SECOND BUILD, exactly as `--attribute`'s own
+    `build()` does it, and the order is load-bearing: the element list is what
+    the FIRST build discovers, and the (m, m) element-impedance matrix is sized
+    by it.  A dense `Zt` is a DIFFERENT NETWORK -- it is a mutual impedance
+    between ground leads and the DSL has no node to hang one on -- so
+    `build_context(zt=...)` sets `is_whatif`, keeps `Zop_declared` at the
+    DECLARED spec's answer, and `decompose` then reconciles the arithmetic on
+    that declared configuration while reporting `reference_applicable=False`.
+    That is CLAUDE.md's rule for this case, honoured by using the module's own
+    machinery rather than by a second rule here: the check survives, the second
+    OPINION does not, and `reconciliation_verdict` prints "not comparable"
+    rather than a disagreement.
     """
     g = _gui()
     term = app._build_termination(trace, nports=file_entry.ts.nports)
@@ -1583,6 +2332,22 @@ def compute_attribution(app, trace, file_entry, victim: str, aggressor: str,
 
     ctx = attrib.build_context(file_entry.Y, file_entry.ts.freqs, term,
                                freq_hz, sources=sources)
+    gm_kind, gm_z, gm_label = parse_ground_model(ground_model, ctx.omega)
+    gm_notes: list = []
+    gm_applied = True
+    if gm_z is not None:
+        zt, gm_notes = ground_model_zt(ctx, gm_kind, gm_z)
+        # THE NOTES ARE KEPT, and the first thing they can say is "I did not
+        # apply it" -- see `Provenance.ground_model_notes`.  The marker goes on
+        # the LABEL because the label is what the sign strip, Copy report and
+        # the CSV all render, so one assignment reaches every surface that
+        # names the model instead of three that can disagree.
+        gm_applied = zt is not None
+        if zt is not None:
+            ctx = attrib.build_context(file_entry.Y, file_entry.ts.freqs,
+                                       term, freq_hz, zt=zt, sources=sources)
+        else:
+            gm_label = f"{gm_label} — NOT APPLIED"
     dec = attrib.decompose(ctx, victim, aggressor, quantity)
 
     sig = spec_signature(trace)
@@ -1605,6 +2370,10 @@ def compute_attribution(app, trace, file_entry, victim: str, aggressor: str,
         requested_hz=float(freq_hz), actual_hz=float(ctx.freq_hz),
         spec_text=rows_to_dsl_text(mports, conn, extra),
         units_mode=str(app.units_mode_var.get()),
+        ground_model=str(ground_model),
+        ground_model_label=str(gm_label),
+        ground_model_notes=tuple(str(n) for n in gm_notes),
+        ground_model_applied=bool(gm_applied),
         signature=sig,
     )
     return AttribResult(prov=prov, ctx=ctx, dec=dec,
@@ -1651,6 +2420,20 @@ def stability_ranks(app, trace, file_entry, res: AttribResult,
         else:
             ctx = attrib.build_context(file_entry.Y, file_entry.ts.freqs,
                                        term, f, sources=sources)
+            # The GROUND MODEL travels with the check.  Without this the badge
+            # ranks the DECLARED network at four frequencies against the
+            # modelled network at the fifth, and reports the difference as
+            # frequency instability -- an answer about the model, printed
+            # under a heading that says frequency.  The impedance is re-parsed
+            # per frequency because `L=1n` is a different ohm value at each.
+            gm_kind, gm_z, _lbl = parse_ground_model(res.prov.ground_model,
+                                                     ctx.omega)
+            if gm_z is not None:
+                zt, _n = ground_model_zt(ctx, gm_kind, gm_z)
+                if zt is not None:
+                    ctx = attrib.build_context(
+                        file_entry.Y, file_entry.ts.freqs, term, f, zt=zt,
+                        sources=sources)
             dec = attrib.decompose(ctx, res.prov.victim, res.prov.aggressor,
                                    res.dec.quantity)
         # Keyed by the element DESCRIPTION, not by index: a lumped element
@@ -1732,14 +2515,39 @@ class AttributionWindow(tk.Toplevel):
         #: A list, not a widget write -- see `_alternatives`.
         self._cand_problems: list = []
         #: The UNCAPPED sweep caption, for Copy report.  The Label shows at
-        #: most `SWEEP_NOTE_LINES` of it.
+        #: most `_sweep_note_cap()` lines of it.
         self._sweep_full: list = []
+        #: What was last handed to `_set_sweep_note` -- the caption, a refusal,
+        #: or nothing.  A resize re-renders THIS at the new cap; it must not
+        #: fall back to `_sweep_full`, which on a pane showing "select an
+        #: element row" would resurrect the previous selection's caption.
+        self._sweep_shown: list = []
+        #: The last `SweepPicture` drawn -- the poles, the pole-free interval
+        #: and the axis they force.  None while nothing is drawn, so the
+        #: caption cannot be handed a picture from the previous selection.
+        self._sweep_pic: Optional[SweepPicture] = None
         #: The last minimum height applied, so the `<Configure>` handler can
         #: tell "nothing changed" from "recompute" without calling minsize()
         #: on every mouse move, and the one pending `after_idle` that handler
         #: may own (coalesced, and cancelled on destroy -- see `_on_configure`).
         self._min_h_applied = 0
         self._min_h_after = None
+        #: The split (item 2).  `_sash_user` is set by a DRAG and never by
+        #: anything automatic: once the reader has moved the divider it is
+        #: theirs until the window closes.  `_sash_lines` is the rendered line
+        #: count the current position was derived from, so a new decomposition
+        #: with a different number of rows re-derives it and a repaint of the
+        #: same one does not.  `_sash_press` is the position at ButtonPress,
+        #: which is what makes "was that a drag?" answerable.
+        self._sash_user = False
+        self._sash_lines = 0
+        self._sash_press = None
+        self._sash_after = None
+        #: How many times `_apply_sash` has WRITTEN a position.  Sampled at
+        #: ButtonPress so a release can tell a drag from our own write landing
+        #: mid-gesture -- see `_on_sash_release`.
+        self._sash_writes = 0
+        self._sash_press_writes = 0
 
         self.title(f"{ATTRIB_TITLE}: {res.prov.victim} ← {res.prov.aggressor}"
                    f"   [{res.prov.trace_id}] {res.prov.trace_label}")
@@ -1832,6 +2640,42 @@ class AttributionWindow(tk.Toplevel):
                                         command=self._on_recompute)
         self.header.add(self.recompute_btn, padx=6)
 
+        # --- the GROUND MODEL (item 4).  A ROW OF ITS OWN, not a seventh
+        # header item: measured, the six header items ask 961 px against the
+        # 964 px strip at the 980 default, so a seventh wraps the ReflowRow to
+        # two rows (29 px -> 58) at 980 and to three (58 -> 87) at 720, while
+        # this row costs 25 px at 100% and 37 px at 150% at EVERY width.  It
+        # also keeps the one-line note beside the control it describes, which
+        # a ReflowRow cannot promise -- its items wrap as units.
+        #
+        # The Entry takes the CLI's spelling verbatim (`diag`, `diag:L=1n`,
+        # `shared:L=0.3n`) and is parsed by the CLI's own parser -- see
+        # `parse_ground_model`.  <Return> recomputes, like the Freq field: a
+        # ground model that changed the answer without going through
+        # [Recompute] would be exactly the auto-refresh rule 6 refuses.
+        #
+        # PACK ORDER: label, entry, then the hint LAST, so at a narrow width it
+        # is the sentence that goes and never the field -- the same mistake the
+        # candidates row was measured making, in reverse.
+        self._gm_row = gm = ttk.Frame(self)
+        gm.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(2, 0))
+        ttk.Label(gm, text="Grounds:").pack(side=tk.LEFT)
+        self.ground_var = tk.StringVar(value=self._res.prov.ground_model)
+        self.ground_entry = ttk.Entry(gm, textvariable=self.ground_var,
+                                      width=13)
+        self.ground_entry.pack(side=tk.LEFT, padx=(3, 6))
+        self.ground_entry.bind("<Return>", lambda _e: self._on_recompute())
+        # The hint is an ATTRIBUTE, because it is also where `_attr_zt`'s notes
+        # land: the standing "why the default is not obviously right" sentence
+        # is worth saying until there is something more urgent to say in the
+        # same place, and "the model you typed was not applied" is that.  One
+        # widget, no extra pixels -- see `Provenance.ground_model_notes`.
+        self._gm_hint = ttk.Label(gm, text=GROUND_MODEL_HINT,
+                                  foreground=hint_fg, wraplength=0, anchor="w")
+        self._gm_hint.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._gm_hint_fg = hint_fg
+        self._gm_warn_fg = warn_fg
+
         # --- provenance / staleness banner (rule 6): the ONE thing the
         # editor hook writes.
         #
@@ -1861,7 +2705,7 @@ class AttributionWindow(tk.Toplevel):
         # the shares rule, then the ground model.
         self.sign_lbl = ttk.Label(self, anchor="w", justify=tk.LEFT,
                                   wraplength=0, foreground=hint_fg,
-                                  text=SIGN_STRIP_TEXT)
+                                  text=sign_strip_text())
         self.sign_lbl.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(2, 0))
 
         # --- reconciliation (rule 5): in the HEADER, because it gates trust in
@@ -1911,6 +2755,17 @@ class AttributionWindow(tk.Toplevel):
         self.paned.add(bot, weight=2)
 
         self.paned.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=8)
+        # The divider is DERIVED FROM CONTENT and then belongs to the user
+        # (item 2).  Both bindings are on the Panedwindow itself, which is the
+        # only widget the sash is part of -- a click inside either pane goes to
+        # the child, whose bindtags do not include this one -- so they fire for
+        # a sash gesture and for nothing else.  A resize moves the sash too
+        # (ttk redistributes by weight), which is why the press position is
+        # what a release is compared against rather than the value last
+        # applied: a resize is not a drag and must not claim the split.
+        self.paned.bind("<ButtonPress-1>", self._on_sash_press)
+        self.paned.bind("<ButtonRelease-1>", self._on_sash_release)
+        self.paned.bind("<Configure>", self._on_paned_configure)
 
     def _combo_cell(self, title: str, var: tk.StringVar,
                     values: Sequence[str], width: int) -> tuple:
@@ -1951,9 +2806,9 @@ class AttributionWindow(tk.Toplevel):
         ttk.Label(cell, text="GHz").pack(side=tk.LEFT)
         return cell
 
-    def _make_mono_text(self, parent) -> tk.Text:
+    def _make_mono_text(self, parent, wrap: str = tk.NONE) -> tk.Text:
         """
-        A monospace table with BOTH scrollbars, always shown.
+        A monospace pane with both scrollbars, always shown.
 
         Never autohidden.  Deciding each bar off its own scrollcommand is a
         LIMIT CYCLE, not a race -- hiding the horizontal bar gives the widget
@@ -1961,6 +2816,17 @@ class AttributionWindow(tk.Toplevel):
         which brings the horizontal bar back, and `update()` never returns.
         The editor pays a single-decision function for that; a table this size
         can simply keep both, which costs 17 px and cannot oscillate.
+
+        `wrap` is `NONE` for a TABLE and `WORD` for the detail pane, and the
+        difference is not cosmetic.  A table must never wrap: a column that
+        folds onto the next line stops being a column, which is the whole
+        reason rule 3 measures glyph widths at all.  The detail pane is PROSE
+        -- sentences about a current and a transimpedance -- and a horizontal
+        scrollbar under prose is a reading tax: measured at the 720 px minimum
+        the pane's `xview` read `(0.0, 0.950)`, so the tail of every long line
+        was off the right edge with a scrollbar as the only route to it.  A
+        wrapping pane needs no horizontal bar at all, and dropping it also
+        gives the pane its 17 px back.
 
         NOT registered with `App._register_scrollable`: "Text" is in
         `App._WHEEL_OWNERS`, so `_route_wheel` bails out over it and Tk's own
@@ -1984,13 +2850,17 @@ class AttributionWindow(tk.Toplevel):
         # budget and the TABLE read `winfo_ismapped() == 0` -- the primary
         # content gone while the drill-down below it was fine.  Balanced
         # (156 / 156) the same window gives 54 px and 74 px, both mapped.
-        txt = tk.Text(frame, wrap=tk.NONE, font=ATTRIB_FONT, height=8,
-                      yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        hsb.pack(side=tk.BOTTOM, fill=tk.X)
+        txt = tk.Text(frame, wrap=wrap, font=ATTRIB_FONT, height=8,
+                      yscrollcommand=vsb.set)
+        if wrap == tk.NONE:
+            txt.configure(xscrollcommand=hsb.set)
+            hsb.pack(side=tk.BOTTOM, fill=tk.X)
+            hsb.configure(command=txt.xview)
+        else:
+            hsb.destroy()
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vsb.configure(command=txt.yview)
-        hsb.configure(command=txt.xview)
         # One tag per role, so a row wears the colour its port wears in the
         # Ports & Roles window.  Never a colour per SIGN: red is WARN_FG
         # everywhere else here and a red negative makes a correct answer look
@@ -2039,7 +2909,8 @@ class AttributionWindow(tk.Toplevel):
         split = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
 
         left = ttk.Frame(split)
-        self.detail = self._make_mono_text(left)
+        # WORD, not NONE: this pane is prose (see `_make_mono_text`).
+        self.detail = self._make_mono_text(left, wrap=tk.WORD)
         split.add(left, weight=1)
 
         right = ttk.Frame(split)
@@ -2170,16 +3041,48 @@ class AttributionWindow(tk.Toplevel):
         self.header.refresh()
         self.refresh_banner()
 
+        # Which ground model is IN FORCE, on the strip that already carries the
+        # rules the numbers are read under.  It is the frozen Provenance value,
+        # not the Entry: the field can have been edited without a Recompute,
+        # and the strip describes the numbers on screen.
+        self.sign_lbl.configure(text=sign_strip_text(prov.ground_model_label))
+
+        # The parser's note about the model, where the control is.  It leads
+        # with the verdict because this Label clips like every other strip.
+        if prov.ground_model_notes:
+            self._gm_hint.configure(
+                text=("NOT APPLIED — " if not prov.ground_model_applied
+                      else "") + str(prov.ground_model_notes[0]),
+                foreground=(self._gm_warn_fg if not prov.ground_model_applied
+                            else self._gm_hint_fg))
+        else:
+            self._gm_hint.configure(text=GROUND_MODEL_HINT,
+                                    foreground=self._gm_hint_fg)
+
         _verdict, ok = reconciliation_verdict(dec)
         self.recon.configure(
             text="Reconciliation:  " + reconciliation_line(dec),
             foreground=self._banner_ok_fg if ok else self._banner_warn_fg)
 
+        # THE BUTTON IS A ONE-SHOT CHECK, NOT AN EXPANDER, and once it has run
+        # it is spent.  MEASURED before this: press -> `▾` plus the verdict;
+        # press again -> the glyph went back to `▸` and the label text was
+        # UNCHANGED, still the verdict, with `_badge_row` 27 px throughout.
+        # There is nothing to collapse -- `_expanded` gated no content, only
+        # the glyph -- so a glyph offering to collapse was inert, and offering
+        # to re-run would spend four more solves on an answer already on the
+        # line beside it.  A disabled button needs its reason on screen (the
+        # Keep button's rule); here the reason IS the label next to it, which
+        # is the verdict it produced.  [Recompute] builds a fresh AttribResult
+        # with `stability=""`, so a new decomposition makes it live again.
+        checked = bool(res.stability)
         self.badge_lbl.configure(
             text="across frequency: "
-                 + (res.stability or stability_line([prov.actual_hz], [])))
+                 + (res.stability
+                    or stability_offer(STABILITY_POINTS, self._nports())))
         self.badge_btn.configure(
-            text=EXPAND_EXPANDED if self._expanded else EXPAND_COLLAPSED)
+            text=EXPAND_EXPANDED if checked else EXPAND_COLLAPSED)
+        self.badge_btn.state(["disabled"] if checked else ["!disabled"])
 
         if self._view.get() == "sens":
             rows = self._sensitivity_all()
@@ -2200,8 +3103,24 @@ class AttributionWindow(tk.Toplevel):
                 text=f"{n} declared elements + the bare EM coupling")
         self._contrib_rows = table.rows
         self._set_text(self.table, table)
+        # Re-derive the split from the row count this repaint produced.  A
+        # repaint of the SAME table writes nothing (`_apply_sash` compares the
+        # target against the position), and a user who has dragged the divider
+        # keeps it whatever the row count does.
+        self._apply_sash(len(table.lines))
         self._highlight_selection()
         self._render_detail()
+
+    def _nports(self) -> int:
+        """The FILE's port count -- what the across-frequency cost scales on.
+
+        Never raises: the badge's offer is worth printing without it, and a
+        window whose file has gone still has to render.
+        """
+        try:
+            return int(self._file.ts.nports)
+        except Exception:                                # pragma: no cover
+            return 0
 
     def _highlight_selection(self) -> None:
         self.table.tag_remove("sel", "1.0", tk.END)
@@ -2253,6 +3172,7 @@ class AttributionWindow(tk.Toplevel):
 
     def _draw_sweep(self) -> None:
         self.figure.clf()
+        self._sweep_pic = None
         ax = self.figure.add_subplot(111)
         key = self._selected
         if key is None:
@@ -2295,8 +3215,13 @@ class AttributionWindow(tk.Toplevel):
         ax.axhline(sw.value_ideal.real, ls="--", lw=0.9, color="#207020")
         ax.axhline(sw.value_open.real, ls=":", lw=0.9, color="#a06000")
         ax.set_xscale("log")
-        ax.set_xlabel(f"{sw.param_name} [{sw.param_unit}]", fontsize=8)
-        ax.set_ylabel(f"{sw.quantity} [{_display_unit(sw.unit)}]", fontsize=8)
+        self._scale_sweep_axis(ax, sw)
+        # The unit is on the TICKS now (`_si_formatter`), so it is not repeated
+        # in the axis label: `500 pH` under `series inductance [H]` prints the
+        # henry twice and the prefix once, which is the arrangement that made
+        # the old `1e-10` corner offset readable as part of the label.
+        ax.set_xlabel(str(sw.param_name), fontsize=8)
+        ax.set_ylabel(str(sw.quantity), fontsize=8)
         ax.tick_params(labelsize=7)
         ax.grid(True, which="both", alpha=0.3)
         ax.legend(fontsize=7, loc="best")
@@ -2305,10 +3230,94 @@ class AttributionWindow(tk.Toplevel):
         except Exception:                                # pragma: no cover
             pass
         self.canvas.draw()
-        self._sweep_full = list(sweep_caption(sw))
+        self._sweep_full = list(sweep_caption(sw, self._sweep_pic))
         self._set_sweep_note(self._sweep_full)
 
-    def _set_sweep_note(self, caption) -> None:
+    def _scale_sweep_axis(self, ax, sw) -> None:
+        """
+        The y axis: symlog, limits from the physical endpoints, pole labelled.
+
+        Item 1, and every piece of it is `sweep_picture`'s -- this only puts it
+        on the axes.  Three things happen here and each has its measurement in
+        `sweep_picture`'s own constants:
+
+          * the limits come from `M(0)` and `M(inf)` plus the pole-free samples
+            and a margin, so the pole runs OFF THE TOP instead of owning the
+            axis (measured before: one vertical spike over a `1e-10` axis);
+          * the scale is symlog with a linthresh taken from the endpoints, and
+            the major locator goes linear while the visible range stays inside
+            it, because matplotlib's symlog locator ticks at decades and
+            produced NO labelled tick at all on a sub-decade range;
+          * every pole visible in the sampling gets a labelled vertical line at
+            its parameter value -- a pole is a real feature and is named, never
+            silently hidden;
+          * BOTH axes print ENGINEERING UNITS, through the same `format_si`
+            every other number in this window goes through.  The original
+            complaint was literally "the y axis reads 1e-5"; MEASURED after the
+            symlog change it read `1e-10` -- `ax.yaxis.get_offset_text()` was
+            `'1e−10'` over tick labels `['−2.5','0.0','2.5','5.0','7.5','10.0']`
+            and an ylabel of `M [H]`, beside a table cell reading `+413 pH` and
+            a caption reading `ideal +821 pH`.  A bare exponent offset is a
+            second notation for the same quantity on the same screen, and it is
+            the notation the reader has to do arithmetic on.  This is the plot
+            cursor readout's own rule (`_readout_value` -> `format_si`), so the
+            axis and the caption cannot drift.
+
+        The whole block is guarded: an axis that cannot be scaled is worth less
+        than a curve that cannot be drawn, so a failure here leaves matplotlib's
+        own autoscale in place rather than blanking the pane.
+        """
+        pic = sweep_picture(sw)
+        self._sweep_pic = pic
+        try:
+            ylo, yhi = pic.ylim
+            if pic.linthresh > 0.0 and math.isfinite(ylo) \
+                    and math.isfinite(yhi) and yhi > ylo:
+                ax.set_yscale("symlog", linthresh=pic.linthresh)
+                if pic.linear_ticks:
+                    ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=5))
+                ax.set_ylim(ylo, yhi)
+            # Engineering units on BOTH axes, and the exponent offset that a
+            # ScalarFormatter would otherwise park in the corner turned off
+            # explicitly -- `format_si` already carries the prefix, so an offset
+            # beside it would multiply the label the reader just read.
+            ax.yaxis.set_major_formatter(_si_formatter(_display_unit(sw.unit)))
+            ax.xaxis.set_major_formatter(_si_formatter(sw.param_unit))
+            for cluster in pic.clusters:
+                ax.axvline(cluster[0].t, color=POLE_LINE_FG, lw=1.0, ls="-.")
+                # The label sits ON the excursion, which is where the curve is
+                # a near-vertical line, so it needs a background or it is read
+                # through the data: measured, without the bbox the two are the
+                # same pixels.  `alpha` rather than opaque, because hiding the
+                # curve behind the annotation would be the same failure the
+                # other way round.
+                ax.text(cluster[0].t, 0.97,
+                        "  " + pole_label(cluster, sw.param_unit),
+                        rotation=90, transform=ax.get_xaxis_transform(),
+                        va="top", ha="left", fontsize=7, color=POLE_LINE_FG,
+                        bbox=dict(boxstyle="square,pad=0.15", fc="white",
+                                  ec="none", alpha=0.75))
+        except Exception:                                # pragma: no cover
+            pass
+
+    def _sweep_note_cap(self) -> int:
+        """
+        How many clipping lines the caption may take at THIS window height.
+
+        See `ATTRIB_SWEEP_NOTE_RESERVE_LINES` for the four measurements and for
+        why the budget is read off the WINDOW and not off the sweep pane.
+        Never raises: it runs from `<Configure>`.
+        """
+        try:
+            line = tkfont.Font(root=self, font="TkDefaultFont"
+                               ).metrics("linespace")
+            budget = int(self.winfo_height()) - self._chrome_height()
+            allow = budget // max(1, line) - ATTRIB_SWEEP_NOTE_RESERVE_LINES
+            return max(1, min(SWEEP_NOTE_LINES, int(allow)))
+        except Exception:                                # pragma: no cover
+            return SWEEP_NOTE_LINES
+
+    def _set_sweep_note(self, caption=None) -> None:
         """
         The capped note, with any REFUSED CANDIDATE ahead of the caption.
 
@@ -2317,9 +3326,17 @@ class AttributionWindow(tk.Toplevel):
         widget and `_draw_sweep` overwrite it a few statements later in the
         same `_render()`, so a candidate the parser refused reached no widget
         at all.
+
+        `caption=None` means "re-render whatever is already there at the
+        current cap", which is what the resize path wants -- it must not invent
+        a caption for a pane that is showing a refusal or nothing at all.
         """
+        if caption is None:
+            caption = self._sweep_shown
+        self._sweep_shown = list(caption)
         self.sweep_note.configure(
-            text=sweep_note_text(caption, self._cand_problems))
+            text=sweep_note_text(caption, self._cand_problems,
+                                 self._sweep_note_cap()))
 
     # -------------------------------------------------------------- events
 
@@ -2444,10 +3461,10 @@ class AttributionWindow(tk.Toplevel):
             self.app._flush_editor_sync()
         except Exception:                                # pragma: no cover
             pass
-        self._expanded = not self._expanded
-        if self._expanded and not self._res.stability:
-            # The expander glyph and the "checking…" line are written NOW,
-            # synchronously: an expander that does not move until the work
+        self._expanded = True
+        if not self._res.stability:
+            # The glyph and the "checking…" line are written NOW,
+            # synchronously: a button that does not move until the work
             # finishes reads as a dead button, and on a 153-port file that is
             # seconds of it.
             self.badge_btn.configure(text=EXPAND_EXPANDED)
@@ -2472,10 +3489,11 @@ class AttributionWindow(tk.Toplevel):
             self._res.stability = stability_line(freqs, ranks)
         except Exception as e:
             self._res.stability = f"could not be checked: {e}"
-        try:
-            self.badge_btn.state(["!disabled"])
-        except Exception:                                # pragma: no cover
-            pass
+        # `_render` decides the button's state from `res.stability`, which is
+        # now set either way -- including on the failure branch, where the
+        # message IS the reason the button is spent.  Re-enabling here and
+        # letting `_render` disable it again would be two writes saying
+        # opposite things in one pass.
         self._render()
 
     def _on_recompute(self) -> None:
@@ -2555,8 +3573,13 @@ class AttributionWindow(tk.Toplevel):
             return
         try:
             res = compute_attribution(self.app, trace, fe, vic, agg,
-                                      self.quantity_var.get(), f_hz)
+                                      self.quantity_var.get(), f_hz,
+                                      ground_model=self.ground_var.get())
         except Exception as e:
+            # A ground model this cannot read reports the CLI's own wording
+            # here rather than raising: the field is free text and the message
+            # ("'shared' needs an impedance after the colon, e.g. shared:L=1n")
+            # is the whole of what makes it correctable.
             self.recon.configure(text=f"Reconciliation:  {e}",
                                  foreground=self._banner_warn_fg)
             return
@@ -2607,6 +3630,140 @@ class AttributionWindow(tk.Toplevel):
         except Exception:                                # pragma: no cover
             return None, None
 
+    # ------------------------------------------------------------ the split
+
+    def _sash_target(self, lines: int, height: int) -> int:
+        """
+        Where the divider goes for a table of `lines` rendered lines.
+
+        Pure arithmetic on measured CHROME (the two panes' requested heights
+        minus their Texts', i.e. the captions and the scrollbars) and on the
+        table font's linespace.  `height` is the paned window's own height and
+        is used for ONE thing: clamping, so neither pane is squeezed below its
+        floor.  It is not what the position is derived from -- see
+        `ATTRIB_SASH_SPARE_LINES`.
+        """
+        panes = self.paned.panes()
+        top = self.nametowidget(panes[0])
+        bot = self.nametowidget(panes[1])
+        line = tkfont.Font(root=self, font=ATTRIB_FONT).metrics("linespace")
+        top_chrome = max(0, top.winfo_reqheight()
+                         - self.table.winfo_reqheight())
+        bot_chrome = max(0, bot.winfo_reqheight()
+                         - self.detail.winfo_reqheight())
+        want = top_chrome + line * min(int(lines) + ATTRIB_SASH_SPARE_LINES,
+                                       ATTRIB_SASH_MAX_LINES)
+        floor = top_chrome + line * ATTRIB_TABLE_FLOOR_LINES
+        need_bot = bot_chrome + line * ATTRIB_DETAIL_FLOOR_LINES
+        ceiling = height - need_bot
+        if ceiling < floor:
+            # NEITHER FLOOR FITS, and giving the table its floor outright is
+            # not the answer: measured at 150% DPI at the enforced minimum
+            # (720x678, 198 px of paned against floors of 125 and 174), the
+            # table took its 125 and the SWEEP CANVAS read
+            # `winfo_ismapped() == 0` -- the drill-down gone, which is the
+            # same "gives up all of it" failure `_apply_min_height` exists to
+            # stop, arriving inside the split.  What there is is therefore
+            # shared in proportion to the two floors: 83 px here, against the
+            # 82 px ttk's own weights produced before any of this, and
+            # everything mapped.
+            total = floor + need_bot
+            share = int(height * floor / total) if total > 0 else floor
+            # ONE line of table, whatever the proportion says.  `need_bot`
+            # grows with the sweep caption's requested height (three clipping
+            # lines at 150% is 86 px), and a proportion taken against that put
+            # the table at 6 px -- measured at 150% / 720x678 with a row
+            # selected, against 23 px from ttk's own weights before any of
+            # this.  Neither shows a row; one shows the heading.
+            return max(top_chrome + line, share)
+        return int(max(floor, min(want, ceiling)))
+
+    def _apply_sash(self, lines: Optional[int] = None) -> None:
+        """
+        Put the divider where the content says, unless the user has moved it.
+
+        Never raises: it runs from `<Configure>` and from `_render`, and an
+        error on either reaches no handler anyone controls.
+        """
+        if lines is not None:
+            self._sash_lines = int(lines)
+        if self._sash_user or not self.winfo_exists():
+            return
+        try:
+            height = self.paned.winfo_height()
+            if height <= 1:
+                # Not laid out yet -- the <Configure> that gives it a real
+                # height calls back.  Writing a position now would be a
+                # position for a 1 px window.
+                return
+            want = self._sash_target(self._sash_lines, height)
+            if abs(int(self.paned.sashpos(0)) - want) <= 1:
+                return
+            self.paned.sashpos(0, want)
+            self._sash_writes += 1
+        except Exception:                                # pragma: no cover
+            pass
+
+    def _on_paned_configure(self, _event=None) -> None:
+        # Coalesced and cancelled on destroy, like `_on_configure`.  Writing a
+        # sash position cannot re-enter this: measured, `sashpos()` resizes the
+        # two PANES and leaves the Panedwindow's own geometry untouched, so the
+        # next pass computes the same number and the early return above ends
+        # it.  That is the `ReflowRow` fixed point, not the
+        # `_apply_editor_scrollbars` limit cycle.
+        if self._sash_after is not None:
+            return
+        try:
+            self._sash_after = self.after_idle(self._sash_now)
+        except Exception:                                # pragma: no cover
+            self._sash_after = None
+
+    def _sash_now(self) -> None:
+        self._sash_after = None
+        if self.winfo_exists():
+            self._apply_sash()
+
+    def _on_sash_press(self, _event=None) -> None:
+        try:
+            self._sash_press = int(self.paned.sashpos(0))
+        except Exception:                                # pragma: no cover
+            self._sash_press = None
+        self._sash_press_writes = self._sash_writes
+
+    def _on_sash_release(self, _event=None) -> None:
+        """
+        A DRAG claims the split; a click, a resize, or OUR OWN WRITE does not.
+
+        Once the reader has moved the divider it is theirs until the window
+        closes -- a later decomposition with a different row count must not
+        take it back.  Compared against the position at ButtonPress rather than
+        against the last value applied, because ttk moves the sash itself when
+        the window is resized and that is not a gesture.
+
+        THE WRITE COUNTER IS THE SECOND HALF OF THAT, and without it the
+        position test alone turns anything that moves the sash while a button
+        is held into a permanent claim.  MEASURED at 100% / 980x700:
+        `_on_sash_press()` -> `_apply_sash(30)` -- which is exactly what a new
+        decomposition does -- -> `_on_sash_release()` left `_sash_user` True
+        with no pointer movement at all, and the split was then frozen for the
+        rest of the session, i.e. item 2's content-derived position stopped
+        working. `_apply_sash` is reachable while a button is down from
+        `_render_impl` (Recompute, a view switch, and the units switch's
+        `refresh_attribution_windows(rerender=True)`) and from the `after_idle`
+        `<Configure>`.  Requiring the counter to be UNCHANGED costs at most a
+        real drag that raced an automatic write in the same gesture, which is
+        self-correcting -- the reader drags again -- where the false claim is
+        not.
+        """
+        try:
+            now = int(self.paned.sashpos(0))
+        except Exception:                                # pragma: no cover
+            return
+        if (self._sash_press is not None and now != self._sash_press
+                and self._sash_writes == self._sash_press_writes):
+            self._sash_user = True
+        self._sash_press = None
+
     # ------------------------------------------------------- minimum height
 
     def _chrome_height(self) -> int:
@@ -2620,7 +3777,8 @@ class AttributionWindow(tk.Toplevel):
         is the number being diagnosed.
         """
         total = 0
-        for widget, pad in ((self.header, 10), (self.banner, 0),
+        for widget, pad in ((self.header, 10), (self._gm_row, 2),
+                            (self.banner, 0),
                             (self.sign_lbl, 2), (self.recon, 2),
                             (self._badge_row, 6), (self._foot, 12)):
             total += widget.winfo_reqheight() + pad
@@ -2665,6 +3823,16 @@ class AttributionWindow(tk.Toplevel):
         self._min_h_after = None
         if not self.winfo_exists():                      # pragma: no cover
             return
+        # The caption's line cap is a function of the window height, so it is
+        # re-applied here rather than only at render time -- otherwise a window
+        # opened at 1500x900 and dragged down to the minimum keeps a three-line
+        # caption and the plot goes back to 2 px.  It writes one Label and
+        # cannot change `winfo_height()` or `_chrome_height()`, so it cannot
+        # re-enter this (see `ATTRIB_SWEEP_NOTE_RESERVE_LINES`).
+        try:
+            self._set_sweep_note()
+        except Exception:                                # pragma: no cover
+            pass
         try:
             line = tkfont.Font(root=self, font=ATTRIB_FONT
                                ).metrics("linespace")
@@ -2737,7 +3905,7 @@ class AttributionWindow(tk.Toplevel):
         # would drop the window from the registry while it is still on screen.
         if event is not None and event.widget is not self:
             return
-        for attr in ("_stability_after", "_min_h_after"):
+        for attr in ("_stability_after", "_min_h_after", "_sash_after"):
             pending = getattr(self, attr, None)
             if pending is not None:
                 try:
@@ -2853,11 +4021,38 @@ def open_attribution_window(app, trace) -> Optional[AttributionWindow]:
             w.focus_set()
             return w
 
+    gmodel = saved.get("ground_model") or GROUND_MODEL_DEFAULT
     try:
-        res = compute_attribution(app, trace, fe, victim, aggr, quantity, f_hz)
+        res = compute_attribution(app, trace, fe, victim, aggr, quantity, f_hz,
+                                  ground_model=gmodel)
     except Exception as e:
-        messagebox.showerror(ATTRIB_TITLE, str(e), parent=app)
-        return None
+        if gmodel != GROUND_MODEL_DEFAULT:
+            # A hand-edited session file can carry a model this cannot read.
+            # That costs the CHOICE, never the window -- the session rule --
+            # so the declared model opens instead of a dialog and nothing.
+            try:
+                res = compute_attribution(app, trace, fe, victim, aggr,
+                                          quantity, f_hz)
+            except Exception as e2:
+                messagebox.showerror(ATTRIB_TITLE, str(e2), parent=app)
+                return None
+            # AND IT SAYS SO.  "A bad value costs its own field, never the
+            # file" is the session rule, and the half of it that is easy to
+            # forget is the second clause: every other dropped field in that
+            # code notes itself in the Results pane.  Without this the window
+            # opens on `diag` with the model the user saved silently gone --
+            # and a ground model is worth a measured 7.19 dB, so a silent
+            # revert to the default is a silent 7.19 dB.
+            try:
+                app._append_result(
+                    f"WARN: attribution window: ground model '{gmodel}' from "
+                    f"the session file could not be used ({e}); opened with "
+                    f"'{GROUND_MODEL_DEFAULT}' instead.", _gui().LOG_WARN)
+            except Exception:                            # pragma: no cover
+                pass
+        else:
+            messagebox.showerror(ATTRIB_TITLE, str(e), parent=app)
+            return None
 
     win = AttributionWindow(app, trace, fe, res)
     # The two restored choices that are not arguments to `compute_attribution`
@@ -2961,7 +4156,7 @@ def attribution_session_state(win_or_none) -> dict:
             if not w.winfo_exists():
                 continue
             p = w._res.prov
-            out.append({
+            entry = {
                 "trace_id": p.trace_id,
                 "victim": p.victim,
                 "aggressor": p.aggressor,
@@ -2969,7 +4164,25 @@ def attribution_session_state(win_or_none) -> dict:
                 "freq_ghz": p.requested_hz / 1e9,
                 "view": w._view.get(),
                 "candidates": w.cand_var.get(),
-            })
+            }
+            # The ground model is on the same footing as `candidates`: a CHOICE
+            # the user typed, that this tool refuses to guess, and that is
+            # worth 9.60 dB.  Handing back the default on reopen would hand
+            # back a different network.
+            #
+            # It is written ONLY when it is not the default, and that condition
+            # is not a design preference -- it is a file-ownership one.
+            # `tests/test_attrib_gui_integration.py::TestTheSessionRoundTrip`
+            # pins the exact KEY SET of an entry, and that file was being
+            # edited by another hand while this was written.  The condition
+            # keeps the default case byte-identical to what that test pins
+            # while a chosen model still round-trips.  WHEN THAT KEY SET GAINS
+            # `ground_model`, DELETE THE CONDITION -- an unconditional key is
+            # the simpler contract and is what the rest of this dict does.
+            gm = str(w.ground_var.get() or "").strip()
+            if gm and gm != GROUND_MODEL_DEFAULT:
+                entry["ground_model"] = gm
+            out.append(entry)
         except Exception:                                # pragma: no cover
             continue
     return {"version": ATTRIB_SESSION_VERSION, "windows": out} if out else {}
@@ -3009,6 +4222,8 @@ def apply_attribution_session_state(app, data) -> list[str]:
                 "view": str(entry.get("view", "contrib")),
                 "candidates": str(entry.get(
                     "candidates", ", ".join(STRUCTURAL_CANDIDATES))),
+                "ground_model": str(entry.get("ground_model",
+                                              GROUND_MODEL_DEFAULT)),
             }
             notes.append(
                 f"Attribution for trace [{tid}] "

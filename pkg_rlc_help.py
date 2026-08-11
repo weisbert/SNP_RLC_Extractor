@@ -1461,9 +1461,47 @@ What is on the window, top to bottom:
                 4.3e-10)". If it ever fails, the per-element SPLIT
                 is withheld and the TOTAL is still shown -- the
                 total is compute_z_matrix's and is not in doubt.
-  ACROSS FREQ   one line saying whether the ranking still holds at
-                other frequencies, with an expander that opens it
-                in place.
+  ACROSS FREQ   one line, and its OFF state carries the action. A
+                ranking read off one frequency is a statement
+                about that frequency, so the badge does not just
+                say "not checked": it says what checking would
+                COST on this file and does it in one click.
+                Checked, it says what MOVED -- which elements
+                changed rank, and at which frequency -- or, if
+                nothing did, that the ranking is STABLE across the
+                band, in those words. A stable ranking is a
+                result, not an absence.
+                The cost is one extra solve per frequency, at five
+                frequencies including the one you are reading.
+                Measured: 0.45 ms per point on the 4-port fixture
+                below, and 223 ms per point on a synthetic dense
+                153-port network -- so under 2 ms on a small file
+                and roughly 0.9 s on a package export. That is why
+                it is a click and not automatic. It is a ONE-SHOT:
+                once it has run, the verdict beside it IS the
+                answer and the button greys out. [Recompute]
+                makes it live again, because that is a new
+                decomposition.
+  GROUND MODEL  how the declared shunt leads are modelled, in the
+                same spelling the CLI uses: "diag" (the default --
+                exactly as declared), "diag:L=1n" (every shunt
+                lead gets that impedance on its OWN independent
+                lead) or "shared:L=1n" (every lead keeps what it
+                declares and they ALSO share that impedance back
+                to the reference). One line beside the field says
+                why the default is not obviously right:
+                independent leads understate the shared return.
+                Changing it takes effect on [Recompute], like
+                every other input here -- it never re-decomposes
+                on its own. See "One more thing this changes about
+                your GND field" at the bottom of this tab.
+                If the spec has no shunt lead to model at all --
+                every ground expressed as "short_to", say -- the
+                model CANNOT be applied, and the window says so
+                rather than leaving you to read an unchanged
+                number as "the shared return is worth 0 dB": the
+                sign strip reads "NOT APPLIED", the line beside
+                the field says why, and both exports carry it.
   TABLE         (o) Contributions   ( ) Sensitivity -- one pane,
                 two views, not two tabs. Rows are coloured by
                 element KIND, in the same palette as the Ports &
@@ -1479,7 +1517,12 @@ What is on the window, top to bottom:
                 closed-form sweep of that one element plotted
                 beside it, with both asymptotes and the current
                 spec marked. Non-monotonicity is labelled where
-                the sweep finds it.
+                the sweep finds it, and so is any pole -- see
+                "Reading the sweep plot" below. The pane is PROSE
+                and it wraps; it never scrolls sideways, and the
+                split above it opens sized to the table's own row
+                count rather than to a fixed fraction. Drag the
+                sash and it is yours until you close the window.
   FOOTER        Copy report / Export CSV... / Close. Both exports
                 carry the full provenance: run number, the
                 frequency and whether it was snapped to the file's
@@ -1496,19 +1539,86 @@ the reconciliation rule above -- would blank its own table. It
 would erase itself while you type. So an edit moves the banner and
 nothing else, and you press the button when you mean it.
 
-The window does not offer the shared-return ground model. That is
-a dense element-impedance matrix, it cannot be written as a
-termination spec, and it lives on the CLI
-(--attribute-ground-model shared:...). Every export names the
-model the numbers came out of rather than letting you assume one.
+The shared-return ground model is on the window, and it is worth
+reading the last section of this tab before you leave it on the
+default. One thing about it is unlike every other input here: the
+dense (shared) model is a network that CANNOT be written as a
+termination spec -- a shared return is a mutual impedance BETWEEN
+two ground leads, and the connection table has no node to hang one
+on -- so compute_z_matrix has never been asked about it and there
+is no second opinion on its total. What is still checked is the
+ARITHMETIC: the reconciliation line is always of the spec AS
+DECLARED through the same machinery, so choosing a model does not
+quietly cost you the cross-check, and the sign strip and both
+exports name the model the numbers came out of rather than letting
+you assume one.
 
 Save Config remembers WHICH pair you were reading -- the victim,
 the aggressor, the quantity, the frequency, the view and the
-Candidates field -- but it does not reopen the window on Load. A config carries the setup and
-never the results, so a just-loaded trace has no numbers yet and
-the window could only open on its own refusal. The Results pane
-names each entry it did not reopen; Calculate, then Analyze ->
-Attribution..., and you land back where you were.
+Candidates field -- but it does not reopen the window on Load. A
+config carries the setup and never the results, so a just-loaded
+trace has no numbers yet and the window could only open on its own
+refusal. The Results pane names each entry it did not reopen;
+Calculate, then Analyze -> Attribution..., and you land back where
+you were.
+
+Reading the sweep plot, and its pole
+-------------------------------------
+Click a row and the detail pane sweeps THAT element's series
+inductance from ideal (L = 0) to open (L = infinity), in closed
+form -- no loop, no sampling. Two numbers on it are the ones you
+came for:
+
+      M(0)     that termination made IDEAL
+      M(inf)   that termination NOT THERE at all
+
+They are exact, and the plot's y limits are set FROM them (plus a
+margin), so the two readings you are comparing are always on
+screen at a readable size.
+
+Between them the curve may have ONE pole, and on a package it
+usually does. A pole is not a numerical artefact and it is not
+hidden: it is drawn as a labelled vertical line at the L where it
+sits, with the value of the element there, because it is a real
+physical event. The L you are adding RESONATES with the reactance
+the network itself presents at that node. Measured on the fixture
+below: the network looks like 2.005 fF at ground ball 3, and
+505.25 nH series-resonates with 2.005 fF at exactly the 5 GHz
+being read (5.0005 GHz, to five digits). There the termination is
+anti-resonant, the curve runs off the top of the plot -- which is
+what the label says -- and M passes through +-10.28 mH, ten
+million times the [504 pH, 1.01 nH] the two endpoints span.
+
+So the HEADLINE interval is the one over the POLE-FREE part of the
+sweep, and the pole is stated separately, in words:
+
+   "M lies in [-2.5 pH, 1.52 nH] over any ground inductance more
+    than a factor of two away from the 505 nH resonance"
+                                      ... is a budget statement.
+   "M lies in [-10.3 mH, +10.3 mH]"
+                     ... is the tool reading its own arithmetic
+                         back to you. Same curve, same numbers.
+
+The y axis is SYMLOG -- linear in a band around zero, logarithmic
+outside it -- because M crosses zero here and a log axis cannot
+draw that. The width of the linear band comes from the DATA, not
+from a constant: this tool's plot panel uses 1e-6 for R/L/C, and
+1 uH is a thousand times the whole curve above, so a fixed 1e-6
+would put every point inside the linear band and symlog would
+degenerate into the linear axis it exists to replace.
+
+Both axes read in ENGINEERING UNITS -- "500 pH", not "5.0" under
+a "1e-10" parked in the corner -- the same formatting the table,
+the caption and the main plot's cursor readout use.
+
+A sweep that does not move at all (M(0) == M(infinity)) gets an
+axis the size of ITS OWN VALUE. That happens on real files --
+decap_4port.s4p reads a flat -506.755 nH -- and an axis a
+hundred thousand times the number on it is the same
+uninformative picture from the other direction.
+
+If the swept range holds no pole, none of this appears and the
+plot is exactly what it was before.
 
 Where to run it: the CLI
 -------------------------
@@ -1619,34 +1729,62 @@ Now ask the other question. What if those grounds were not ideal?
     (gamma + delta*z), so the endpoints, the interval and the
     extremum are analytic -- no loop, no sampling. Sweeping
     ground 3's series inductance on this fixture:
-        ideal (L = 0)   1.01 nH
-        open  (L = inf)  504 pH
-        actual range over all L >= 0:  [504 pH, 1.18 nH]
-    Note the range is WIDER than the two endpoints. A series L
-    resonates with the structure's shunt C, so the [ideal, open]
-    pair is not a bound; here the peak is 1.18 nH at L = 505 nH.
-    The tool detects that and says so instead of quoting a
-    bracket that does not hold.
+        ideal (L = 0)         1.01 nH
+        open  (L = inf)      503.7 pH
+        pole at L = 505.25 nH -- the added L resonating with the
+              2.005 fF the network presents at that ball, at the
+              5 GHz being read
+        over all L >= 0:     [-10.28 mH, +10.28 mH]   <- the pole
+        away from the pole:  [-2.5 pH, 1.52 nH]       <- the answer
+    Two things to take from that. The +-10.28 mH is arithmetic,
+    not structure: it is the curve on its way past the pole, ten
+    million times the endpoint bracket, and no component you can
+    buy sits there. And the pole-free range is STILL wider than
+    the two endpoints -- a series L resonates with the structure's
+    shunt C, so [ideal, open] is not a bound even where nothing is
+    anti-resonant. The tool labels the pole and headlines the
+    pole-free interval instead of quoting a bracket that does not
+    hold.
 
 One more thing this changes about your GND field
 ------------------------------------------------
+This is the most expensive modelling choice in the whole flow and
+it is the easy one to make by accident, because the obvious
+spelling is the wrong one.
+
 A ground field written as N independent lumped_to_gnd inductors
 says the balls have N independent return paths. Real package
-ground balls share a return plane. N independent z in parallel is
+ground balls SHARE A RETURN PLANE. N independent z in parallel is
 z/N; N balls sharing one z is z -- so the independent spelling
 understates the common-mode return inductance by roughly
-(1 + (N-1)*k_ret), and that is worth more decibels than most
-things being argued about. Measured three times on three
-different networks: 9.60 dB, 8.09 dB, and 6.03 dB on
-diff_pair_4port.s4p above. Monotone in the coupling, no threshold,
-so there is no safe default and the tool refuses to pick one.
 
-On the CLI that is one flag: --attribute-ground-model diag:L=1n
-versus shared:L=1n, and the report prints both against the spec
-as declared.
+      (1 + (N-1)*k_ret)
+
+where k_ret is how strongly the return paths couple to each other.
+That factor is why "independent" is not a conservative default: at
+20 balls with a realistic k_ret = 0.2 it is 4.8x, which is 13.6 dB
+of M, and it GROWS with the ball count -- the bigger and better
+your ground field, the more the independent spelling flatters it.
+
+Measured three times, on three different networks: 9.60 dB on a
+four-ball cluster (four leads at 1 nH each, independently, against
+the same four tied through ONE shared 1 nH), 8.09 dB on an
+independently built 6-node 4-ball cluster, and 6.03 dB on
+diff_pair_4port.s4p above. Every one of them is bigger than the
+6.07 dB argument this whole layer exists to settle. Monotone in
+k_ret, no threshold, so there is no safe default and the tool
+refuses to pick one for you.
+
+In the window it is the GROUND MODEL field: "diag" as declared,
+"diag:L=1n" for independent leads, "shared:L=1n" for a shared
+return. On the CLI it is the same spelling in one flag:
+--attribute-ground-model diag:L=1n versus shared:L=1n. Either way
+run it BOTH ways -- diag and shared are not a refinement of each
+other, they are different answers, and the report says so.
 
 You can also spell it right here in Mode 5, with no attribution
-code at all: tie the whole ground set with one short_to row, then
+code at all -- and if you take one thing from this section, take
+this one. Tie the whole ground set with one short_to row, then
 hang ONE lumped_to_gnd on any port of it.
 
       independent:  3 lumped_to_gnd L=1n

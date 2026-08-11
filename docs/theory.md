@@ -1076,19 +1076,45 @@ solve is a ratio of two affine functions of it. Therefore the endpoints `z = 0` 
 analytic. No sampling loop, and the headline is an interval rather than a curve:
 "M lies in [1.71, 3.44] pH over any physical ground inductance."
 
-**The curve need not be monotone, and the endpoints are not a bound.** A series `L` resonates
-with the package's shunt `C` and `M` can leave the `[ideal, open]` bracket entirely. Measured
-on `diff_pair_4port.s4p`, sweeping the series inductance of the ground on port 3:
+**The two endpoints are the two numbers worth reading, and they are exact.** `z = 0` is the
+termination made ideal and `z → ∞` is the termination not there at all — "ideal ground" and
+"open", the two assumptions the disputed number of §13.1 differed by. In the partial-fraction
+form below they are `c0 - Σ c_j/λ_j` and `c0` respectively: one sum and one constant, with no
+subtraction of large nearly-equal quantities anywhere. Everything else on the curve is context
+for those two.
 
-```
-ideal (L = 0)        1.01 nH
-open  (L = inf)       504 pH
-actual range         [504 pH, 1.18 nH]      peak at L = 505 nH
-```
+**The map has one pole per swept element, and its position is closed form.** A Möbius map has
+exactly one in the extended plane — whether it lands inside the swept range `[0, ∞)` is a
+property of the network, not of the algebra — and a group of `|S|` elements tied to one value
+has `|S|`. From `Z_ab(z) = (α + βz)/(γ + δz)` it is at `z = -γ/δ`; from the partial fraction,
+at `t = -λ_j`. Physically it is the value at which **the added impedance cancels the impedance
+the network presents at that element's own terminals** (with every other declared element in
+place) — `H = Zt + G` is singular there — i.e. the termination you are hypothesising
+*anti-resonates* with the structure. Measured on `diff_pair_4port.s4p` at 5.0005 GHz with
+probes on 1 and 2 and grounds on 3 and 4, sweeping the series `L` of `ground port 3`:
 
-The tool detects that and says so rather than quoting a bracket that does not hold. On an
-**unbounded** sweep an extremum orders of magnitude past the bracket is a near-pole of the
-map, not a design margin, and is reported as such.
+| | |
+|---|---|
+| the network at that ball (`ctx.Gm[0,0]`; on this fixture the *other* declared ground moves it only in the eighth significant figure, so `z_pole = −Gm[0,0]` here to seven) | `−391 µΩ − j15.8745 kΩ`, i.e. **2.005 fF** |
+| pole (`−λ`) | `L = 505.25 nH` — and `505.25 nH` series-resonates with `2.005 fF` at **5.0005 GHz**, the frequency being read, to five digits |
+| `Im λ` (the loss, which is what keeps the pole off the real axis) | `12.44 fH` — so the peak is finite: `±10.28 mH` |
+
+**Which is why the reported interval must be the pole-free one.** Over the whole half-line the
+extremum is that `±10.28 mH` — ten million times the `[503.7 pH, 1.01 nH]` the endpoints span,
+and reached only within femtohenries of a 505 nH inductor nobody is putting on a ground ball.
+Quoting it as *the* interval is the tool describing its own arithmetic. Away from the pole (a
+factor-of-two guard band, measured) the same curve reads `[−2.5 pH, 1.52 nH]`, which is a
+budget statement. So: **headline the interval over the pole-free portion, and state the pole
+separately, naming its `L` and the value of the element there.** A pole is a real feature of
+the structure and hiding it would be a different lie from letting it eat the axis.
+
+**Even pole-free, the curve need not be monotone and the endpoints are not a bound.** A series
+`L` resonates with the package's shunt `C`, so `M` leaves the `[ideal, open]` bracket at both
+ends and stays outside it well away from the resonance: measured with a factor-of-**ten** guard
+band the same curve reads `[447.5 pH, 1.066 nH]` against the `[503.7 pH, 1.01 nH]` bracket. The tool
+detects that and says so rather than quoting a bracket that does not hold. On an **unbounded**
+sweep an extremum orders of magnitude past the bracket is the near-pole, not a design margin,
+and is reported as such.
 
 **Tying a whole group to one value is a degree-`|S|` rational function, and two things about
 it are easy to get wrong.** First, do not expand it into polynomial coefficients. The
@@ -1124,12 +1150,23 @@ candidates.
 **And this is why `Zt` may be dense.** Real package ground balls share a return plane. `N`
 independent `z` in parallel is `z/N`; `N` balls sharing one `z` is `z`, so modelling a ground
 field as `N` independent series inductors understates the effective common-mode return
-inductance by roughly `(1 + (N-1)·k_ret)`. Measured on three different networks — 9.60 dB,
-8.09 dB, and 6.03 dB on `diff_pair_4port.s4p` — every one of them **larger than the 6.07 dB
-dispute of §13.1**, monotone in `k_ret` with no threshold behaviour. There is therefore no
-defensible default and the tool refuses to pick one; it offers `diag(z)` and
-`diag(z_self) + z_ret · ones(m, m)` and makes you choose. `H = Zt + G` accepts a dense `Zt`
-with zero change to the mathematics and zero change to the cost.
+inductance by roughly `(1 + (N-1)·k_ret)`. That factor is why the independent spelling is not a
+conservative default: at 20 balls with a realistic `k_ret = 0.2` it is `4.8x`, i.e. **13.6 dB**
+of `M`, and it grows with the ball count. Measured on three different networks — 9.60 dB
+(four leads at 1 nH each independently, against the same four tied through **one** shared
+1 nH), 8.09 dB, and 6.03 dB on `diff_pair_4port.s4p` — every one of them **larger than the
+6.07 dB dispute of §13.1**, monotone in `k_ret` with no threshold behaviour. There is therefore
+no defensible default and the tool refuses to pick one; it offers `diag(z)` and
+`diag(z_self) + z_ret · ones(m, m)` and makes you choose, on the CLI
+(`--attribute-ground-model`) and in the Attribution window, in one spelling. `H = Zt + G`
+accepts a dense `Zt` with zero change to the mathematics and zero change to the cost.
+
+The dense case is the one configuration in this layer with **no second opinion**: a mutual
+impedance *between* two ground leads is not expressible as a `TerminationSet` — the DSL has no
+node to hang one on — so `compute_z_matrix` cannot be asked about that network at all. What is
+reconciled, whatever model is in force, is the **declared** configuration through the same
+machinery (§13.6), which checks the arithmetic the modelled total came out of; the modelled
+number itself is this module's alone and every surface that prints it says so.
 
 The same physics is expressible in the Mode 5 table today with no new code: one `short_to`
 row tying the ground set together, then **one** `lumped_to_gnd` on any port of it.

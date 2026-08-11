@@ -1288,14 +1288,199 @@ enough. `<Return>` in the frequency field recomputes, bound **on the Entry**.
 
 ### 13.12 What the window does not offer
 
-**The shared-return ground model.** It is a dense element-impedance matrix
-(§5.2), it cannot be written as a `TerminationSet`, and the header is already
-over budget at 980 px, so a seventh control would push `[Recompute]` onto a
-third row. It stays on the CLI (`--attribute-ground-model shared:…`). Because
-the choice is worth 6–10 dB, the window does not let the reader *assume* a
-model: the export names the one its numbers came out of, in full.
-
 **The cold-start screen** (§14). It is CLI-only today.
+
+*(The shared-return ground model was on this list and no longer is — see
+§13.13.4 for what it was doing here and what that cost.)*
+
+### 13.13 What the first screenshot changed
+
+Stage 4 shipped at commit `4605f31` with 1566 tests green, and the window was
+**correct**: no notebook, reconciliation in the header, monospace tables with
+per-kind swatches, explicit `+` signs, shares over 100 % unclipped,
+`[Recompute]` rather than auto-refresh, a permanent provenance banner, a detail
+pane deriving `contribution = −current × transimpedance`, and a candidates
+field that says in words that this tool will not guess a package value.
+
+Then somebody looked at it. Four things followed, and **none of them is a wrong
+number** — every one is the difference between "passes its tests" and "a person
+can use it". They are recorded here because each was, at the time, a defensible
+decision with a written reason, and a later session reading only the reason
+would put it back.
+
+#### 13.13.1 The sweep plot was unreadable, and a picture that says nothing is worse than no picture
+
+Observed: y axis reading `1e-5`, the whole plot one vertical spike, and the
+interval underneath quoting microhenries of `M`. The caption beside it was
+*correct* — it said `NON-MONOTONIC` — which is what made it worth fixing rather
+than deleting: a true sentence next to an uninformative picture teaches the
+reader to stop looking at the picture.
+
+Those microhenries are a **pole artefact**. `M(z)` is a Möbius map (§5.10), so
+it has exactly one pole per swept element — at most one of them inside the
+swept `[0, ∞)`, and whether it lands there is a property of the network — and
+there the added element anti-resonates with the network's own reactance.
+Measured on `diff_pair_4port.s4p` at 5.0005 GHz, sweeping `ground port 3`:
+
+| | |
+|---|---|
+| `M(0)` — ideal | **1.01 nH** |
+| `M(∞)` — open | **503.7 pH** |
+| the network at that ball, `ctx.Gm[0,0]` | `−391 µΩ − j15.8745 kΩ` = **2.005 fF** |
+| pole | `L = 505.25 nH` — which series-resonates with 2.005 fF at **5.0005 GHz**, the frequency being read |
+| `Im λ` (loss; why the peak is finite) | 12.44 fH → extremum **±10.28 mH**, i.e. **1.0e7 ×** the endpoint bracket |
+| interval, whole half-line | `[−10.28 mH, +10.28 mH]` |
+| interval, factor-of-2 guard band round the pole | `[−2.5 pH, 1.52 nH]` |
+| interval, factor-of-10 guard band | `[447.5 pH, 1.066 nH]` — *still* outside `[503.7 pH, 1.01 nH]` at both ends |
+
+The rule that came out of it, in the order it matters:
+
+1. **x stays log.**
+2. **y becomes symlog**, per the repo's own sign-crossing convention — but
+   `linthresh` comes from the **endpoint scale**, not from `pkg_rlc_plot`'s
+   `1e-6`. These are henries: 1 µH is a thousand times the whole curve above,
+   so a fixed `1e-6` puts every sample inside the linear band and symlog
+   degenerates into the linear axis it exists to replace.
+3. **The y limits come from `M(0)` and `M(∞)` plus a margin.** Those are the
+   two numbers the reader came for — "ideal ground" and "open", the two
+   assumptions the 6.07 dB of §1 differed by. The pole runs off the top.
+4. **The pole is drawn**: a labelled vertical line at its `z`, annotated with
+   the element value there, plus one line saying the curve is off-scale near
+   it. Its position is **closed form** from the Möbius coefficients
+   (`z = −γ/δ`, `t = −λ_j`) — never found by scanning the samples, which is
+   both slower and, on a lightly-damped pole 12.44 fH wide, unreliable.
+5. **The headline interval is the pole-free one**; the existence of a pole is a
+   separate, plainly worded statement. `M ∈ [−10.28 mH, +10.28 mH]` is the tool
+   describing its own arithmetic, not the structure.
+
+With no pole in the swept range, nothing about the plot changes. The guard is a
+case **with** a pole and a case **without**, both asserting the y limits bracket
+the endpoints — that assertion is the whole point, and it is the one a
+"tidy-up" of the autoscale would break.
+
+This also corrected three documents. `theory.md` §13.8, the Mode 6 Help tab and
+CLAUDE.md's own sweep rule all quoted `actual range [504 pH, 1.18 nH], peak at
+L = 505 nH` — a figure from before the pole-seeded extremum search of §5.10
+landed. The current code reports `±10.28 mH` for that same sweep, and the CLI
+prints it (`M over L in [0, inf) lies in [-5.187 H, 5.187 H]` for the two-ball
+group, with a near-pole note under it). Three documents had been carrying a
+*headline number that was itself the pole artefact* — which is how long this
+class of defect survives when nobody plots the thing.
+
+#### 13.13.2 The pane split was backwards
+
+Observed: three data rows in the contributions table with roughly **250 px** of
+empty space under them, while the detail pane below was scrolling **and**
+clipping horizontally — `…because the other n-1` cut off at the right edge with
+a horizontal scrollbar under it.
+
+- The initial sash is **derived from the CONTENT**: the table asks for its row
+  count plus a header plus a couple of spare lines (at the table font's
+  linespace), and the detail pane gets the rest.
+- **Not from the measured pane height.** That is the documented **limit-cycle
+  shape** — a layout rule that reads a size it can itself change flips forever
+  and `update()` never returns, taking the GUI and the test suite with it
+  (`_apply_editor_scrollbars`; and the reason `ReflowRow` reads an *imposed*
+  width and writes only a height). A row count is an input the sash cannot
+  move, so it is a fixed point by construction rather than by tuning.
+- The detail text **wraps**. It is prose; a horizontal scrollbar on prose is
+  the Treeview clipping failure §13.2 refuses, arriving in the pane
+  underneath the tables that refuse it.
+- It is re-derived when the row count changes materially (a new
+  decomposition) and **never** after the user has dragged it — once moved, the
+  sash is theirs until the window closes.
+
+The numbers at 980x700 and at the enforced minimum, at 100 % and 150 %, belong
+in §13.11 beside the rest of the layout budget; **this note's author could not
+measure them** — the derivation did not exist yet at the time of writing — and
+the change that implements it owns that measurement.
+
+#### 13.13.3 `across frequency: not checked` was too soft a default
+
+A ranking read off one frequency is a statement about that frequency, which is
+precisely what acceptance item 5 is about — and the window shipped with the
+check **off** and a badge that only said so.
+
+Simply turning it on was rejected on cost: it is a fresh `build_context` +
+`decompose` per frequency, `O(N³)` in the **port** count. Measured — `0.45 ms`
+per point on `diff_pair_4port.s4p`, `1.08 ms` at 32 ports, `4.31 ms` at 64, and
+`223 ms` at 153 ports on a synthetic dense `Y` (there is no real 153-port
+fixture in the repo). At `STABILITY_POINTS = 5` that is four extra points:
+under 2 ms on a small file, and about **0.9 s** on a package export — enough to
+be felt on every `[Recompute]`, on a window whose whole design is that nothing
+happens until you ask.
+
+So the **off state carries the action**: the badge says what checking would
+cost *on this file* and does it in one click. And once checked it must say what
+**moved** — which elements changed rank, at which frequency — rather than
+"checked", which is a statement about the tool. **If the ranking is stable, it
+says so in those words**: a stable ranking is a result. On
+`diff_pair_4port.s4p` it is stable (`ground port 4 > ground port 3` at every
+frequency in the band), and that sentence is worth more than a green tick.
+
+#### 13.13.4 The shared-return ground model was CLI-only, and that was the real gap
+
+This is the finding the whole revision was built on. §5.2 is the requirement,
+`termination_impedance_shared_return(z_self, z_ret)` is the builder, and
+`--attribute-ground-model shared:Z_RET` is the CLI surface. The window offered
+nothing and its sign strip said `Grounds as declared, independent`.
+
+**What §13.12 used to say, verbatim in substance:** it is a dense
+element-impedance matrix, it cannot be written as a `TerminationSet`, and the
+header is already over budget at 980 px, so a seventh control would push
+`[Recompute]` onto a third row. Every clause of that is true. The measurement it
+was weighed against:
+
+| | |
+|---|---|
+| four ground balls at 1 nH each **independently** vs the same four tied through **one** shared 1 nH | **9.60 dB** |
+| the discrepancy this entire feature exists to resolve (§1) | 6.07 dB |
+| `(1 + (n−1)k)` at 20 balls, realistic `k = 0.2` | `4.8x` = **13.6 dB** |
+
+A pixel budget lost to that, and it should have lost sooner. Real package
+grounds share a return plane and are mutually coupled; independent-per-lead
+understates the common-mode return inductance, monotonically, with no threshold
+behaviour and no safe default — which is exactly why the tool refuses to pick
+one and therefore must let the reader pick. A default nobody can change is not
+a default; it is a decision taken on their behalf, and this is the most
+expensive decision in the flow.
+
+What the control is, and each clause is load-bearing:
+
+- **Small.** The header is measured at 961 of 964 px (§13.11), so this costs a
+  second header row (29 px, measured) wherever it is placed. A combobox plus
+  one entry, or a single field taking the CLI's own `shared:0.3n` spelling —
+  **one** spelling, so the window and the flag cannot drift into two dialects
+  of the same setting. It may not cost `[Recompute]` its place; `ReflowRow` is
+  what guarantees that.
+- **The sign strip states which model is in force**, and the exports already
+  do. Keep both: the strip is what the reader has in front of them, and the
+  export is where the tail of a clipped strip lives.
+- **It goes through `[Recompute]`.** Not a silent re-decomposition — the same
+  rule as every other input, for the same reason (§13.5).
+- **The reconciliation is re-derived, and it does not change meaning.** A dense
+  `Zt` is a network `compute_z_matrix` cannot be handed, so the modelled total
+  has **no second opinion**; what is reconciled — whatever model is in force —
+  is the **declared** configuration through the same machinery, which checks
+  the arithmetic the modelled number came out of. The CLI already settles this
+  and the failure mode is recorded in its own code: reconciling the *modelled*
+  total against the *declared* engine value made a shared return — which
+  doubles `M` — read as a catastrophic algorithm disagreement, so the split
+  vanished at exactly the setting the section exists for. Do not invent a
+  second rule here.
+- **One line where the control is**, saying in plain words why the default is
+  not obviously right: independent leads understate the shared return. One
+  line. Do not moralise.
+
+And the recipe that needed no code at all, which is what a reader can use
+today: one `short_to` row tying the whole ground set, then **one**
+`lumped_to_gnd` on any port of it. Measured on `diff_pair_4port.s4p`:
+`3 lumped_to_gnd L=1n` + `4 lumped_to_gnd L=1n` gives `M = 1.0120 nH`, while
+`3 short_to 4` + `3 lumped_to_gnd L=1n` gives `2.0259 nH` — 6.03 dB, through
+`compute_z_matrix` with no attribution code in the path, and agreeing with the
+dense builder to `3.2e-13` relative. That it was already expressible is not a
+defence of leaving the control out: nobody reading the sign strip would have
+guessed the question was open.
 
 ---
 

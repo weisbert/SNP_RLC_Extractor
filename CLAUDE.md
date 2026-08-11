@@ -23,6 +23,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `reduce_snp.py`         | **Standalone** CLI: shrinks a big `.sNp` to a few ports (KEEP / GND-short / open-or-matched elimination). Deliberately imports nothing from this repo — it gets copied to simulation servers on its own. |
 | `deploy.sh`             | **Top level on purpose.** Red-zone update entry point: `cd <install> && bash deploy.sh` auto-detects the uploaded tarball. The operator's cross-project convention is `<install>/deploy.sh` — do not move it back under `deploy/`. |
 | `deploy/`               | Rest of the air-gapped ("red zone") pipeline: `pack.ps1` (Windows, `git archive`), `doctor.sh` + `_env_check.py` (what can this box run?). No network, no pip, no venv on the far side. |
+| `tests/test_run_parallel.py` | The RUNNER's own suite (57 tests, 0.25 s, no subprocesses, in `FAST_MODULES`): the contention rule (`max(1, min(budget, cores // live))` — sharing the *cores*, not the worker budget, because sharing the budget measured **slower** at two concurrent runs), the atomic registry write, the heartbeat and the stale-entry expiry. |
 | `tests/test_parse_diagnostics.py` | The robust-reading work: what a file says about itself (span, sweep description, DC / \|S\|>1 notes) and what happens when it cannot be read. Every refusal test pins the **verdict** and the **line number**, not just "raises ValueError" — that would have passed before any of it existed. Plus the recovery cases (UTF-16, BOM, commas, `D` exponents, extension tiebreak) and the two GUI affordances. |
 | `tests/test_session.py` | Save Config / Load Config / Restore Last Session. Pure round trip (no Tk) for the trace fields, the refusal verdicts, the hand-edit tolerance and the path precedence; Tk-driven for the App-level save→wipe→load, the missing-file path, the autosave, and that the File menu and its accelerators are reachable. Also the guard on the Help window's tab strip, which the tenth tab pushed past the old 950 px. |
 | `tests/test_results_notebook.py` | The Results pane's `ttk.Notebook`: that the Log is tab 0, selected and MAPPED at startup (both are mechanical preconditions of tests elsewhere), the width-stable badge measured in the tab strip's own font, the unseen-warning count, the ERROR claim on the pane and the severity routing of the real call sites, plus the measured proof that a 30-tab strip does not move the left panel. Every guard mutation-checked. |
@@ -32,12 +33,12 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `tests/test_attrib_degenerate.py` | What the module does when the spec, the network or the data is BROKEN — the only interesting question here, because **every failure mode below produces a plausible number rather than an exception**: no DC reference (`cond(Y) = 2.5e16`) inverting to garbage; a redundant spec making `H` exactly singular (which must read as a spec bug, not as "unattributable physics"); an ill-conditioned baseline putting the decomposition's own sum 100% away from the engine with both numbers finite; independent-per-ball grounds reading **9.6 dB low** against the shared return real balls have; **eight** ground balls where every one-at-a-time and every pairwise measurement reads ~0 while the collective effect is **600x larger and the OTHER SIGN**; a ground inductance resonating with a package capacitance putting `M` outside the [ideal, open] bracket; one NaN in one S entry. It CONSTRUCTS each degeneracy — the repo's 2- and 4-port fixtures cannot express an eight-ball package or a resonant return — and checks against an honest rebuild through `compute_z_matrix`, so both sides come from shipped code. Every guard mutation-checked, with the defeating mutation named in each test's own docstring. |
 | `tests/test_attrib_coldstart.py` | The cold-start screen (49 tests, 0.25 s, no Tk). The load-bearing one is the same as `test_attrib_core.py`'s: the closed form `-Zbase[a,p]Zbase[p,b]/Zbase[p,p]` against an HONEST re-solve through `compute_z_matrix` with a rebuilt `TerminationSet` — `1.47e-11` worst on the planted 12-port case, `<= 5.8e-11` over every fixture. Plus the bracket and its second opinion, the two coupling columns kept separate (the planted **red herring**: largest `\|Z_ap\|` in the file, negligible effect, ranks 5th of 8 by `\|dM\|` and 1st by `\|Z_ap\|` alone), the pair scan and the **shield** (`+9.689` / `+9.689` / `-870.268 pH`, 89.8x, sign flip), the mirror, the greedy curve's saturation, the family suggestion as a SENTENCE, and that the whole report is byte-identical with and without port names. |
 | `tests/test_attrib_cli_coldstart.py` | `--cold-start` on the CLI (70 tests, 0.33 s). The flag refusals and that every `--cold-start-*` is inert without it (all three cap flags default to `None` so the check is EXACT, which `_attr_dependent_flags` cannot be); the printed ORDER, with `test_the_BRACKET_comes_before_the_RANKING` pinning that pair on its own; that `--attribute` and `--cold-start` together are allowed with cold start last; the `--cold-start-csv` `DictReader` round trip; and the line-width budget (widest line 95, the same as `--attribute`'s). |
-| `tests/test_attrib_window.py` | The Attribution window IN ISOLATION (150 tests). Split in two on purpose: the pure formatters run with **no display** (the monospace table model, the width-stable sign pair, the reconciliation verdict, the provenance and staleness text, the CSV records), and the rest drives real Tk off a hand-built `TraceConfig` — the four refusals by name, the header `ReflowRow` budget, both PanedWindow starvation cases, the lazy sweep draw, that crossing the canvas does NOT steal focus from the frequency Entry (measured with `focus -lastfor`, not `focus_get()`, because the test process rarely owns WM focus under the parallel runner), the `[Recompute]`-not-auto-refresh contract, and that the swatch stays equal to `pkg_rlc_gui.RESULTS_SWATCH`. Plus the integration pass's own classes: `TestGesturesThatMustNotDiscardWork` (Escape from inside a field, and a click past the last row), `TestTheDetailPaneSaysWhatItRefused` (a refused candidate reaching a widget, the sweep not collapsing, the Candidates entry on screen at the minimum), `TestTheHeaderHearsAboutItsOwnText` (`ReflowRow.refresh`) and `TestTheDeclaredMinimumShowsContent`, which builds a SECOND App at `tk scaling 2.0` with every named font x1.5 and asserts the content is mapped at the enforced minimum, that the 100% minimum did not move, and that the layout SETTLES over eight resizes. Every guard mutation-checked. |
+| `tests/test_attrib_window.py` | The Attribution window IN ISOLATION (212 tests). Split in two on purpose: the pure formatters run with **no display** (the monospace table model, the width-stable sign pair, the reconciliation verdict, the provenance and staleness text, the CSV records), and the rest drives real Tk off a hand-built `TraceConfig` — the four refusals by name, the header `ReflowRow` budget, both PanedWindow starvation cases, the lazy sweep draw, that crossing the canvas does NOT steal focus from the frequency Entry (measured with `focus -lastfor`, not `focus_get()`, because the test process rarely owns WM focus under the parallel runner), the `[Recompute]`-not-auto-refresh contract, and that the swatch stays equal to `pkg_rlc_gui.RESULTS_SWATCH`. Plus the integration pass's own classes: `TestGesturesThatMustNotDiscardWork` (Escape from inside a field, and a click past the last row), `TestTheDetailPaneSaysWhatItRefused` (a refused candidate reaching a widget, the sweep not collapsing, the Candidates entry on screen at the minimum), `TestTheHeaderHearsAboutItsOwnText` (`ReflowRow.refresh`) and `TestTheDeclaredMinimumShowsContent`, which builds a SECOND App at `tk scaling 2.0` with every named font x1.5 and asserts the content is mapped at the enforced minimum, that the 100% minimum did not move, and that the layout SETTLES over eight resizes. Every guard mutation-checked. |
 | `tests/test_attrib_gui_integration.py` | The same window END TO END through the REAL app, which is the other half: nothing here constructs a `TraceConfig`, a `FileEntry` or an `AttribResult` — the file goes in through `_on_add_file`, the measurement ports are typed into the real `RowTable`, and the window is opened through the menu entries a user clicks. It owns the JOIN, i.e. every defect where `pkg_rlc_gui`'s hooks and `pkg_rlc_attrib_gui`'s window are each right on their own: the number on the table against `pkg_rlc_attrib` called directly AND against the `M` the results pane printed down the separate `compute_z_matrix` path, the right-click SELECTING the row under the pointer first, every refusal by name, rule 6 in full, rule 11 (remove the trace / remove the file / load a session, each with the window open), the Results-pane pointer and its gate, and that none of it put a run or a result into the session file. **The window is MAPPED everywhere here** — a withdrawn root answers 0 to every geometry query and `Listbox.nearest()` then answers row 0 for every y, which is exactly the answer the right-click tests exist to rule out. |
-| `tests/run_parallel.py` | **The test runner to use.** Class-sharded, longest-first. Measured when it was written: `python -m unittest discover -s tests` 293 s against `python tests/run_parallel.py` 108 s over the same 906 tests (2.7x). Re-measured here: **1566 tests in 236 s / 230 s**, and `--fast` **642 tests in 4.1 s** over the thirteen no-Tk modules (the two cold-start ones were added — neither imports tkinter, which is the one property that list has); `-m <substr>` picks modules by name. Sharded by CLASS not module because `test_run_history` alone is 86 s of the serial 293. Exit code 0 means every shard passed. NOT auto-discovered (no `test_` prefix). |
+| `tests/run_parallel.py` | **The test runner to use.** Class-sharded, longest-first. Measured when it was written: `python -m unittest discover -s tests` 293 s against `python tests/run_parallel.py` 108 s over the same 906 tests (2.7x). Re-measured here: **1703 tests in 310 s**, and `--fast` **699 tests in 4.4 s** over the fifteen no-Tk modules (the two cold-start ones were added — neither imports tkinter, which is the one property that list has); `-m <substr>` picks modules by name. Sharded by CLASS not module because `test_run_history` alone is 86 s of the serial 293. Exit code 0 means every shard passed. NOT auto-discovered (no `test_` prefix). |
 | `tests/test_freq_label.py` | Frequency-label honesty: the marker frequency a report prints says where the numbers came from. Both extractors snap to the nearest grid point via `argmin`, and the default 0.1 GHz marker on `diff_pair_4port.s4p` lands on 0.10099 GHz — every default session in the repo snapped and said nothing. |
 | `tests/test_large_files.py` | How big a file the tool will read and what it says when it will not: the escalating port-count sniff past `MAX_SNIFF_NPORTS` to `SNIFF_HARD_CAP`, the refusal as a `TouchstoneParseError`, and the memory envelope. |
-| `tests/`                | `unittest`-based suite (1566 tests run by `tests/run_parallel.py` at the time of writing, covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, port attribution and its cross-check against the engine, the Attribution window, the cold-start screen, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/`                | `unittest`-based suite (1703 tests run by `tests/run_parallel.py` at the time of writing, covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, port attribution and its cross-check against the engine, the Attribution window, the cold-start screen, the bit-exact golden regression, and `reduce_snp`). |
 | `tests/test_editor_autoapply.py` | The commit-step removal: WHEN the editor writes into a `TraceConfig` and WHICH one it lands on (the deferral, the object capture, the flush-before-selection-change), the style picker's storage / reachability / honesty about multi-curve traces, and that hiding a curve neither recomputes it nor destroys the cursors. Every guard here was mutation-checked. |
 | `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see, and the reordering hazard that forces `_import_dsl_text`'s verbatim fallback. |
 | `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
@@ -222,7 +223,9 @@ was measured and was worse.
   Real package ground balls share a return plane. `N` independent `z` in
   parallel is `z/N`; `N` balls sharing one `z` is `z`, so independent
   per-lead inductors understate the common-mode return inductance by
-  `(1 + (N-1)k_ret)`. Measured on three different networks: **9.60 dB** (review,
+  `(1 + (N-1)k_ret)` — `4.8x`, i.e. **13.6 dB**, at 20 balls with a realistic
+  `k_ret = 0.2`, and it GROWS with the ball count. Measured on three different
+  networks: **9.60 dB** (review,
   synthetic 4-ball), **8.09 dB** (design note §5.2, independently constructed
   4-ball), **6.03 dB** (`diff_pair_4port.s4p`, `agg=1`/`vic=2`, grounds 3+4,
   5 GHz: 1.0120 nH independent vs 2.0259 nH shared). Every one **larger than
@@ -360,11 +363,22 @@ was measured and was worse.
   line to a circular arc). **The INTERVAL is the headline scalar** ("M lies in
   [1.71, 3.44] pH over any physical ground inductance"); the sampled curve is
   secondary. **The curve need not be monotone and the endpoints are NOT a
-  bound** — a series L resonates with the package's shunt C. Measured on
-  `diff_pair_4port.s4p` sweeping ground port 3: ideal `1.01 nH`, open `504 pH`,
-  actual range `[504 pH, 1.18 nH]` peaking at `L = 505 nH`. Detect it and say
-  so. On an UNBOUNDED sweep an extremum `NEAR_POLE_RATIO` past the bracket is a
-  near-pole, not a design margin. **`bracket` must be in the SAME quantity as
+  bound** — a series L resonates with the package's shunt C. **The two
+  ENDPOINTS are the numbers the user came for** (`M(0)` = ideal ground, `M(inf)`
+  = open, the two assumptions the 6.07 dB dispute differed by), and both are
+  exact. Re-measured on `diff_pair_4port.s4p` at 5.0005 GHz sweeping ground
+  port 3: ideal `1.01 nH`, open `503.7 pH`, one pole at `L = 505.25 nH` (there
+  `ctx.Gm[0,0] = -391 µΩ - j15.8745 kΩ`, i.e. 2.005 fF, and 505.25 nH
+  series-resonates with 2.005 fF at exactly the 5.0005 GHz being read), and an
+  extremum of **±10.28 mH** — `1.0e7` times the bracket. Away from the pole
+  (factor-of-two guard) the same curve is `[-2.5 pH, 1.52 nH]`, and at a
+  factor of ten it is `[447.5 pH, 1.066 nH]`, still outside the bracket at both
+  ends. This bullet used to quote `[504 pH, 1.18 nH]` as the actual range,
+  which predates the pole-seeded extremum search and is what the code no longer
+  says: **an interval quoted over the whole half-line is the pole, i.e.
+  arithmetic; the pole-free interval is the answer, and the pole is reported
+  separately by its `L`.** On an UNBOUNDED sweep an extremum `NEAR_POLE_RATIO`
+  past the bracket is a near-pole, not a design margin. **`bracket` must be in the SAME quantity as
   `interval`** — for the complex `quantity="Z"` the interval is of `|Z|`, so
   the bracket has to be too: measured with `t_max=20 nH`, the real-part
   spelling put `(-2.49 nOhm, 376 pOhm)` beside an interval of
@@ -533,7 +547,11 @@ was measured and was worse.
 
 `tests/test_attrib_window.py` is the guard, and every claim below was
 mutation-checked. `docs/design_port_attribution.md` §13 records what stage 4
-became and where it departed from that note's own §9 sketch.
+became and where it departed from that note's own §9 sketch; **§13.13 records
+the four things the first screenshot changed** — the sweep plot's pole, the
+sash, the across-frequency badge and the ground model — none of which was a
+wrong number, and all four of which had a written reason a later session would
+otherwise reinstate.
 
 **The hook surface `pkg_rlc_gui.py` calls, and there is no other:**
 `ATTRIB_MENU_LABEL`, `attribution_refusal(trace, file_entry)`,
@@ -840,14 +858,270 @@ failure this repo has already had more than once.
   FLOOR moved — matplotlib re-lays the figure out on every `<Configure>`, so
   the drawn plot is whatever the pane actually gets (183 px tall at the default
   size).
-- **The window does NOT offer the shared-return ground model.** It is a dense
-  element-impedance matrix, it cannot be written as a `TerminationSet`, and the
-  header is already over budget at 980 px so a seventh control pushes
-  `[Recompute]` onto a third row. It stays on the CLI
-  (`--attribute-ground-model shared:…`). Because the choice is worth
-  **9.60 dB** (measured, four balls at 1 nH each independently versus the same
-  four tied through one shared 1 nH), the export states the model in full
-  rather than letting the reader assume one was chosen.
+- **THE WINDOW OFFERS THE GROUND MODEL, in the CLI's own `shared:0.3n`
+  spelling, and it goes through `[Recompute]` like every other input.** It was
+  CLI-only at first on a pixel argument — the header is a `ReflowRow` measured
+  at **961 px of 964** at the 980 default, so any further control there wraps
+  it to a second row (**29 px**, measured) — and that argument lost to the
+  measurement it was weighed against: the choice is worth
+  **9.60 dB** (four balls at 1 nH each independently versus the same four tied
+  through one shared 1 nH), against the **6.07 dB** dispute this whole layer
+  exists to settle, and it grows with the ball count — `(1 + (n−1)k)` is
+  **13.6 dB** at 20 balls with `k = 0.2`. A control the user cannot reach is
+  not a default, it is a decision taken for them, and this one is the most
+  expensive decision in the flow. One field, one spelling shared with
+  `--attribute-ground-model` so the two cannot drift, and **one line beside it**
+  saying why the default is not obviously right (independent leads understate
+  the shared return) — one line, not a lecture. The **sign strip states which
+  model is in force** and both exports keep doing so — but it says so AFTER the
+  sign rule and the shares rule, never in front of them: the strip's measured
+  budget is **48 characters at 150%/720**, rule 4 requires both of those stated
+  once in the header, and the model name is the item that may clip, because it
+  is also on the control itself and in full in both exports. Whatever a later session
+  does to the header, the control may not cost `[Recompute]` its place: that is
+  what `ReflowRow` is for (`pack` unmaps from the end and has no scrollbar and
+  no other route to the button — `tests/test_plot_controls.py`'s whole
+  subject).
+- **A dense `Zt` has NO second opinion, and the window must NOT invent a second
+  rule for that.** The rule is already written down twice above — *"the
+  reconciliation compares two algorithms on ONE network, so it is always taken
+  on the DECLARED configuration"* (`ctx.Zop_declared` is the left-hand side
+  whatever `zt` is in force) and *"what a dense `Zt` loses is the second
+  OPINION, not the check"* (`reference_applicable = False`, the total
+  re-labelled *"compute_z_matrix, DECLARED spec — a DIFFERENT network"*).
+  Follow those; `_attr_print_ground_model` is the CLI's working example.
+  The failure they exist to prevent is measured on `diff_pair_4port.s4p`
+  (probes 1/2, grounds 3/4, 5 GHz): reconciling the MODELLED total against the
+  engine's DECLARED one made a shared 1 nH return — which **doubles** `M` —
+  read as a residual of **1.01**, past `RESIDUAL_CATASTROPHIC`, so `terms`
+  emptied and the window printed *"the two algorithms disagree about the answer
+  itself"* about **2.026 nH, which was right**. The split would vanish at
+  exactly the setting the control exists for.
+- **THE SWEEP PLOT LABELS THE POLE; it never lets the pole set the axis.**
+  Measured on `diff_pair_4port.s4p` at 5.0005 GHz sweeping `ground port 3`:
+  `M(0) = 1.01 nH`, `M(inf) = 503.7 pH`, and one pole at `L = 505.25 nH` where
+  the extremum is **±10.28 mH** — 1.0e7 times the endpoint bracket. Autoscaled,
+  that is a y axis reading `1e-5`, one vertical spike, and a caption honestly
+  saying NON-MONOTONIC beside a picture carrying no information at all — and a
+  true sentence beside an uninformative picture teaches the reader to stop
+  looking at the picture. Five rules, of which the middle three are the ones
+  that get "simplified" back into an autoscale: **x stays
+  log; y is SYMLOG with `linthresh` derived from the ENDPOINT SCALE, never the
+  panel's `1e-6`** (these are henries — 1 µH is a thousand times the whole
+  curve, so a fixed `1e-6` puts every point inside the linear band and symlog
+  degenerates into the linear axis it replaces); **the y limits come from the
+  physical endpoints `M(0)` and `M(inf)` plus a margin** — those are the two
+  numbers the user came for — and the pole is allowed to run off the top;
+  **the pole is drawn as a labelled vertical line at its `z`**, from the closed
+  form (`z = -γ/δ`, i.e. `t = -λ_j`; measured, `ctx.Gm[0,0] = -391 µΩ -
+  j15.8745 kΩ` and the pole sits at `L = 505.25 nH`, which series-resonates
+  with that 2.005 fF at the 5.0005 GHz being read), **never by scanning the
+  samples**; and **the headline interval is the POLE-FREE one** with the pole
+  reported as a separate sentence (`[-2.5 pH, 1.52 nH]` at a factor-of-two
+  guard band, against `[-10.28 mH, +10.28 mH]` over the whole half-line —
+  the second is the tool describing its own arithmetic). A pole is a real
+  feature of the structure: label it, never silently hide it. With no pole in
+  range nothing changes visually. The guard is a case WITH a pole and a case
+  WITHOUT, both asserting the y limits bracket the endpoints.
+- **"The limits bracket the endpoints" is NOT SUFFICIENT on its own, and a
+  shipped fixture proves it.** The margin for a sweep with no span was
+  `SWEEP_Y_PAD * max(abs(hi), abs(lo), 1.0)`, and that bare `1.0` is one HENRY
+  in an expression whose other terms are picohenries. Measured on
+  `decap_4port.s4p` (ordinary mode 6, probes 1/2, `gnd_ports="3,4"`, 5 GHz,
+  either ground row): every residue is exactly 0, so ideal = open =
+  **−506.755 nH**, and the axis came out `(−120.00005 mH, +119.99995 mH)` —
+  **473 602×** the value it was drawn to show, with the curve and both
+  asymptote lines on one pixel row (endpoint separation **0.0 px of a 223.5 px
+  axes**) and `linear_ticks` False, so the symlog decade locator printed
+  **17** labelled decades from −10⁰ to +10⁰. The bracket assertion passes that
+  trivially — ±0.12 H brackets everything — which is exactly the shape of
+  failure item 1 was about, arriving inside item 1's own fix. `SWEEP_Y_PAD_FLAT`
+  takes the margin as a fraction of the VALUE (1.12× the value, `linear_ticks`
+  True), and the guard is the **ratio of the axis to the endpoint magnitude**,
+  not membership. A curve that is identically zero gets a zero pad, and
+  `_scale_sweep_axis`'s `yhi > ylo` test then declines to set any limit at all
+  — matplotlib's own autoscale is the honest answer there.
+- **Both sweep axes print ENGINEERING UNITS (`si_tick` → `format_si`), and the
+  exponent offset is gone.** The original complaint about this plot was
+  literally "the y axis reads 1e-5"; after the symlog change it read `1e-10` —
+  measured, `ax.yaxis.get_offset_text()` was `'1e−10'` over tick labels
+  `['−2.5','0.0','2.5','5.0','7.5','10.0']` with an ylabel of `M [H]`, beside a
+  table cell reading `+413 pH` and a caption reading `ideal +821 pH`. A bare
+  exponent is a second notation for the same quantity on the same screen, and
+  it is the one the reader has to do arithmetic on. This is the plot cursor
+  readout's own rule (`_readout_value` → `format_si`), so the axis, the table
+  and the caption cannot drift. The unit therefore lives on the TICKS and is
+  **not** repeated in the axis label.
+- **A sub-decade symlog range gets a LINEAR major locator.** Measured: with
+  ylim `(310 pH, 919 pH)` the default symlog locator put `[]` labelled ticks
+  inside the range and `subs=[1,2,5]` put `['500 pH']`, against
+  `['450 pH','600 pH','750 pH','900 pH']` from `MaxNLocator`. Inside
+  `linthresh` the symlog transform IS the identity, so a linear locator places
+  its ticks exactly right; the axis is unchanged and only the tick choice
+  moves.
+- **The sweep caption's endpoints are printed the way the interval beside them
+  is COMPUTED.** For a complex quantity (`Z`) `Sweep.interval` and
+  `Sweep.bracket` are over the MAGNITUDE while the endpoints were printed as
+  `.real` unconditionally: measured on `coupled_4port_diff.s4p` at 5.1 GHz the
+  line read `[−2.15 mΩ, +27.5 Ω]   ideal +6.41 mΩ   open +785 µΩ` against a
+  `|value_ideal|` of **26.3 Ω** — the ideal endpoint reported four orders of
+  magnitude below the interval that is supposed to contain it, and below the
+  `[13.1 Ohm, 26.3 Ohm]` bracket the caption's own NON-MONOTONIC line quotes
+  two lines further down. A magnitude is labelled `|Z|`, so no sign is being
+  suppressed — there is none to suppress — and every real-valued quantity
+  (`M`, `ReZ`, `ImZ`, …) is untouched.
+- **The caption's LINE CAP is a budget, not a count, and it is read off the
+  WINDOW.** `SWEEP_NOTE_LINES = 3` is a count; the note is packed `side=BOTTOM`
+  against the `expand=True` canvas, so it takes its whole request and the plot
+  gets the remainder. Three lines are 55 px at 100% and **112 px at 150%**,
+  out of a pane that got smaller rather than bigger. Measured on
+  `coupled_4port_diff.s4p` with an element row **SELECTED** — the state the
+  pane exists for, and the state the existing 150% guard never entered:
+
+  | scaling | window | paned | detail | note | CANVAS |
+  |---|---|---|---|---|---|
+  | 100% | 980x700 | 497 | 331 | 55 | 309x276 |
+  | 100% | 720x420 | 188 | 90 | 55 | 179x35 |
+  | 150% | 980x700 | 268 | 114 | 112 | **309x2** |
+  | 150% | 720x678 | 198 | 70 | 112 | **309x2, `ismapped()==0`** |
+
+  The last one also hung 309 px off a 179 px parent — the only containment
+  violation in the window. So everything item 1 does was invisible at 150% DPI.
+  `_sweep_note_cap()` is `budget // line − ATTRIB_SWEEP_NOTE_RESERVE_LINES`
+  with `budget = winfo_height() − _chrome_height()`, giving 3 / 3 / 1 / 1 on
+  that table: **100% is untouched, including 720x420, where three lines over a
+  35 px canvas is the documented trade** ("the sentence saying the two
+  endpoints are not a bound is worth the whole pane"), and both 150% cases get
+  the plot back (309x74 and 179x30, mapped and contained). **Both terms of the
+  budget are independent of the note** — `_chrome_height` enumerates seven
+  fixed widgets and the note is not among them — and that is the whole reason
+  the rule is written against the window rather than against the sweep pane,
+  which is the obvious place to read it: the pane's height comes from the sash,
+  `_sash_target` reads the bottom pane's REQUESTED height, and the note's
+  request is part of it. A cap read from the pane is a rule that changes the
+  size it is measured from, i.e. the `_apply_editor_scrollbars` limit cycle. A
+  fraction of the budget was tried and is wrong in the other direction:
+  a quarter puts 720x420 at two lines, which drops rule 8's mandatory
+  NON-MONOTONIC label into the "+N more".
+- **THE SASH IS DERIVED FROM CONTENT, NEVER FROM THE MEASURED PANE HEIGHT.**
+  Observed on the shipped window: three data rows with roughly **250 px** of
+  empty space under them while the detail pane below was scrolling *and*
+  clipping horizontally (`…because the other n-1` cut off at the right edge
+  with an h-scrollbar under it). The initial position is therefore computed
+  from the table's own row count — rows + header + a couple of spare lines, at
+  the table font's linespace — and the detail pane takes the rest. Deriving it
+  from the pane's measured height instead is the documented **limit-cycle
+  shape**: a layout rule that reads a size it can itself change flips forever
+  and `update()` never returns, hanging the GUI and the test suite together
+  (`_apply_editor_scrollbars`, and the reason `ReflowRow` reads an imposed
+  width and writes only a height). Row count is an input the sash cannot move,
+  so it is a fixed point. **The detail text WRAPS and never scrolls
+  horizontally** — it is prose, and a horizontal scrollbar on prose is the
+  Treeview clipping failure this window's tables exist to refuse, arriving in
+  the pane underneath them. Re-derive on a material row-count change (a new
+  decomposition), and **never fight a user who has dragged it**: once moved it
+  is theirs until the window closes. Measured, `sashpos` / table / detail /
+  canvas with a row selected: **138 / 98 / 331 / 276** at 980x700 at 100%
+  (against 279 / 239 / 198 / 160 before), **70 / 30 / 90 / 35** at the 720x420
+  minimum, **107 / 48 / 114 / 74** at 980x700 at 150%, and **81 / 22 / 70 / 30**
+  at the 150% enforced minimum of 720x678. `detail.yview` and `detail.xview`
+  are `(0, 1.0)` at every one of them.
+- **"Was that a drag?" needs the WRITE COUNTER as well as the position.**
+  Comparing `sashpos` at ButtonRelease against ButtonPress is right and is not
+  enough on its own: anything that moves the sash while a button is held is
+  then recorded as a gesture and the split freezes for the session — i.e.
+  the content-derived position above stops working, permanently, from a click.
+  Measured at 100% / 980x700: `_on_sash_press()` → `_apply_sash(30)` (exactly
+  what a new decomposition does) → `_on_sash_release()` left `_sash_user` True
+  with no pointer movement at all. `_apply_sash` is reachable while a button
+  is down from `_render_impl` (Recompute, a view switch, and the units switch's
+  `refresh_attribution_windows(rerender=True)`) and from the `after_idle`
+  `<Configure>`. `_sash_writes` is bumped only where `_apply_sash` actually
+  writes a position, sampled at press, and required unchanged at release —
+  orthogonal to the "not the last value applied" rule, which stands. The cost
+  is at most a real drag that raced an automatic write in the same gesture,
+  which is self-correcting; the false claim is not.
+- **`across frequency: not checked` MUST CARRY THE ACTION AND ITS COST.** The
+  ranking is read off one frequency, which is exactly what acceptance item 5 is
+  about, and the window shipped with the check off and a badge that only said
+  so. Turning it on by default is the wrong fix — it is a fresh
+  `build_context` + `decompose` per frequency, `O(N³)` in the PORT count:
+  measured **0.45 ms** per point on `diff_pair_4port.s4p` and **223 ms** per
+  point on a synthetic dense 153-port network, so at `STABILITY_POINTS = 5`
+  the check is four extra points, under 2 ms on a small file and about **0.9 s**
+  on a package export. So the OFF state names the cost *on this file* and
+  checks it in one click, and the ON state says what **MOVED** — which elements
+  changed rank and at which frequency — not merely "checked". **A stable
+  ranking is a RESULT and must be said in those words**, not rendered as the
+  absence of a complaint.
+- **Both badge states are FRONT-LOADED, because this Label clips.** It is
+  `wraplength=0` (the `_footer_strip_text` rule — a wrapping strip costs plot
+  height), so what is written last is not on screen. Measured on the real
+  widget, the offer being 237 characters and the STABLE verdict 152:
+
+  | | 1500 px | 980 px | 720 px |
+  |---|---|---|---|
+  | offer, 100% | 238 | 156 | 111 |
+  | offer, 150% | 104 | **64** | **46** |
+  | verdict, 150% | — | **65** | 48 |
+
+  With the caveat first, at 150% / 980 px — the DEFAULT size — the reader saw
+  `across frequency: not checked — a ranking read off ONE frequency` and
+  nothing else: the gesture and the cost were both off screen, and at 100% /
+  980 px the cost was too (the visible text ended `… across the band: 4`). The
+  STABLE verdict clipped before `nothing changed places`, and a real NOT-stable
+  verdict off a 32-port file clipped before the moved ranks and their
+  frequencies — in each case exactly the words the rule above demands. So the
+  order is **verdict → gesture → cost → caveat** and **verdict → what moved →
+  span**: after the change the whole action and cost fit at 150% / 980 px
+  (`not checked — press ▸: 4 more solves (4-port file`) and the gesture
+  survives even at the 150% minimum.
+- **THE GROUND MODEL IS SECOND ON THE SIGN STRIP, ahead of the shares rule,
+  and that is a measured trade.** The strip is 137 characters and clips like
+  every other one: 137 / 137 / 114 at 100% and **106 / 66 / 48** at 150% for
+  1500 / 980 / 720 px. With the model last, `'Grounds:' in shown` was **False
+  at 980, 860 and 720 px at 150%** — at every supported size at that scaling
+  bar a maximised window there was no on-screen statement of the model that
+  produced the numbers, for a choice worth a measured **7.19 dB** on the
+  shipped fixture. "It is also on the control" is not a substitute: the control
+  shows the FIELD, which can have been edited without a Recompute, while the
+  strip shows what is IN FORCE (it renders `prov.ground_model_label`, never the
+  Entry). What clips instead is the shares rule, which is also in the table's
+  column heading, in Help and in the README, and which cannot change a number.
+- **`_attr_zt`'s NOTES are carried, and the first thing they can say is that
+  the model was not applied.** The window used to discard them
+  (`zt, _gm_notes = ground_model_zt(...)`) while the CLI prints them in
+  `header_notes`. Measured on `coupled_4port_diff.s4p`, probes 1/3, one
+  connection row `2 short_to 4` (a legal spelling of the same network),
+  `shared:L=1n` + [Recompute]: `_attr_zt` returns `zt is None` with *"The
+  ground model was ignored: this spec declares no shunt element … there is no
+  ground lead to model."*, so the numbers stay the DECLARED network's and
+  `reference_applicable` stays **True** — while the sign strip read
+  `Grounds: shared:L=1n` and both exports headed the block
+  `Ground model: shared:L=1n`. A reader who typed `shared:L=1n`, saw the number
+  not move and read that strip concludes the shared return is worth 0 dB, in
+  the one flow that exists to settle a 6.07 dB dispute. The discriminator is
+  free (`gm_z is not None and zt is None`); the marker goes on
+  `ground_model_label`, so ONE assignment reaches the sign strip, Copy report
+  and the CSV rather than three that can disagree, and the full sentence goes
+  on the hint Label beside the control (no new pixels — it replaces the
+  standing hint only while there is something more urgent to say there).
+- **A session-restored ground model that no longer parses says so.** The
+  retry-without-it is right — a bad value costs its own field, never the
+  window — but the second half of that rule is that every other dropped field
+  in the session code notes itself in the Results pane. Without it the window
+  opens on `diag` with the saved model silently gone, and a ground model is
+  worth a measured 7.19 dB, so a silent revert to the default is a silent
+  7.19 dB.
+- **The across-frequency button is a ONE-SHOT, not an expander.** Measured:
+  press → `▾` plus the verdict; press again → the glyph went back to `▸` and
+  the label text was UNCHANGED, still the verdict, with `_badge_row` 27 px
+  throughout. `_expanded` gated no content — only the glyph — so the collapse
+  offer was inert, and re-running would spend four more solves on an answer
+  already on the line beside it. It is therefore disabled once `res.stability`
+  is set, and the reason a disabled button owes the reader (the Keep button's
+  rule) is the verdict in the Label next to it. [Recompute] builds a fresh
+  `AttribResult` with `stability=""`, which makes it live again.
 - **A session restores the CHOICES, never the WINDOW.** `attribution_refusal`
   turns away a trace with no numbers, and a freshly loaded session has none
   until Calculate has run — so auto-reopening would show nothing but the
@@ -2188,12 +2462,12 @@ recorded here rather than in a commit message nobody will find.
 
 ```bash
 python tests/run_parallel.py            # the whole suite -- use this
-python tests/run_parallel.py --fast     # 4.1 s, 642 tests, the thirteen no-Tk modules
+python tests/run_parallel.py --fast     # 4.4 s, 699 tests, the fifteen no-Tk modules
 python tests/run_parallel.py -m attrib coupling core    # substring on module name
 ```
 
-**Re-measured on this box: 1566 tests / 289 shards in 236 s and 230 s over two runs, and
-642 tests in 4.1 s twice for `--fast`.** (The historical figures the runner's docstring
+**Re-measured on this box: 1703 tests / 314 shards in 310 s, and 699 tests in 4.4 s for
+`--fast`.** (The historical figures the runner's docstring
 opens with — 293 s serial against 108 s parallel over 906 tests — are what justified the
 runner and are kept as such.) The full number tracks CONTENTION as much as anything: 120 s
 on an idle box and 339 s with another agent competing for the same cores have both been
@@ -2211,7 +2485,8 @@ parallel suite once before reporting — never the serial `discover`.
 
 `--fast` now covers the cold-start screen: `test_attrib_coldstart` and
 `test_attrib_cli_coldstart` were qualified on the one property `FAST_MODULES` has — neither
-imports tkinter — and were added, which is what took it from 523 tests / 2.9 s to 642 / 4.1 s.
+imports tkinter — and were added, which is what took it from 523 tests / 2.9 s to 642 / 4.1 s;
+the runner's own suite then took it to 699 / 4.4 s.
 
 ## How to add a new measurement mode
 
