@@ -317,9 +317,10 @@ class TestCouplingBlockRendering(unittest.TestCase):
             Zmat[f, 0, 2] = Zmat[f, 2, 0] = complex(0.0, 1e-9)   # ~ -180 dB
         names = ["L1", "L2", "L3"]
         tc = SimpleNamespace(Zmat=Zmat, mport_names=names)
-        fe = SimpleNamespace(ts=SimpleNamespace(freqs=freqs))
         buf = io.StringIO()
-        _write_coupling_csv(buf, csv.writer(buf), tc, fe)
+        # The AXIS, handed in: a composed Zmat lives on the composed axis and
+        # not on the home file's sweep, so the exporter no longer fetches it.
+        _write_coupling_csv(buf, csv.writer(buf), tc, freqs)
         header = [ln for ln in buf.getvalue().splitlines()
                   if ln.startswith("Freq_GHz")][0]
         self.assertIn("M_nH_L1_L3", header)

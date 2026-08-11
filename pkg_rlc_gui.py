@@ -109,6 +109,26 @@ from pkg_rlc_plot import (
     COLORS, LINESTYLES, MAX_LABEL_LEN, PlotPanel, Trace as PlotTrace,
 )
 from pkg_rlc_help import HelpWindow
+# `default_alias` is the ONE place that turns a file's position in a trace into
+# the tag its ports wear (F1, F2, ...), and it lives in pkg_rlc_compose because
+# that is what parses the tag back.  pkg_rlc_files_gui imports the same
+# function for the same reason -- a second copy here is how the tag a port cell
+# shows and the tag the engine resolves come to disagree.
+#
+# Measured marginal import cost with pkg_rlc_core (which this file already
+# imports) warm: 3.0 / 2.9 / 8.3 ms in three fresh processes, against a
+# documented 349 / 352 / 364 ms for `import pkg_rlc_gui` itself.  No cycle:
+# pkg_rlc_compose imports pkg_rlc_core and numpy and nothing else.
+import pkg_rlc_compose as comp
+from pkg_rlc_compose import default_alias
+# `_collect_nets` is reached by name on purpose.  It is the ONE definition of
+# which tokens in a Mode 5 DSL block are NODE NAMES rather than port fields,
+# and `_scope_dsl_text` has to skip exactly those.  A second copy here would
+# let the field this file rewrites and the field core resolves disagree, which
+# is the drift this repo has been bitten by (RECIPROCITY_WARN, and the two
+# definitions of "which files is this trace made of" that `trace_file_labels`
+# now has to keep mirrored).  It never raises for a malformed line.
+from pkg_rlc_core import _collect_nets
 # The Attribution window lives in its own module (pkg_rlc_attrib_gui);
 # this file carries only the hooks below.  It is imported at module
 # level, NOT lazily, for two measured reasons.
@@ -132,6 +152,29 @@ from pkg_rlc_attrib_gui import (
     live_windows as attribution_windows,
     open_attribution_window,
     refresh_attribution_windows,
+)
+# The file UI (R3-2 / R3-3) and the GUI half of the reference-node check
+# (R3-5).  Same split, same reasons, as pkg_rlc_attrib_gui above: it is a
+# module of its own because this file is 8000+ lines, it is imported at module
+# level because the menubar needs FILES_MENU_LABEL at build time and a second
+# copy of a menu path is the drift the "Show Ports needed five pointers"
+# history warns about, and it is not a cycle -- pkg_rlc_files_gui imports
+# pkg_rlc_gui only from inside functions.
+#
+# Measured marginal import cost with pkg_rlc_core and pkg_rlc_compose (which
+# this file already imports) warm: 11.8 / 14.5 / 13.7 ms in three fresh
+# processes, against a documented 349 / 352 / 364 ms for `import pkg_rlc_gui`
+# itself -- and it is already paid today, because pkg_rlc_attrib_gui imports
+# it at module level for the reference-node strip.  Nothing on the CLI path
+# pays it at all: pkg_rlc_extractor imports pkg_rlc_gui only inside the
+# GUI-launch branch.
+from pkg_rlc_files_gui import (
+    FILES_MENU_LABEL,
+    FILES_TITLE,
+    files_refusal,
+    open_files_window,
+    reference_provenance,
+    refresh_files_windows,
 )
 
 
@@ -185,7 +228,34 @@ class TraceConfig:
     kept as a field so old configs still load; nothing edits it any more.
     """
     id: int = 0
+    # THE HOME FILE.  A bare port number anywhere in this trace means a port of
+    # THIS file, in every mode -- which is what keeps every pre-existing spec,
+    # every golden case and every saved session meaning exactly what it meant
+    # before composition existed, and what keeps a single-file user from ever
+    # seeing a tag.  It stays a single `str` on purpose: the alternative (one
+    # list of files, home at index 0) would have moved every one of the ~20
+    # consumers of this field at once, and would have written a one-element
+    # list into every session file ever saved.
     file_label: str = ""
+    # The OTHER files this trace is composed with, in order: plain FileEntry
+    # labels, no tags.  A file's TAG is its POSITION -- F1 is the home file,
+    # F2 the first of these -- resolved through pkg_rlc_compose.default_alias
+    # by `trace_file_aliases` here and by `slots_of` in pkg_rlc_files_gui, so
+    # there is exactly one authority for what 'F2.3' means.  Measured there:
+    # a port cell shows about 7 characters, 'F2.' is 33% of that and leaves 4
+    # digits of port number, while a 4-character tag is 73% and leaves 1.
+    #
+    # Empty is the ordinary single-file trace, and empty is what makes this
+    # field invisible: it is not written to a session file (see
+    # _OPTIONAL_TRACE_FIELDS), it contributes nothing to _config_signature and
+    # a snapshot of a single-file trace carries no file list at all -- so
+    # every spec, golden case and saved session that predates composition
+    # means exactly what it always meant.
+    #
+    # It is LIST-VALUED, so it is the documented `mports` Duplicate aliasing
+    # trap: _duplicate_trace_config and _freeze_trace_config must copy it, or
+    # two traces silently share one file set.
+    file_labels: list = field(default_factory=list)   # list[str]
     mode: int = 1            # 1, 2, 3, 5, 6  (4 retired -> migrated to 2)
     port_a: str = "1"
     port_b: str = ""
@@ -257,6 +327,21 @@ class TraceConfig:
     Zmat: Optional[np.ndarray] = None          # (nfreqs, G, G) complex
     mport_names: Optional[list[str]] = None    # length G
     coupling: Optional[object] = None          # CouplingResult at marker freq
+    # Computed, COMPOSED traces only.
+    #
+    # `net_freqs` is the frequency axis `Z` / `Zmat` actually live on.  None
+    # means "the home file's own sweep", which is what it is for every
+    # single-file trace and therefore for every trace that existed before
+    # composition -- so nothing about them moves.  On a composed trace the two
+    # axes are equal only when no interpolation happened, and drawing a
+    # composed Z against the home file's freqs would misplace every point in
+    # the sweep with no symptom but a plausible curve.
+    net_freqs: Optional[np.ndarray] = None
+    # The reference-node verdicts (R3-5), one per file, cached so the run
+    # snapshot, the Attribution window's strip and the files window all read
+    # the same list.  `pkg_rlc_files_gui.reference_checks_of` looks for exactly
+    # this attribute name.
+    reference_checks: Optional[list] = None
 
     MODE_NAMES = {1: "GND", 2: "A↔B", 3: "A↔B+Short",
                   4: "A↔B+VDD (retired)", 5: "Custom", 6: "+/- Coupling"}
@@ -278,9 +363,18 @@ class TraceConfig:
         if self.frozen:
             frozen = ("  ❄" if (self.Z is not None or self.Zmat is not None)
                       else "  ❄ no numbers")
+        # A composed trace names its HOME file and counts the rest.  ' +N'
+        # rather than ' +N files' or the extra file's tag, for the usual
+        # measured reason: on a representative entry in the Traces list
+        # (Microsoft YaHei UI 9, 444 px of list) the line is 388 px bare,
+        # 408 px with ' +1' -- and 408 px with ' +2' and ' +9' too, so the
+        # count cannot jitter the line.  ' +1 file' is 429 px, 15 px from the
+        # edge, and ' +PKG' is 421 px and grows with the tag.
+        extra = len(trace_file_labels(self)) - 1
+        more = f" +{extra}" if extra > 0 else ""
         return (f"{'☑' if self.enabled else '☐'} "
                 f"[{self.id}] {self.label}  |  "
-                f"{self.file_label}  {self.MODE_NAMES.get(self.mode, '?')}"
+                f"{self.file_label}{more}  {self.MODE_NAMES.get(self.mode, '?')}"
                 f"{' *' if self.stale else ''}{frozen}")
 
     def port_descriptor(self) -> str:
@@ -372,6 +466,376 @@ class TraceConfig:
             self.mports, self.conn_rows, self.extra_lines = mports, conn, extra
         self.custom_text = ""
         return True
+
+
+# ============================================================================
+# A trace's FILE SET (one home file, plus the files it is composed with)
+# ============================================================================
+#
+# DEFAULT SCOPE, NOT PER-CELL SCOPE.  The trace has a home file; a bare port
+# number means the home file; a tag appears only on an endpoint that crosses
+# into another file.  That is not a preference, it is the only option that
+# fits: measured, a per-row file COLUMN costs 451 px against the editor's
+# 431 px viewport (two columns 497 px, widening Port/To to 11 chars 461 px, a
+# Name column 469 px), and the string 'EM.23,24,25' renders 70 px into a ~55 px
+# visible combo area.  It is also what makes every pre-existing spec, golden
+# case and saved session keep its meaning byte for byte.
+#
+# Everything below is pure and Tk-free, so the whole schema is testable without
+# a display -- the same split `session_to_dict` / `session_from_dict` follow.
+
+def trace_file_labels(tc: "TraceConfig") -> list[str]:
+    """
+    Every file this trace is built from, HOME FIRST, deduplicated.
+
+    Home first is not cosmetic: the tag is the POSITION, so the home file is
+    F1 and stays F1 when a second file is added or removed.  A tag that moved
+    would silently re-point every tagged port cell in the connection table at
+    a different file.
+
+    This rule is MIRRORED, line for line, by pkg_rlc_files_gui's function of
+    the same name -- that module reads a trace through `TRACE_FILES_FIELD` /
+    `TRACE_HOME_FIELD` so it can degrade gracefully on a build without this
+    schema, and the two must not answer differently.  Anything that would
+    change the answer (stripping, sorting, keeping a repeat) has to change on
+    both sides or not at all; the normalising is therefore done ON THE WAY IN
+    (see _TRACE_STRLIST_FIELDS), never here.
+    """
+    home = str(getattr(tc, "file_label", "") or "")
+    out = [home] if home else []
+    for lbl in (getattr(tc, "file_labels", None) or []):
+        lbl = str(lbl or "")
+        if lbl and lbl not in out:
+            out.append(lbl)
+    return out
+
+
+def trace_file_aliases(tc: "TraceConfig") -> list[tuple[str, str]]:
+    """[(tag, file_label), ...], home first.  The tag IS the position."""
+    return [(default_alias(i), lbl)
+            for i, lbl in enumerate(trace_file_labels(tc))]
+
+
+def trace_is_composed(tc: "TraceConfig") -> bool:
+    """True when this trace is built from more than one file."""
+    return len(trace_file_labels(tc)) > 1
+
+
+def trace_file_legend(tc: "TraceConfig", sep: str = " + ") -> str:
+    """'F1=die.s6p + F2=package.s4p' -- what this trace is built from."""
+    return sep.join(f"{a}={lbl}" for a, lbl in trace_file_aliases(tc))
+
+
+def trace_file_scope(tc: "TraceConfig") -> str:
+    """
+    The file set as ONE comparable, rendered value for _config_signature.
+
+    Deliberately EMPTY for a single-file trace -- which is every trace that
+    existed before this schema -- so nothing about an existing run's diff
+    moves.  The home file on its own is already watched, by `file_label`.
+    """
+    return trace_file_legend(tc) if trace_is_composed(tc) else ""
+
+
+def compose_spec_problems(tc: "TraceConfig",
+                          loaded_labels: Optional[Sequence[str]] = None
+                          ) -> list[str]:
+    """
+    What is wrong with this trace's FILE SET -- one message per problem.
+
+    NEVER RAISES.  It is written to be callable from the editor strips, which
+    run inside Tk variable traces where a raised error reaches no handler you
+    control: Tk prints it and the GUI carries on showing a stale verdict.  It
+    reports; `compose()` is what refuses.
+
+    `loaded_labels` is optional because the pure half of this has to be
+    testable without an App; with it, a file that is named but not loaded is
+    reported here rather than only at Calculate.
+    """
+    msgs: list[str] = []
+    listed = [str(lbl or "") for lbl in
+              (getattr(tc, "file_labels", None) or [])]
+    home = str(getattr(tc, "file_label", "") or "")
+    if any(not lbl.strip() for lbl in listed):
+        msgs.append("a file entry is empty; it contributes nothing")
+    # A REPEAT counts ONCE (trace_file_labels drops it), and that has to be
+    # said out loud rather than silently repaired: "the same file twice" looks
+    # like two blocks of one part, but a label resolves through
+    # _file_by_label to ONE FileEntry, so the second copy could only ever be
+    # the first block again -- and the tag it would have had is then a tag no
+    # port cell can use.
+    for lbl in dict.fromkeys(listed):
+        if not lbl.strip():
+            continue
+        n = listed.count(lbl) + (1 if lbl == home else 0)
+        if n > 1:
+            msgs.append(
+                f"'{lbl}' is listed {n} times and counts once: a file label "
+                f"names one loaded file, so a second copy of it is the same "
+                f"block again")
+    if loaded_labels is not None:
+        for lbl in trace_file_labels(tc):
+            if lbl not in loaded_labels:
+                msgs.append(f"file '{lbl}' is not loaded")
+    return msgs
+
+
+# ============================================================================
+# The composed network: what a multi-file trace is actually solved against
+# ============================================================================
+#
+# `pkg_rlc_compose` does every piece of arithmetic -- the stacking, the
+# frequency plan, the namespace, the reference-node check -- and everything
+# here is the GUI's side of the seam: which files, which scope, and what to do
+# with the answer.  Same split as pkg_rlc_attrib / pkg_rlc_attrib_gui.
+#
+# THE ONE PROPERTY EVERYTHING BELOW RESTS ON: the home file is block 0 of the
+# composition, at offset 0, with every port kept -- so a BARE port number in a
+# composed trace is already the correct global index, and a port field that
+# carries no tag needs no rewriting at all.  That is what makes "default file
+# scope" (R3-2) free rather than a translation layer: measured on
+# coupled_2port_gndref.s2p + pi_2port.s2p, `parse_scoped_ports('1', net,
+# default='F1')` is [1] and `('2', ...)` is [2], while 'F2.1' is [3].
+#
+# It is also what makes the refusal free.  A bare port number PAST the home
+# file's port count would otherwise silently address the second file's ports
+# ('3' on a 2-port home would be F2.1), which is the same class of silent
+# wrong answer as the weld.  `net.gport` raises there, by name, with the port
+# map attached -- so every port field goes through parse_scoped_ports rather
+# than being passed through when it has no tag.
+
+
+class ComposeSpecError(ValueError):
+    """A port field that does not resolve in the composed namespace.
+
+    A plain ValueError from here would be indistinguishable from core's own
+    port errors in _on_calculate's handler, which is where the difference
+    matters: core's message names a bare port number, and on a composed
+    network a bare port number names nothing anyone can act on.
+    """
+
+
+def _scope_port_field(spec: str, net, home: str,
+                      skip: Sequence[str] = ()) -> str:
+    """
+    One port field, scoped: 'F2.13,14' -> '19-20';  '3' -> '3'.
+
+    `skip` is the set of NODE NAMES in the same spec (lower-cased).  A node
+    name is a port field too -- `tap lumped_between 30 L=10f` -- and it is not
+    a port reference, so it passes through untouched and core resolves it.
+    Everything else goes through `parse_scoped_ports`, tag or no tag, because
+    that is where the "this is not a port of the home file" refusal lives.
+
+    A COMMA TOKEN MAY CARRY ITS OWN TAG, and the scope is STICKY.  This is the
+    one rule added on top of `parse_scoped_ports`, and it is added because the
+    connection table forces it: a `short` row stores its whole tied group in
+    ONE cell (`_join_short_group`, the single-cell short of R1), so
+    `2,F2.1` -- tie die port 2 to package port 1 -- has no other spelling in
+    that table.  `parse_scoped_ports` refuses a tag on a later token outright,
+    for a good reason on ITS input: `F1.1,F2.3` would have to mean either "one
+    field, two scopes" or "F1 scopes everything", and the two answers differ
+    silently.
+
+    So this does not re-decide that; it removes the ambiguity and then asks the
+    same parser.  Each comma token is resolved ON ITS OWN, with the scope
+    carried forward from the last tag seen (the home file until one is), so:
+
+        '2,F2.1'    -> die port 2, package port 1     (the single-cell short)
+        'F2.1,2'    -> package ports 1 and 2          (identical to
+                                                       parse_scoped_ports)
+        'F1.1,F2.3' -> die port 1, package port 3     (refused there, because
+                                                       there it is ambiguous)
+
+    Every token still goes through `parse_scoped_ports`, one at a time, so the
+    "tag on more than one port" branch can never fire and every OTHER rule --
+    unknown alias, port out of range, range syntax, an empty tagged field --
+    stays that function's rule, unchanged and unduplicated.  The agreement is
+    pinned in tests/test_multifile_engine.py::TestScopePortField.
+
+    `collapse_ports` never emits a space, which is what makes the rewritten
+    text still tokenise as ONE field in a whitespace-split DSL.
+    """
+    text = (spec or "").strip()
+    if not text or text.lower() in skip:
+        return text
+    ports: list[int] = []
+    scope = home
+    try:
+        for token in text.split(","):
+            tag, _rest = comp._split_tag(token.strip())
+            if tag:
+                scope = tag
+            ports.extend(comp.parse_scoped_ports(token, net, default=scope))
+    except comp.ComposeError as e:
+        raise ComposeSpecError(str(e)) from None
+    return collapse_ports(ports) if ports else text
+
+
+#: DSL keywords whose FIRST remaining token is a second port field.  `short`
+#: takes its whole group in the port field and has no partner; `lumped_between`
+#: and `short_to` do.  Anything else (ground / vdd / open / signal /
+#: lumped_to_gnd) has no second port field at all.
+_DSL_SECOND_PORT_KINDS = ("short_to", "lumped_between")
+
+
+def _scope_dsl_text(text: str, net, home: str) -> str:
+    """
+    Rewrite the port FIELDS of a Mode 5 DSL block into the composed namespace.
+
+    Field positions, not a blanket token scan: `parts[0]` is always a port
+    field and `parts[2]` is one after `short_to` / `lumped_between`, and
+    nothing else in the grammar is.  A blanket scan would have to decide what
+    `C=1.5p` is -- `_split_tag` says its head is `C=1`, which fails the alias
+    pattern, so it survives today -- but a signal group legitimately named
+    `F1.something` would not, and a rewrite that depends on a group name is a
+    silent re-pointing.
+
+    Node names are collected through core's own `_collect_nets`, by name and
+    on purpose: it is the ONE definition of which tokens in this text are node
+    names, and a second copy here would let the field this rewrites and the
+    field core resolves disagree.  It never raises for a malformed line (the
+    main pass does, with the line number), so a failure here degrades to "no
+    node names" and the main pass still gives its own message.
+    """
+    try:
+        nets = set(_collect_nets(text).keys())
+    except Exception:
+        nets = set()
+    out: list[str] = []
+    for raw in (text or "").splitlines():
+        body, sep, comment = raw.partition("#")
+        parts = body.split()
+        if not parts:
+            out.append(raw)
+            continue
+        # The indent and the run of spaces in front of a trailing comment are
+        # kept, so the transform is as close to identity as the field rewrite
+        # allows: `extra_lines` is shown verbatim in "Edit as text…", and a
+        # block that reflowed itself every time it was scoped would look like
+        # the tool had edited the user's text.
+        lead = body[:len(body) - len(body.lstrip())]
+        trail = body[len(body.rstrip()):]
+        parts[0] = _scope_port_field(parts[0], net, home, nets)
+        if len(parts) >= 3 and parts[1].lower() in _DSL_SECOND_PORT_KINDS:
+            parts[2] = _scope_port_field(parts[2], net, home, nets)
+        out.append(lead + " ".join(parts) + trail
+                   + (sep + comment if sep else ""))
+    text_out = "\n".join(out)
+    if (text or "").endswith(("\n", "\r")) and not text_out.endswith("\n"):
+        text_out += "\n"
+    return text_out
+
+
+def _scope_conn_rows(rows: Sequence, net, home: str) -> list:
+    """Connection rows with their two port cells scoped.  Copies; never edits."""
+    names = {(r.net or "").strip().lower()
+             for r in rows if (r.net or "").strip()}
+    return [replace(row,
+                    ports=_scope_port_field(row.ports, net, home, names),
+                    to=_scope_port_field(row.to, net, home, names))
+            for row in rows]
+
+
+def _scope_mport_rows(rows: Sequence, net, home: str) -> list:
+    """Measurement-port rows with both probe sides scoped.  Copies."""
+    return [replace(r,
+                    plus=_scope_port_field(r.plus, net, home),
+                    minus=_scope_port_field(r.minus, net, home))
+            for r in rows]
+
+
+def _check_bare_ports(ports: Sequence[int], net, home: str, what: str) -> None:
+    """
+    Refuse a bare port index that is past the home file's ports.
+
+    For every field that goes through `_scope_port_field` this is free -- the
+    resolver raises.  Mode 3's Short Pairs field does NOT go through it:
+    `parse_short_pairs` reads its tokens with `int()`, so a tag there already
+    fails with core's own message, but a bare '3' on a 2-port home file would
+    quietly become F2.1.  This is the one field that needs the check spelled
+    out, and spelling it out is cheaper than a second parser.
+    """
+    for p in sorted({int(p) for p in ports}):
+        comp.parse_scoped_ports(str(p), net, default=home)
+
+
+@dataclass
+class SolveNetwork:
+    """
+    What ONE trace is solved against.
+
+    A single-file trace gets the FileEntry's own arrays verbatim -- the same
+    `fe.Y`, the same `fe.ts.freqs` -- so every pre-existing trace takes exactly
+    the path it took before composition existed and the golden regression is
+    untouched.  A composed trace gets the stacked network and its own frequency
+    axis, which is the composed one and not the home file's.
+    """
+    freqs: np.ndarray
+    Y: np.ndarray
+    nports: int
+    port_names: list
+    #: '' for a single file; the home file's tag ('F1') for a composition,
+    #: which is what a bare port field is scoped to.
+    home_alias: str = ""
+    net: object = None                  # comp.ComposedNetwork | None
+    notes: tuple = ()
+    warnings: tuple = ()
+
+    @property
+    def composed(self) -> bool:
+        return self.net is not None
+
+
+def _composed_solve_network(net) -> SolveNetwork:
+    """A stacked network as a SolveNetwork.  The port NAMES carry their tags.
+
+    `net.port_labels()` is 'F2.13 VSS_1', not 'VSS_1': on a combined network a
+    bare port name names nothing anyone can act on, and these names reach the
+    Ports & Roles window and the open-port remnant check, both of which are
+    read as "which port is this".
+    """
+    return SolveNetwork(freqs=net.freqs, Y=net.Y, nports=net.nports,
+                        port_names=net.port_labels(),
+                        home_alias=(net.blocks[0].alias if net.blocks else ""),
+                        net=net, notes=tuple(net.notes),
+                        warnings=tuple(net.warnings))
+
+
+def _namespace_network(entries: Sequence["FileEntry"]):
+    """
+    The PORT NAMESPACE of a composition, without composing anything.
+
+    `parse_scoped_ports`, `gport`, `local_of`, `port_labels` and
+    `describe_ports` read nothing but `ComposedNetwork.blocks`, so 'what does
+    F2.3 mean' can be answered from the files' port counts alone -- no S -> Y,
+    no interpolation, no stacked matrix.  `Y` is `zeros((0, n, n))` because
+    `ComposedNetwork.nports` reads `Y.shape[-1]`; it allocates nothing.
+
+    That is what makes the validation strip and the Ports & Roles window
+    understand a tagged port cell IMMEDIATELY, on the keystroke that types it,
+    instead of after a Calculate.  Measured, the real thing is not an option
+    there: `comp.compose` of 16 + 153 ports at 401 points is 10.5 SECONDS
+    (10780 / 10346 / 10521 ms, three runs), and these two run once per
+    keystroke.  This one is a list comprehension over the file list.
+
+    The blocks are built with the SAME rule `_trace_network` uses -- home
+    first, every port kept, `default_alias` for the tag -- because a namespace
+    that disagreed with the one Calculate solves against would validate a spec
+    that then addresses different ports.
+    """
+    blocks, offset = [], 0
+    for i, fe in enumerate(entries):
+        n = int(fe.ts.nports)
+        blocks.append(comp.FileBlock(
+            alias=default_alias(i), label=fe.label, offset=offset,
+            local_ports=list(range(1, n + 1)), z0=float(fe.ts.z0),
+            port_names=[(fe.ts.port_names[k] if k < len(fe.ts.port_names)
+                         else "") for k in range(n)],
+            nports_original=n))
+        offset += n
+    total = offset
+    return comp.ComposedNetwork(freqs=np.zeros(0), Y=np.zeros((0, total, total)),
+                                blocks=blocks)
 
 
 def _fmt_port_terminal(spec: str) -> str:
@@ -1238,7 +1702,27 @@ def editor_scroll_fraction(top: int, height: int, view: int, total: int,
 # testable without a display.
 
 SESSION_FORMAT = "pkg_rlc_extractor_session"
-SESSION_VERSION = 1
+# Bumped to 2 by the multi-file schema (`TraceConfig.file_labels`).
+#
+# WHY UNCONDITIONALLY, when only a COMPOSED trace carries anything new.  A
+# version-1 reader drops an unknown key with a note and carries on -- so it
+# would load a composed trace as its home file alone and then compute a
+# well-formed number, of the right order, from a network with the package
+# missing.  That is precisely the silent wrong answer this feature exists to
+# end, and it is worth refusing a whole file over; the refusal already exists
+# and already names both numbers (`version > SESSION_VERSION` below).
+#
+# Writing 1 for uncomposed sessions and 2 only for composed ones was
+# implemented and reverted: it keeps an uncomposed file loadable by an older
+# build, but it cannot satisfy both halves of what the suite already pins --
+# test_session.py asserts that a saved file's version IS this constant AND that
+# `SESSION_VERSION + 1` is refused, which together force the written default
+# and the read cap to be the same number.
+#
+# What does NOT change is the part that matters: a trace with no extra file
+# still serialises BYTE FOR BYTE as before (no 'file_labels' key at all -- see
+# _OPTIONAL_TRACE_FIELDS), so nothing about an existing spec moves.
+SESSION_VERSION = 2
 
 SESSION_FILETYPES = [("RLC session", "*.json"), ("All files", "*.*")]
 
@@ -1258,6 +1742,12 @@ AUTOSAVE_FILENAME = "last_session.json"
 _COMPUTED_TRACE_FIELDS = frozenset({
     "stale", "Z", "rlc", "fit_kind", "fit", "fit_freqs", "fit_Z",
     "Zmat", "mport_names", "coupling",
+    # Composed traces.  `net_freqs` is a numpy array and `reference_checks` is
+    # a list of dataclasses holding floats -- neither is a spec, both are
+    # products of a Calculate, and a session file that carried them would be
+    # claiming a composition had been solved when the files behind it may not
+    # even be on this machine.
+    "net_freqs", "reference_checks",
 })
 
 # Retired-but-still-loading fields (mode 4's VDD list, the free-text Mode 5
@@ -1271,7 +1761,21 @@ _LEGACY_TRACE_FIELDS = frozenset({
     "mp2_name", "mp2_plus", "mp2_minus", "mp_more",
 })
 
+# Forward-looking fields written only when non-empty.  Same MECHANISM as
+# _LEGACY_TRACE_FIELDS and the opposite reason: those are retired and this one
+# is new.  What it buys is that a single-file trace serialises to BYTE-IDENTICAL
+# JSON -- no 'file_labels': [] on every trace of every file anyone has ever
+# saved.  tests/test_multifile_session.py pins the exact bytes.
+_OPTIONAL_TRACE_FIELDS = frozenset({"file_labels"})
+
 _TRACE_ROW_CLASSES = {"mports": MeasPortRow, "conn_rows": ConnectionRow}
+# Plain list-of-string fields.  Without an entry here, trace_from_dict's default
+# branch would `str()` the whole list and store its REPR as the value -- a field
+# that round-trips into garbage instead of failing.  The coercion also
+# NORMALISES: entries are stripped and blanks dropped, so `trace_file_labels`
+# (mirrored in pkg_rlc_files_gui, and it must stay mirrored) never has to decide
+# what a padded label means.
+_TRACE_STRLIST_FIELDS = frozenset({"file_labels"})
 _TRACE_INT_FIELDS = frozenset({"id", "mode", "color_idx", "ls_idx"})
 _TRACE_BOOL_FIELDS = frozenset({"plot_self", "plot_mutual", "enabled",
                                 "frozen"})
@@ -1329,11 +1833,14 @@ def trace_to_dict(tc: "TraceConfig") -> dict:
     for name in _config_trace_fields():
         value = getattr(tc, name)
         if name in _TRACE_ROW_CLASSES:
-            out[name] = [asdict(r) for r in value]
-        elif name in _LEGACY_TRACE_FIELDS and not value:
+            value = [asdict(r) for r in value]
+        # `mports` and `conn_rows` are in neither skip set, so an empty table
+        # is still written -- exactly as before.  Only the retired fields and
+        # the forward-looking ones disappear when empty.
+        if not value and (name in _LEGACY_TRACE_FIELDS
+                          or name in _OPTIONAL_TRACE_FIELDS):
             continue
-        else:
-            out[name] = value
+        out[name] = value
     return out
 
 
@@ -1375,6 +1882,29 @@ def _rows_from_list(cls, value, key: str, warn) -> list:
     return rows
 
 
+def _strings_from_list(value, key: str, warn) -> list[str]:
+    """
+    A JSON array of file labels, defensively.
+
+    Same contract as `_rows_from_list`: a bad value costs its own entry and a
+    note, never the file.  A nested object or list is refused rather than
+    `str()`-ed, because its repr would then be a "file label" no file can ever
+    match and the trace would report it missing forever.
+    """
+    if not isinstance(value, list):
+        warn(f"'{key}' is not a list; ignored")
+        return []
+    out: list[str] = []
+    for item in value:
+        if isinstance(item, (dict, list)):
+            warn(f"a '{key}' entry is not a name; dropped")
+            continue
+        text = ("" if item is None else str(item)).strip()
+        if text:
+            out.append(text)
+    return out
+
+
 def trace_from_dict(data, warn) -> "TraceConfig":
     """
     One trace, rebuilt defensively.
@@ -1396,6 +1926,8 @@ def trace_from_dict(data, warn) -> "TraceConfig":
         try:
             if cls is not None:
                 coerced = _rows_from_list(cls, value, key, warn)
+            elif key in _TRACE_STRLIST_FIELDS:
+                coerced = _strings_from_list(value, key, warn)
             elif key in _TRACE_INT_FIELDS:
                 coerced = int(value)
             elif key in _TRACE_BOOL_FIELDS:
@@ -1580,6 +2112,10 @@ def _duplicate_trace_config(src: "TraceConfig", new_id: int) -> "TraceConfig":
                           "label": src.label + "_copy",
                           "mports": [replace(r) for r in src.mports],
                           "conn_rows": [replace(r) for r in src.conn_rows],
+                          # Same trap, third list-valued field: without this
+                          # the copy and the original share one file set, and
+                          # adding a file to one silently adds it to the other.
+                          "file_labels": list(src.file_labels),
                           # Duplicating a frozen trace must NOT produce another
                           # frozen one: the copy drops the results (below), and
                           # a frozen trace with no numbers is one Calculate
@@ -1589,7 +2125,15 @@ def _duplicate_trace_config(src: "TraceConfig", new_id: int) -> "TraceConfig":
                           "Z": None, "rlc": None, "fit": None, "fit_kind": "",
                           "fit_freqs": None, "fit_Z": None,
                           "Zmat": None, "mport_names": None,
-                          "coupling": None, "stale": False})
+                          "coupling": None, "stale": False,
+                          # Both are products of a run this copy never had.
+                          # `net_freqs` is harmless while Z is None (nothing
+                          # is drawn), but a verdict is not: `_snapshot_row`
+                          # reads `reference_checks` off the trace, so the
+                          # first Calculate of a duplicate whose file set has
+                          # since been edited would print the ORIGINAL's
+                          # reference-node verdict beside the new numbers.
+                          "net_freqs": None, "reference_checks": None})
 
 
 # Wall-clock stamp appended to a frozen trace's label.  Minutes, not seconds:
@@ -1704,6 +2248,7 @@ def _freeze_trace_config(src: "TraceConfig", new_id: int,
                           "label": freeze_label(src.label, stamp),
                           "mports": [replace(r) for r in src.mports],
                           "conn_rows": [replace(r) for r in src.conn_rows],
+                          "file_labels": list(src.file_labels),
                           "frozen": True,
                           # Its numbers were computed from exactly this spec,
                           # and nothing can edit either of them again.
@@ -1725,7 +2270,14 @@ def _config_signature(tc: "TraceConfig") -> tuple:
     return (tc.file_label, tc.mode, tc.port_a, tc.port_b, tc.short_pairs,
             tc.gnd_ports, tc.extra_lines,
             tuple((r.name, r.plus, r.minus) for r in tc.mports),
-            tuple(astuple(r) for r in tc.conn_rows))
+            tuple(astuple(r) for r in tc.conn_rows),
+            # The file SET, as one element, so this stays one-for-one with
+            # _SIGNATURE_FIELDS.  It is "" for every trace that predates
+            # composition, so no existing signature moves.  Appended rather
+            # than inserted next to `file_label`: nothing indexes into this
+            # tuple, but a run diff reads _SIGNATURE_FIELDS in order and the
+            # file set belongs after the spec, not in the middle of it.
+            trace_file_scope(tc))
 
 
 def _draw_signature(tc: "TraceConfig") -> tuple:
@@ -1740,15 +2292,24 @@ def _draw_signature(tc: "TraceConfig") -> tuple:
     return (tc.enabled, tc.color_idx, tc.ls_idx, tc.plot_self, tc.plot_mutual)
 
 
-def _collect_mports(tc: "TraceConfig") -> list[tuple[str, list[int], list[int]]]:
+def _collect_mports(tc: "TraceConfig",
+                    rows: Optional[Sequence] = None
+                    ) -> list[tuple[str, list[int], list[int]]]:
     """
     Measurement-port table -> the (name, plus_1based, minus_1based) triples
     that build_terminations_coupling expects.  Ports stay 1-based here; the
     core builder is the 1-based/0-based boundary.
+
+    `rows` overrides the trace's own table and is how a COMPOSED trace gets
+    here: `_build_termination` hands in the same rows with every probe side
+    already resolved into the composed namespace.  It defaults to the trace's
+    table, so every single-file call site is unchanged.
     """
     tc.migrate_legacy_mports()
+    if rows is None:
+        rows = tc.mports
     out: list[tuple[str, list[int], list[int]]] = []
-    for idx, row in enumerate(tc.mports, start=1):
+    for idx, row in enumerate(rows, start=1):
         plus = row.plus.strip()
         minus = row.minus.strip()
         if not plus:
@@ -1819,6 +2380,52 @@ def _make_plot_trace(aux: Optional[dict] = None, **kwargs) -> PlotTrace:
     if aux and PLOT_TRACE_SUPPORTS_AUX:
         kwargs["aux"] = aux
     return PlotTrace(**kwargs)
+
+
+#: The marker a composed curve wears in the plot legend, and the reason it is
+#: this short.  R3-4 asks that the composed run say WHICH FILES produced it
+#: everywhere it is read, and the legend is one of those places -- but the
+#: legend budget is `MAX_LABEL_LEN = 30` characters HEAD-truncated, and the
+#: tool's own default label (`f"{fe.label}_p1_to_gnd"`) already overflows it
+#: for any file name of 20 characters.  A file legend there ('F1=die.s6p +
+#: F2=package.s4p', 30 characters on its own) would delete the trace name it is
+#: qualifying.  So the legend carries the COUNT, the same ` +N` the Traces list
+#: carries, and the names live in the results table's file column, the coupling
+#: block's `files:` line, the CSV header and the files window.
+#:
+#: `freeze_label`'s rule and the reason for it, exactly: trim the BASE, keep
+#: the discriminator, because head-truncation deletes the tail.
+COMPOSED_LABEL_SUFFIX = " +{n}"
+
+
+def _plot_trace_label(tc: "TraceConfig", limit: int = MAX_LABEL_LEN) -> str:
+    """The trace's legend entry: its label, plus ' +N' when it is composed."""
+    base = (tc.label or "").strip()
+    if not trace_is_composed(tc):
+        return base
+    suffix = COMPOSED_LABEL_SUFFIX.format(n=len(trace_file_labels(tc)) - 1)
+    room = limit - len(suffix)
+    if len(base) > room and room >= 2:
+        base = base[:room - 1] + "…"
+    return f"{base}{suffix}"
+
+
+def _trace_plot_freqs(tc: "TraceConfig", fe: "FileEntry"):
+    """
+    The frequency axis this trace's cached Z is on, or None if it has none.
+
+    None only in one case, and it is a real one: a composed trace whose numbers
+    were computed on an axis that is not stored anywhere else, restored or left
+    behind by a path that did not set `net_freqs`.  Falling back to the home
+    file's sweep there would draw the right values at the wrong frequencies --
+    a plausible curve, shifted, with nothing on screen to say so -- which is
+    the exact failure the composed axis exists to avoid.
+    """
+    if tc.net_freqs is not None:
+        return tc.net_freqs
+    if trace_is_composed(tc) and (tc.Z is not None or tc.Zmat is not None):
+        return None
+    return fe.ts.freqs
 
 
 # ============================================================================
@@ -2068,15 +2675,18 @@ def marker_freq_text(freq, fmt: str = "{:.4g}") -> str:
     return f"{act_txt} GHz  (requested {req_txt} GHz; nearest point)"
 
 
-def _write_coupling_csv(fh, writer, tc: "TraceConfig", fe: "FileEntry") -> None:
+def _write_coupling_csv(fh, writer, tc: "TraceConfig", freqs) -> None:
     """
     Mode-6 CSV block: Re/Im of every Z_ij, then M_nH and k for every unordered
     pair, one row per frequency.  Every value keeps its physical sign; nothing
     is clipped to NaN except where it is genuinely undefined.
+
+    `freqs` is the axis the matrix was COMPUTED on, handed in rather than
+    fetched from the home file: a composed Zmat lives on the composed axis, and
+    the home file's sweep is neither the same length nor the same points.
     """
     Zmat = tc.Zmat
     names = list(tc.mport_names or [])
-    freqs = fe.ts.freqs
     G = int(Zmat.shape[1])
     pairs = [(a, b) for a in range(G) for b in range(a + 1, G)]
 
@@ -2401,6 +3011,10 @@ _SIGNATURE_FIELDS: tuple = (
         f"{r.name}={r.plus}/{r.minus}" for r in tc.mports)),
     ("connections", lambda tc: " | ".join(
         " ".join(str(v) for v in astuple(r) if str(v)) for r in tc.conn_rows)),
+    # Which files this trace is built from -- '' for a single-file trace that
+    # has not tagged its own file, i.e. for everything that predates
+    # composition, so no existing run page gains a line.
+    ("files", trace_file_scope),
 )
 
 
@@ -2485,6 +3099,42 @@ def run_change_line(prev_number: int, items: Sequence[str]) -> str:
 # array a snapshot does reach is cres.Z_matrix, a G x G matrix at the single
 # marker frequency, which is what the block prints.)
 
+# A COMPOSED row's provenance, resolved at snapshot time like everything else
+# here: ((alias, file_label), ...), home first.  It is EMPTY for a single-file
+# trace, and that is what keeps every renderer below byte-identical for the
+# case that is almost always the case -- including tests/fixtures/
+# render_reference.json, which is the proof the page did not move.
+#
+# `file_label` stays the HOME file and keeps its meaning: it is what
+# run_file_freq keys on and what the CSV heads a block with.  A composed row
+# has BOTH, because "which sweep was this read against" and "which files is
+# this built from" are different questions with different answers.
+def _snapshot_files(tc: "TraceConfig") -> tuple:
+    """((tag, file_label), ...) for a COMPOSED trace, else ()."""
+    if not trace_is_composed(tc):
+        return ()
+    return tuple(trace_file_aliases(tc))
+
+
+def _row_file_labels(rec) -> list[str]:
+    """Every file one snapshot was built from, home first.
+
+    `getattr` rather than `rec.files`: tests/_render_capture.py and several
+    test helpers build these records directly, and this must read a record
+    written before the field existed as the single-file record it is.
+    """
+    files = getattr(rec, "files", ()) or ()
+    return [lbl for _alias, lbl in files] or [rec.file_label]
+
+
+def _snapshot_file_legend(rec) -> str:
+    """'files: F1=die.s6p + F2=pkg.s4p', or 'file: coil.s4p' for one file."""
+    files = getattr(rec, "files", ()) or ()
+    if not files:
+        return f"file: {rec.file_label}"
+    return "files: " + " + ".join(f"{a}={lbl}" for a, lbl in files)
+
+
 @dataclass(frozen=True)
 class RowSnapshot:
     """One results-table row, resolved away from its TraceConfig."""
@@ -2495,6 +3145,23 @@ class RowSnapshot:
     color_idx: int
     file_label: str
     res: object                 # RLCResult -- a fresh object per run
+    # ((alias, file_label), ...) when this row came from several files, () when
+    # it came from one.  Declared LAST with a default, like `freqs` on
+    # RunSnapshot and for the same reason: every construction in the repo is by
+    # keyword, and a new field in the middle would silently reorder anything
+    # that is not.
+    files: tuple = ()
+    # R3-5, FROZEN at snapshot time and rendered here rather than read live.
+    # `ReferenceCheck` objects hang off the live trace and are replaced by the
+    # next Calculate, so a run page holding them would print this run's numbers
+    # under the next composition's verdict -- the hazard the whole snapshot
+    # type exists for.  `ref_strip` is one line, `ref_lines` the full report,
+    # both straight out of `reference_provenance` so the strip and the report
+    # cannot disagree.  Empty on every single-file trace, which is what keeps
+    # tests/fixtures/render_reference.json byte-identical.
+    ref_strip: str = ""
+    ref_warn: bool = False
+    ref_lines: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -2513,6 +3180,12 @@ class CouplingSnapshot:
     # resolved against some earlier request, and this run's request says
     # nothing true about them.  A None here renders exactly as before.
     freq: Optional[FreqSnap] = None
+    # See RowSnapshot.files.
+    files: tuple = ()
+    # See RowSnapshot.ref_strip.
+    ref_strip: str = ""
+    ref_warn: bool = False
+    ref_lines: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -2586,11 +3259,29 @@ class RunSnapshot:
                        fits=fix(self.fits))
 
 
+def _snapshot_reference(tc: "TraceConfig") -> dict:
+    """The reference-node verdict as three frozen fields, or three empty ones.
+
+    Rendered HERE, at snapshot time, for the same reason `port_desc` is a
+    resolved string: `tc.reference_checks` is replaced wholesale by the next
+    Calculate, so a record holding the list would answer about a composition
+    that has since been rebuilt.
+    """
+    strip, lines = reference_provenance(getattr(tc, "reference_checks", None)
+                                        or [])
+    if not strip:
+        return {"ref_strip": "", "ref_warn": False, "ref_lines": ()}
+    return {"ref_strip": strip[0], "ref_warn": bool(strip[1]),
+            "ref_lines": tuple(lines)}
+
+
 def _snapshot_row(tc: "TraceConfig", file_label: str, res) -> RowSnapshot:
     return RowSnapshot(id=tc.id, label=tc.label,
                        port_desc=tc.port_descriptor(),
                        enabled=bool(tc.enabled), color_idx=int(tc.color_idx),
-                       file_label=file_label, res=res)
+                       file_label=file_label, res=res,
+                       files=_snapshot_files(tc),
+                       **_snapshot_reference(tc))
 
 
 def _snapshot_block(tc: "TraceConfig", file_label: str,
@@ -2599,7 +3290,9 @@ def _snapshot_block(tc: "TraceConfig", file_label: str,
                             port_desc=tc.port_descriptor(),
                             enabled=bool(tc.enabled),
                             color_idx=int(tc.color_idx),
-                            file_label=file_label, cres=cres, freq=freq)
+                            file_label=file_label, cres=cres, freq=freq,
+                            files=_snapshot_files(tc),
+                            **_snapshot_reference(tc))
 
 
 def _snapshot_fit(tc: "TraceConfig", text: str) -> FitSnapshot:
@@ -2676,20 +3369,42 @@ def _format_results_table(rows: Sequence[RowSnapshot], units_mode: str,
     if not rows:
         return ""
 
+    # One entry per FILE, not per row: a COMPOSED row names several, and its
+    # first is its home file (RowSnapshot.file_label), so a single-file row and
+    # the home file of a composed one land on the same alias.
     file_labels_in_order = []
     seen = set()
     for r in rows:
-        fl = r.file_label
-        if fl not in seen:
-            seen.add(fl)
-            file_labels_in_order.append(fl)
+        for fl in _row_file_labels(r):
+            if fl not in seen:
+                seen.add(fl)
+                file_labels_in_order.append(fl)
     multi_file = len(file_labels_in_order) > 1
     file_alias = {fl: f"F{i + 1}" for i, fl in enumerate(file_labels_in_order)}
+
+    def _file_cell(r) -> str:
+        # 'F1' for one file, 'F1+F2' for a composition.  The letters are the
+        # TABLE's, assigned in order of appearance across all rows, and the
+        # legend line above the table is what defines them -- that is what this
+        # column has always meant and two traces cannot be given one letter for
+        # two files.
+        #
+        # KNOWN COLLISION, left for whoever owns the composed report: a TRACE's
+        # own file tags are also F1/F2 (positional within that trace, see
+        # trace_file_aliases), so with a single-file trace listed first the
+        # table calls the composed trace's home file F2 while its port cells
+        # call it F1.  Both mappings are printed where they are used -- this
+        # legend line, and the Files window's -- and inventing a third scheme
+        # here would make it three.
+        return "+".join(file_alias[fl] for fl in _row_file_labels(r))
 
     # Truncation widths
     LABEL_W = 18
     PORT_W = 24
-    FILE_W = 4
+    # 4 = len('File'), the header.  It only ever grows for a COMPOSED row, so a
+    # table of single-file rows is byte-identical to what it always was --
+    # every cell is 'F1'/'F2' and max(4, 2) is 4.
+    FILE_W = max([4] + [len(_file_cell(r)) for r in rows]) if multi_file else 4
     NUM_W = 10  # per numeric cell (smart mode); aligned mode tighter
 
     def _trunc(s: str, w: int) -> str:
@@ -2769,7 +3484,7 @@ def _format_results_table(rows: Sequence[RowSnapshot], units_mode: str,
             f"{_trunc(r.label, LABEL_W):<{LABEL_W}}  ",
         ]
         if multi_file:
-            row_parts.append(f"{file_alias[r.file_label]:<{FILE_W}}  ")
+            row_parts.append(f"{_file_cell(r):<{FILE_W}}  ")
         row_parts.append(f"{_trunc(r.port_desc, PORT_W):<{PORT_W}}  ")
         row_parts.append(f"{r_str:>{NUM_W}}  ")
         row_parts.append(f"{l_str:>{NUM_W}}  ")
@@ -2974,7 +3689,11 @@ def _format_coupling_block(block: CouplingSnapshot, units_mode: str) -> str:
     if isinstance(block.freq, FreqSnap):
         freq = replace(block.freq, actual_hz=float(cres.freq_hz))
     lines = [
-        f"  [{block.id}] {block.label}  |  file: {block.file_label}  |  "
+        # 'file: x' for one file -- byte for byte what this line has always
+        # said -- and 'files: EM=… + PKG=…' for a composition, because a block
+        # headed with one file name when the numbers came from two is a false
+        # claim in the line the reader uses to identify the measurement.
+        f"  [{block.id}] {block.label}  |  {_snapshot_file_legend(block)}  |  "
         f"{block.port_desc}",
         f"  Z matrix @ {marker_freq_text(freq, '{:.6g}')}   (Ω, Re+jIm; "
         f"off-diagonal = mutual, every other port open)",
@@ -4618,6 +5337,21 @@ class App(tk.Tk):
         self._run_auto_var = tk.IntVar(self, value=RUN_AUTO_DEFAULT)
         self._run_tabs_var = tk.IntVar(self, value=RUN_TABS_DEFAULT)
 
+        # Composed networks, keyed by the tuple of file labels and validated by
+        # FileEntry IDENTITY on every lookup (a label is re-used when a file is
+        # reloaded, and the arrays behind it are then different objects).
+        #
+        # A cache, not an optimisation of a fast thing.  Stacking is S -> Y per
+        # file plus an interpolation, and `_freq_batch` collapses exactly where
+        # this feature is first needed -- 16 ports gives 64 frequencies per
+        # chunk, 76 gives 2, 153 gives 1 -- so the edit/recompute loop is where
+        # the cost is.  Measured in pkg_rlc_compose on a 16-port EM + 300-port
+        # package at 101 points: 3565 ms to stack and pre-reduce once against
+        # 2.6 ms per later solve.  Nothing here pre-reduces (the GUI has no
+        # keep list yet), but the stacking half is the same and is what this
+        # avoids paying per Calculate.
+        self._compose_cache: dict = {}
+
         self._install_wheel_router()
         self._build_ui()
         self._build_menubar()
@@ -4757,6 +5491,15 @@ class App(tk.Tk):
         analyze_menu = tk.Menu(menubar, tearoff=False)
         analyze_menu.add_command(label=ATTRIB_MENU_LABEL,
                                  command=self._on_attribution)
+        # R3-3.  Which files a trace is made of is a per-trace fact, so it
+        # belongs on the same menu as the other per-trace window and on the
+        # same right-click menus.  It is NOT a fifth button on the Files or
+        # Traces rows: both are measured at 448 px at the 1040x600 minsize with
+        # four buttons already asking 364, and a fifth row inside Global
+        # Controls comes straight out of an editor viewport that is down to
+        # 45 px there.  No accelerator, for the reason above this cascade.
+        analyze_menu.add_command(label=FILES_MENU_LABEL,
+                                 command=self._on_files_window)
         menubar.add_cascade(label="Analyze", menu=analyze_menu)
 
         self.config(menu=menubar)
@@ -5517,7 +6260,26 @@ class App(tk.Tk):
         # need a rule between them anyway.
         self._trace_menu.add_command(label=ATTRIB_MENU_LABEL,
                                      command=self._on_attribution)
+        # APPENDED for the same two reasons, and it is the FOURTH entry: the
+        # file set belongs to a trace, and the right-click selects the row
+        # under the pointer first so the gesture and the subject cannot
+        # disagree.  Still no separator -- see above.
+        self._trace_menu.add_command(label=FILES_MENU_LABEL,
+                                     command=self._on_files_window)
         self.traces_lb.bind("<Button-3>", self._on_trace_context_menu)
+
+        # The Files list gets the SAME entry, because "which files is this
+        # trace made of" is the question a user asks while looking at the
+        # Files list -- and because a right-click there is the only gesture
+        # that reaches the window without going via the menubar.  It does NOT
+        # select a file row: the window is about the SELECTED TRACE, and
+        # moving the file selection under the pointer would change what the
+        # editor and Ports & Roles are describing as a side effect of asking a
+        # question about something else.
+        self._files_menu = tk.Menu(self, tearoff=0)
+        self._files_menu.add_command(label=FILES_MENU_LABEL,
+                                     command=self._on_files_window)
+        self.files_lb.bind("<Button-3>", self._on_files_context_menu)
 
         # ---- auto-apply -------------------------------------------------
         # Registered HERE, after _build_ui, and never in a widget constructor:
@@ -5608,8 +6370,25 @@ class App(tk.Tk):
         if idx is None:
             return
         fe = self.files.pop(idx)
-        # Drop traces bound to this file
-        self.traces = [t for t in self.traces if t.file_label != fe.label]
+        # Drop traces bound to this file -- in ANY of their slots, not only as
+        # the home file.  A composed trace whose second file has gone is not a
+        # single-file trace, it is a trace that can no longer be computed at
+        # all, and leaving it in the list to say so on the next Calculate is
+        # the same "the plot and the Traces list disagree" the call below
+        # exists to prevent.
+        #
+        # Identity, never `t not in dropped`: TraceConfig is an eq=True
+        # dataclass holding numpy arrays, so == against a non-matching trace
+        # raises "truth value of an array is ambiguous" -- the documented
+        # reason _apply_editor_sync uses `any(t is tc ...)`.
+        keep, dropped = [], []
+        for t in self.traces:
+            (dropped if fe.label in trace_file_labels(t) else keep).append(t)
+        self.traces = keep
+        # A trace removed because of its HOME file needs no explanation -- the
+        # Files row is right there.  One removed because of a file it merely
+        # composed with does: the name that went is not the name on the trace.
+        by_extra = [t for t in dropped if t.file_label != fe.label]
         self._refresh_file_list()
         self._refresh_trace_list()
         self._refresh_file_combobox()
@@ -5628,7 +6407,17 @@ class App(tk.Tk):
         # were dropped above, and a window on a trace bound to it resolves its
         # file through _file_by_label, which now returns None.
         refresh_attribution_windows(self)
+        # And the same for the file windows, which is the LOUDER case here:
+        # this is the one path that can remove a file a surviving trace still
+        # composes with, so an open window would keep listing a file that is
+        # gone with a port count beside it.
+        refresh_files_windows(self)
         self._append_result(f"Removed {fe.label}")
+        if by_extra:
+            self._append_result(
+                f"  also removed {len(by_extra)} trace(s) that composed with "
+                f"it: " + ", ".join(f"[{t.id}] {_trunc_str(t.label, 18)}"
+                                    for t in by_extra), LOG_WARN)
 
     def _on_show_ports(self) -> None:
         """
@@ -5675,13 +6464,37 @@ class App(tk.Tk):
             return ("(no file selected)" if fe is None
                     else f"{fe.label} — no trace selected", [], {})
         mports, conn, extra, src = _trace_role_rows(tc)
+        # R3-4: on a composed trace this window shows the COMPOSED namespace,
+        # because that is the port list the spec is written against -- 'port 7'
+        # on a 6-port die is F2.1, and a window counting only the die's six
+        # would report it as out of range or, worse, as the die's port 7.
+        #
+        # It never raises here.  This window's job is to show what was TYPED
+        # (that is why it renders modes 1/2/3/6 through the permissive rows
+        # path at all), so a composition that cannot be built degrades to the
+        # home file's own port list with a note, rather than blanking.
+        net, home, nports, names, note = None, "", fe.ts.nports, \
+            fe.ts.port_names, ""
+        if trace_is_composed(tc):
+            # The NAMESPACE, not the composition: this runs from
+            # _apply_editor_strips, i.e. once per keystroke, and stacking two
+            # real files there is measured at up to 10.5 s.  Which ports exist
+            # and what F2.3 means need none of that arithmetic.
+            net, home = self._trace_namespace(tc)
+            if net is not None:
+                nports, names = net.nports, net.port_labels()
         try:
-            term = build_terminations_rows(mports, conn, extra,
-                                           nports=fe.ts.nports)
+            if net is not None:
+                mports = _scope_mport_rows(mports, net, home)
+                conn = _scope_conn_rows(conn, net, home)
+                extra = _scope_dsl_text(extra, net, home)
+            term = build_terminations_rows(mports, conn, extra, nports=nports)
         except Exception:
             term = None
-        roles = port_roles(term, fe.ts.nports, fe.ts.port_names, src)
-        header = _roles_header(fe.label, fe.ts.nports, roles)
+        roles = port_roles(term, nports, names, src)
+        header = (_roles_header(trace_file_legend(tc), nports, roles)
+                  if trace_is_composed(tc)
+                  else _roles_header(fe.label, nports, roles)) + note
         if term is None:
             header += "  (spec did not parse)"
         # The mode decides which of the two overlap rules the window states:
@@ -5837,6 +6650,10 @@ class App(tk.Tk):
         # answer about nothing.  It resolves its subject by identity against
         # app.traces, so this call is the whole of what is needed.
         refresh_attribution_windows(self)
+        # Same reason, same position: a file window resolves its subject by
+        # identity too, and one on a trace that is gone would keep offering
+        # [Set as home] on it.
+        refresh_files_windows(self)
 
     def _on_toggle_trace_key(self, _event=None) -> str:
         self._on_toggle_trace()
@@ -5867,6 +6684,70 @@ class App(tk.Tk):
         self._refresh_trace_list()
         self.traces_lb.selection_set(idx)
         self._replot_from_cache()
+
+    def set_trace_home_file(self, tc: TraceConfig, label: str) -> None:
+        """
+        Make `label` the trace's HOME file -- the one a bare port number means.
+
+        The hook pkg_rlc_files_gui's 'Set home' button looks up BY NAME (it
+        reports its absence rather than doing nothing).  It SWAPS: the file set
+        is unchanged and only which of them is typed bare moves.
+
+        Two things it must do that writing `tc.file_label` directly does not.
+
+        (a) IT GOES THROUGH THE EDITOR for the selected trace.  The editor owns
+            the File combobox, so a label poked onto the trace is overwritten
+            by the very next `_sync_editor_to_trace` -- the same rule the Ports
+            & Roles write-back follows.
+
+        (b) IT SAYS THAT THE TAGS RENUMBERED.  A tag is a POSITION: F1 is the
+            home file, so making F2 the home makes the old home F2, and every
+            'F2.<port>' already typed in the connection table now names the
+            other file.  Nothing here can rewrite those cells -- the table's
+            rows are the user's text and guessing at them is how a spec means
+            something it does not say -- so the swap is reported where the user
+            reads results, with both names in it.
+
+        A FROZEN trace refuses, by name and for the same reason
+        `_sync_editor_to_trace` does: its numbers and the spec printed beside
+        them have to keep describing each other, and re-homing it would change
+        what every bare port number in it meant.
+        """
+        label = str(label or "").strip()
+        old = tc.file_label
+        if not label or label == old:
+            return
+        if tc.frozen:
+            self._append_result(
+                f"  [{tc.id}] {tc.label}: frozen snapshot -- its files cannot "
+                f"be changed. Right-click it in the Traces list → "
+                f"{UNFREEZE_MENU_LABEL} first.", LOG_WARN)
+            return
+        before = _config_signature(tc)
+        # Everything except the new home, in its existing order.  The old home
+        # lands wherever it fell in that order, which is position 0, so a
+        # two-file trace simply swaps.
+        tc.file_labels = [lbl for lbl in trace_file_labels(tc) if lbl != label]
+        tc.file_label = label
+        idx = self._sel_idx(self.traces_lb)
+        if (idx is not None and idx < len(self.traces)
+                and self.traces[idx] is tc):
+            self._suppress_editor_sync = True
+            try:
+                self.ed_file_var.set(label)
+            finally:
+                self._suppress_editor_sync = False
+        if _config_signature(tc) != before and tc.Z is not None:
+            # Same rule as _apply_editor_sync: the drawn curve is now older
+            # than the spec that describes it.
+            tc.stale = True
+        self._refresh_trace_list()
+        self._append_result(
+            f"  [{tc.id}] {tc.label}: home file is now {label} — its ports are "
+            f"typed bare. The file tags renumbered: "
+            f"{trace_file_legend(tc)} (was {old} first), so a tagged port cell "
+            f"written before this now names a different file.", LOG_WARN)
+        self._refresh_port_roles_window()
 
     def _on_duplicate_trace(self) -> None:
         # Without the flush the copy is taken from the trace as it was BEFORE
@@ -5935,6 +6816,51 @@ class App(tk.Tk):
         # stale trace.  It is set explicitly rather than left at its default so
         # the invariant is stated where it can be read and asserted.
         self._trace_menu.entryconfigure(ATTRIB_MENU_LABEL, state=tk.NORMAL)
+        # LIVE on a frozen trace too, and for the same reason: the window is
+        # read-only on one (`_apply_file_set` refuses by name), and a snapshot
+        # is exactly the trace whose file set someone wants to READ while
+        # comparing it against the live one beside it.
+        self._trace_menu.entryconfigure(FILES_MENU_LABEL, state=tk.NORMAL)
+
+    def _on_files_context_menu(self, event) -> None:
+        """
+        Right-click on the Files list -> the per-trace file window.
+
+        Deliberately does NOT move the file selection: the window is about the
+        selected TRACE, and re-selecting a file would change what the editor's
+        Ports & Roles view is describing as a side effect of a question about
+        something else.  `_on_show_ports` already falls back to the editor's
+        file when nothing is selected, so nothing here depends on it either.
+        """
+        try:
+            self._files_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._files_menu.grab_release()
+
+    def _on_files_window(self) -> None:
+        """
+        Open (or raise) the "Files in this trace" window on the selected trace.
+
+        One decision in one place, the `_on_attribution` rule: the refusal for
+        "no trace selected" lives in `files_refusal`, so the menubar entry and
+        both right-click entries cannot start refusing different things.  The
+        editor is flushed first for the Calculate reason -- a keystroke in the
+        same event burst as the click is still in the idle queue, and a window
+        that opened showing the spec from an event ago would be describing a
+        file set the user has already changed.
+
+        Returns the window (or None), so a caller -- and a test -- can reach
+        the thing it just opened without walking `files_gui.live_windows`.
+        """
+        self._flush_editor_sync()
+        idx = self._sel_idx(self.traces_lb)
+        tc = (self.traces[idx]
+              if idx is not None and idx < len(self.traces) else None)
+        refusal = files_refusal(tc)
+        if refusal:
+            messagebox.showinfo(FILES_TITLE, refusal)
+            return None
+        return open_files_window(self, tc)
 
     def _on_freeze_trace(self) -> None:
         # Same flush as Duplicate, for the same reason: without it the snapshot
@@ -6366,6 +7292,14 @@ class App(tk.Tk):
         # function.  `_strips_wanted` is what gets us here at all in mode 6;
         # see the note there.
         refresh_attribution_windows(self)
+        # The file windows get the whole picture rather than a banner, because
+        # unlike an Attribution table nothing in them is a computed NUMBER:
+        # the alias legend, the port counts and the spec problems are all
+        # properties of the spec being typed, so they must follow it.  Same
+        # contract -- `refresh_files_windows` never raises -- and it is outside
+        # the try above for the same reason the Ports & Roles refresh is: a
+        # window failure must not blank the strips.
+        refresh_files_windows(self)
 
     def _editor_spec_inputs(self) -> tuple:
         """
@@ -6374,12 +7308,41 @@ class App(tk.Tk):
         One reader, because the strips and the footer's route (R1-4) must
         answer about the same spec: a route computed from a cached message list
         would send the user to a row number from before their last keystroke.
+
+        On a COMPOSED trace the rows are first resolved into the composed
+        namespace, so a `F2.13` cell is validated as the port it names instead
+        of being reported as a port field that does not parse.  The namespace
+        costs a list comprehension over the file list (`_namespace_network`) --
+        stacking the real thing here is measured at up to 10.5 s per keystroke
+        and is what Calculate pays once.
+
+        It NEVER RAISES: this is on the strips' path, and a bad tag is a
+        message for the strip, not an exception.  A field that cannot be
+        scoped is left exactly as typed and the ordinary validation reports it.
         """
-        return (self.ed_mp_table.get_rows(),
-                self.ed_conn_table.get_rows(),
-                self._ed_extra_lines,
-                self._editor_nports(),
-                self._editor_port_names())
+        mports = self.ed_mp_table.get_rows()
+        conn = self.ed_conn_table.get_rows()
+        extra = self._ed_extra_lines
+        nports = self._editor_nports()
+        names = self._editor_port_names()
+        tc = self._selected_trace()
+        if tc is not None and trace_is_composed(tc):
+            net, home = self._trace_namespace(tc)
+            if net is not None:
+                nports, names = net.nports, net.port_labels()
+                try:
+                    mports = _scope_mport_rows(mports, net, home)
+                    conn = _scope_conn_rows(conn, net, home)
+                    extra = _scope_dsl_text(extra, net, home)
+                except Exception:
+                    pass
+        return (mports, conn, extra, nports, names)
+
+    def _selected_trace(self) -> Optional[TraceConfig]:
+        """The trace the editor is showing, or None."""
+        idx = self._sel_idx(self.traces_lb)
+        return (self.traces[idx]
+                if idx is not None and idx < len(self.traces) else None)
 
     def _on_footer_route(self, _event=None) -> None:
         """
@@ -6773,10 +7736,31 @@ class App(tk.Tk):
         # reduction measured in tens of milliseconds.
         freq_snaps: list = []
         for tc in self.traces:
-            fe = self._file_by_label(tc.file_label)
-            if fe is None or any(lbl == fe.label for lbl, _ in freq_snaps):
+            if trace_is_composed(tc):
+                # A composed trace's numbers are read on the COMPOSED axis --
+                # the span intersection, resampled onto the finer grid -- and
+                # not on any one file's own sweep.  So it contributes ONE entry
+                # keyed by its file legend rather than one per file: a header
+                # line naming `die.s6p` beside a number read off a grid neither
+                # file has is the disagreement this list exists to remove.
+                #
+                # Swallowed on failure and reported by name in the main pass
+                # below.  A composition that cannot be built has no axis, and a
+                # header is not the place to explain why.
+                try:
+                    sn = self._trace_network(tc)
+                except Exception:
+                    continue
+                key = trace_file_legend(tc)
+                if not any(lbl == key for lbl, _ in freq_snaps):
+                    freq_snaps.append((key, snap_to_grid(sn.freqs, f_rlc_hz)))
                 continue
-            freq_snaps.append((fe.label, snap_to_grid(fe.ts.freqs, f_rlc_hz)))
+            for label in trace_file_labels(tc):
+                fe = self._file_by_label(label)
+                if fe is None or any(lbl == fe.label for lbl, _ in freq_snaps):
+                    continue
+                freq_snaps.append(
+                    (fe.label, snap_to_grid(fe.ts.freqs, f_rlc_hz)))
         run_freq = combine_freq_snaps([s for _, s in freq_snaps])
         # A snap SMALLER than half a grid step is the tool doing its job on a
         # sampled axis, and is reported without badging the Log.  A snap larger
@@ -6801,12 +7785,19 @@ class App(tk.Tk):
         fit_lines: list[FitSnapshot] = []
         coupling_blocks: list[CouplingSnapshot] = []
         for tc in self.traces:
-            fe = self._file_by_label(tc.file_label)
-            if fe is None:
+            missing = [lbl for lbl in trace_file_labels(tc)
+                       if self._file_by_label(lbl) is None]
+            if missing:
+                # Names EVERY file that is missing, not just the home one: a
+                # composed trace reporting one name while a second is also
+                # gone sends the user to fix half the problem.
                 self._append_result(
-                    f"  [{tc.id}] {tc.label}: file '{tc.file_label}' not loaded",
+                    f"  [{tc.id}] {tc.label}: file "
+                    + ", ".join(f"'{lbl}'" for lbl in missing)
+                    + (" is" if len(missing) == 1 else " are") + " not loaded",
                     LOG_WARN)
                 continue
+            fe = self._file_by_label(tc.file_label)
 
             if tc.frozen:
                 # Never recomputed -- that is the whole of what "frozen" means
@@ -6846,18 +7837,65 @@ class App(tk.Tk):
             tc.coupling = None
             tc.fit_freqs = None
             tc.fit_Z = None
+            tc.net_freqs = None
+            tc.reference_checks = None
             # About to be recomputed from the current spec, so whatever the
             # editor did since the last run is now accounted for.
             tc.stale = False
+
+            # What this trace is solved against.  One file: the FileEntry's own
+            # arrays, the path every trace took before composition existed.
+            # Several: the stacked network, on the composed frequency axis.
+            try:
+                sn = self._trace_network(tc)
+            except Exception as e:
+                tc.Z = None
+                self._append_result(
+                    f"  [{tc.id}] {tc.label}: ERROR {e}", LOG_ERROR)
+                for problem in compose_spec_problems(
+                        tc, [f.label for f in self.files]):
+                    self._append_result(f"      {problem}", LOG_ERROR)
+                continue
+            if sn.composed:
+                # The file set's own faults first -- a file listed twice counts
+                # once, and saying so is the difference between a spec the user
+                # can fix and a port map that quietly addresses one block.
+                for problem in compose_spec_problems(
+                        tc, [f.label for f in self.files]):
+                    self._append_result(f"    [{tc.id}] {problem}", LOG_WARN)
+                # Then what the composition itself decided: the weld note, the
+                # grid it adopted, what it dropped, how much phase an
+                # interpolation invented.  These are the assumptions the number
+                # below rests on, so they are printed with it and not stored in
+                # a report nobody opens.
+                for note in sn.notes:
+                    self._append_result(f"    [{tc.id}] {note}")
+                for warn in sn.warnings:
+                    self._append_result(f"    [{tc.id}] {warn}", LOG_WARN)
 
             # The validation strip is capped at two lines and points here for
             # the rest; this is what makes that pointer true. Only the OVERFLOW
             # is printed -- the first two are already on screen, and repeating
             # them for every clean trace would be noise.
             if tc.mode == 5:
-                notes = _validation_messages(tc.mports, tc.conn_rows,
-                                             tc.extra_lines, fe.ts.nports,
-                                             fe.ts.port_names)
+                # Scoped first on a composition, exactly as the editor strip
+                # does it (`_editor_spec_inputs`): the two must answer about
+                # the same spec, or the strip says a tagged cell is fine while
+                # the Log says it does not parse.  Never raises here either --
+                # a bad tag is reported by the build below, with its message.
+                try:
+                    v_mp, v_conn, v_extra = (
+                        (_scope_mport_rows(tc.mports, sn.net, sn.home_alias),
+                         _scope_conn_rows(tc.conn_rows, sn.net, sn.home_alias),
+                         _scope_dsl_text(tc.extra_lines, sn.net,
+                                         sn.home_alias))
+                        if sn.composed else
+                        (tc.mports, tc.conn_rows, tc.extra_lines))
+                except Exception:
+                    v_mp, v_conn, v_extra = (tc.mports, tc.conn_rows,
+                                             tc.extra_lines)
+                notes = _validation_messages(v_mp, v_conn, v_extra, sn.nports,
+                                             sn.port_names)
                 if len(notes) > VALIDATION_STRIP_LINES:
                     # Only the ones that are NOT a '✓' echo make this a
                     # warning; a long spec that is entirely fine must not
@@ -6870,8 +7908,8 @@ class App(tk.Tk):
                         self._append_result(f"      {note}")
 
             try:
-                term = self._build_termination(tc, nports=fe.ts.nports)
-                n_mports = len(resolve_meas_ports(term, fe.ts.nports))
+                term = self._build_termination(tc, nports=sn.nports, sn=sn)
+                n_mports = len(resolve_meas_ports(term, sn.nports))
             except Exception as e:
                 tc.Z = None
                 self._append_result(
@@ -6899,17 +7937,21 @@ class App(tk.Tk):
                         "Mode 6.", LOG_WARN)
                 try:
                     cres = self._calculate_coupling_trace(
-                        tc, fe, f_rlc_hz, term=term)
+                        tc, sn, f_rlc_hz, term=term)
                 except Exception as e:
                     tc.Z = None
                     self._append_result(
                         f"  [{tc.id}] {tc.label}: ERROR {e}", LOG_ERROR)
                     self._append_result(traceback.format_exc(), LOG_ERROR)
                     continue
+                # The block's own marker snap comes from the axis its numbers
+                # were read on: the composed one for a composition, keyed under
+                # the file legend, and the home file's otherwise.
+                snap_key = trace_file_legend(tc) if sn.composed else fe.label
                 coupling_blocks.append(_snapshot_block(
                     tc, fe.label, cres,
                     freq=next((s for lbl, s in freq_snaps
-                               if lbl == fe.label), None)))
+                               if lbl == snap_key), None)))
                 if do_fit:
                     fit_lines.append(_snapshot_fit(
                         tc,
@@ -6918,7 +7960,7 @@ class App(tk.Tk):
                 continue
 
             try:
-                Z, warns = compute_z(fe.Y, fe.ts.freqs, term)
+                Z, warns = compute_z(sn.Y, sn.freqs, term)
             except Exception as e:
                 self._append_result(
                     f"  [{tc.id}] {tc.label}: ERROR {e}", LOG_ERROR)
@@ -6929,7 +7971,12 @@ class App(tk.Tk):
                 # took a different route than usual and said so.
                 self._append_result(f"    [{tc.id}] {w}", LOG_WARN)
             tc.Z = Z
-            res = extract_rlc_at_freq(fe.ts.freqs, Z, f_rlc_hz)
+            # The axis Z lives on, cached for _replot_from_cache.  None on a
+            # single-file trace: the home file's sweep IS the axis, and storing
+            # a second reference to it would be one more thing to keep in step.
+            tc.net_freqs = sn.freqs if sn.composed else None
+            tc.reference_checks = self._reference_checks(tc, sn, term, f_rlc_hz)
+            res = extract_rlc_at_freq(sn.freqs, Z, f_rlc_hz)
             tc.rlc = res
             result_rows.append(_snapshot_row(tc, fe.label, res))
 
@@ -6939,15 +7986,15 @@ class App(tk.Tk):
                 try:
                     model = self.fit_model_var.get()
                     if model == "auto":
-                        which, fit = fit_auto(fe.ts.freqs, Z, fmin_hz, fmax_hz)
+                        which, fit = fit_auto(sn.freqs, Z, fmin_hz, fmax_hz)
                     elif model == "inductor":
-                        which, fit = "inductor", fit_inductor(fe.ts.freqs, Z, fmin_hz, fmax_hz)
+                        which, fit = "inductor", fit_inductor(sn.freqs, Z, fmin_hz, fmax_hz)
                     else:
-                        which, fit = "capacitor", fit_capacitor(fe.ts.freqs, Z, fmin_hz, fmax_hz)
+                        which, fit = "capacitor", fit_capacitor(sn.freqs, Z, fmin_hz, fmax_hz)
                     tc.fit_kind = which
                     tc.fit = fit
-                    fit_freqs = fe.ts.freqs[(fe.ts.freqs >= fmin_hz)
-                                            & (fe.ts.freqs <= fmax_hz)]
+                    fit_freqs = sn.freqs[(sn.freqs >= fmin_hz)
+                                         & (sn.freqs <= fmax_hz)]
                     if which == "inductor":
                         fit_Z = eval_inductor_model(fit, fit_freqs)
                         fit_lines.append(_snapshot_fit(
@@ -7034,13 +8081,24 @@ class App(tk.Tk):
             fe = self._file_by_label(tc.file_label)
             if fe is None:
                 continue
+            # The axis the cached Z was computed on.  For a composed trace that
+            # is the composed one, which equals the home file's only when no
+            # interpolation happened -- drawing against the home file's would
+            # misplace every point in the sweep and look like a plausible curve.
+            freqs = _trace_plot_freqs(tc, fe)
+            if freqs is None:
+                # Cached numbers from a composition, and no axis to draw them
+                # against: the run that produced them is older than a reload of
+                # one of its files.  Skipped rather than drawn on a guess.
+                continue
             if tc.Zmat is not None and tc.mport_names:
                 plot_traces.extend(
-                    self._coupling_plot_traces(tc, fe, tc.Zmat, tc.mport_names))
+                    self._coupling_plot_traces(tc, freqs, tc.Zmat,
+                                               tc.mport_names))
             elif tc.Z is not None:
                 plot_traces.append(PlotTrace(
-                    label=tc.label,
-                    freqs=fe.ts.freqs,
+                    label=_plot_trace_label(tc),
+                    freqs=freqs,
                     Z=tc.Z,
                     color_idx=tc.color_idx,
                     ls_idx=tc.ls_idx,
@@ -7049,7 +8107,7 @@ class App(tk.Tk):
                 ))
         self.plot.set_traces(plot_traces, keep_cursors=keep_cursors)
 
-    def _calculate_coupling_trace(self, tc: TraceConfig, fe: FileEntry,
+    def _calculate_coupling_trace(self, tc: TraceConfig, sn: "SolveNetwork",
                                   f_rlc_hz: float,
                                   term: TerminationSet | None = None) -> object:
         """
@@ -7066,8 +8124,8 @@ class App(tk.Tk):
         to count the measurement ports.
         """
         if term is None:
-            term = self._build_termination(tc, nports=fe.ts.nports)
-        Zmat, names, warns = compute_z_matrix(fe.Y, fe.ts.freqs, term)
+            term = self._build_termination(tc, nports=sn.nports, sn=sn)
+        Zmat, names, warns = compute_z_matrix(sn.Y, sn.freqs, term)
         for w in warns:
             self._append_result(f"    [{tc.id}] {w}", LOG_WARN)
         if any("Rank-deficient" in w for w in warns):
@@ -7095,8 +8153,10 @@ class App(tk.Tk):
         # impedance so anything expecting tc.Z keeps working. Zmat[:, 0, 0] is
         # a strided view, so copy it.
         tc.Z = np.ascontiguousarray(Zmat[:, 0, 0])
-        tc.rlc = extract_rlc_at_freq(fe.ts.freqs, tc.Z, f_rlc_hz)
-        cres = extract_coupling_at_freq(fe.ts.freqs, Zmat, names, f_rlc_hz)
+        tc.net_freqs = sn.freqs if sn.composed else None
+        tc.reference_checks = self._reference_checks(tc, sn, term, f_rlc_hz)
+        tc.rlc = extract_rlc_at_freq(sn.freqs, tc.Z, f_rlc_hz)
+        cres = extract_coupling_at_freq(sn.freqs, Zmat, names, f_rlc_hz)
         tc.coupling = cres
 
         # The emptiness CONDITION of _coupling_plot_traces, not a call to it:
@@ -7109,7 +8169,7 @@ class App(tk.Tk):
                 "nothing plotted for this trace", LOG_WARN)
         return cres
 
-    def _coupling_plot_traces(self, tc: TraceConfig, fe: FileEntry,
+    def _coupling_plot_traces(self, tc: TraceConfig, freqs: np.ndarray,
                               Zmat: np.ndarray, names: list) -> list:
         """
         Expand one mode-6 trace into plot curves: one self curve per
@@ -7123,8 +8183,8 @@ class App(tk.Tk):
         if tc.plot_self:
             for g, nm in enumerate(names):
                 out.append(_make_plot_trace(
-                    label=_compose_curve_label(tc.label, nm),
-                    freqs=fe.ts.freqs,
+                    label=_compose_curve_label(_plot_trace_label(tc), nm),
+                    freqs=freqs,
                     Z=np.ascontiguousarray(Zmat[:, g, g]),
                     color_idx=(tc.color_idx + n) % len(COLORS),
                     ls_idx=tc.ls_idx % len(LINESTYLES),
@@ -7135,12 +8195,12 @@ class App(tk.Tk):
                 for b in range(a + 1, G):
                     out.append(_make_plot_trace(
                         label=_compose_curve_label(
-                            tc.label, f"{names[a]} x {names[b]}"),
-                        freqs=fe.ts.freqs,
+                            _plot_trace_label(tc), f"{names[a]} x {names[b]}"),
+                        freqs=freqs,
                         Z=np.ascontiguousarray(Zmat[:, a, b]),
                         color_idx=(tc.color_idx + n) % len(COLORS),
                         ls_idx=(tc.ls_idx + 1) % len(LINESTYLES),
-                        aux={"k": _coupling_k_array(Zmat, fe.ts.freqs, a, b)},
+                        aux={"k": _coupling_k_array(Zmat, freqs, a, b)},
                     ))
                     n += 1
         return out
@@ -7242,6 +8302,27 @@ class App(tk.Tk):
                 f"  where each M above comes from, and what would move it: "
                 f"select the trace, then Analyze → {ATTRIB_MENU_LABEL} "
                 f"(also on the Traces list's right-click menu)", (), LOG_INFO))
+        # R3-5: THE WELD, WHERE THE NUMBER IS READ.  A weld raises nothing and
+        # makes no number look wrong -- measured in pkg_rlc_compose, the
+        # package ground pad grounded / open / through 1 nH give
+        # L_eff = 2.1454 nH, bit-identical, spread 0.000e+00 -- so it does not
+        # change the number, it changes how the number must be READ.  A report
+        # nobody opened is therefore the wrong place for it, and this is the
+        # right one: directly under the table and the blocks it qualifies, in
+        # the Log AND on every run page, because `_run_report_segments` is the
+        # one builder of both.
+        #
+        # Read off the SNAPSHOT, frozen at Calculate time.  A page re-rendered
+        # by a units switch must not pick up a verdict from a composition that
+        # has been rebuilt since.
+        for rec in list(shown_rows) + list(shown_blocks):
+            if not getattr(rec, "ref_strip", ""):
+                continue
+            segs.append((f"  [{rec.id}] {rec.ref_strip}", (),
+                         LOG_WARN if rec.ref_warn else LOG_INFO))
+            if rec.ref_warn:
+                for line in rec.ref_lines:
+                    segs.append((f"      {line}", (), LOG_WARN))
         if hidden:
             # Named, not silently dropped: Calculate still measured them, and
             # since they are in no other output either, this line is the only
@@ -7305,15 +8386,146 @@ class App(tk.Tk):
         # path that would be a closed-form solve per character.
         refresh_attribution_windows(self, rerender=True)
 
+    def _trace_network(self, tc: TraceConfig) -> "SolveNetwork":
+        """
+        The network this trace is solved against -- one file, or several.
+
+        A single-file trace returns the FileEntry's OWN arrays, not copies:
+        `fe.Y` and `fe.ts.freqs` are the objects every pre-composition path
+        used, so the reduction sees the same bytes and the golden regression is
+        untouched.  Nothing about a one-file trace goes near pkg_rlc_compose.
+
+        A composed trace is stacked by `pkg_rlc_compose.compose`, cached on the
+        App and validated by FileEntry identity, and the HOME file is block 0
+        with every port kept -- which is the property that makes a bare port
+        number mean the home file (R3-2).
+
+        `marker_hz` is deliberately NOT passed to `compose`.  It would make the
+        composition refuse outright when the marker falls outside the common
+        span, and the GUI already answers that question its own way: the
+        marker is snapped onto the composed axis by `snap_to_grid`, which
+        reports the distance and flags `off_grid` when the request was off the
+        end of the sweep.  Refusing here would also key the cache on a value
+        the user retypes constantly, which is exactly the value a cache must
+        not depend on.
+        """
+        labels = trace_file_labels(tc)
+        entries = [self._file_by_label(lbl) for lbl in labels]
+        if any(fe is None for fe in entries) or not entries:
+            raise ValueError(
+                "file " + ", ".join(f"'{lbl}'" for lbl, fe in zip(labels, entries)
+                                    if fe is None) + " is not loaded")
+        if len(entries) == 1:
+            fe = entries[0]
+            return SolveNetwork(freqs=fe.ts.freqs, Y=fe.Y, nports=fe.ts.nports,
+                                port_names=list(fe.ts.port_names))
+        key = tuple(labels)
+        hit = self._compose_cache.get(key)
+        if hit is not None:
+            cached_entries, net = hit
+            if len(cached_entries) == len(entries) and all(
+                    a is b for a, b in zip(cached_entries, entries)):
+                return _composed_solve_network(net)
+            # A file was reloaded under the same name: the label matches and
+            # the arrays behind it are different objects, so the cached stack
+            # is a stack of the PREVIOUS parse.  Identity is what catches that;
+            # a label-only key would have kept serving it.
+            self._compose_cache.pop(key, None)
+        net = comp.compose([comp.ComposeInput(data=fe.ts, alias=default_alias(i))
+                            for i, fe in enumerate(entries)])
+        self._compose_cache[key] = (list(entries), net)
+        return _composed_solve_network(net)
+
+    def _trace_namespace(self, tc: TraceConfig):
+        """
+        (ComposedNetwork, home alias) for scoping this trace's port fields, or
+        (None, "").  Namespace only -- see `_namespace_network`.
+
+        Never raises: it is on the strips' path, where a raised error reaches
+        no handler anyone controls.
+        """
+        if not trace_is_composed(tc):
+            return None, ""
+        try:
+            entries = [self._file_by_label(lbl)
+                       for lbl in trace_file_labels(tc)]
+            if any(fe is None for fe in entries):
+                return None, ""
+            net = _namespace_network(entries)
+            return net, (net.blocks[0].alias if net.blocks else "")
+        except Exception:                                    # pragma: no cover
+            return None, ""
+
+    def _cached_trace_network(self, tc: TraceConfig) -> "SolveNetwork | None":
+        """
+        The composed network for this trace IF IT IS ALREADY BUILT, else None.
+
+        NEVER BUILDS ONE, and that is a measured rule rather than caution.  The
+        editor strips and the Ports & Roles refresh both run from
+        `_apply_editor_strips`, i.e. from a Tk variable trace, i.e. once per
+        keystroke.  Measured on this box with smooth synthetic data
+        (`comp.compose` of two files, three runs each):
+
+            16 + 60 ports, 401 points  ->  76 ports:  100 / 112 /  97 ms
+            16 + 153 ports, 401 points -> 169 ports:  10780 / 10346 / 10521 ms
+            16 + 300 ports, 101 points -> 316 ports:  6772 / 6833 / 6661 ms
+
+        Ten seconds per character is not a slow strip, it is a frozen
+        application -- and 153 ports is the SMALL end of what this tool is used
+        on (its own docstring names a 153-port package).  So the strips read
+        what Calculate has already paid for and fall back to the home file
+        until then, which is honest: before a Calculate there is no composition
+        to describe.
+
+        Identity-checked exactly as `_trace_network` is, for the same reason: a
+        file reloaded under the same name is a different set of arrays.
+        """
+        if not trace_is_composed(tc):
+            return None
+        labels = trace_file_labels(tc)
+        hit = self._compose_cache.get(tuple(labels))
+        if hit is None:
+            return None
+        cached_entries, net = hit
+        entries = [self._file_by_label(lbl) for lbl in labels]
+        if len(cached_entries) != len(entries) or any(
+                a is not b for a, b in zip(cached_entries, entries)):
+            return None
+        return _composed_solve_network(net)
+
     def _build_termination(self, tc: TraceConfig,
-                           nports: int | None = None) -> TerminationSet:
+                           nports: int | None = None,
+                           sn: "SolveNetwork | None" = None) -> TerminationSet:
+        """
+        The trace's spec as a TerminationSet.
+
+        `sn` is the network the spec is being read against.  For a single-file
+        trace it is None or a plain one and NOTHING below changes -- the same
+        builders get the same strings, which is what keeps every golden case
+        and every saved session bit-identical.  For a composed one every port
+        field is first resolved into the composed namespace: a bare number
+        still means the home file (R3-2), a tagged one names the file it says,
+        and a bare number past the home file's port count is REFUSED rather
+        than quietly addressing the next file's ports.
+
+        Each mode keeps its OWN builder.  Routing a composed mode-6 trace
+        through the permissive rows path would silently allow the probe-and-
+        ground overlap that `build_terminations_coupling` refuses, which is a
+        rule of the mode and not of the number of files.
+        """
         self._migrate_trace(tc)
+        net = sn.net if sn is not None else None
+        home = sn.home_alias if sn is not None else ""
         if tc.mode == 6:
             # nports lets the builder reject a port number the file does not
             # have (a one-digit typo in a '+/-' spec would otherwise silently
             # demote a differential probe to a ground-referenced one).
+            mp_rows = (tc.mports if net is None
+                       else _scope_mport_rows(tc.mports, net, home))
+            gnd = (tc.gnd_ports if net is None
+                   else _scope_port_field(tc.gnd_ports, net, home))
             return build_terminations_coupling(
-                _collect_mports(tc), parse_port_range(tc.gnd_ports),
+                _collect_mports(tc, mp_rows), parse_port_range(gnd),
                 nports=nports)
         if tc.mode == 5:
             # Through the rows, never through tc.custom_text: the tables are
@@ -7321,12 +8533,29 @@ class App(tk.Tk):
             # the builder reject a port the file does not have -- Mode 5 used
             # to pass none, so '3 / 5' on a 4-port file became a plausible
             # wrong number until compute_z_matrix's backstop caught it.
-            return build_terminations_rows(tc.mports, tc.conn_rows,
-                                           tc.extra_lines, nports=nports)
-        a = parse_port_range(tc.port_a)
-        b = parse_port_range(tc.port_b)
-        g = parse_port_range(tc.gnd_ports)
-        sp = parse_short_pairs(tc.short_pairs)
+            if net is None:
+                return build_terminations_rows(tc.mports, tc.conn_rows,
+                                               tc.extra_lines, nports=nports)
+            return build_terminations_rows(
+                _scope_mport_rows(tc.mports, net, home),
+                _scope_conn_rows(tc.conn_rows, net, home),
+                _scope_dsl_text(tc.extra_lines, net, home), nports=nports)
+        if net is None:
+            a = parse_port_range(tc.port_a)
+            b = parse_port_range(tc.port_b)
+            g = parse_port_range(tc.gnd_ports)
+            sp = parse_short_pairs(tc.short_pairs)
+        else:
+            a = parse_port_range(_scope_port_field(tc.port_a, net, home))
+            b = parse_port_range(_scope_port_field(tc.port_b, net, home))
+            g = parse_port_range(_scope_port_field(tc.gnd_ports, net, home))
+            sp = parse_short_pairs(tc.short_pairs)
+            # The ONE field that is not scoped: parse_short_pairs reads its
+            # tokens with int(), so 'F2.3' there already fails with core's own
+            # message -- but a BARE index past the home file would have gone
+            # through as a global port.  See _check_bare_ports.
+            _check_bare_ports([p for pair in sp for p in pair], net, home,
+                              "Short Pairs")
         if tc.mode == 1:
             return build_terminations_mode1(a, g)
         if tc.mode == 2:
@@ -7334,6 +8563,34 @@ class App(tk.Tk):
         if tc.mode == 3:
             return build_terminations_mode3(a, b, g, sp)
         raise ValueError(f"Unknown mode: {tc.mode}")
+
+    def _reference_checks(self, tc: TraceConfig, sn: "SolveNetwork",
+                          term: TerminationSet, f_hz: float) -> list:
+        """
+        R3-5.  Is each file's ground network in the circuit at all?
+
+        MANDATORY on every composed trace and there is deliberately no way to
+        turn it off, the same rule the CLI is written to: a weld raises
+        nothing and makes no number look wrong -- measured in pkg_rlc_compose,
+        the package ground pad grounded / open / through 1 nH give
+        L_eff = 2.1454 nH, bit-identical, spread 0.000e+00 -- so it changes how
+        the number must be READ, and it has to arrive where the number is read.
+
+        It costs two single-frequency solves per file.  It never propagates a
+        failure: a check that could not run must not cost the measurement it
+        was checking, so it degrades to a warning line and an empty list.
+        """
+        if not sn.composed:
+            return []
+        try:
+            return comp.reference_check(sn.net, term, freq_hz=f_hz)
+        except Exception as e:
+            self._append_result(
+                f"    [{tc.id}] the reference-node check could not run: {e} "
+                f"-- the numbers below stand, but nothing has confirmed that "
+                f"each file's ground network is in the circuit.", LOG_WARN)
+            return []
+
 
     def _on_marker_drag(self, freq_hz: float) -> None:
         self.rlc_freq_var.set(f"{freq_hz/1e9:.4g}")
@@ -7510,6 +8767,12 @@ class App(tk.Tk):
                 for tc in sess.traces:
                     if tc.file_label == label:
                         tc.file_label = fe.label
+                    # The extra files are bound by the same label and have to
+                    # be re-pointed by the same rule: re-binding only the home
+                    # file would leave a composed trace half resolved, naming
+                    # a file that is loaded under another name.
+                    tc.file_labels = [fe.label if lbl == label else lbl
+                                      for lbl in tc.file_labels]
                 self._append_result(
                     f"  '{label}' resolved to {fe.label}; its traces were "
                     f"re-bound to the new name", LOG_WARN)
@@ -7578,6 +8841,7 @@ class App(tk.Tk):
         # that holds a result cannot re-read its way out of that, it has to be
         # told, or it carries on offering [Recompute] on a trace that is gone.
         refresh_attribution_windows(self)
+        refresh_files_windows(self)
         # Second: what the SAVED windows were reading.  Nothing is reopened --
         # `attribution_refusal` turns away a trace with no numbers, and a
         # freshly loaded session has none until Calculate has run, so an
@@ -7695,11 +8959,36 @@ class App(tk.Tk):
                     fe = self._file_by_label(tc.file_label)
                     if fe is None:
                         continue
+                    # The axis these numbers were computed on -- the composed
+                    # one for a composition.  None means a composed trace whose
+                    # axis is not stored, and it is SKIPPED rather than written
+                    # against the home file's sweep: the lengths differ, so
+                    # that would either raise halfway through a file the user
+                    # is waiting on or, worse, line every value up against the
+                    # wrong frequency.
+                    freqs = _trace_plot_freqs(tc, fe)
+                    if freqs is None:
+                        self._append_result(
+                            f"  [{tc.id}] {tc.label}: not exported -- its "
+                            f"numbers came from a composition whose frequency "
+                            f"axis is no longer available. Calculate again.",
+                            LOG_WARN)
+                        continue
                     fh.write(f"# Trace: {tc.label}\n")
                     # No 'Plotted: no' marker any more -- every trace in the
                     # file is one that was on the plot, so a CSV and a
                     # screenshot of the same session carry the same traces.
-                    fh.write(f"# File: {fe.label}, Mode: {tc.mode_name()}\n")
+                    # One file names itself exactly as it always has; a
+                    # composed trace names all of them with their tags, because
+                    # a CSV headed '# File: die.s6p' whose numbers came from
+                    # the die AND the package is a false claim in the one line
+                    # a spreadsheet keeps.
+                    if trace_is_composed(tc):
+                        fh.write(f"# Files: {trace_file_legend(tc)}, "
+                                 f"Mode: {tc.mode_name()}\n")
+                    else:
+                        fh.write(f"# File: {fe.label}, "
+                                 f"Mode: {tc.mode_name()}\n")
                     # WHICH RUN this is.  Export writes the CURRENT cached
                     # state, which is the newest run -- not whatever page the
                     # user happens to be reading -- so the file has to say so
@@ -7728,7 +9017,13 @@ class App(tk.Tk):
                         fh.write(f"# Run: #{run.number} "
                                  f"{_run_marker_text(run.marker_freq_hz)}, "
                                  f"{run.when.strftime('%H:%M:%S')}\n")
-                        snap = run_file_freq(run, fe.label)
+                        # Keyed by the composition's legend for a composed
+                        # trace, because that is the key `_on_calculate` filed
+                        # its snap under -- the marker landed on the composed
+                        # axis, not on the home file's.
+                        snap = run_file_freq(
+                            run, trace_file_legend(tc) if trace_is_composed(tc)
+                            else fe.label)
                         if (isinstance(snap, FreqSnap)
                                 and not (snap.exact and snap.agreed)):
                             fh.write(
@@ -7741,15 +9036,15 @@ class App(tk.Tk):
                     # well-formed, headed '# Mode: Custom', and missing every
                     # mutual term, every M and every k.
                     if tc.Zmat is not None:
-                        _write_coupling_csv(fh, w, tc, fe)
+                        _write_coupling_csv(fh, w, tc, freqs)
                         fh.write("\n")
                         continue
                     w.writerow(["Freq_GHz", "Re_Z", "Im_Z", "abs_Z",
                                 "R_mOhm", "L_nH", "C_pF", "Q"])
-                    omega = 2 * np.pi * fe.ts.freqs
-                    for k in range(len(fe.ts.freqs)):
+                    omega = 2 * np.pi * freqs
+                    for k in range(len(freqs)):
                         z = tc.Z[k]
-                        f = fe.ts.freqs[k]
+                        f = freqs[k]
                         r = z.real
                         im = z.imag
                         L = im / omega[k] * 1e9 if omega[k] != 0.0 else float("nan")

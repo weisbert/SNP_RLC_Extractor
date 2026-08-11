@@ -820,6 +820,20 @@ with A=1, B=2, ShortPairs="3-4":
     3 short_to 4
 
 (Verified by unit test -- numerical results identical.)
+
+Hanging this on a package (a SECOND file)
+-----------------------------------------
+Add the package to the trace with Analyze -> "Files in this
+trace...", then write its ports with a tag while the die's stay
+bare:
+
+    2,F2.1                     short row: bond wire, die 2 to pkg 1
+    F2.2  rlc_gnd  R=0.5       the package's ground return
+    2 / F2.1 + R/L/C           rlc_between row: a modelled wire
+
+A bare number always means the HOME file, so nothing above this
+line changes. The full rules -- what a tag is, why it is short, and
+what renumbers it -- are on the "Input syntax" tab.
 """
 
 
@@ -2192,6 +2206,42 @@ for the other direction -- which of the ports you have not written
 a row for matter at all, ranked from all-open, before any of this
 table exists. It is CLI-only: --cold-start VICTIM,AGGRESSOR. Read
 it before you write your first ground row on an unfamiliar file.
+
+Ports of a SECOND file:  F2.13
+------------------------------
+A trace can be built from more than one file -- an EM block hung
+on a package block. Select the trace and open
+
+      Analyze -> Files in this trace...
+
+(also on the right-click menu of the Traces list and of the Files
+list). Right-click a row there to add a file, remove one, or make
+one the HOME file.
+
+The home file needs no tag: a BARE port number always means a port
+of the home file, in every mode, so every spec you already have
+keeps its meaning and a single-file user never sees a tag. A port
+of another file carries its tag:
+
+      F2.13          port 13 of the second file
+      F2.40-42       a range of it
+      2,F2.1         a SHORT group across the two files
+      2 / F2.1       Port / To of an rlc_between row, with R/L/C
+
+The tags are F1, F2, ... in the order the files are listed, F1
+being the home file. A tag is a POSITION, so changing the home
+file or removing one renumbers the rest -- the tool says so in the
+Results pane when it happens, because an F2.<port> cell you have
+already typed then names a different file.
+
+A port cell shows about seven characters (measured: 72 px at 100%,
+135 px at 150%, seven either way). "F2." spends three of them and
+leaves four digits, which is why the tag is short and why it is
+only ever written on the endpoint that crosses files.
+
+Ports & Roles lists the composed port list -- every port with its
+tag, its name and its role -- as soon as you type a tag. The
+network itself is only stacked at Calculate.
 """
 
 

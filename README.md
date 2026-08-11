@@ -979,8 +979,42 @@ never be recomputed or edited by accident.
 
 ### GUI
 
-Composition is **CLI-only** for now. The connection table's per-kind row shape and named merged
-nodes are in the GUI; multi-file assembly is not.
+Composition works in the GUI too. A trace has a **home file** (the `File:` combobox, exactly as
+before) and any number of extra files:
+
+1. Select the trace, then **Analyze → Files in this trace…** (also on the right-click menu of the
+   Traces list and of the Files list). Right-click a row there to **Add a file…**, to **Remove**
+   one, or to **Set as home**.
+2. In the connection table, a **bare port number still means the home file** — every spec you
+   already have keeps its meaning, and if you only ever use one file you will never see a tag. A
+   port of another file is written with its tag: `F2.13`, `F2.40-42`.
+3. Calculate. The trace is solved on the stacked network, over the **intersection of the two
+   frequency spans resampled onto the finer grid** — never extrapolated. What the composition
+   decided (the grid it took, what it dropped, how much phase an interpolation invented) is
+   printed with the numbers.
+
+The tags are `F1`, `F2`, … in the order the files are listed, `F1` being the home file. A tag is a
+**position**, so changing the home file or removing a file renumbers the rest — the tool says so in
+the Results pane when it happens, because a `F2.<port>` cell you already typed then names a
+different file and nothing can rewrite it for you.
+
+Everything that names a file follows: the results table grows a `File` column (`F1+F2`), the
+coupling block heads with `files: F1=… + F2=…`, the CSV block writes `# Files: …`, **Ports &
+Roles** lists the composed port list with each port's tag and name, and the plot legend marks a
+composed curve with ` +N` (the file names do not fit a 30-character legend entry; they are in all
+of the above).
+
+**The reference-node check is mandatory** and appears under the numbers it qualifies — in the
+Results pane, on every run page, in the files window and in the Attribution window. Read it: see
+the section above for why grounded, open and through-an-inductor can be the same number.
+
+Two things are worth knowing:
+
+- A **cross-file short** goes in one cell of a `short` row: `2,F2.1`. A cross-file element is an
+  `rlc_between` row with `2` in Port and `F2.1` in To.
+- The composed port list appears in **Ports & Roles** as soon as you type a tag; the network
+  itself is only stacked at Calculate, because stacking a 16-port die onto a 153-port package is
+  measured at ten seconds and the editor's strips run on every keystroke.
 
 ---
 

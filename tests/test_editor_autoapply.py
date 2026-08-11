@@ -698,8 +698,11 @@ class TestBothCurveKindsUnchecked(_Case):
         self.app._on_calculate()
         self._settle()
         body = self.app.results_text.get("1.0", tk.END)
+        # The AXIS, not the FileEntry: _coupling_plot_traces takes the
+        # frequency axis its caller computed the matrix on, because a composed
+        # trace's is not any one file's.
         curves = self.app._coupling_plot_traces(
-            self.tc, self.fe, self.tc.Zmat, self.tc.mport_names)
+            self.tc, self.fe.ts.freqs, self.tc.Zmat, self.tc.mport_names)
         return ("both 'self' and 'mutual' are unchecked" in body), len(curves)
 
     def test_the_note_matches_what_is_actually_drawn(self):

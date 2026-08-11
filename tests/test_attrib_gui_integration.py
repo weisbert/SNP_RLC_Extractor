@@ -368,18 +368,25 @@ class TestTheWholeUserPath(_AppCase):
         self.assertFalse(tc.stale)
         self.assertIsNotNone(tc.coupling)
 
-    def test_analyze_is_a_real_cascade_and_carries_exactly_the_one_entry(self):
+    def test_analyze_is_a_real_cascade_and_attribution_is_its_first_entry(self):
         """
         Reached from the menubar widget, not from `app._analyze_menu`.
 
         Mutation: drop `menubar.add_cascade(label="Analyze", ...)` and keep the
         attribute -- every other test here still passes, because they all go
         through `_analyze_menu()`... which is why THIS one walks the real bar.
+
+        The cascade grew a second per-trace window in round 3 ("Files in this
+        trace…"), so what is pinned is the POSITION rather than the count:
+        every other test in this class reads entry 0, and the accelerator guard
+        below names it by index.
         """
         menu = self._analyze_menu()
         labels = [menu.entrycget(i, "label")
                   for i in range(menu.index("end") + 1)]
-        self.assertEqual(labels, [ag.ATTRIB_MENU_LABEL])
+        self.assertEqual(labels[0], ag.ATTRIB_MENU_LABEL)
+        self.assertNotIn(ag.ATTRIB_MENU_LABEL, labels[1:],
+                         "the entry is on this cascade twice")
 
     def test_the_entry_carries_no_accelerator(self):
         """

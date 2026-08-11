@@ -16,9 +16,10 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `pkg_rlc_attrib.py`     | **Port attribution.** Given `Y(f)` and a `TerminationSet`, answers three questions at one frequency. (a) An EXACT additive signed decomposition of `Z_ab` into the bare EM coupling plus one term per declared termination (`build_context` / `decompose` / `format_decomposition`). (b) The EXACT what-if of changing any of them (`sensitivity`, `group_joint`, `cumulative_curve`, `leave_one_out`, `sweep_mobius`, `transfer_ratio`). (c) The **cold-start screen** — which ports matter BEFORE a spec exists, from all-open: `cold_start_context` / `cold_start_bracket` / `cold_start_screen` / `cold_start_pairs` / `cold_start_leave_one_out` / `cold_start_cumulative` / `name_family_suggestions` / `cold_start_negative_result` / `cold_start_report` / `format_cold_start`, with `Bracket` / `PortScreenRow` / `PairEffect` / `FamilySuggestion` / `ColdStartContext` / `ColdStart` and the `COLD_START_*` constants. Plus `Element` / `Term` / `ReturnBudget` / `Decomposition` / `AttribContext`, the `DECOMPOSABLE` / `NON_DECOMPOSABLE` registries, the `Alternative` builders, `termination_impedance_diagonal` / `termination_impedance_shared_return`, `SIGN_CONVENTION_TEXT` and `AttribError`. Plus the **composed-network gauge** — `COMPOSED_BASELINE_TEXT`, `PortBlocks`, `BaselineLinks`, the `baseline=` argument every entry point takes, and `_island_elements`, the ungated structural warning for an element whose whole support sits in a probe-free component of the baseline. Imports `pkg_rlc_core` ONLY (acyclic, the `pkg_rlc_plot` rule), no scipy. `pkg_rlc_extractor.py` drives it from the `--attribute*` and `--cold-start*` flag groups (`--mode coupling` only); the GUI surface for (a) and (b) is `pkg_rlc_attrib_gui.py`, and (c) is CLI-only. |
 | `pkg_rlc_compose.py`    | **Several Touchstone files measured as ONE network.** `ComposeInput` / `compose` / `ComposedNetwork` / `FileBlock` stack k files into one `Y` on a common frequency axis; every cross-file link is an ordinary `ShortPair` / `LumpedBetween` on the global indices handed to the SAME `compute_z_matrix`, so every mode, the Mode 5 DSL and the coupling path work on a composition without a line of their own. Plus the mandatory reference-node check (`reference_check`, `REF_LIVE` / `REF_WELDED` / `REF_NO_GROUND` / `REF_UNKNOWN`), the frequency plan (`align_frequencies` / `FreqPlan` / `interpolate_s`), the namespace (`COMPOSE_TAG_SEP`, `parse_scoped_ports`, `format_scoped_port`, `default_alias`, `link_short` / `link_lumped`), the pre-reduction (`reduce_block_y`), the Touchstone writer (`write_composed_touchstone`), the limit case (`limit_case_check`), `solve_composed` and `ComposeError`. Imports `pkg_rlc_core` ONLY. |
 | `pkg_rlc_attrib_gui.py` | **The Attribution window** (`AttributionWindow`, `open_attribution_window`, `ATTRIB_MENU_LABEL`, `attribution_refusal`, `refresh_attribution_windows`, `attribution_session_state` / `apply_attribution_session_state`) plus the pure formatters it is testable through with no display (`render_table` / `Column` / `TableText`, `contributions_table`, `sensitivity_table`, `detail_lines`, `sweep_caption`, `reconciliation_verdict` / `reconciliation_line`, `provenance_lines`, `staleness_text`, `stability_line`, `report_text`, `csv_records`, `signed_str`, `parse_candidate`). A modeless `Toplevel` over `pkg_rlc_attrib`; `pkg_rlc_gui.py` holds only the Analyze-menu entry, the Traces right-click entry, the Results-pane pointer line and the refresh hooks. It is a separate module because `pkg_rlc_gui.py` was already 7000+ lines; `pkg_rlc_gui` imports it, and it imports `pkg_rlc_gui` back only from **inside functions** (`_gui()`), so the cycle never exists at import time. |
+| `pkg_rlc_files_gui.py`  | **Which FILES a trace is made of** (round 3): the `Files in this trace…` window (`FilePairWindow`, `open_files_window`, `FILES_MENU_LABEL`, `files_refusal`, `refresh_files_windows`, `slots_of` / `FileSlot`, `spec_problems`), the port-cell scope rules (`render_port_cell` / `cell_scope` / `cell_is_foreign` / `port_choices` / `resolve_cell`, `ALIAS_MAX_CHARS`, `PORT_CELL_CHARS`) and the GUI rendering of the reference-node check (`reference_checks_of`, `reference_strip_text`, `reference_report_lines`, `reference_provenance`, `REFERENCE_HEADLINE`). Same split as `pkg_rlc_attrib_gui` against `pkg_rlc_attrib`: `pkg_rlc_compose` does every piece of arithmetic and this is presentation, budget and refusal. Both `pkg_rlc_gui` and `pkg_rlc_attrib_gui` import it at module level; it imports `pkg_rlc_gui` only from inside functions. |
 | `pkg_rlc_plot.py`       | Matplotlib plot panel: multi-subplot grid over R/L/C/\|Z\|/Re/Im/Q/**k**, draggable freq marker, M / V / Delete keys, fullscreen window, and the `ReflowRow` / `reflow_rows` control strip that wraps instead of losing its tail. Quantities that cannot be derived from one `(freqs, Z)` pair (today only `k`) arrive via the optional `Trace.aux` dict. |
 | `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), the frozen-trace snapshot (`_freeze_trace_config`, `freeze_label`, `freeze_refusal`, the Traces-list right-click menu), the File menu and the JSON session format (`session_to_dict` / `session_from_dict` / `SessionError` / `autosave_path`), the results pane (a `ttk.Notebook` whose tab 0 is the Log, with `log_tab_label` / `_append_result(severity)` / `_select_results_tab`), and the immutable run record (`RowSnapshot` / `CouplingSnapshot` / `FitSnapshot` / `RunSnapshot`, `_snapshot_row` / `_snapshot_block` / `_snapshot_fit`) that `_render_results` consumes instead of live traces. Re-exports the DSL helpers it no longer defines. |
-| `pkg_rlc_gui.py` (cont.) | Plus the **Ports & Roles** window (`PortRolesWindow`, `_trace_role_rows`, `_role_warnings`, `_roles_header`, `apply_ports_as`), which is what `Show Ports` now opens; and the **Attribution hooks** — the `Analyze` cascade, the third Traces right-click entry, `_on_attribution`, the Results-pane pointer line, and the `refresh_attribution_windows` calls. The window itself is `pkg_rlc_attrib_gui.py`. |
+| `pkg_rlc_gui.py` (cont.) | Plus the **Ports & Roles** window (`PortRolesWindow`, `_trace_role_rows`, `_role_warnings`, `_roles_header`, `apply_ports_as`), which is what `Show Ports` now opens; and the **Attribution hooks** — the `Analyze` cascade, the third Traces right-click entry, `_on_attribution`, the Results-pane pointer line, and the `refresh_attribution_windows` calls. The window itself is `pkg_rlc_attrib_gui.py`. Plus the **multi-file schema and engine** (round 3): `TraceConfig.file_labels` and its helpers (`trace_file_labels` / `trace_file_aliases` / `trace_is_composed` / `trace_file_legend` / `trace_file_scope` / `compose_spec_problems`), the port-field scopers (`_scope_port_field` / `_scope_dsl_text` / `_scope_conn_rows` / `_scope_mport_rows`, `ComposeSpecError`), `SolveNetwork` / `_trace_network` / `_cached_trace_network` / `_namespace_network` / `_trace_namespace`, `_reference_checks`, `set_trace_home_file`, and the `Files in this trace…` entries on the Analyze cascade and on BOTH right-click menus. |
 | `pkg_rlc_help.py`       | In-app Help window content (`HELP_TOPICS`, `HelpWindow`, `HELP_WINDOW_WIDTH`). One tab per mode + syntax + save/load + worked examples. **Ten tabs, and there is no room for an eleventh** — port attribution, the Attribution window and the cold-start screen all live at the bottom of `Mode 6 (Coupling)`, cross-referenced from `Overview`, `Input syntax` and `Worked examples`. See the measurement under "Port attribution". |
 | `pkg_rlc_extractor.py`  | Entry point: dispatches GUI vs CLI from argv. CLI `--mode gnd \| p2p \| coupling`, `--mport` repeatable. |
 | `reduce_snp.py`         | **Standalone** CLI: shrinks a big `.sNp` to a few ports (KEEP / GND-short / open-or-matched elimination). Deliberately imports nothing from this repo — it gets copied to simulation servers on its own. |
@@ -47,6 +48,9 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `tests/test_compose.py` | `pkg_rlc_compose`'s arithmetic (80 tests, 0.16 s, no Tk, in `FAST_MODULES`): the weld (die return as a PORT gives 2.2501 nH and moves with the ground path; die return as the EM REFERENCE gives 2.1454 nH for grounded / open / 1 nH, bit-identical, spread 0.000e+00), the reference check's four verdicts, the frequency plan (identical-grid detection at a RELATIVE tolerance — a GHz file and a Hz file differ by 2.218e-16 and `np.array_equal` says False —, the refusal to extrapolate, the phase-step warn/refuse at 20/60 deg), the namespace, the pre-reduction (316 → 22 ports: 2.6 ms against 4486 ms, **1714x** per re-solve, agreeing to 4.290e-15), the export (digits 17 reproduces S exactly; the n==2 column-major quirk, which needs a deliberately NON-reciprocal 2-port because every passive network has S12 == S21 and the transpose is otherwise invisible) and the limit case. Every guard mutation-checked. |
 | `tests/test_compose_cli.py` | The composition command line (71 tests, 0.58 s, no Tk, in `FAST_MODULES`): every `--compose-*` refusal by TOKEN (exit 2 alone is also argparse's answer to an unrelated typo), the port namespace surviving in and out — including through a `pkg_rlc_core` message that knows nothing about files —, the numbers being the ENGINE's, the reference check as mandatory output, the proposal that prints and stops, and `TestComposedAttributionBaseline`, which pins R2-8 as a capability: the package-internal element measured at **exactly 0j with a 1.70e-13 residual** under no gauge, and non-zero under it. Every guard mutation-checked. |
 | `tests/test_attrib_composed.py` | The composed-network gauge inside `pkg_rlc_attrib` (45 tests, 0.06 s, no Tk, in `FAST_MODULES`): a 12-port construction where the package is in series in the SHARED RETURN (a fully differential probe pair injects zero net current, `1ᵀw_b == 0`, so it can only reach a common-mode-only package through asymmetry — an obvious 6-port sketch gives a fixture where every test passes and nothing is measured), the ball-grounded / ball-open engine bracket (704.70176729 pH vs 1.0837047531 nH, **−3.7381 dB**), the exactly-zero-with-a-healthy-residual failure, the bare term against an ENGINE re-solve with the balls removed (2.481e-15 relative), the cold start with and without the gauge, and `_island_elements` fuzzed over 2993 specs on every fixture. Every guard mutation-checked. |
+| `tests/test_multifile_session.py` | The multi-file SCHEMA (R3-1): that a trace can name several files without moving anything about naming one. Byte identity of a single-file trace's JSON pinned against a literal captured from the build BEFORE the change (key order included); the two tag authorities (`pkg_rlc_gui` and `pkg_rlc_files_gui`) pinned against each other; the list-aliasing trap on the THIRD field (`file_labels`, after `mports` and `conn_rows`); `_config_signature` unmoved for every pre-composition trace; and `TestCalculateComposesTheFiles`, which is where the engine half is asserted from the App side. Every guard mutation-checked. |
+| `tests/test_multifile_table.py` | The file WINDOW and the port-cell budget (R3-2 / R3-3 / R3-5): the measured cell (72 px / 7 chars at 100%, 135 px / 7 chars at 150% — the character count is what is DPI-stable), the alias refusal quoting the measured FRACTION rather than a digit count, the default-scope rendering, the footer's pack order at a floor where the tree actually unmaps, and the reference strip in the Attribution window (not packed at all when there is no composition — an unmanaged `ttk.Label` still answers `winfo_reqheight() == 21`). Every guard mutation-checked. |
+| `tests/test_multifile_engine.py` | What Calculate DOES with several files, and the surfaces that have to say so: the namespace and its sticky-scope rule pinned against `parse_scoped_ports` on everything that one accepts, the two namespace builders pinned against each other, the composed frequency axis reaching the plot / the CSV / the marker snap, R3-5 reaching the Log and the run page exactly once, and R2-8 inside the Attribution window (the package element must not come back as exactly 0). Every guard mutation-checked. |
 | `tests/test_conn_rowshape.py` | Per-kind row shape and the footer route (the GUI's half of round 1): `conn_table_layout`'s two rules over all 63 kind subsets (a cell never spreads under someone else's heading, and it spreads whenever it may), the measured table widths, the short-group cell shim's `TerminationSet` equivalence, the R1-5 consequence tiers, and — Tk-driven — that clicking the footer reaches a row past the table's OWN scroll and that it costs zero pixels. Every guard mutation-checked. |
 | `tests/test_mode5_editor.py` | Stage 3: the pure text<->rows import decision and both strip renderers, plus Tk-driven editor wiring, per-mode widget visibility, the text hatch, the CSV gate, wheel routing, and the LAYOUT numbers (`ismapped` / `reqwidth` / `xview` / `scrollregion` / `sashpos`) measured off a mapped window — including that a mode with no table fits the 431 px canvas outright and every mode shows the same editor height at the minsize. |
 | `tests/test_freeze_trace.py` | "Freeze as new trace": the pure copy rules (config copied, lists element-wise, results REFERENCED), the two refusals (Calculate skips it, the editor cannot write it), the two *entry* refusals (`freeze_refusal` — no numbers, and a STALE spec), the `freeze_label` budget that keeps the `<HH:MM>` stamp inside `MAX_LABEL_LEN`, that everything else still works (plot / show-hide / CSV / Remove), that the CSV does not attribute a snapshot's numbers to the newest run, the right-click menu, and the session round trip that comes back without numbers and says so. Every guard mutation-checked. |
@@ -1806,6 +1810,164 @@ mutation-checked.
   `PKG.100 VSS_`, `PKG.101 VSS_`, … one family per port, on the file where a family is the
   whole point. `PKG.VSS_1` gives `PKG.VSS_` for all 54 and keeps two files' identically
   named nets apart, which a bare `VSS_1` would not.
+
+### The two-file GUI — schema, namespace, engine (round 3)
+
+Round 2 made `pkg_rlc_compose` able to answer; round 3 is what lets the GUI ask.
+`tests/test_multifile_session.py` (the schema), `tests/test_multifile_table.py`
+(the window and the cell budget) and `tests/test_multifile_engine.py` (the
+engine and the surfaces) are the guards, and every claim below was
+mutation-checked.
+
+- **A HOME FILE PLUS EXTRAS, never one list of files.** `TraceConfig.file_label`
+  stays a single `str` and keeps its meaning — a bare port number is a port of
+  THAT file, in every mode — and `file_labels` holds the others in order. That
+  is what makes every pre-existing spec, every golden case and every saved
+  session mean exactly what it meant, and what keeps a single-file user from
+  ever seeing a tag. It is also the only layout that FITS: measured, a per-row
+  file COLUMN takes the connections table from 405 px to **451** (two columns
+  497, widening Port/To to 11 chars 461, a Name column 469) against a **431 px**
+  viewport whose documented headroom is 13 px.
+- **A file's TAG IS ITS POSITION** (`default_alias`: F1 is the home file, F2 the
+  first extra), resolved by `trace_file_labels` here and by `slots_of` in
+  `pkg_rlc_files_gui`. Two authorities for what `F2.3` means is the silent
+  wrong answer this feature exists to end, so the two are pinned against each
+  other and the files module DELEGATES to this one. Measured there: a port cell
+  is `ttk.Combobox(width=7)` — **72 px / 7 characters at 100%, 135 px / 7
+  characters at 150%**, and the character count is what is DPI-stable. `F2.` is
+  33% / 34% of the text budget and leaves 4 digits; a 4-character tag is 73% /
+  76% and leaves 1. `23,24,25` is 48 px and fits the 49 px budget; `F2.23,24,25`
+  is 64 px, i.e. **131%**, and scrolls in a widget with no scrollbar. Hence
+  `ALIAS_MAX_CHARS = 3` and a tag ONLY on an endpoint that crosses files.
+- **THE HOME FILE IS BLOCK 0 AT OFFSET 0 WITH EVERY PORT KEPT, and everything
+  rests on it.** That is what makes default scope FREE rather than a translation
+  layer: measured on `coupled_2port_gndref.s2p + pi_2port.s2p`,
+  `parse_scoped_ports('1', net, default='F1')` is `[1]` and `('2', …)` is `[2]`,
+  while `'F2.1'` is `[3]`. It is also what makes the refusal free — a bare
+  number PAST the home file's port count would otherwise address the next
+  file's ports (`'5'` on a 4-port home is F2.1: a plausible number from a port
+  nobody named), and `net.gport` raises there by name with the port map
+  attached. Every port field therefore goes through `parse_scoped_ports`, tag
+  or no tag; nothing is passed through untouched because it "looks bare".
+- **A COMMA TOKEN MAY CARRY ITS OWN TAG, and the scope is STICKY — one rule on
+  top of `parse_scoped_ports`, not a second parser.** The connection table
+  forces it: a `short` row stores its whole tied group in ONE cell
+  (`_join_short_group`, R1's single-cell short), so `2,F2.1` has no other
+  spelling there. `parse_scoped_ports` refuses a tag on a later token, and is
+  right to on ITS input — `F1.1,F2.3` would have to mean either "one field, two
+  scopes" or "F1 scopes everything". `_scope_port_field` removes the ambiguity
+  instead of re-deciding it: each comma token is resolved ON ITS OWN with the
+  scope carried forward from the last tag seen, so `F2.1,2` is identical to what
+  that function answers and `2,F2.1` becomes expressible. Every token still goes
+  through the same parser, so every other rule stays its rule.
+- **`_scope_dsl_text` rewrites FIELD POSITIONS, never every token that contains
+  a dot.** `parts[0]` is always a port field and `parts[2]` is one after
+  `short_to` / `lumped_between`; nothing else in the grammar is. A blanket scan
+  survives `C=1.5p` by accident (`_split_tag` reads the head as `C=1`, which
+  fails the alias pattern) but would silently re-point a signal group named
+  `F1.something`. Node names are skipped through core's own `_collect_nets` —
+  the ONE definition of which tokens in that text are names.
+- **Mode 3's Short Pairs is the ONE port field that is not scoped, and it has an
+  explicit check instead.** `parse_short_pairs` reads its tokens with `int()`,
+  so a tag there already fails with core's message — but a bare index past the
+  home file would have gone through as a global port. `_check_bare_ports` is
+  that check; do not delete it in favour of "the resolver catches everything".
+- **THERE ARE TWO NAMESPACE BUILDERS, and that is a measured decision.**
+  `_trace_network` stacks the real thing (Calculate). `_namespace_network`
+  builds a `ComposedNetwork` with the blocks and `Y = zeros((0, n, n))` — it
+  answers "what does F2.3 mean" from the port counts alone and allocates
+  nothing. The strips and the Ports & Roles refresh both run from
+  `_apply_editor_strips`, i.e. once per KEYSTROKE, and `comp.compose` measured
+  on this box with smooth synthetic data (three runs each) is **100 / 112 /
+  97 ms** for 16 + 60 ports at 401 points, **10780 / 10346 / 10521 ms** for
+  16 + 153, and **6772 / 6833 / 6661 ms** for 16 + 300 at 101 points. Ten
+  seconds per character is a frozen application, and 153 ports is the SMALL end
+  of what this tool is used on. The two must agree — a namespace that validated
+  a spec the composition then addresses differently is the same drift
+  `trace_file_labels` is kept mirrored against — and
+  `TestTheTwoNamespaceBuildersAgree` is the guard.
+- **The stack is CACHED on the App, keyed by the file labels and validated by
+  FileEntry IDENTITY.** A label is re-used when a file is reloaded and the
+  arrays behind it are then different objects, so a label-only key keeps serving
+  the previous parse. The cache is what makes the edit/recompute loop usable at
+  all (see the numbers above; `pkg_rlc_compose` measures the re-solve at 2.6 ms
+  against 4486 ms for the full path on 316 ports).
+- **`marker_hz` is deliberately NOT passed to `compose`.** It would refuse the
+  whole composition when the marker falls outside the common span, and the GUI
+  already answers that its own way — `snap_to_grid` reports the distance and
+  flags `off_grid`. It would also key the cache on a value the user retypes
+  constantly.
+- **A composed trace's numbers live on the COMPOSED axis, `TraceConfig.net_freqs`.**
+  None means "the home file's own sweep", which is what it is for every trace
+  that predates this. The two are equal only when nothing was interpolated, so
+  the plot, the CSV and the marker snap all read `_trace_plot_freqs`; drawing a
+  composed `Z` against the home file's sweep puts the right values at the wrong
+  frequencies and looks like a plausible curve. When a composed trace has
+  numbers and no axis, `_trace_plot_freqs` returns **None and the curve is
+  skipped** — falling back is the failure it exists to prevent.
+- **The composed axis is filed in `run.freqs` under the file LEGEND, not under
+  either file's label.** The marker landed on an axis neither file has, so a
+  header line naming one of them beside that number is exactly the disagreement
+  that list exists to remove.
+- **The plot legend carries the COUNT (` +N`), not the file names.** R3-4 asks
+  that a composed run say which files produced it everywhere it is read, but the
+  legend budget is `MAX_LABEL_LEN = 30` characters HEAD-truncated and the tool's
+  own default label already overflows it for a 20-character file name; the
+  legend `F1=die.s6p + F2=package.s4p` is 30 characters on its own and would
+  delete the trace name it qualifies. `_plot_trace_label` trims the BASE and
+  keeps the marker — `freeze_label`'s rule and the same reason. The NAMES live
+  in the results table's file column, the coupling block's `files:` line, the
+  CSV header, the Ports & Roles header and the files window.
+- **R3-5 arrives WHERE THE NUMBER IS READ, frozen onto the snapshot.** A weld
+  raises nothing and makes no number look wrong (measured in `pkg_rlc_compose`:
+  grounded / open / through 1 nH all give `L_eff` = 2.1454 nH, bit-identical,
+  spread 0.000e+00), so it changes how the number must be READ and a report
+  nobody opened is the wrong place for it. `RowSnapshot` / `CouplingSnapshot`
+  carry `ref_strip` / `ref_warn` / `ref_lines`, resolved at snapshot time by
+  `reference_provenance` — which renders the one-line strip and the full report
+  ONCE so they cannot disagree — and `_run_report_segments` emits them under the
+  table, in the Log AND on every run page. There is deliberately **NO second
+  printer** at compute time: it put the same paragraph on screen twice, and two
+  copies of one verdict are two things that can come to disagree.
+- **An attribution of a composition decomposes against a baseline that has the
+  cross-file links IN it, and there is no way to turn that off.** R2-8, arriving
+  in the window. All-open on a composition leaves the files as disconnected
+  islands: measured with the real engine on a 12-port combined network, the
+  EM-vs-PKG off-diagonal block of `Ybase` is **0.000e+00**, every package-only
+  element contributes **EXACTLY 0**, and the reconciliation residual reads
+  **6.49e-15** — perfect health, wrong answer. `_attrib_network` is the ONE
+  resolver (`Y`, `freqs`, `nports`, `term`, `baseline`) and it is what every
+  call site in the window now goes through; `_attrib_role_rows` scopes the
+  provenance rows the same way, or the From column names a row for port 3 of the
+  die beside an element on port 3 of the package.
+- **A GLOBAL PORT INDEX still reaches two messages, and both are display-only.**
+  `Element.describe()` in the Attribution window renders "port 6 → gnd" for what
+  the user typed as `F2.2`, and the editor's validation echo says
+  `✓ port 6 → GND: 500 mΩ` for the same row (measured, on the two-file run in
+  the screenshot). Both are the finding the CLI section already records: an
+  element is a stamp on the combined `Y` and knows nothing about files, and
+  `_validation_report` echoes the port field it was handed, which is the SCOPED
+  one because scoping is what makes the check correct. The number, the port and
+  the row are all right; only the spelling is global, and the Attribution
+  window's From column and the table row itself both carry what was typed.
+  Threading a labeller through `pkg_rlc_attrib`'s construction sites and through
+  `_validation_report` is the fix and is not this round's — do not "fix" it by
+  un-scoping either, which trades a wrong spelling for a wrong answer.
+- **The window is on the MENUBAR and on BOTH right-click menus, never a fifth
+  button.** The Files and Traces rows are each measured at 448 px with four
+  buttons already asking 364, and a fifth row inside Global Controls comes
+  straight out of an editor viewport that is down to 45 px at the 1040x600
+  minsize. The Files right-click deliberately does NOT move the file selection:
+  the window is about the selected TRACE, and re-selecting a file would change
+  what the editor and Ports & Roles are describing as a side effect of a
+  question about something else.
+- **`SESSION_VERSION` is 2 unconditionally.** The conditional form (1 when
+  uncomposed) was implemented and reverted: `tests/test_session.py` asserts both
+  that a saved file's version IS `SESSION_VERSION` and that `SESSION_VERSION + 1`
+  is refused, which together force the written default and the read cap to be
+  one number. It is also the safe side — a v1 reader would drop `file_labels`
+  with a note and then compute the home file alone, which is the wrong answer
+  this feature exists to prevent.
 
 ### Auto-apply, the style picker, plot visibility
 

@@ -193,6 +193,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 import pkg_rlc_attrib as attrib
+import pkg_rlc_files_gui as files_gui
 from pkg_rlc_core import (
     ROLE_ELEMENT,
     ROLE_GROUND,
@@ -204,6 +205,7 @@ from pkg_rlc_core import (
     parse_kv_rlc_params,
     parse_si,
     resolve_meas_ports,
+    row_sources,
     rows_to_dsl_text,
 )
 from pkg_rlc_plot import ReflowRow
@@ -587,7 +589,11 @@ def _gui():
         port", so the From column matches the Ports & Roles window;
       * `_value_formatter`   -- ONE definition of the aligned units mode, so a
         column here carries the same SI prefix the results pane would;
-      * `PORT_ROLE_FG` / `WARN_FG` / `PLACEHOLDER_FG` -- ONE palette.
+      * `PORT_ROLE_FG` / `WARN_FG` / `PLACEHOLDER_FG` -- ONE palette;
+      * `trace_is_composed` and the three port-field scopers
+        (`_scope_mport_rows` / `_scope_conn_rows` / `_scope_dsl_text`) -- ONE
+        definition of what `F2.13` means, so the ports this window decomposes
+        and the ports Calculate solved are the same ports.
     """
     import pkg_rlc_gui                                   # noqa: PLC0415
     return pkg_rlc_gui
@@ -1864,6 +1870,23 @@ class Provenance:
     #: keeping it beside the numbers it belongs to is what stops the banner
     #: from being computed against some LATER snapshot of the same window.
     signature: tuple = ()
+    #: R3-5.  The reference-node check, ALREADY RENDERED, frozen at compute
+    #: time like everything else here: `reference_strip` is `(one line, is-a-
+    #: warning)` for the strip, `reference_notes` the unabridged verdicts for
+    #: the copied report.  Both come from ONE call to
+    #: `files_gui.reference_provenance`, so the strip and the report cannot
+    #: describe different compositions.
+    #:
+    #: Empty for a single-file trace -- which is every trace that has ever
+    #: existed -- and empty is what costs zero pixels and zero report lines.
+    #:
+    #: Rendered strings and not the `ReferenceCheck` objects, for the reason
+    #: `port_desc` is a resolved string: a window kept open across a re-compose
+    #: would otherwise print THIS run's contributions under the NEXT
+    #: composition's verdict, which is the run-snapshot failure where nothing
+    #: raises and the numbers are real.
+    reference_strip: tuple = ()
+    reference_notes: tuple = ()
 
 
 def _freq_phrase(prov: Provenance) -> str:
@@ -1903,6 +1926,16 @@ def provenance_lines(prov: Provenance) -> list[str]:
         out.append("    ! " + str(note))
     out += [
         "    " + GROUND_MODEL_TEXT,
+    ]
+    # R3-5.  BEFORE the sign convention and the spec, because it is a
+    # precondition on reading any of the numbers rather than a footnote under
+    # them -- the same placement decision `_compose_print_reference` takes on
+    # the CLI ("BEFORE the numbers, on purpose").  Nothing is emitted for a
+    # single-file trace, so every existing report is byte-identical.
+    if prov.reference_notes:
+        out.append("")
+        out.extend(str(n) for n in prov.reference_notes)
+    out += [
         "",
         attrib.SIGN_CONVENTION_TEXT,
         SIGN_NOTE_TERMS + " " + SIGN_NOTE_SHARES,
@@ -2291,6 +2324,87 @@ class AttribResult:
         return {el.index: el.kind for el in self.ctx.elements}
 
 
+#: What a trace is decomposed against, resolved in ONE place.
+#:
+#: On a single file this is exactly what every call site used to spell inline
+#: (`file_entry.Y`, `file_entry.ts.freqs`, `_build_termination(nports=...)`),
+#: so nothing about a one-file attribution moves.  On a COMPOSED trace two
+#: things change and both are load-bearing:
+#:
+#:   * the arrays are the STACKED ones and the termination is built against the
+#:     composed namespace, so `F2.13` resolves and a bare number past the home
+#:     file's ports is refused rather than silently addressing the next file;
+#:
+#:   * the baseline carries the CROSS-FILE LINKS (requirement R2-8).  An
+#:     all-open baseline on a composition leaves the files as disconnected
+#:     islands -- Ybase is then exactly block diagonal.  Measured with the real
+#:     engine on a 12-port combined network: the EM-vs-PKG off-diagonal block
+#:     is 0.000e+00, every package-only element contributes EXACTLY 0, and the
+#:     reconciliation residual reads 6.49e-15, i.e. perfect health.  A
+#:     confident, exactly-zero, perfectly-reconciled wrong answer is worse than
+#:     no answer, which is why there is no way to turn this off -- the same
+#:     rule, and the same `PortBlocks.from_sizes` gauge, as the CLI's
+#:     `_compose_baseline`.
+@dataclass(frozen=True)
+class _AttribNetwork:
+    Y: object
+    freqs: object
+    nports: int
+    term: object
+    baseline: object = None
+    composed: bool = False
+
+
+def _attrib_network(app, trace, file_entry) -> "_AttribNetwork":
+    """`_AttribNetwork` for this trace.  Raises what `_build_termination` does."""
+    sn = None
+    try:
+        if _gui().trace_is_composed(trace):
+            sn = app._trace_network(trace)
+    except AttributeError:                               # pragma: no cover
+        sn = None
+    if sn is None or not sn.composed:
+        return _AttribNetwork(
+            Y=file_entry.Y, freqs=file_entry.ts.freqs,
+            nports=int(file_entry.ts.nports),
+            term=app._build_termination(trace, nports=file_entry.ts.nports))
+    return _AttribNetwork(
+        Y=sn.Y, freqs=sn.freqs, nports=int(sn.nports),
+        term=app._build_termination(trace, nports=sn.nports, sn=sn),
+        baseline=attrib.BaselineLinks(
+            blocks=attrib.PortBlocks.from_sizes(
+                [b.nports for b in sn.net.blocks],
+                [b.alias for b in sn.net.blocks])),
+        composed=True)
+
+
+def _attrib_role_rows(app, trace, net: "_AttribNetwork") -> tuple:
+    """
+    (mports, conn, extra, sources) for this trace, in the network's namespace.
+
+    `row_sources` maps a row's PORT FIELD onto the ports it declares, so on a
+    composed trace it has to see the same global numbers the termination was
+    built from -- otherwise the From column names a row for port 3 of the die
+    while the element it labels is port 3 of the package.
+    """
+    g = _gui()
+    try:
+        mports, conn, extra, sources = g._trace_role_rows(trace)
+    except Exception:                                    # pragma: no cover
+        return [], [], "", None
+    if not net.composed:
+        return mports, conn, extra, sources
+    try:
+        sn = app._trace_network(trace)
+        mports = g._scope_mport_rows(mports, sn.net, sn.home_alias)
+        conn = g._scope_conn_rows(conn, sn.net, sn.home_alias)
+        extra = g._scope_dsl_text(extra, sn.net, sn.home_alias)
+        sources = row_sources(mports, conn, extra)
+    except Exception:                                    # pragma: no cover
+        pass
+    return mports, conn, extra, sources
+
+
 def compute_attribution(app, trace, file_entry, victim: str, aggressor: str,
                         quantity: str, freq_hz: float,
                         ground_model: str = GROUND_MODEL_DEFAULT
@@ -2320,18 +2434,15 @@ def compute_attribution(app, trace, file_entry, victim: str, aggressor: str,
     OPINION does not, and `reconciliation_verdict` prints "not comparable"
     rather than a disagreement.
     """
-    g = _gui()
-    term = app._build_termination(trace, nports=file_entry.ts.nports)
-    try:
-        mports, conn, extra, sources = g._trace_role_rows(trace)
-    except Exception:                                    # pragma: no cover
-        # Without provenance every element of a kind lands in one group named
-        # after the kind.  That is a worse table, not a wrong one, so it is
-        # not worth failing the whole window over.
-        mports, conn, extra, sources = [], [], "", None
+    net = _attrib_network(app, trace, file_entry)
+    term = net.term
+    # Without provenance every element of a kind lands in one group named after
+    # the kind.  That is a worse table, not a wrong one, so `_attrib_role_rows`
+    # degrades instead of failing the whole window.
+    mports, conn, extra, sources = _attrib_role_rows(app, trace, net)
 
-    ctx = attrib.build_context(file_entry.Y, file_entry.ts.freqs, term,
-                               freq_hz, sources=sources)
+    ctx = attrib.build_context(net.Y, net.freqs, term, freq_hz,
+                               sources=sources, baseline=net.baseline)
     gm_kind, gm_z, gm_label = parse_ground_model(ground_model, ctx.omega)
     gm_notes: list = []
     gm_applied = True
@@ -2344,13 +2455,24 @@ def compute_attribution(app, trace, file_entry, victim: str, aggressor: str,
         # names the model instead of three that can disagree.
         gm_applied = zt is not None
         if zt is not None:
-            ctx = attrib.build_context(file_entry.Y, file_entry.ts.freqs,
-                                       term, freq_hz, zt=zt, sources=sources)
+            ctx = attrib.build_context(net.Y, net.freqs, term, freq_hz, zt=zt,
+                                       sources=sources, baseline=net.baseline)
         else:
             gm_label = f"{gm_label} — NOT APPLIED"
     dec = attrib.decompose(ctx, victim, aggressor, quantity)
 
     sig = spec_signature(trace)
+    # R3-5.  Resolved HERE, beside the numbers, and frozen onto the Provenance
+    # -- not read live by the strip.  `reference_checks_of` returns [] for a
+    # trace with one file, so both fields stay empty and every surface below
+    # is byte-identical to what it was.  It cannot raise: a defective cache
+    # would otherwise take down a window whose decomposition has already been
+    # paid for, over a strip.
+    try:
+        ref_strip, ref_notes = files_gui.reference_provenance(
+            files_gui.reference_checks_of(trace))
+    except Exception:                                        # pragma: no cover
+        ref_strip, ref_notes = (), ()
     prov = Provenance(
         trace_id=int(getattr(trace, "id", 0)),
         trace_label=str(getattr(trace, "label", "")),
@@ -2375,6 +2497,8 @@ def compute_attribution(app, trace, file_entry, victim: str, aggressor: str,
         ground_model_notes=tuple(str(n) for n in gm_notes),
         ground_model_applied=bool(gm_applied),
         signature=sig,
+        reference_strip=ref_strip,
+        reference_notes=ref_notes,
     )
     return AttribResult(prov=prov, ctx=ctx, dec=dec,
                         names=tuple(ctx.port_names), signature=sig)
@@ -2391,7 +2515,11 @@ def stability_ranks(app, trace, file_entry, res: AttribResult,
     primary is always first, because it is the ranking every other part of this
     window was built from.
     """
-    freqs_all = np.asarray(file_entry.ts.freqs, dtype=float)
+    net = _attrib_network(app, trace, file_entry)
+    # The COMPOSED axis on a composition: the badge snaps its sample points
+    # onto the grid the decomposition lives on, and the home file's grid is
+    # neither the same points nor the same span.
+    freqs_all = np.asarray(net.freqs, dtype=float)
     lo = float(freqs_all[freqs_all > 0].min()) if np.any(freqs_all > 0) \
         else float(freqs_all.min())
     hi = float(freqs_all.max())
@@ -2406,20 +2534,16 @@ def stability_ranks(app, trace, file_entry, res: AttribResult,
             picked.append(snapped)
     picked = picked[:n_points]
 
-    g = _gui()
-    term = app._build_termination(trace, nports=file_entry.ts.nports)
-    try:
-        sources = g._trace_role_rows(trace)[3]
-    except Exception:                                    # pragma: no cover
-        sources = None
+    term = net.term
+    sources = _attrib_role_rows(app, trace, net)[3]
 
     ranks: list[dict] = []
     for f in picked:
         if f == res.prov.actual_hz:
             dec = res.dec
         else:
-            ctx = attrib.build_context(file_entry.Y, file_entry.ts.freqs,
-                                       term, f, sources=sources)
+            ctx = attrib.build_context(net.Y, net.freqs, term, f,
+                                       sources=sources, baseline=net.baseline)
             # The GROUND MODEL travels with the check.  Without this the badge
             # ranks the DECLARED network at four frequencies against the
             # modelled network at the fifth, and reports the difference as
@@ -2432,8 +2556,8 @@ def stability_ranks(app, trace, file_entry, res: AttribResult,
                 zt, _n = ground_model_zt(ctx, gm_kind, gm_z)
                 if zt is not None:
                     ctx = attrib.build_context(
-                        file_entry.Y, file_entry.ts.freqs, term, f, zt=zt,
-                        sources=sources)
+                        net.Y, net.freqs, term, f, zt=zt, sources=sources,
+                        baseline=net.baseline)
             dec = attrib.decompose(ctx, res.prov.victim, res.prov.aggressor,
                                    res.dec.quantity)
         # Keyed by the element DESCRIPTION, not by index: a lumped element
@@ -2714,6 +2838,21 @@ class AttributionWindow(tk.Toplevel):
         self.recon = ttk.Label(self, anchor="w", justify=tk.LEFT,
                                wraplength=0)
         self.recon.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(2, 0))
+
+        # --- R3-5: the reference-node check, DIRECTLY UNDER RECONCILIATION
+        # and above everything it qualifies.  Created here so its pack order is
+        # fixed, but NOT PACKED: it is packed only when there is a composition
+        # to report, with `before=self._badge_row` so it lands here whenever it
+        # arrives.
+        #
+        # Not packed, rather than packed-with-empty-text.  MEASURED: a ttk.Label
+        # reports `winfo_reqheight() == 21` whether or not it is managed, so an
+        # empty one packed here costs the split 21 px of the 168 px it has at
+        # the 720x420 minimum -- and it would cost it on every single-file
+        # trace, which is every trace that exists today.  `winfo_manager()` is
+        # the discriminator ('' against 'pack'); `winfo_reqheight()` is not.
+        self.ref_strip = ttk.Label(self, anchor="w", justify=tk.LEFT,
+                                   wraplength=0)
 
         # --- the across-frequency badge: ONE line with an expander, not a tab.
         self._badge_row = badge = ttk.Frame(self)
@@ -3064,6 +3203,8 @@ class AttributionWindow(tk.Toplevel):
             text="Reconciliation:  " + reconciliation_line(dec),
             foreground=self._banner_ok_fg if ok else self._banner_warn_fg)
 
+        self._apply_reference_strip()
+
         # THE BUTTON IS A ONE-SHOT CHECK, NOT AN EXPANDER, and once it has run
         # it is spent.  MEASURED before this: press -> `▾` plus the verdict;
         # press again -> the glyph went back to `▸` and the label text was
@@ -3111,12 +3252,61 @@ class AttributionWindow(tk.Toplevel):
         self._highlight_selection()
         self._render_detail()
 
+    def _apply_reference_strip(self) -> None:
+        """
+        R3-5: show the weld where the number is read, and nothing otherwise.
+
+        A weld raises nothing and makes no number look wrong -- measured in
+        `pkg_rlc_compose`, the package ground pad grounded / open / through
+        1 nH all give L_eff = 2.1454 nH, BIT-IDENTICAL, spread 0.000e+00 -- so
+        what it changes is how the table below has to be READ.  In this window
+        it changes it twice over: every contribution attributed to an element
+        in the welded file is a contribution from a network that is not in the
+        circuit, and it will read as exactly 0 with a healthy residual beside
+        it, which is the composed-baseline failure `COMPOSED_BASELINE_TEXT`
+        already exists to name.  A reader looking at a table of zeroes needs
+        that sentence on the same screen, not in a CLI report they did not run.
+
+        Placed under Reconciliation because it is the same KIND of statement --
+        a precondition on trusting everything below it -- and above the badge
+        so it cannot be pushed off by a long stability verdict.
+
+        `pack_forget`, never empty text: an unmanaged ttk.Label costs 0 px and
+        a managed empty one costs 21 (measured), which on a single-file trace
+        would be 21 px of the 168 px the split has at the 720x420 minimum, paid
+        by every session that has ever existed for a check with nothing to say.
+        """
+        strip = self._res.prov.reference_strip
+        text = str(strip[0]) if strip else ""
+        warn = bool(strip) and bool(strip[1])
+        managed = bool(self.ref_strip.winfo_manager())
+        if not text:
+            if managed:
+                self.ref_strip.pack_forget()
+            return
+        self.ref_strip.configure(
+            text=text,
+            foreground=self._banner_warn_fg if warn else self._banner_ok_fg)
+        if not managed:
+            self.ref_strip.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(2, 0),
+                                before=self._badge_row)
+
     def _nports(self) -> int:
-        """The FILE's port count -- what the across-frequency cost scales on.
+        """The NETWORK's port count -- what the across-frequency cost scales on.
+
+        The composed count on a composition, because that is the matrix each
+        extra frequency reduces: quoting the die's 16 for a 316-port stack
+        understates the offer by the cube of 20.
 
         Never raises: the badge's offer is worth printing without it, and a
         window whose file has gone still has to render.
         """
+        try:
+            sn = self.app._cached_trace_network(self._trace)
+            if sn is not None:
+                return int(sn.nports)
+        except Exception:                                # pragma: no cover
+            pass
         try:
             return int(self._file.ts.nports)
         except Exception:                                # pragma: no cover
@@ -3602,8 +3792,9 @@ class AttributionWindow(tk.Toplevel):
         the widget the user is about to choose from.
         """
         try:
-            term = self.app._build_termination(trace, nports=fe.ts.nports)
-            names = [mp.name for mp in resolve_meas_ports(term, fe.ts.nports)]
+            net = _attrib_network(self.app, trace, fe)
+            names = [mp.name
+                     for mp in resolve_meas_ports(net.term, net.nports)]
         except Exception:
             return
         if len(names) < 2:
@@ -3780,7 +3971,18 @@ class AttributionWindow(tk.Toplevel):
         for widget, pad in ((self.header, 10), (self._gm_row, 2),
                             (self.banner, 0),
                             (self.sign_lbl, 2), (self.recon, 2),
+                            (self.ref_strip, 2),
                             (self._badge_row, 6), (self._foot, 12)):
+            # `ref_strip` is packed only when there is a composition to report,
+            # and an UNMANAGED ttk.Label still answers `winfo_reqheight()` with
+            # 21 (measured) -- so counting it unconditionally would raise the
+            # enforced minimum height by 23 px on every single-file trace, for
+            # a widget that is not on screen.  `winfo_manager()` is the only
+            # discriminator that works here: it is '' when unmanaged and 'pack'
+            # when packed, while ismapped is also 0 on a window that has not
+            # been mapped yet, which is exactly when this runs.
+            if not widget.winfo_manager():
+                continue
             total += widget.winfo_reqheight() + pad
         return total
 
