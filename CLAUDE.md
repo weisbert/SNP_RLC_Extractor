@@ -13,7 +13,8 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | File                    | Responsibility                                                                  |
 |-------------------------|---------------------------------------------------------------------------------|
 | `pkg_rlc_core.py`       | Touchstone parser (+ `TouchstoneParseError` / `diagnose_touchstone` / `check_touchstone`), S<->Y, unified `TerminationSet` model + the Mode 5 DSL (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`), the connection-table row model (`MeasPortRow`, `ConnectionRow`, `rows_to_dsl_text`, `dsl_text_to_rows`, `build_terminations_rows`), `parse_mport_spec`, `resolve_meas_ports`, `compute_z_matrix` / `compute_z`, `extract_rlc_at_freq` / `extract_coupling_at_freq`, `fit_inductor` / `fit_capacitor` / `fit_auto`. |
-| `pkg_rlc_attrib.py`     | **Port attribution.** Given `Y(f)` and a `TerminationSet`, answers three questions at one frequency. (a) An EXACT additive signed decomposition of `Z_ab` into the bare EM coupling plus one term per declared termination (`build_context` / `decompose` / `format_decomposition`). (b) The EXACT what-if of changing any of them (`sensitivity`, `group_joint`, `cumulative_curve`, `leave_one_out`, `sweep_mobius`, `transfer_ratio`). (c) The **cold-start screen** — which ports matter BEFORE a spec exists, from all-open: `cold_start_context` / `cold_start_bracket` / `cold_start_screen` / `cold_start_pairs` / `cold_start_leave_one_out` / `cold_start_cumulative` / `name_family_suggestions` / `cold_start_negative_result` / `cold_start_report` / `format_cold_start`, with `Bracket` / `PortScreenRow` / `PairEffect` / `FamilySuggestion` / `ColdStartContext` / `ColdStart` and the `COLD_START_*` constants. Plus `Element` / `Term` / `ReturnBudget` / `Decomposition` / `AttribContext`, the `DECOMPOSABLE` / `NON_DECOMPOSABLE` registries, the `Alternative` builders, `termination_impedance_diagonal` / `termination_impedance_shared_return`, `SIGN_CONVENTION_TEXT` and `AttribError`. Imports `pkg_rlc_core` ONLY (acyclic, the `pkg_rlc_plot` rule), no scipy. `pkg_rlc_extractor.py` drives it from the `--attribute*` and `--cold-start*` flag groups (`--mode coupling` only); the GUI surface for (a) and (b) is `pkg_rlc_attrib_gui.py`, and (c) is CLI-only. |
+| `pkg_rlc_attrib.py`     | **Port attribution.** Given `Y(f)` and a `TerminationSet`, answers three questions at one frequency. (a) An EXACT additive signed decomposition of `Z_ab` into the bare EM coupling plus one term per declared termination (`build_context` / `decompose` / `format_decomposition`). (b) The EXACT what-if of changing any of them (`sensitivity`, `group_joint`, `cumulative_curve`, `leave_one_out`, `sweep_mobius`, `transfer_ratio`). (c) The **cold-start screen** — which ports matter BEFORE a spec exists, from all-open: `cold_start_context` / `cold_start_bracket` / `cold_start_screen` / `cold_start_pairs` / `cold_start_leave_one_out` / `cold_start_cumulative` / `name_family_suggestions` / `cold_start_negative_result` / `cold_start_report` / `format_cold_start`, with `Bracket` / `PortScreenRow` / `PairEffect` / `FamilySuggestion` / `ColdStartContext` / `ColdStart` and the `COLD_START_*` constants. Plus `Element` / `Term` / `ReturnBudget` / `Decomposition` / `AttribContext`, the `DECOMPOSABLE` / `NON_DECOMPOSABLE` registries, the `Alternative` builders, `termination_impedance_diagonal` / `termination_impedance_shared_return`, `SIGN_CONVENTION_TEXT` and `AttribError`. Plus the **composed-network gauge** — `COMPOSED_BASELINE_TEXT`, `PortBlocks`, `BaselineLinks`, the `baseline=` argument every entry point takes, and `_island_elements`, the ungated structural warning for an element whose whole support sits in a probe-free component of the baseline. Imports `pkg_rlc_core` ONLY (acyclic, the `pkg_rlc_plot` rule), no scipy. `pkg_rlc_extractor.py` drives it from the `--attribute*` and `--cold-start*` flag groups (`--mode coupling` only); the GUI surface for (a) and (b) is `pkg_rlc_attrib_gui.py`, and (c) is CLI-only. |
+| `pkg_rlc_compose.py`    | **Several Touchstone files measured as ONE network.** `ComposeInput` / `compose` / `ComposedNetwork` / `FileBlock` stack k files into one `Y` on a common frequency axis; every cross-file link is an ordinary `ShortPair` / `LumpedBetween` on the global indices handed to the SAME `compute_z_matrix`, so every mode, the Mode 5 DSL and the coupling path work on a composition without a line of their own. Plus the mandatory reference-node check (`reference_check`, `REF_LIVE` / `REF_WELDED` / `REF_NO_GROUND` / `REF_UNKNOWN`), the frequency plan (`align_frequencies` / `FreqPlan` / `interpolate_s`), the namespace (`COMPOSE_TAG_SEP`, `parse_scoped_ports`, `format_scoped_port`, `default_alias`, `link_short` / `link_lumped`), the pre-reduction (`reduce_block_y`), the Touchstone writer (`write_composed_touchstone`), the limit case (`limit_case_check`), `solve_composed` and `ComposeError`. Imports `pkg_rlc_core` ONLY. |
 | `pkg_rlc_attrib_gui.py` | **The Attribution window** (`AttributionWindow`, `open_attribution_window`, `ATTRIB_MENU_LABEL`, `attribution_refusal`, `refresh_attribution_windows`, `attribution_session_state` / `apply_attribution_session_state`) plus the pure formatters it is testable through with no display (`render_table` / `Column` / `TableText`, `contributions_table`, `sensitivity_table`, `detail_lines`, `sweep_caption`, `reconciliation_verdict` / `reconciliation_line`, `provenance_lines`, `staleness_text`, `stability_line`, `report_text`, `csv_records`, `signed_str`, `parse_candidate`). A modeless `Toplevel` over `pkg_rlc_attrib`; `pkg_rlc_gui.py` holds only the Analyze-menu entry, the Traces right-click entry, the Results-pane pointer line and the refresh hooks. It is a separate module because `pkg_rlc_gui.py` was already 7000+ lines; `pkg_rlc_gui` imports it, and it imports `pkg_rlc_gui` back only from **inside functions** (`_gui()`), so the cycle never exists at import time. |
 | `pkg_rlc_plot.py`       | Matplotlib plot panel: multi-subplot grid over R/L/C/\|Z\|/Re/Im/Q/**k**, draggable freq marker, M / V / Delete keys, fullscreen window, and the `ReflowRow` / `reflow_rows` control strip that wraps instead of losing its tail. Quantities that cannot be derived from one `(freqs, Z)` pair (today only `k`) arrive via the optional `Trace.aux` dict. |
 | `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), the frozen-trace snapshot (`_freeze_trace_config`, `freeze_label`, `freeze_refusal`, the Traces-list right-click menu), the File menu and the JSON session format (`session_to_dict` / `session_from_dict` / `SessionError` / `autosave_path`), the results pane (a `ttk.Notebook` whose tab 0 is the Log, with `log_tab_label` / `_append_result(severity)` / `_select_results_tab`), and the immutable run record (`RowSnapshot` / `CouplingSnapshot` / `FitSnapshot` / `RunSnapshot`, `_snapshot_row` / `_snapshot_block` / `_snapshot_fit`) that `_render_results` consumes instead of live traces. Re-exports the DSL helpers it no longer defines. |
@@ -35,14 +36,17 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `tests/test_attrib_cli_coldstart.py` | `--cold-start` on the CLI (70 tests, 0.33 s). The flag refusals and that every `--cold-start-*` is inert without it (all three cap flags default to `None` so the check is EXACT, which `_attr_dependent_flags` cannot be); the printed ORDER, with `test_the_BRACKET_comes_before_the_RANKING` pinning that pair on its own; that `--attribute` and `--cold-start` together are allowed with cold start last; the `--cold-start-csv` `DictReader` round trip; and the line-width budget (widest line 95, the same as `--attribute`'s). |
 | `tests/test_attrib_window.py` | The Attribution window IN ISOLATION (212 tests). Split in two on purpose: the pure formatters run with **no display** (the monospace table model, the width-stable sign pair, the reconciliation verdict, the provenance and staleness text, the CSV records), and the rest drives real Tk off a hand-built `TraceConfig` — the four refusals by name, the header `ReflowRow` budget, both PanedWindow starvation cases, the lazy sweep draw, that crossing the canvas does NOT steal focus from the frequency Entry (measured with `focus -lastfor`, not `focus_get()`, because the test process rarely owns WM focus under the parallel runner), the `[Recompute]`-not-auto-refresh contract, and that the swatch stays equal to `pkg_rlc_gui.RESULTS_SWATCH`. Plus the integration pass's own classes: `TestGesturesThatMustNotDiscardWork` (Escape from inside a field, and a click past the last row), `TestTheDetailPaneSaysWhatItRefused` (a refused candidate reaching a widget, the sweep not collapsing, the Candidates entry on screen at the minimum), `TestTheHeaderHearsAboutItsOwnText` (`ReflowRow.refresh`) and `TestTheDeclaredMinimumShowsContent`, which builds a SECOND App at `tk scaling 2.0` with every named font x1.5 and asserts the content is mapped at the enforced minimum, that the 100% minimum did not move, and that the layout SETTLES over eight resizes. Every guard mutation-checked. |
 | `tests/test_attrib_gui_integration.py` | The same window END TO END through the REAL app, which is the other half: nothing here constructs a `TraceConfig`, a `FileEntry` or an `AttribResult` — the file goes in through `_on_add_file`, the measurement ports are typed into the real `RowTable`, and the window is opened through the menu entries a user clicks. It owns the JOIN, i.e. every defect where `pkg_rlc_gui`'s hooks and `pkg_rlc_attrib_gui`'s window are each right on their own: the number on the table against `pkg_rlc_attrib` called directly AND against the `M` the results pane printed down the separate `compute_z_matrix` path, the right-click SELECTING the row under the pointer first, every refusal by name, rule 6 in full, rule 11 (remove the trace / remove the file / load a session, each with the window open), the Results-pane pointer and its gate, and that none of it put a run or a result into the session file. **The window is MAPPED everywhere here** — a withdrawn root answers 0 to every geometry query and `Listbox.nearest()` then answers row 0 for every y, which is exactly the answer the right-click tests exist to rule out. |
-| `tests/run_parallel.py` | **The test runner to use.** Class-sharded, longest-first. Measured when it was written: `python -m unittest discover -s tests` 293 s against `python tests/run_parallel.py` 108 s over the same 906 tests (2.7x). Re-measured here: **1703 tests in 310 s**, and `--fast` **699 tests in 4.4 s** over the fifteen no-Tk modules (the two cold-start ones were added — neither imports tkinter, which is the one property that list has); `-m <substr>` picks modules by name. Sharded by CLASS not module because `test_run_history` alone is 86 s of the serial 293. Exit code 0 means every shard passed. NOT auto-discovered (no `test_` prefix). |
+| `tests/run_parallel.py` | **The test runner to use.** Class-sharded, longest-first. Measured when it was written: `python -m unittest discover -s tests` 293 s against `python tests/run_parallel.py` 108 s over the same 906 tests (2.7x). Re-measured after the composition work: **2045 tests / 364 shards in 333.7 s**, and `--fast` **976 tests in 5.5 s** over the eighteen no-Tk modules (the four composition ones were added — none imports tkinter, which is the one property that list has); `-m <substr>` picks modules by name. Sharded by CLASS not module because `test_run_history` alone is 86 s of the serial 293. Exit code 0 means every shard passed. NOT auto-discovered (no `test_` prefix). |
 | `tests/test_freq_label.py` | Frequency-label honesty: the marker frequency a report prints says where the numbers came from. Both extractors snap to the nearest grid point via `argmin`, and the default 0.1 GHz marker on `diff_pair_4port.s4p` lands on 0.10099 GHz — every default session in the repo snapped and said nothing. |
 | `tests/test_large_files.py` | How big a file the tool will read and what it says when it will not: the escalating port-count sniff past `MAX_SNIFF_NPORTS` to `SNIFF_HARD_CAP`, the refusal as a `TouchstoneParseError`, and the memory envelope. |
-| `tests/`                | `unittest`-based suite (1849 tests run by `tests/run_parallel.py` at the time of writing, covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, named merged nodes, the `RowTable` widget and its per-kind layout, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, port attribution and its cross-check against the engine, the Attribution window, the cold-start screen, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/`                | `unittest`-based suite (2045 tests run by `tests/run_parallel.py` at the time of writing, covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, named merged nodes, the `RowTable` widget and its per-kind layout, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, port attribution and its cross-check against the engine, the Attribution window, the cold-start screen, several files composed into one network and the composed-network attribution baseline, the bit-exact golden regression, and `reduce_snp`). |
 | `tests/test_editor_autoapply.py` | The commit-step removal: WHEN the editor writes into a `TraceConfig` and WHICH one it lands on (the deferral, the object capture, the flush-before-selection-change), the style picker's storage / reachability / honesty about multi-curve traces, and that hiding a curve neither recomputes it nor destroys the cursors. Every guard here was mutation-checked. |
 | `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see, and the reordering hazard that forces `_import_dsl_text`'s verbatim fallback. |
 | `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
 | `tests/test_conn_nets.py` | Named merged nodes and the parallel-stamp refusal (core's half of round 1): the measurements that prove the wrong number is real (10.000 fH typed reads 3.333 fH), every net-name rule with its own refusal, the forward-reference pre-pass, that a name resolves to ONE member and is therefore bit-identical to typing that member, the legacy `short_to` round trip, and that the refusal does not depend on Union-Find root ordering. Every guard mutation-checked. |
+| `tests/test_compose.py` | `pkg_rlc_compose`'s arithmetic (80 tests, 0.16 s, no Tk, in `FAST_MODULES`): the weld (die return as a PORT gives 2.2501 nH and moves with the ground path; die return as the EM REFERENCE gives 2.1454 nH for grounded / open / 1 nH, bit-identical, spread 0.000e+00), the reference check's four verdicts, the frequency plan (identical-grid detection at a RELATIVE tolerance — a GHz file and a Hz file differ by 2.218e-16 and `np.array_equal` says False —, the refusal to extrapolate, the phase-step warn/refuse at 20/60 deg), the namespace, the pre-reduction (316 → 22 ports: 2.6 ms against 4486 ms, **1714x** per re-solve, agreeing to 4.290e-15), the export (digits 17 reproduces S exactly; the n==2 column-major quirk, which needs a deliberately NON-reciprocal 2-port because every passive network has S12 == S21 and the transpose is otherwise invisible) and the limit case. Every guard mutation-checked. |
+| `tests/test_compose_cli.py` | The composition command line (71 tests, 0.58 s, no Tk, in `FAST_MODULES`): every `--compose-*` refusal by TOKEN (exit 2 alone is also argparse's answer to an unrelated typo), the port namespace surviving in and out — including through a `pkg_rlc_core` message that knows nothing about files —, the numbers being the ENGINE's, the reference check as mandatory output, the proposal that prints and stops, and `TestComposedAttributionBaseline`, which pins R2-8 as a capability: the package-internal element measured at **exactly 0j with a 1.70e-13 residual** under no gauge, and non-zero under it. Every guard mutation-checked. |
+| `tests/test_attrib_composed.py` | The composed-network gauge inside `pkg_rlc_attrib` (45 tests, 0.06 s, no Tk, in `FAST_MODULES`): a 12-port construction where the package is in series in the SHARED RETURN (a fully differential probe pair injects zero net current, `1ᵀw_b == 0`, so it can only reach a common-mode-only package through asymmetry — an obvious 6-port sketch gives a fixture where every test passes and nothing is measured), the ball-grounded / ball-open engine bracket (704.70176729 pH vs 1.0837047531 nH, **−3.7381 dB**), the exactly-zero-with-a-healthy-residual failure, the bare term against an ENGINE re-solve with the balls removed (2.481e-15 relative), the cold start with and without the gauge, and `_island_elements` fuzzed over 2993 specs on every fixture. Every guard mutation-checked. |
 | `tests/test_conn_rowshape.py` | Per-kind row shape and the footer route (the GUI's half of round 1): `conn_table_layout`'s two rules over all 63 kind subsets (a cell never spreads under someone else's heading, and it spreads whenever it may), the measured table widths, the short-group cell shim's `TerminationSet` equivalence, the R1-5 consequence tiers, and — Tk-driven — that clicking the footer reaches a row past the table's OWN scroll and that it costs zero pixels. Every guard mutation-checked. |
 | `tests/test_mode5_editor.py` | Stage 3: the pure text<->rows import decision and both strip renderers, plus Tk-driven editor wiring, per-mode widget visibility, the text hatch, the CSV gate, wheel routing, and the LAYOUT numbers (`ismapped` / `reqwidth` / `xview` / `scrollregion` / `sashpos`) measured off a mapped window — including that a mode with no table fits the 431 px canvas outright and every mode shows the same editor height at the minsize. |
 | `tests/test_freeze_trace.py` | "Freeze as new trace": the pure copy rules (config copied, lists element-wise, results REFERENCED), the two refusals (Calculate skips it, the editor cannot write it), the two *entry* refusals (`freeze_refusal` — no numbers, and a STALE spec), the `freeze_label` budget that keeps the `<HH:MM>` stamp inside `MAX_LABEL_LEN`, that everything else still works (plot / show-hide / CSV / Remove), that the CSV does not attribute a snapshot's numbers to the newest run, the right-click menu, and the session round trip that comes back without numbers and says so. Every guard mutation-checked. |
@@ -1646,6 +1650,163 @@ the same table. `tests/test_conn_nets.py` (core) and `tests/test_conn_rowshape.p
   carries the full text of the top message, including the ports it names and the repair.
   Fix it from the row side if it is ever fixed, not by parsing the message.
 
+### Composition — several files as ONE network (`pkg_rlc_compose.py`, round 2)
+
+The user's framing decides everything here: *"我们现在这种相当于用户在自己搭建一个快捷的
+TB 了，得到的肯定是**所搭即所得**"*. The connection table is a quick TESTBENCH; the
+deliverable is the ABSOLUTE number of the assembled thing, and the before/after delta
+already exists as freeze-as-trace. But "what you built is what you measure" RAISES the
+bar rather than lowering it: the tool's first duty becomes making *what was built*
+unambiguously visible, because when it is not what the user thinks, the answer is a
+precise wrong number. `tests/test_compose.py`, `tests/test_compose_cli.py` and
+`tests/test_attrib_composed.py` are the guards, and every claim below was
+mutation-checked.
+
+- **`block_diag` WELDS the two files' reference nodes, and that is the premise, not a
+  footnote.** An n-port Touchstone `Y` is the matrix with its OWN reference already
+  eliminated, so stacking two of them identifies `ref_A` with `ref_B` at zero impedance.
+  Measured on a 2 nH coil + 100 pH package trace + 100 pH package ground lead: with the
+  die return brought out as a PORT and tied to the package ground pad, `L_eff` =
+  **2.2501 nH** and it moves when the ground path changes; with the die return being the
+  EM reference, the package ground pad grounded / open / through 1 nH all give
+  **2.1454 nH, bit-identical, spread 0.000e+00**. The package's entire ground network is
+  unreachable and nothing raises. That is the same failure shape as the 6 dB dispute the
+  feature exists to settle, arriving through the door this feature is.
+- **The reference-node self-check is MANDATORY OUTPUT and has no off switch.**
+  `solve_composed` runs it; `reference_check` perturbs each file's declared ground set
+  with a series inductor at ONE frequency (the question is topological) with TWO values a
+  decade apart, and a delta of `== 0.0` — exact, not a tolerance — is `REF_WELDED`. Two
+  extra solves per file. `REF_NO_GROUND` is deliberately NOT folded into `welded`: the
+  CORRECT die-return-as-a-port configuration declares no package ground, so folding them
+  cries wolf on exactly the composition the feature exists to make work.
+- **Y is z0-invariant, so there is no renormalisation step.** Measured: `max |Y(z0=50) −
+  Y(z0=75)|` = **1.049e-17**. Each file goes `S -> Y` with ITS OWN `z0` and the blocks are
+  stacked. "Renormalise if z0 differs" is a NON-TASK and was deleted from the plan; it
+  returns only for an export path, which needs one `z0` for the whole file.
+- **Interpolate S, never Y and never Z**, and check the PHASE STEP, not `max |S|`. For a
+  passive network S is bounded at every real frequency so it has no real-axis poles, while
+  Y blows up at a series resonance and Z at a parallel one. A post-interpolation `max |S|`
+  check is **structurally incapable of firing** — `{S : σ_max <= 1}` is convex, so any
+  convex combination stays inside (measured max σ = 0.999999900000) — and `max |S|` is not
+  a passivity test anyway (all off-diagonals 0.6 gives max entry 0.6 and σ_max 1.80). Do
+  not ship one. What interpolation DOES break is phase: `dphi = 2*pi*df*tau`, and the
+  chord error `1 - cos(dphi/2)` reads as fake insertion loss and corrupts R and Q.
+  Measured: a 1 ns delay at a 100 MHz step is 36.0° → 4.89% amplitude → **0.436 dB** of
+  invented loss (warn); 2 ns is 72.0° → **1.841 dB** (refuse).
+- **An identical grid is detected with a RELATIVE tolerance (~1e-9), never `array_equal`.**
+  A file written in GHz and one written in Hz describing the same sweep differ by
+  **2.218e-16** and `np.array_equal` answers False, so the common same-flow case would
+  otherwise be interpolated onto itself. The COARSER file's max step is reported as the
+  effective resolution — upsampling recovers no information — and a marker frequency
+  landing inside a wide coarse interval is flagged.
+- **The tag separator is a DOT and must never be a colon.** `parse_port_range("PKG:12")`
+  raises "Range must be start:step:stop" today — `:` is already the range separator in
+  every port field in this repo. `COMPOSE_TAG_SEP = "."`. The aliases are the repo's own
+  `F1` / `F2` idiom from `_format_results_table`, because the measured column budget has
+  no room for a file name (one file column 451 px, two 497 px, a Name column 469 px, all
+  against a **431 px** viewport) and "port 305" is unactionable on a 316-port network.
+- **EVERY warning names its file.** Core's one bare-port-number message is re-raised
+  scoped by `_scope_port_error`; the CLI translates the rest with `_COMPOSE_PORTNUM_RE`.
+- **`merge_terms` raises with 0-BASED indices, and it is the FIRST message a composed
+  network hits.** "Ports [1, 4] merged via short, but assigned to conflicting signal
+  groups" carries the Union-Find MEMBER list, which is internal 0-based indices; every
+  other message core raises at that boundary is 1-based. Measured: `EM.2` (global 2)
+  shorted to `PKG.3` (global 5) reports `Ports [1, 4]`. `_COMPOSE_MERGED_RE` translates it
+  with its own offset — translating it as 1-based would name two real, innocent ports with
+  total confidence. **This is a defect in `pkg_rlc_core` and it is NOT fixed**: the fix
+  moves a message other tests pin, and the CLI's translation depends on the current
+  offset. Fix both halves together or neither.
+- **The correspondence is the USER's; the tool may PROPOSE and only the user may COMMIT.**
+  `--compose-propose` prints and stops, naming any `--compose-link` / `--compose-export`
+  it therefore did not run. Elementwise range pairing is a HARD ERROR on a length mismatch
+  and ECHOES the END pairs, because an off-by-one in one file's numbering shifts every
+  pair silently. Many-to-one is normal (54 VSS balls onto one die pad), N-to-M with both
+  above 1 has no defensible order and is reported as ambiguous.
+- **Pre-reduction is the edit/recompute loop, not a one-shot run, and the help says so.**
+  `_freq_batch` collapses at combined sizes (16→64, 60→4, 76→2, **153→1, 316→1**), so the
+  stacked-solve batching `compute_z_matrix`'s docstring justifies at length stops working
+  exactly where it is first needed. Measured on this box: 16-port die + 120-port package
+  at 201 frequencies, the solve goes **3113 ms → 14.4 ms = 216x** and the answers agree to
+  7.4e-16 — but the reduction itself costs 2.5 s, so ONE end-to-end run is 7378 → 6754 ms,
+  i.e. **1.09x**. Quoting the 216x for a single run would oversell it by 200x.
+  `--compose-export` is the "reduce once, load the small one" route.
+- **`--compose-export` writes the STACKED network, not the assembled one, and says so.**
+  The links are `ShortPair` / `LumpedBetween` in the `TerminationSet`, and a short MERGES
+  NODES and changes the port count; stamping them into `Y` would be a second
+  implementation of the merge the golden reference exists to pin, in the CLI layer. The
+  report names every link the file does not contain, the file's comments list them, and
+  the round trip (`parse_touchstone` → `s_to_y` == `net.Y`, tested at 1e-12) is the
+  independent check. `EXPORT_DIGITS = 17`, measured: 9/12/15/17 reproduce S to
+  9.210e-11 / 7.235e-14 / 1.777e-16 / **0.000e+00**.
+- **The n==2 column-major quirk cannot be caught by a physical fixture.** Every passive
+  network has `S12 == S21`, so the transpose is invisible. Any test of it must use a
+  deliberately NON-reciprocal 2-port (the guard uses `S21 = 0.6`, `S12 = 0.1`).
+- **A limit-case fixture needs UNEQUAL die pads.** With equal pads the EM block is
+  port-symmetric and a swapped mapping reproduces the standalone number EXACTLY, so
+  `limit_case_check` — which exists to catch a swapped mapping — passes for the wrong
+  reason. Measured: 0.0 with equal pads, 1.30e-2 with 2 fF / 8 fF.
+- **`--short` is refused on a composed network.** `a-b` cannot say which file each side is
+  and `-` is already a range. `--compose-link "EM.3 short_to EM.4"` covers it.
+- **`--compose` without `--cli` exits 2** rather than opening the GUI on one file and
+  silently dropping the rest.
+
+#### The attribution baseline on a composed network (R2-8)
+
+- **The cross-file links are IN the baseline, not elements on top of it, and that is a
+  DELIBERATE GAUGE CHANGE.** The all-open baseline leaves the files as disconnected
+  islands, so `Ybase` is exactly block diagonal. Measured with the real engine on a
+  12-port combined network: the EM-vs-PKG off-diagonal block is **0.000e+00**, every
+  package-only element's contribution is **EXACTLY 0**, and `residual_rel` reads
+  **6.49e-15**, i.e. perfect health. Re-measured end to end through this CLI on a 10-port
+  case: the package-internal element reads **exactly 0j against a 1.70e-13 residual**
+  without the gauge and **−1.939976e-09 H** with it. A confident, exactly-zero,
+  perfectly-reconciled wrong answer is the worst output this tool can produce, and no test
+  of the attribution arithmetic can see it because the arithmetic is right.
+- **`BaselineLinks(blocks=…)`, never an enumerated link list, and there is no flag to turn
+  it off.** A `PortBlocks` says "every declared link whose two ports come from different
+  files is structure", which cannot MISS a link; an enumerated list can, and a missed link
+  is the silent zero above. A link inside one file stays an ordinary element, because it
+  is one — the gauge is about the stack, not about the spec. `_compose_baseline` builds it
+  from `b.nports` (the SURVIVING count), never `b.nports_original`: after a
+  `--compose-keep` pre-reduction the block in `net.Y` is the reduced one.
+- **The gauge is NAMED on the report.** `COMPOSED_BASELINE_TEXT` is ONE string (the
+  `SIGN_CONVENTION_TEXT` rule) and reaches the header, the decomposition's `baseline:`
+  line and the cold-start notes verbatim. Two attribution reports are comparable only when
+  their baselines match.
+- **A composition with NO cross-file link says so.** The policy selects DECLARED links, so
+  with none declared it selects nothing, the baseline is back to all-open, and the header
+  still carries a paragraph saying the files are connected. `_compose_gauge_notes` names
+  the contradiction; the island warning inside `build_context` cannot, because it only
+  fires for elements and a far file with no elements has nothing to name.
+- **The cold start needs the gauge MORE than the decomposition does**, because it REWRITES
+  the spec — probes kept, every other declaration dropped. Without the policy the
+  cross-file links go with them: measured on the 12-port construction, ALL SIX package
+  ports come back with `delta` exactly 0.0 and `defined = True`, a screen confidently
+  reporting that the package cannot matter. `cold_start_report`'s own `baseline=` is a
+  no-op while the CLI passes `context=csc` (`_cs_context` returns the given context
+  untouched) and is kept as the safety net for that edit; the one that bites is
+  `cold_start_context`'s.
+- **`--mport` text is rewritten to GLOBAL numbering before `_attr_sources` parses it, and
+  the LABEL stays the text the user typed.** `parse_mport_spec` reads bare integers, so
+  handing it `vic = EM.1` is a `ValueError` traceback out of a report the coupling solve
+  has already been paid for. `spec_labels` is the display half; a group named after an
+  index nobody wrote is the other failure.
+- **A cross-file link is grouped under the `--compose-link` that declared it**
+  (`link_sources`, walked last because that is the order they enter `term.couplings` and
+  the map is last-assignment-wins). Without it every link falls back to its KIND and two
+  links on two lines land in one group called `lumped_between`.
+- **`pkg_rlc_attrib.Element.describe()` renders GLOBAL indices** ("ground port 10"),
+  because an element is a stamp on the combined `Y` and knows nothing about files. That is
+  unactionable on a 316-port network unless the map is on the same screen, so the CLI
+  prints the block map as a header note. Threading a labeller through every construction
+  site in `pkg_rlc_attrib` was the alternative and is the fix if this is ever revisited.
+- **The naming heuristics get `ALIAS.name`, with NO local number** (`_attr_family_names`).
+  `name_prefix` strips only a trailing run of digits, so the label printed elsewhere —
+  `PKG.100 VSS_1` — is exactly the wrong input for it: the prefixes come out
+  `PKG.100 VSS_`, `PKG.101 VSS_`, … one family per port, on the file where a family is the
+  whole point. `PKG.VSS_1` gives `PKG.VSS_` for all 54 and keeps two files' identically
+  named nets apart, which a bare `VSS_1` would not.
+
 ### Auto-apply, the style picker, plot visibility
 
 `tests/test_editor_autoapply.py` is the guard for this whole section, and every
@@ -2615,12 +2776,12 @@ recorded here rather than in a commit message nobody will find.
 
 ```bash
 python tests/run_parallel.py            # the whole suite -- use this
-python tests/run_parallel.py --fast     # 4.4 s, 699 tests, the fifteen no-Tk modules
+python tests/run_parallel.py --fast     # 5.5 s, 976 tests, the eighteen no-Tk modules
 python tests/run_parallel.py -m attrib coupling core    # substring on module name
 ```
 
-**Re-measured on this box: 1703 tests / 314 shards in 310 s, and 699 tests in 4.4 s for
-`--fast`.** (The historical figures the runner's docstring
+**Re-measured on this box after the composition work: 2045 tests / 364 shards in 333.7 s,
+and 976 tests in 5.5 s for `--fast`.** (The historical figures the runner's docstring
 opens with — 293 s serial against 108 s parallel over 906 tests — are what justified the
 runner and are kept as such.) The full number tracks CONTENTION as much as anything: 120 s
 on an idle box and 339 s with another agent competing for the same cores have both been
@@ -2639,7 +2800,11 @@ parallel suite once before reporting — never the serial `discover`.
 `--fast` now covers the cold-start screen: `test_attrib_coldstart` and
 `test_attrib_cli_coldstart` were qualified on the one property `FAST_MODULES` has — neither
 imports tkinter — and were added, which is what took it from 523 tests / 2.9 s to 642 / 4.1 s;
-the runner's own suite then took it to 699 / 4.4 s.
+the runner's own suite then took it to 699 / 4.4 s. Round 2 added the four composition
+modules on the same qualification (`test_compose`, `test_compose_cli`, `test_attrib_composed`,
+`test_conn_nets` — `test_compose_cli` has its own test asserting `pkg_rlc_gui` never entered
+`sys.modules`), for **976 tests / 5.5 s**. `test_conn_rowshape` is deliberately excluded:
+it drives real widgets and its slowest shard alone is 19 s.
 
 ## How to add a new measurement mode
 

@@ -20,12 +20,26 @@ Re-measured again with the contention control below, at 304 shards:
                                                   127 shards
 
 Re-measured on the integration pass, with nothing else on the box and an empty
-run registry -- these are the current numbers:
+run registry:
 
     python tests/run_parallel.py                  310 s   1703 tests
                                                   314 shards
     python tests/run_parallel.py --fast           4.4 s     699 tests
                                                   127 shards
+
+Re-measured after the composition work (round 2) -- these are the current
+numbers, both single runs on an otherwise idle box:
+
+    python tests/run_parallel.py                  333.7 s  2045 tests
+                                                  364 shards
+    python tests/run_parallel.py --fast           5.5 s     976 tests
+                                                  164 shards
+
+--fast gained 277 tests for 1.1 s of wall: `test_compose`, `test_compose_cli`,
+`test_attrib_composed` and `test_conn_nets` all satisfy the one property this
+list has and were outside it.  The full number moved 310 -> 334 s for 342 more
+tests, i.e. the new work is cheap per test and the slowest shard did not change
+(`test_mode5_editor.TestEditorLayout`, 90.7 s, a module round 2 did not touch).
 
 The full number moved from 261 to 310 s and the test count from 1693 to 1703.
 Ten of those are the integration pass's own guards, all Tk-driven; --fast is
@@ -152,7 +166,7 @@ REPO = Path(__file__).resolve().parent.parent
 TESTS = REPO / "tests"
 
 # Modules with no Tk dependency: the guard to run while iterating on the
-# numeric core.  Measured together: 642 tests in 4.1 s, against 230-236 s for
+# numeric core.  Measured together: 976 tests in 5.5 s, against 334 s for
 # the full parallel suite.  Anything touching pkg_rlc_gui.py or pkg_rlc_plot.py
 # needs more than this -- see --fast in the help text and the note in
 # CLAUDE.md.  `test_freq_label` is deliberately NOT here despite being quick:
@@ -184,6 +198,20 @@ FAST_MODULES = (
     # this list has -- it imports no tkinter -- and it costs 57 tests in a
     # measured 0.24 s, spawning no subprocesses.
     "test_run_parallel",
+    # The composition work.  All four satisfy the one property: `pkg_rlc_compose`
+    # imports `pkg_rlc_core` and nothing else, `test_compose_cli` drives
+    # `pkg_rlc_extractor` through argv (and has a test asserting pkg_rlc_gui
+    # never entered sys.modules), and `test_conn_nets` is pure net arithmetic.
+    # Measured on this box, serially: test_compose 80 tests / 0.159 s,
+    # test_compose_cli 71 / 0.577 s, test_attrib_composed 45 / 0.066 s,
+    # test_conn_nets 81 / 0.057 s -- 277 tests for 0.86 s of CPU.  --fast went
+    # 699 tests / 4.4 s to 976 / 5.5 s.  `test_conn_rowshape` is deliberately
+    # NOT here: it drives real widgets and its slowest shard alone is 19 s,
+    # more than the whole --fast run.
+    "test_compose",
+    "test_compose_cli",
+    "test_attrib_composed",
+    "test_conn_nets",
 )
 
 _RAN_RE = re.compile(r"Ran (\d+) test")

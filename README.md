@@ -872,6 +872,118 @@ on purpose rather than by default.
 
 ---
 
+## Several files as ONE network (`--compose`)
+
+Your EM block and your package are two `.sNp` files. `--compose` hangs one on the other and
+measures the assembled thing: the blocks are stacked into one `Y`, every cross-file wire is an
+ordinary short or lumped element, and the result goes through **the same `compute_z_matrix`**
+as everything else — so every mode, the Mode 5 DSL, the coupling path, the attribution and the
+cold-start screen all work on a composition with no special case of their own.
+
+```bash
+python pkg_rlc_extractor.py --cli coil.s2p --compose-alias EM \
+    --compose "PKG=package.s3p" \
+    --compose-link "EM.2 short_to PKG.1" \
+    --compose-link "EM.1 lumped_between PKG.3 L=0.3n" \
+    --gnd "PKG.2" --mode gnd --porta "EM.1" --freq 5
+```
+
+Every port carries its file's tag. **The separator is a dot, never a colon** — `:` is already
+`start:step:stop` in every port field here, and `parse_port_range("PKG:12")` raises. Ports with
+no tag default to the positional file, so a one-file command line still reads exactly as it did.
+
+### The reference-node check, and why it is not optional
+
+An n-port Touchstone `Y` is the matrix with its **own reference already eliminated**. Stacking
+two of them therefore does not put two networks side by side — it welds file A's reference to
+file B's at zero impedance. If your EM file's return current uses its own reference (the
+ordinary on-die convention), the package's entire ground network is then **not in the circuit**,
+and nothing about the answer looks wrong.
+
+Measured on a 2 nH coil + 100 pH package trace + 100 pH package ground lead:
+
+| die return | package ground pad | `L_eff` |
+|---|---|---|
+| brought out as a **port**, tied to the pad | — | **2.2501 nH**, and it moves when the ground path changes |
+| **is** the EM reference | grounded | 2.1454 nH |
+| **is** the EM reference | open | 2.1454 nH |
+| **is** the EM reference | through 1 nH | 2.1454 nH |
+
+Those last three are **bit-identical**, spread `0.000e+00`. So after composing, the tool
+perturbs each file's declared ground set with a series inductor and re-solves; a delta of
+*exactly* zero means welded, and it says so by name. This runs whether you ask for it or not.
+
+**The composition only answers your question when the EM file brings its return path out as a
+port.** That is a precondition, not a warning.
+
+### Frequency grids
+
+The span is intersected and **extrapolation is refused**; the report says how many points were
+dropped. `S` is interpolated (not `Y`, not `Z`: for a passive network `S` is bounded at every
+real frequency, while `Y` blows up at a series resonance and `Z` at a parallel one). An
+already-identical grid is detected with a *relative* tolerance — a file written in GHz and one
+written in Hz describing the same sweep differ by `2.2e-16` and never compare equal as floats —
+and skipped. `z0` is **not** renormalised because it does not need to be: `max |Y(z0=50) −
+Y(z0=75)| = 1.049e-17`.
+
+What interpolation does break is **phase**. Across one step `Δφ = 2π·Δf·τ`, and the chord error
+`1 − cos(Δφ/2)` shows up as fake insertion loss that corrupts `R` and `Q`. A 1 ns delay at a
+100 MHz step is 36° → **0.436 dB** of invented loss (warned); 2 ns is 72° → **1.841 dB**
+(refused). The coarser file's largest step is reported as the effective resolution — resampling
+onto a finer grid recovers nothing.
+
+### Big packages: pre-reduce
+
+`--compose-keep PKG.10-12,40-42 --compose-gnd PKG.100:1:153` shrinks the package to the ports
+your spec actually uses before stacking (its ground balls go in `--compose-gnd`, **not** `--gnd`
+— they are shorted to that file's own reference before the stack). Measured on this box, a
+16-port die + 120-port package at 201 frequencies: the solve goes **3113 ms → 14.4 ms (216×)**,
+answers agreeing to `7.4e-16`. The reduction itself costs 2.5 s, so one end-to-end run is only
+1.09× faster — **the 216× is the edit/recompute loop.** `--compose-export combined.s22p` writes
+the reduced network out so you can load the small one next time.
+
+### Which package pin costs you the dB
+
+`--attribute` and `--cold-start` work on a composition, and there is one thing to know about
+them: **the cross-file links go into the attribution baseline.** The all-open baseline those
+reports normally use would leave the two files as disconnected islands — measured on a 12-port
+combined network, every package-only element's contribution comes out **exactly 0** while the
+reconciliation residual reads `6.49e-15`, i.e. perfect health. A confident, exactly-zero,
+perfectly-reconciled wrong answer. So the baseline for a composed network is *"the files
+connected, everything else open"*, the report names that gauge on its header, and there is no
+flag to turn it off. Two attribution reports are comparable only when their baselines match.
+
+```bash
+python pkg_rlc_extractor.py --cli coil.s2p --compose "PKG=package.s3p" \
+    --compose-link "F1.2 short_to PKG.1" --mode coupling \
+    --mport "vic = F1.1" --mport "agg = PKG.2" --freq 5 \
+    --attribute vic,agg --cold-start vic,agg
+```
+
+### Port correspondence
+
+The mapping is **yours**; the tool may propose and only you may commit. `--compose-propose
+EM,PKG` matches the two files' own port names, prints the matched / ambiguous / unmatched lists
+and **stops** — naming any `--compose-link` or `--compose-export` it therefore did not run.
+Review the CSV it writes, edit it, then commit what you accept with `--compose-map`. Elementwise
+range pairing is a hard error on a length mismatch and echoes the *end* pairs, because an
+off-by-one in one file's numbering shifts every pair silently. Many-to-one is normal (54 ground
+balls onto one die pad).
+
+### Before / after, without rebuilding anything
+
+The delta ("what did the package cost me?") already exists: Calculate the bare EM trace,
+**right-click → Freeze as new trace**, then add the package and Calculate again. The two rows sit
+side by side in the results table with the snapshot's own timestamp on it, and the frozen one can
+never be recomputed or edited by accident.
+
+### GUI
+
+Composition is **CLI-only** for now. The connection table's per-kind row shape and named merged
+nodes are in the GUI; multi-file assembly is not.
+
+---
+
 ## Important Notes
 
 - **Results are TOTAL values, not per-unit-length.** `L`, `C`, `R` are reported for the network as seen between the chosen signal ports. To get per-unit-length values, divide by your known trace length yourself. The tool does not perform distributed (RLGC-per-length) extraction; that requires multi-section ABCD or `gamma`/`Z_0` extraction.
@@ -908,6 +1020,10 @@ SNP_RLC_Extractor/
   pkg_rlc_attrib_gui.py      The Attribution window (Analyze -> Attribution...): a
                              modeless Toplevel over pkg_rlc_attrib. pkg_rlc_gui holds
                              only the menu / right-click / refresh hooks
+  pkg_rlc_compose.py         Several .sNp files as ONE network: block-diagonal stack,
+                             common frequency axis, cross-file links, the mandatory
+                             reference-node check, pre-reduction and export.
+                             Imports pkg_rlc_core only (acyclic)
   pkg_rlc_plot.py            Matplotlib plot panel with M / V / Delete / drag features
                              (R, L, C, |Z|, Re, Im, Q, k subplots)
   pkg_rlc_gui.py             Tkinter GUI with file/trace management, and the
@@ -934,6 +1050,11 @@ SNP_RLC_Extractor/
                              with no display, and the Tk-driven layout / refusal / export
     test_attrib_gui_integration.py  The same window end to end through the real app —
                              Add File to a number on the table, and every hook
+    test_compose.py          Composition arithmetic: the weld, the reference check,
+                             the frequency plan, the pre-reduction, the export
+    test_compose_cli.py      The composition command line end to end, incl. the
+                             composed-network attribution baseline
+    test_attrib_composed.py  The composed-network gauge inside pkg_rlc_attrib
     test_golden_regression.py  Bit-exact replay of the pre-coupling behaviour
     test_port_parser.py
     test_content_sniffer.py

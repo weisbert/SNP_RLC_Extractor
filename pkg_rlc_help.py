@@ -1898,6 +1898,93 @@ are one node that is two 1 nH leads in PARALLEL on it, i.e. a
 The validation strip refuses it and prints both numbers. Which
 model is right is a question about your package, not about this
 tool -- but you should answer it on purpose.
+
+
+===========================================================
+Hanging an EM block on a PACKAGE block (--compose, CLI only)
+===========================================================
+Two files -- your EM extraction and the package -- measured as ONE
+network. There is no window for it yet; the command line is:
+
+      python pkg_rlc_extractor.py --cli coil.s2p \\
+          --compose-alias EM --compose "PKG=package.s3p" \\
+          --compose-link "EM.2 short_to PKG.1" \\
+          --compose-link "EM.1 lumped_between PKG.3 L=0.3n" \\
+          --mode gnd --porta "EM.1" --gnd "PKG.2" --freq 5
+
+Every port carries its file's tag, and the separator is a DOT.
+Not a colon: ":" is already start:step:stop in every port field
+in this tool, so "PKG:12" is a parse error today. A port with no
+tag belongs to the file you named positionally, so a one-file
+command line still reads exactly as it always did.
+
+The mathematics is the pipeline you already know -- the two Y
+matrices are stacked, each cross-file wire is an ordinary short or
+lumped element, and the whole thing goes to the same solver. Every
+mode, the Mode 5 DSL, Mode 6 coupling, the attribution and the
+cold-start screen all work on a composition with nothing added.
+
+ONE THING YOU MUST KNOW BEFORE TRUSTING THE NUMBER
+--------------------------------------------------
+Stacking two files WELDS their reference nodes together at zero
+impedance. An n-port Y already has its own reference eliminated,
+so there is no way to keep the two apart after the fact.
+
+If your EM file's return current uses the EM model's own reference
+-- the ordinary on-die convention -- then in the combined network
+that current is already at the package's reference the moment it
+leaves the die, and the package's WHOLE ground network is bypassed.
+Measured on a 2 nH coil, a 100 pH package trace and a 100 pH
+package ground lead:
+
+    die return brought out as a PORT   2.2501 nH, and it MOVES
+                                       when the ground path changes
+
+    die return IS the EM reference:
+      package ground pad grounded      2.1454 nH
+      package ground pad open          2.1454 nH
+      package ground pad through 1 nH  2.1454 nH   <- identical
+
+Bit-identical, spread 0.000e+00. Nothing raises and the number
+looks perfectly reasonable. So the tool perturbs each file's
+declared ground set with a series inductor and re-solves; a change
+of EXACTLY zero means welded, and it says so by name. That check
+is mandatory output -- there is no flag to turn it off.
+
+Composition answers your question only when the EM file brings the
+return path out AS A PORT. That is a precondition, not a warning.
+
+FREQUENCY GRIDS
+---------------
+The spans are intersected and extrapolation is refused; the report
+says how many points were dropped. S is interpolated, never Y or Z
+(S is bounded at every real frequency; Y blows up at a series
+resonance and Z at a parallel one). Z0 is NOT renormalised because
+it does not need to be -- Y does not depend on it, measured to
+1.049e-17. What interpolation does break is PHASE: a 1 ns delay
+across a 100 MHz step is 36 degrees of rotation, which the chord
+turns into 0.436 dB of insertion loss that is not there. That is
+warned past 20 degrees and refused past 60.
+
+WHICH PACKAGE PIN COSTS YOU THE dB
+-----------------------------------
+--attribute and --cold-start work here, with one change you should
+know about: the cross-file links go INTO the attribution baseline.
+Otherwise all-open leaves the two files as disconnected islands
+and every package-only element contributes EXACTLY 0 while the
+reconciliation residual still reads healthy -- a confident,
+perfectly reconciled wrong answer. The baseline for a composed
+network is therefore "the files CONNECTED, everything else open",
+the report names that gauge, and it cannot be switched off. Two
+attribution reports are comparable only when their baselines match.
+
+BEFORE AND AFTER, WITHOUT REBUILDING ANYTHING
+----------------------------------------------
+"What did the package cost me?" is already a gesture you have:
+Calculate the bare EM trace, right-click it in the Traces list ->
+Freeze as new trace, then add the package and Calculate again. The
+two rows sit side by side in the results table, and the frozen one
+can never be recalculated or edited by accident.
 """
 
 
@@ -1928,6 +2015,21 @@ preserving order.
 
 NOTE the MATLAB range needs all THREE fields. "35:45" is an error;
 write "35:1:45" or "35-45".
+
+File tags (--compose, CLI only)
+-------------------------------
+With several files composed into one network, a port reference may
+carry its file's tag, and the separator is a DOT:
+
+   EM.1        port 1 of the file aliased EM
+   PKG.40-42   ports 40, 41, 42 of the file aliased PKG
+   PKG.1,2,3   the same three, listed
+
+The dot is not a style choice: ":" is already the start:step:stop
+separator above, so "PKG:12" is a parse error and always will be.
+An untagged port belongs to the file named positionally, so every
+single-file spelling on this page is unchanged. See the last
+section of the "Mode 6 (Coupling)" tab.
 
 Node names (Mode 5)
 -------------------

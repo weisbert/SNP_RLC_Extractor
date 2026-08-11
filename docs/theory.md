@@ -14,6 +14,12 @@ open-circuit is the right primitive) and §8.8 (M/L versus the exact current-tra
 throughout. **§13.14** is the same algebra pointed the other way — before any assumption has
 been made, *which ports would matter if you made one?* — and is where a new file starts.
 
+**Section 14** (composition) hangs one file on another and measures the assembled thing. Almost
+all of it is the pipeline above, unchanged; the two parts that are not are §14.2, where a
+block-diagonal stack silently welds the two files' reference nodes together, and §14.4, where
+that same disconnection makes the §13 baseline report a confident, exactly-zero, perfectly
+reconciled wrong answer.
+
 ---
 
 ## 1. What is a Touchstone file?
@@ -1626,3 +1632,187 @@ every step. That sentence is on the report, not in a footnote
 Every boundary in §13.10 still applies too, in particular: **it cannot evaluate new metal.**
 Every port it considers is one the S-parameter file already has. A shield that is not already
 a port changes `Y` itself and needs a new EM solve.
+
+---
+
+## 14. Composition — several files as one network
+
+This section is the maths behind `--compose` (`pkg_rlc_compose.py`). It is short, because
+almost all of it is the existing pipeline; the parts that are *not* short are the two places
+where the obvious construction is silently wrong.
+
+### 14.1 The stack
+
+Two files `A` (`Na` ports) and `B` (`Nb` ports), each converted with **its own** reference
+impedance:
+
+```
+Y_A = s_to_y(S_A, z0_A)          Y_B = s_to_y(S_B, z0_B)
+Y_combined = block_diag(Y_A, Y_B)          (Na+Nb) x (Na+Nb)
+port renumbering:  A -> 1..Na,  B -> Na+1..Na+Nb
+one cross-file wire    = ShortPair(a_i, Na + b_i)
+one cross-file element = LumpedBetween(a_i, Na + b_i, y)
+```
+
+and then the result goes **unchanged** to `compute_z_matrix`: short merge (Union-Find) ->
+ground drop -> Schur elimination -> probe-node contraction. Not one line of §9 or §10 changes.
+
+`z0` needs no renormalisation, and this is worth stating because the plan originally listed it
+as work. `Y` is the ratio `I = Y·V` between physical currents and voltages; the reference
+impedance is a property of the *wave* variables `S` is written in, and it cancels in `s_to_y`.
+Measured: `max |Y(z0=50) − Y(z0=75)| = 1.049e-17`. Convert each file with its own `z0` and
+stack. (The one place `z0` returns is an **export**, which is a single file and therefore needs
+a single reference impedance.)
+
+### 14.2 The welded reference — the precondition, not a warning
+
+An n-port `Y` from a Touchstone file is **already** the matrix with that network's own
+reference node eliminated. It is the `(n+1)`-node indefinite admittance matrix with the
+reference row and column deleted:
+
+```
+Y_indefinite  (n+1) x (n+1),  rows and columns sum to zero
+Y_file        = Y_indefinite with the reference row and column struck out
+```
+
+So `block_diag(Y_A, Y_B)` is *not* "two networks placed side by side". Striking out both
+reference rows and then stacking is exactly the statement **`ref_A` and `ref_B` are the same
+node**, at zero impedance. There is no ideal transformer between the files and no way to add
+one after the fact: the information needed to separate the two references was destroyed when
+each file was written.
+
+The consequence is the one this whole feature has to survive. Suppose the die's return current
+uses the EM model's own reference (the ordinary on-die convention, where the substrate or
+ground plane *is* the reference). Then in the composed network that return current is already
+at the package's reference the instant it leaves the die, and **every element of the package's
+ground network is bypassed**. Measured on a 2 nH coil + 100 pH package trace + 100 pH package
+ground lead:
+
+| die return | package ground pad | `L_eff` |
+|---|---|---|
+| a **port**, tied to the pad | — | 2.2501 nH, moves with the ground path |
+| **is** the EM reference | grounded | 2.1454 nH |
+| **is** the EM reference | open | 2.1454 nH |
+| **is** the EM reference | through 1 nH | 2.1454 nH |
+
+The last three are bit-identical, spread `0.000e+00`. Nothing raises, no matrix is singular,
+and the number is entirely plausible — it is the same failure shape as the 6 dB dispute of
+§13.1, arriving through the door that was supposed to be its exit.
+
+**So composition answers the question only when the device file brings its return path out as
+a port.** `reference_check` tests that directly rather than assuming it: after composing, each
+file's declared ground set is perturbed with a series inductor (two values a decade apart, at
+one frequency — the question is topological, not spectral) and the network re-solved. A change
+of *exactly* zero is a weld, and it is reported by name. It costs two extra solves per file
+and it is not optional.
+
+The verdict `no-ground` is deliberately **not** the same as `welded`. The *correct*
+configuration — device return brought out as a port, package ground declared nowhere — has no
+declared ground set to perturb, and folding the two verdicts together would cry wolf on
+precisely the composition that works.
+
+### 14.3 Frequency alignment
+
+Two files rarely share a grid. The span is intersected and **extrapolation is refused**: a
+number outside a file's measured band is an invention, not an interpolation.
+
+Interpolate **`S`**, not `Y` and not `Z`. For a passive network `σ_max(S) ≤ 1` at every real
+frequency, so `S` has no real-axis poles and linear interpolation of `Re`/`Im` is a chord
+across a bounded arc. `Y` blows up at a series resonance and `Z` at a parallel one, and a
+chord across a pole is unbounded nonsense.
+
+Two checks people expect here are wrong, and one is right:
+
+* **A post-interpolation `max |S| ≤ 1` check cannot fire.** The set `{S : σ_max(S) ≤ 1}` is
+  convex, so a convex combination of two passive samples is passive. Measured on an
+  adversarial pair: max `σ` after interpolation `0.999999900000`. Shipping the check would be
+  shipping a line that is structurally incapable of failing.
+* **`max |S_ij|` is not a passivity test at all**, interpolated or not. Counter-example: all
+  off-diagonal entries `0.6` gives `max |S_ij| = 0.6` and `σ_max = 1.80`.
+* **The phase step is the real hazard.** Across one interval a delay `τ` rotates `S` by
+  `Δφ = 2π·Δf·τ`. The chord cuts the corner, and the amplitude error is `1 − cos(Δφ/2)` —
+  which reads as **insertion loss that is not there** and corrupts `R` and `Q` while leaving
+  `L` looking fine. `τ` is estimated from the unwrapped phase slope of the largest off-diagonal
+  entry. Below ~20° it is noise; past ~60° the shape is still plausible and the numbers are
+  wrong. Measured: 1 ns at a 100 MHz step = 36° = **0.436 dB** invented (warn); 2 ns = 72° =
+  **1.841 dB** (refuse).
+
+Two reporting rules follow. The **coarser** file's largest step is the effective resolution of
+the composition — interpolating onto the finer grid changes the sample count and not the
+information — and a marker frequency landing inside a wide coarse interval is flagged, because
+the number there was interpolated rather than measured.
+
+Detecting "these grids are already the same" needs a **relative** tolerance. A file written in
+GHz and one written in Hz describing the identical sweep differ by `2.2e-16` after unit
+conversion, and `np.array_equal` says False; the common same-flow case would otherwise be
+interpolated onto itself.
+
+### 14.4 The attribution baseline moves — a deliberate gauge change
+
+§13.3 decomposes `Z_ab` against a baseline in which every declared, non-probe port is
+**open**. On a composed network that baseline is a different network from the one anyone
+means: with all cross-file links open, `Ybase` is *exactly* `block_diag(Y_A, Y_B)`, the two
+files are disconnected islands, and every element inside the far file has `r_a = 0` and
+`p_b = 0` **to the last bit**.
+
+Measured on a 12-port combined construction: the EM-vs-PKG off-diagonal block of `Ybase` is
+`0.000e+00`, every package-only element's contribution is `0.000000e+00` — `== 0` is True, not
+"small" — and `residual_rel` is `5.6e-15` with `split_trustworthy = True`. Re-measured end to
+end through the CLI on a 10-port case: `0j` against a `1.70e-13` residual. The reconciliation
+of §13.6 is structurally incapable of catching this, because the totals *do* add up: zero is
+the correct sum of the terms of a baseline in which the far file cannot be reached.
+
+The fix is a **gauge change in the sense of §13.10**: the cross-file links go *into* the
+baseline rather than being treated as elements on top of it, so the baseline for a composed
+network is "**the files connected, everything else open**". Like every gauge choice it moves
+every term and no physics — the network, the total and the element currents are unchanged —
+and like every gauge choice it must be **named on the report**, because two attribution
+reports are comparable only when their baselines match. The links themselves then have no term
+of their own, which is right: they are structure, not a decision.
+
+Selecting them by **block membership** rather than by an enumerated list is the load-bearing
+detail. "Every declared link whose two ports come from different files" cannot miss a link; a
+list can, and a missed link is the exactly-zero failure again, now with a header claiming the
+gauge is in force.
+
+The same argument applies with more force to the cold-start screen (§13.14), which *rewrites*
+the spec — probes kept, every other declaration dropped and replaced by one hypothesised
+ground per candidate. Without the gauge the cross-file links are dropped with everything else:
+measured, all six package ports of the 12-port construction come back with `delta` exactly
+`0.0` and `defined = True`, a screen confidently reporting that the package cannot matter.
+
+### 14.5 Cost, and why a pre-reduction is not premature
+
+`compute_z_matrix` batches its stacked solves over frequency, and the batch size falls with the
+port count: measured, `_freq_batch` gives 64 at 16 ports, 4 at 60, 2 at 76, and **1** at 153
+and at 316. Composition is exactly where the port count crosses that threshold, so the batching
+the engine's own docstring justifies at length stops working at the first size this feature
+produces.
+
+`--compose-keep` / `--compose-gnd` reduce a file to the ports the spec uses before stacking — a
+Schur elimination of the unwanted ports and a row/column deletion of the grounded ones, i.e.
+the same two primitives as §9, applied per file. Measured on this box, a 16-port die and a
+120-port package at 201 frequencies: the solve goes **3113 ms → 14.4 ms (216x)**, with the two
+answers agreeing to `7.4e-16`. The reduction itself costs 2.5 s, so a single end-to-end run is
+only 1.09x faster — **the 216x is the edit/recompute loop**, and a report that quotes it for a
+one-shot run oversells it by two orders of magnitude.
+
+### 14.6 Two checks that cost one solve each
+
+**The limit case.** Replace one file with ideal interconnect — zero its `Y` block, tie its
+ports together as the ideal part would, ground the rest — and the composed measurement must
+reproduce the standalone number the device file gives on its own. One extra solve, and it
+catches a swapped pair, an off-by-one in one file's numbering, and a link written to the wrong
+side. The ideal topology is stated by the caller and nothing is inferred: guessing what "ideal
+package" means is the same guess this module refuses everywhere else.
+
+A fixture for this must have an **asymmetric** device block. With two identical die pads the
+block is port-symmetric, a swapped mapping reproduces the standalone number *exactly*, and the
+check passes for the wrong reason (measured: `0.0` with equal pads, `1.3e-2` with 2 fF / 8 fF).
+
+**The export.** `y_to_s` on the composed `Y` and out to a Touchstone file. This is the only
+route to *independent* validation of a feature with no golden reference — load it into another
+tool — and it is what a designer actually wants at the end. It writes the **stacked** network,
+not the assembled one, and says so: the links are terminations, and a short merges nodes and
+changes the port count, so stamping them into `Y` would be a second implementation of the merge
+the golden reference exists to pin.

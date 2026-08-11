@@ -78,6 +78,17 @@ describes.  `6:1:14 ground` (9 elements) and `6 short_to 7:1:14` + `6 ground`
 (8 shorts + 1 ground) are the same network, give the same total, and decompose
 differently.  Both are right; they answer different questions.
 
+A COMPOSED NETWORK (`block_diag(Y_A, Y_B)` plus one link per bond) needs one
+more thing said, and it is a GAUGE CHANGE rather than a rule: the cross-file
+links must be IN the baseline.  Left as elements on top of the all-open
+baseline they leave the two files as disconnected islands, `Zbase` is exactly
+block diagonal, and EVERY element inside the far file gets a contribution of
+exactly 0.000000e+00 while the reconciliation residual still reads healthy.
+Pass `baseline=BaselineLinks(...)`; see COMPOSED_BASELINE_TEXT and the block
+comment above `PortBlocks`.  `build_context` also WARNS about the shape of the
+failure without being asked, whenever an element is marooned in a component of
+the baseline that carries no measurement port.
+
 SIGN CONVENTION
 ---------------
 See SIGN_CONVENTION_TEXT.  It is one string so that every export can carry it
@@ -102,6 +113,7 @@ import numpy as np
 from pkg_rlc_core import (  # noqa: F401  (Vdd/Signal used in isinstance checks)
     PINV_RCOND,
     PROBE_RANGE_TOL,
+    Coupling,
     Ground,
     LumpedBetween,
     LumpedToGnd,
@@ -160,6 +172,10 @@ __all__ = [
     "name_family_suggestions",
     "cold_start_report",
     "format_cold_start",
+    # --- composed networks: the cross-file links live IN the baseline
+    "COMPOSED_BASELINE_TEXT",
+    "PortBlocks",
+    "BaselineLinks",
     "DECOMPOSABLE",
     "NON_DECOMPOSABLE",
     "build_context",
@@ -513,6 +529,11 @@ class Decomposition:
     Z_ab: complex = _UNDEFINED
     reference_applicable: bool = True
     C_c_total: complex = _UNDEFINED
+    #: `COMPOSED_BASELINE_TEXT` (plus the block map) when the context was built
+    #: with a `baseline=` policy, "" otherwise.  It goes in the report HEADER
+    #: rather than among the notes because it changes what every number in the
+    #: table below it means -- a gauge, not a caveat.
+    baseline_gauge: str = ""
 
     @property
     def direct_term(self) -> Term | None:
@@ -759,6 +780,270 @@ def _dependent_columns(U_int: np.ndarray) -> list[int]:
 
 
 # ---------------------------------------------------------------------------
+# Composed networks: which declared links are STRUCTURE, not termination
+# ---------------------------------------------------------------------------
+#
+# THE MEASUREMENT THAT FORCES THIS.  Two files combined as
+# `block_diag(Y_A, Y_B)` plus one ShortPair per bond is an ordinary spec, and
+# every rule above applies to it unchanged -- except one.  The baseline is
+# "probe sides merged, EVERY other port open", and with the cross-file links
+# left as ELEMENTS on top of it the baseline is the two files as DISCONNECTED
+# ISLANDS: `Ybase` is then exactly block diagonal, so `Zbase` is too, and
+# `r_a[e] = w_a^T Zbase u_e` is EXACTLY ZERO for every element that lives
+# inside the far block.
+#
+# Measured on the 12-port construction in tests/test_attrib_composed.py
+# (6-port EM, probes 1/2 and 3/4, taps 5/6; 6-port package cross-linked at the
+# taps, ground balls on 11/12; 5 GHz):
+#
+#     ground port 11   contribution   0.000000e+00
+#     ground port 12   contribution   0.000000e+00
+#     residual_rel     5.645e-15      (floor 1.044e-08)  split_trustworthy=True
+#
+# while opening those same two balls takes M from 704.70176729 pH to
+# 1.0837047531 nH -- a factor of 1.538, i.e. -3.7381 dB.  A confident,
+# exactly-zero, perfectly reconciled wrong answer, which is the worst thing
+# this module can produce.
+#
+# The fix is a GAUGE CHANGE, not a bug fix (theory.md 13.10): the cross-file
+# links move INTO the baseline, so the baseline of a composed network is "the
+# files CONNECTED, everything else open".  Every term moves when it is applied,
+# the network and the total do not, and two reports are comparable only when
+# their baselines match -- which is why it is named on the report header rather
+# than switched on quietly.
+
+#: The gauge statement for a COMPOSED network.  ONE string, so the report
+#: header, a CSV and any GUI pane carry it verbatim -- the same rule
+#: SIGN_CONVENTION_TEXT and COLD_START_BRACKET_CAVEAT follow.
+COMPOSED_BASELINE_TEXT = (
+    "COMPOSED-NETWORK BASELINE, a DELIBERATE GAUGE CHANGE: the cross-file "
+    "links are IN the baseline, not elements on top of it, so the baseline "
+    "here is 'the files CONNECTED, everything else open' and not 'everything "
+    "open'. Without it block_diag leaves the files as disconnected islands, "
+    "Zbase is exactly block diagonal, and every element inside the far file "
+    "gets a contribution of EXACTLY ZERO while the reconciliation residual "
+    "still reads healthy. Like every gauge choice here it moves every term and "
+    "no physics: the network, the total and the element currents are "
+    "unchanged. Two attribution reports are comparable only when their "
+    "baselines match, and the links themselves have no term of their own."
+)
+
+
+@dataclass(frozen=True)
+class PortBlocks:
+    """
+    Which file each port of a COMPOSED network came from.
+
+    `block_of_port[p]` is the 0-based block index of the 0-based port `p`, in
+    the order `block_diag` stacked them; `labels` names the blocks.  The
+    default labels are `F1`, `F2`, ... -- the repo's own alias idiom from
+    `_format_results_table`, and short on purpose (a composed warning that says
+    "port 305" is unactionable on a 316-port network, and the measured column
+    budget has no room for a file name).
+
+    THE SEPARATOR IS A DOT, NEVER A COLON.  `parse_port_range("PKG:12")` raises
+    "Range must be start:step:stop" -- `:` is already the range separator in
+    every port field in this repo.
+    """
+    block_of_port: tuple[int, ...]
+    labels: tuple[str, ...] = ()
+
+    @classmethod
+    def from_sizes(cls, sizes: Sequence[int],
+                   labels: Sequence[str] | None = None) -> "PortBlocks":
+        """`from_sizes([6, 6])` -> ports 1-6 are F1 and ports 7-12 are F2."""
+        sz = [int(s) for s in sizes]
+        if any(s < 0 for s in sz):
+            raise AttribError(f"block sizes must be >= 0, got {sz}")
+        labs = (tuple(str(x) for x in labels) if labels is not None
+                else tuple(f"F{i + 1}" for i in range(len(sz))))
+        if len(labs) != len(sz):
+            raise AttribError(
+                f"{len(labs)} block label(s) for {len(sz)} block(s)")
+        bop: list[int] = []
+        for bi, s in enumerate(sz):
+            bop.extend([bi] * s)
+        return cls(tuple(bop), labs)
+
+    @property
+    def n_ports(self) -> int:
+        return len(self.block_of_port)
+
+    @property
+    def n_blocks(self) -> int:
+        return (max(self.block_of_port) + 1) if self.block_of_port else 0
+
+    def block_of(self, port0: int) -> int:
+        if not 0 <= port0 < len(self.block_of_port):
+            raise AttribError(
+                f"port {port0 + 1} is outside 1..{len(self.block_of_port)} of "
+                "this composed network")
+        return self.block_of_port[port0]
+
+    def label_of(self, port0: int) -> str:
+        bi = self.block_of(port0)
+        return self.labels[bi] if bi < len(self.labels) else f"block {bi + 1}"
+
+    def describe(self, port0: int) -> str:
+        """'F2.5 (port 11)' -- the file-local name AND the global index."""
+        bi = self.block_of(port0)
+        # COUNTED, not `port0 - block_of_port.index(bi)`: the subtraction is
+        # only right while a block is a contiguous run, which `from_sizes` and
+        # `block_diag` guarantee and a hand-built map does not.  A local index
+        # that is silently wrong on the one input nobody checks is exactly the
+        # class of bug this label exists to prevent.
+        local = sum(1 for b in self.block_of_port[:port0 + 1] if b == bi)
+        return f"{self.label_of(port0)}.{local} (port {port0 + 1})"
+
+    def crosses(self, ports: Sequence[int]) -> bool:
+        """True when `ports` do not all come from the same file."""
+        if len(ports) < 2:
+            return False
+        return len({self.block_of(int(p)) for p in ports}) > 1
+
+    def summary(self) -> str:
+        """'F1: ports 1-6; F2: ports 7-12' -- for the report header."""
+        parts: list[str] = []
+        for bi in range(self.n_blocks):
+            mem = [p + 1 for p, b in enumerate(self.block_of_port) if b == bi]
+            if not mem:
+                continue
+            lab = self.labels[bi] if bi < len(self.labels) else f"block {bi + 1}"
+            parts.append(f"{lab}: ports {collapse_ports(mem)}")
+        return "; ".join(parts)
+
+
+@dataclass(frozen=True)
+class BaselineLinks:
+    """
+    Which DECLARED two-terminal links belong in the BASELINE rather than in the
+    element list -- the composed-network gauge (`COMPOSED_BASELINE_TEXT`).
+
+    Two ways to say it, and they are OR-ed:
+
+      * `blocks` -- a `PortBlocks`; every declared link whose two ports come
+        from DIFFERENT files is structural.  This is the one to use for a
+        composed network, because it cannot miss a link;
+      * `links` -- explicit 0-based `(port_i, port_j)` pairs, unordered.  Every
+        pair here must match a link the spec actually declares, or
+        `build_context` REFUSES by name: silently ignoring a pair would leave
+        the gauge un-applied and every far-file element reading exactly zero
+        again, which is the failure this class exists to remove.
+
+    Only `short` and `lumped_between` can be structural.  A `ground` / `vdd` /
+    `lumped_to_gnd` has ONE port, so it can neither cross a file boundary nor
+    be a link, and putting one in the baseline would be a different and much
+    larger claim -- that the termination is part of the structure.
+    """
+    blocks: PortBlocks | None = None
+    links: tuple[tuple[int, int], ...] = ()
+
+    def _pairs(self) -> set[tuple[int, int]]:
+        return {(min(int(a), int(b)), max(int(a), int(b)))
+                for a, b in self.links}
+
+    def selects(self, ports: Sequence[int]) -> bool:
+        if len(ports) != 2:
+            return False
+        a, b = int(ports[0]), int(ports[1])
+        if (min(a, b), max(a, b)) in self._pairs():
+            return True
+        return self.blocks is not None and self.blocks.crosses((a, b))
+
+    def describe_port(self, port0: int) -> str:
+        """'F2.5 (port 11)' when blocks are known, 'port 11' otherwise."""
+        if self.blocks is not None and 0 <= port0 < self.blocks.n_ports:
+            return self.blocks.describe(port0)
+        return f"port {port0 + 1}"
+
+    def header(self) -> str:
+        """The gauge line for a report header, naming the files when known."""
+        if self.blocks is not None:
+            return COMPOSED_BASELINE_TEXT + " Blocks: " + self.blocks.summary()
+        return COMPOSED_BASELINE_TEXT
+
+
+def _validate_baseline(baseline: "BaselineLinks | None", n: int) -> None:
+    """Refuse a policy that cannot mean what it says, before anything is built."""
+    if baseline is None:
+        return
+    if not isinstance(baseline, BaselineLinks):
+        raise AttribError(
+            "baseline must be a BaselineLinks (blocks=PortBlocks(...) and/or "
+            f"links=((i, j), ...)), got {type(baseline).__name__}")
+    if baseline.blocks is not None and baseline.blocks.n_ports != n:
+        raise AttribError(
+            f"baseline blocks describe {baseline.blocks.n_ports} port(s) but "
+            f"this Y has {n}. The block map must cover the COMBINED network, "
+            "one entry per port of the stacked matrix.")
+    bad = sorted({int(p) for pair in baseline.links for p in pair
+                  if not 0 <= int(p) < n})
+    if bad:
+        raise AttribError(
+            "baseline link port(s) " + collapse_ports([p + 1 for p in bad])
+            + f" (1-based) are outside 1..{n} for this network")
+    same = sorted({(int(a), int(b)) for a, b in baseline.links if int(a) == int(b)})
+    if same:
+        raise AttribError(
+            "baseline link "
+            + ", ".join(f"({a + 1}, {b + 1})" for a, b in same)
+            + " joins a port to itself, which is not a link")
+
+
+def _island_elements(Ybase: np.ndarray, U: np.ndarray,
+                     W: np.ndarray) -> tuple[list[int], int]:
+    """
+    Element indices whose whole support lies in a component of the baseline
+    node graph that carries NO measurement port, plus the component count.
+
+    That is EXACTLY the condition under which `r_a[e]` and `p_b[e]` are zero to
+    the last bit for every probe, i.e. the element's term is exactly 0 by
+    construction rather than by measurement.  It is a structural test on the
+    sparsity of `Ybase`, not a magnitude threshold: nothing is "small" here.
+    A dense EM admittance is one component and this can never fire on it --
+    fuzzed at 2993 random specs over every fixture in the repo, the only file
+    it ever fires on is `decap_4port.s4p`, which IS two uncoupled pi networks
+    (80 of its specs put both probes on one of them), i.e. a true positive.
+
+    The BFS is FRONTIER-BASED and vectorised, not a per-node
+    `np.nonzero(adj[x])` walk.  Measured on a deliberately two-block matrix
+    (plain walk -> this one): nr = 12  0.0343 -> 0.0304 ms; 60  0.2052 ->
+    0.0494; 153  0.8197 -> 0.0691; 316  2.4386 -> 0.1165, i.e. 21x at the size
+    a composed package reaches.  Against what `build_context` already pays at
+    nr = 316 -- 67.1 ms for the solve with 10 right-hand sides and 203.7 ms for
+    one SVD of the fold loop -- 0.117 ms is 0.17% and 2.44 ms would have been
+    3.6%.  Neither is fatal; the vectorised one is free, so it is the one here.
+    """
+    nr = int(Ybase.shape[0])
+    if nr == 0 or U.shape[1] == 0:
+        return [], (1 if nr else 0)
+    adj = Ybase != 0
+    comp = np.full(nr, -1, dtype=np.int64)
+    ncomp = 0
+    for seed in range(nr):
+        if comp[seed] >= 0:
+            continue
+        reached = np.zeros(nr, dtype=bool)
+        reached[seed] = True
+        frontier = reached.copy()
+        while frontier.any():
+            nxt = adj[frontier].any(axis=0) & ~reached
+            reached |= nxt
+            frontier = nxt
+        comp[reached] = ncomp
+        ncomp += 1
+    if ncomp <= 1:
+        return [], ncomp
+    probe_comps = set(comp[np.any(W != 0, axis=1)].tolist())
+    out: list[int] = []
+    for e in range(U.shape[1]):
+        sup = set(comp[U[:, e] != 0].tolist())
+        if sup and not (sup & probe_comps):
+            out.append(e)
+    return out, ncomp
+
+
+# ---------------------------------------------------------------------------
 # The context
 # ---------------------------------------------------------------------------
 
@@ -781,6 +1066,9 @@ class AttribContext:
         is_whatif           True when `zt` was supplied, i.e. Zop describes a
                             network compute_z_matrix was never asked about
         cond_Ybase, cond_G, reciprocity_rel
+        structural          the links a `baseline=` policy put IN the baseline
+                            (the composed-network gauge); they have no term
+        baseline_note       the gauge line for a report header, "" by default
         notes, warnings
 
     cond(G) is a DIAGNOSTIC, not a trust signal, and neither is cond(Ybase).
@@ -831,6 +1119,15 @@ class AttribContext:
     is_whatif: bool = False
     Zop_declared: np.ndarray = field(
         default_factory=lambda: np.zeros((0, 0), dtype=complex))
+    #: The declared links a `baseline=` policy absorbed INTO the baseline.
+    #: They are also in `folded` (so `_return_budget` still counts their
+    #: current as a declared return path) and are deliberately kept separate,
+    #: because `folded` otherwise means "the structure has no reference without
+    #: this" -- a rank rescue, not a gauge choice, and saying one when the
+    #: other happened would be a false claim on the report.
+    structural: list[Element] = field(default_factory=list)
+    #: `BaselineLinks.header()` when a policy is in force, "" otherwise.
+    baseline_note: str = ""
 
     # ---- small helpers -------------------------------------------------
 
@@ -949,7 +1246,9 @@ def build_context(Y: np.ndarray,
                   terminations: TerminationSet,
                   freq_hz: float,
                   zt: np.ndarray | None = None,
-                  sources: dict[int, str] | None = None) -> AttribContext:
+                  sources: dict[int, str] | None = None,
+                  *,
+                  baseline: BaselineLinks | None = None) -> AttribContext:
     """
     Build the attribution context for one frequency of one spec.
 
@@ -968,6 +1267,19 @@ def build_context(Y: np.ndarray,
     lands in one group named after the kind, because a TerminationSet carries
     no provenance and nine ports written as one range are indistinguishable
     from nine rows.
+
+    `baseline` is the COMPOSED-NETWORK GAUGE (`BaselineLinks`,
+    `COMPOSED_BASELINE_TEXT`).  Every declared link it selects is absorbed INTO
+    the baseline instead of becoming an element, so the baseline of a two-file
+    network is "the files CONNECTED, everything else open".  Without it the
+    all-open baseline leaves the files as disconnected islands and every
+    element inside the far file gets a contribution of EXACTLY ZERO -- measured
+    0.000000e+00 for both package ground balls of the 12-port construction in
+    tests/test_attrib_composed.py, with residual_rel 5.645e-15 reporting perfect
+    health, while those two balls are worth a factor of 1.538 in M.  It is a
+    gauge change, so it moves every term and no physics; `ctx.baseline_note`
+    carries the sentence that says so, and `format_decomposition` prints it in
+    the header.  It changes nothing at all when omitted.
     """
     Y = np.asarray(Y)
     freqs = np.asarray(freqs, dtype=float)
@@ -985,6 +1297,7 @@ def build_context(Y: np.ndarray,
     n = int(Y.shape[1])
     notes: list[str] = []
     warnings: list[str] = []
+    _validate_baseline(baseline, n)
 
     # --- 0. The authoritative answer, from the engine itself.
     #
@@ -1155,6 +1468,65 @@ def build_context(Y: np.ndarray,
             Yb = Yb + y_of[e] * np.outer(u, u)
         return P, Yb
 
+    def _absorb(e: int) -> None:
+        """Move element `e` INTO the baseline; it will have no term of its own."""
+        nonlocal node_map
+        folded.append(e)
+        elem = all_elements[e]
+        if elem.ideal:
+            # node_map holds REDUCED indices; node_of_port holds ORIGINAL ones.
+            # Comparing the two directly worked on the first fold (the map is
+            # the identity then) and quietly deleted the wrong node on the
+            # second -- measured on coupled_4port_float.s4p with ports 2 and 4
+            # grounded: M came back 4.00e-10 H against the engine's 8.00e-10,
+            # a clean factor of two with nothing raised.
+            red = [node_map[node_of_port[p]] for p in elem.ports]
+            if len(red) == 1 or -1 in red:
+                # A shunt element, or a series element whose far end is already
+                # at 0 V -- either way this node goes to ground.
+                gone = red[0] if red[0] >= 0 else red[1]
+                node_map = [-1 if nd == gone else nd for nd in node_map]
+            else:
+                ra, rb = red
+                node_map = [ra if nd == rb else nd for nd in node_map]
+            # renumber so the surviving reduced nodes are 0..nr-1 again
+            live_nodes = sorted({nd for nd in node_map if nd >= 0})
+            relabel = {old: i for i, old in enumerate(live_nodes)}
+            node_map = [relabel[nd] if nd >= 0 else -1 for nd in node_map]
+        else:
+            folded_lumped.append(e)
+
+    # --- 3a. The COMPOSED-NETWORK GAUGE, before anything else looks at the
+    # rank.  These links are STRUCTURE: without them in the baseline, `Ybase`
+    # of a two-file network is exactly block diagonal and every element inside
+    # the far file has a contribution of exactly zero (measured 0.000000e+00
+    # on both package ground balls of the 12-port construction, with the
+    # residual reading 5.645e-15).  Requesting it is the caller's decision and
+    # it is named on the report, because it moves every term.
+    structural_idx: list[int] = []
+    if baseline is not None:
+        declared_pairs = {(min(el.ports), max(el.ports))
+                          for el in all_elements if len(el.ports) == 2}
+        missing = sorted(p for p in baseline._pairs() if p not in declared_pairs)
+        if missing:
+            raise AttribError(
+                "baseline link(s) "
+                + ", ".join(f"({a + 1}, {b + 1})" for a, b in missing)
+                + " are not declared in this spec, so putting them in the "
+                  "baseline would be a no-op -- and a no-op here leaves every "
+                  "element inside the far file reading exactly zero, which is "
+                  "the failure the baseline gauge exists to remove. Declared "
+                  "links: "
+                + (", ".join(sorted(f"({a + 1}, {b + 1})"
+                                    for a, b in declared_pairs))
+                   or "(none)"))
+        structural_idx = [e for e in alive
+                          if baseline.selects(all_elements[e].ports)]
+        for e in structural_idx:
+            _absorb(e)
+        sset = set(structural_idx)
+        alive = [e for e in alive if e not in sset]
+
     Pmat, Ybase = _rebuild()
     for _ in range(n0 + 1):
         nr = Ybase.shape[0]
@@ -1189,30 +1561,7 @@ def build_context(Y: np.ndarray,
                 worst = e
         if worst < 0:
             break
-        folded.append(worst)
-        elem = all_elements[worst]
-        if elem.ideal:
-            # node_map holds REDUCED indices; node_of_port holds ORIGINAL ones.
-            # Comparing the two directly worked on the first fold (the map is
-            # the identity then) and quietly deleted the wrong node on the
-            # second -- measured on coupled_4port_float.s4p with ports 2 and 4
-            # grounded: M came back 4.00e-10 H against the engine's 8.00e-10,
-            # a clean factor of two with nothing raised.
-            red = [node_map[node_of_port[p]] for p in elem.ports]
-            if len(red) == 1 or -1 in red:
-                # A shunt element, or a series element whose far end is already
-                # at 0 V -- either way this node goes to ground.
-                gone = red[0] if red[0] >= 0 else red[1]
-                node_map = [-1 if nd == gone else nd for nd in node_map]
-            else:
-                ra, rb = red
-                node_map = [ra if nd == rb else nd for nd in node_map]
-            # renumber so the surviving reduced nodes are 0..nr-1 again
-            live_nodes = sorted({nd for nd in node_map if nd >= 0})
-            relabel = {old: i for i, old in enumerate(live_nodes)}
-            node_map = [relabel[nd] if nd >= 0 else -1 for nd in node_map]
-        else:
-            folded_lumped.append(worst)
+        _absorb(worst)
         Pmat, Ybase = _rebuild()
 
     active = [e for e in alive if e not in folded]
@@ -1234,6 +1583,15 @@ def build_context(Y: np.ndarray,
         src = all_elements[e]
         elements.append(Element(src.kind, src.ports, src.source, src.ideal, i))
     folded_elements = [all_elements[e] for e in folded]
+    # `folded` is TWO different things and the report must not confuse them: a
+    # RANK RESCUE ("the structure has no reference without this") and a GAUGE
+    # CHOICE ("this link is structure, not a termination").  They are kept in
+    # one list because everything downstream -- U0_folded, the return budget's
+    # recovered currents -- treats them identically, and split here because the
+    # sentences are not interchangeable.
+    structural_set = set(structural_idx)
+    structural_elements = [all_elements[e] for e in structural_idx]
+    rank_folded = [all_elements[e] for e in folded if e not in structural_set]
 
     nr = Ybase.shape[0]
     U0 = U0_all[:, active] if active else np.zeros((n0, 0), dtype=complex)
@@ -1242,13 +1600,30 @@ def build_context(Y: np.ndarray,
     U = Pmat.T @ U0
     W = Pmat.T @ W0
 
-    if folded_elements:
-        ports = sorted({p + 1 for el in folded_elements for p in el.ports})
+    baseline_note = ""
+    if structural_elements:
+        # `baseline is not None` here by construction -- `structural_idx` is
+        # only ever filled inside the `if baseline is not None` block above --
+        # so there is no fallback branch to write and none is written.
+        ports = sorted({p + 1 for el in structural_elements for p in el.ports})
+        baseline_note = baseline.header()
+        notes.append(
+            "Port(s) " + collapse_ports(ports) + " are IN THE BASELINE as "
+            "STRUCTURE, not as terminations: "
+            + ", ".join(el.describe() for el in structural_elements)
+            + " "
+            + ("join the composed blocks" if len(structural_elements) > 1
+               else "joins the composed blocks")
+            + ", so each has no term of its own and every other term is "
+              "measured against a baseline in which they are already "
+              "connected. " + baseline_note)
+    if rank_folded:
+        ports = sorted({p + 1 for el in rank_folded for p in el.ports})
         notes.append(
             "Port(s) " + collapse_ports(ports) + " are IN THE BASELINE because "
             "the structure has no reference without them: with every non-probe "
             "port open the node admittance is singular, so "
-            + ", ".join(el.describe() for el in folded_elements)
+            + ", ".join(el.describe() for el in rank_folded)
             + " was folded in and has no term of its own.")
 
     # --- 4. The two solves.  np.linalg.solve with a multi-column right-hand
@@ -1306,6 +1681,48 @@ def build_context(Y: np.ndarray,
     else:
         denom = float(np.max(np.abs(Dm))) if Dm.size else 0.0
         recip = (float(np.max(np.abs(Dm - Dm.T))) / denom) if denom > 0 else 0.0
+
+    # --- 4b. Elements marooned on an ISLAND of the baseline.
+    #
+    # This is the R2-8 defect made visible, and it fires whether or not the
+    # caller knows the word "composed": an element whose whole support lies in
+    # a component of the baseline node graph that carries no probe has
+    # r_a[e] == 0 and p_b[e] == 0 to the LAST BIT, so its term is exactly zero
+    # by construction and NO residual can see it -- the totals reconcile
+    # perfectly (measured 5.645e-15 beside two contributions of 0.000000e+00).
+    # A gate on the residual therefore cannot catch this and a structural test
+    # is the only thing that can.
+    islands, n_components = _island_elements(Ybase, U, W)
+    if islands:
+        who = ", ".join(elements[e].describe() for e in islands)
+        if baseline is None:
+            what_now = (
+                "If this is a COMPOSED network, the cross-file links are still "
+                "ELEMENTS on top of an all-open baseline that leaves the files "
+                "as islands -- pass "
+                "baseline=BaselineLinks(blocks=PortBlocks.from_sizes([...])) "
+                "so they are IN the baseline instead. If it is one file, the "
+                "file itself says these parts are not connected.")
+        else:
+            # Telling a caller to do what they have already done is a bug
+            # report, not a warning.  A policy IS in force here and did not
+            # join everything, so name that instead.
+            what_now = (
+                "A baseline policy IS in force and it absorbed "
+                f"{len(structural_elements)} link(s), so this part is one the "
+                "policy did not reach: either the spec declares no link into "
+                "it, or the block map puts both ends of every link it does "
+                "declare inside one file."
+                + (" Blocks: " + baseline.blocks.summary()
+                   if baseline.blocks is not None else ""))
+        warnings.append(
+            f"{who} contribute EXACTLY ZERO here, and that is a property of "
+            "the BASELINE, not a measurement: its node graph splits into "
+            f"{n_components} disconnected parts and "
+            + ("these elements sit" if len(islands) > 1 else "this element sits")
+            + " entirely inside a part that carries no measurement port, so "
+              "r_a and p_b are zero to the last bit. The totals still "
+              "reconcile, so no residual can see it. " + what_now)
 
     # --- 5. Probes with no return path, same test core's _probe_impedance runs.
     bad_probes: list[int] = []
@@ -1429,6 +1846,7 @@ def build_context(Y: np.ndarray,
         Zref=Zref, Zop=np.zeros((G, G), dtype=complex),
         core_warnings=list(core_warnings), notes=notes, warnings=warnings,
         is_whatif=is_whatif,
+        structural=structural_elements, baseline_note=baseline_note,
     )
 
     groups: dict[str, list[int]] = {}
@@ -1835,8 +2253,12 @@ def decompose(ctx: AttribContext, victim: int | str, aggressor: int | str,
     budget = _return_budget(ctx, b, I, live)
     ref_note = budget.note
     if ctx.folded:
-        ref_note += " " + next(
-            (nn for nn in ctx.notes if nn.startswith("Port(s)")), "")
+        # `join`, not `next`: there are now TWO notes that can start this way
+        # (a rank rescue and the composed-network gauge) and they can both be
+        # in force at once.  With at most one of them -- every context that
+        # predates the gauge -- this is byte-for-byte what `next` produced.
+        extra = " ".join(nn for nn in ctx.notes if nn.startswith("Port(s)"))
+        ref_note += " " + extra
 
     if ctx.dropped:
         notes.append(
@@ -1873,6 +2295,7 @@ def decompose(ctx: AttribContext, victim: int | str, aggressor: int | str,
         cond_Ybase=ctx.cond_Ybase, cond_H=cond_H,
         reciprocity_rel=ctx.reciprocity_rel, Z_ab=z_ab,
         reference_applicable=not ctx.is_whatif, C_c_total=c_c,
+        baseline_gauge=ctx.baseline_note,
     )
 
 
@@ -2400,6 +2823,13 @@ class Bracket:
     caveat: str
     baseline_grounded: tuple[int, ...] = ()
     baseline_note: str = ""
+    #: Non-empty when the cold-start context carried a COMPOSED-NETWORK gauge
+    #: (`BaselineLinks`).  The low end of the bracket is then "all open EXCEPT
+    #: the cross-file links", not all-open, and `format_cold_start` relabels it
+    #: for the same reason it relabels a folded baseline: printing a number
+    #: under a heading that claims a different network is a false claim, and
+    #: this one would read as "the package is irrelevant".
+    composed_note: str = ""
     notes: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
 
@@ -2555,6 +2985,14 @@ class ColdStartContext:
     #: engine says it moves it by 2.8e-14, i.e. not at all. Both are right
     #: about their own network; only one of them is the one the header claims.
     baseline_grounded: tuple[int, ...] = ()
+    #: The composed-network gauge, when a `baseline=` policy was in force: the
+    #: cross-file links are IN this baseline instead of being dropped with the
+    #: rest of the spec.  Empty for a single file.  Without it the screen's
+    #: baseline leaves the files as islands and EVERY port of the far file
+    #: reads `delta = 0` with `defined = True` -- measured on all six package
+    #: ports of the 12-port construction, two of which are worth a factor of
+    #: 1.538 in M.
+    structural_note: str = ""
     notes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -2569,15 +3007,23 @@ class ColdStartContext:
     def baseline_description(self) -> str:
         """One sentence naming the configuration every delta is measured from."""
         if not self.baseline_grounded:
-            return ("every non-probe port OPEN -- which is the configuration "
-                    "compute_z_matrix returns for a probes-only spec")
-        return (
-            "every non-probe port open EXCEPT port(s) "
-            + collapse_ports([p + 1 for p in self.baseline_grounded])
-            + ", which the baseline had to GROUND because the structure has no "
-              "reference without them. This is therefore NOT the all-open "
-              "configuration, and a delta here is not the delta from all-open: "
-              "on a floating structure those two differ completely.")
+            base = (
+                "every non-probe port open EXCEPT the cross-file links, which "
+                "are IN the baseline -- i.e. the files CONNECTED, everything "
+                "else open" if self.structural_note else
+                "every non-probe port OPEN -- which is the configuration "
+                "compute_z_matrix returns for a probes-only spec")
+        else:
+            base = (
+                "every non-probe port open EXCEPT port(s) "
+                + collapse_ports([p + 1 for p in self.baseline_grounded])
+                + ", which the baseline had to GROUND because the structure has "
+                  "no reference without them. This is therefore NOT the all-open "
+                  "configuration, and a delta here is not the delta from "
+                  "all-open: on a floating structure those two differ "
+                  "completely.")
+        return base + (" " + self.structural_note if self.structural_note
+                       else "")
 
 
 def _declared_label(terminations: TerminationSet, port: int) -> str:
@@ -2606,7 +3052,8 @@ def cold_start_context(Y: np.ndarray,
                        terminations: TerminationSet,
                        freq_hz: float,
                        candidates: Sequence[int] | None = None,
-                       port_names: Sequence[str] | None = None
+                       port_names: Sequence[str] | None = None,
+                       *, baseline: BaselineLinks | None = None
                        ) -> ColdStartContext:
     """
     Build the one context every cold-start step reads.
@@ -2620,6 +3067,7 @@ def cold_start_context(Y: np.ndarray,
         that ties several ports into one measurement-port SIDE is part of the
         same question, and dropping it would make those ports look like
         separate candidates whose grounding moves the answer;
+      * every link a `baseline=` policy calls STRUCTURE -- see below;
 
     and drops everything else, replacing it with one ideal `ground` per
     candidate. Anything dropped is named in `notes`: a `ground`, a
@@ -2627,6 +3075,20 @@ def cold_start_context(Y: np.ndarray,
     HAS taken, and the honest thing is to say it is not in force here and point
     at `sensitivity` / `group_joint`, which is the "check the spec you wrote"
     side of this module.
+
+    `baseline` (a `BaselineLinks`) is what makes the screen answer anything at
+    all about a COMPOSED network, and it is not optional there. The rewrite
+    above would otherwise drop the cross-file links along with every other
+    decision, leaving the two files as disconnected islands: measured on the
+    12-port construction in tests/test_attrib_composed.py, ALL SIX package
+    ports -- including the two ground balls that are worth a factor of 1.538 in
+    M -- come back with `delta` exactly 0.0 and `defined = True`, which is a
+    screen confidently reporting that the package cannot matter. With the
+    policy the links stay and go INTO the baseline, so the screen measures from
+    "the files connected, everything else open" (`COMPOSED_BASELINE_TEXT`).
+    Both ends of one structural link are ONE node, so only the lower-numbered
+    end stays a candidate and the other is listed as unreachable naming it --
+    two rows carrying the same number for one node is not a ranking.
 
     `candidates` narrows the scan (0-based port indices, the `Element.ports`
     convention). The default is every port that is not part of a measurement
@@ -2642,6 +3104,7 @@ def cold_start_context(Y: np.ndarray,
     if Y.ndim != 3 or Y.shape[1] != Y.shape[2]:
         raise AttribError(f"Y must have shape (nfreqs, N, N), got {Y.shape}")
     n = int(Y.shape[1])
+    _validate_baseline(baseline, n)
     names = list(port_names or [])
     names = [str(x) for x in names[:n]] + [""] * max(0, n - len(names))
 
@@ -2678,20 +3141,53 @@ def cold_start_context(Y: np.ndarray,
         cands = tuple(sorted(set(want)))
 
     # --- the rewritten spec
-    keep_short: list[ShortPair] = []
+    keep_cpl: list[Coupling] = []
+    structural_cpl: list[Coupling] = []
     dropped_decl: list[str] = []
     groups = _shorted_groups(terminations, n)
     group_of = {p: gi for gi, mem in enumerate(groups) for p in mem}
     probe_groups = {group_of[p] for p in probe_ports if p in group_of}
     for cpl in terminations.couplings:
-        if (isinstance(cpl, ShortPair)
+        # STRUCTURE first: a cross-file link is not a decision the caller took
+        # about a port, it is what makes the two files one network.  Dropping
+        # it with the rest of the spec is what leaves the far file an island
+        # where every port reads delta 0 with defined True.
+        if baseline is not None and baseline.selects((cpl.port_i, cpl.port_j)):
+            keep_cpl.append(cpl)
+            structural_cpl.append(cpl)
+        elif (isinstance(cpl, ShortPair)
                 and group_of.get(cpl.port_i) in probe_groups):
-            keep_short.append(cpl)
+            keep_cpl.append(cpl)
         elif isinstance(cpl, ShortPair):
             dropped_decl.append(f"short {cpl.port_i + 1}-{cpl.port_j + 1}")
         else:
             dropped_decl.append(
                 f"lumped_between {cpl.port_i + 1}-{cpl.port_j + 1}")
+
+    # Both ends of an ideal structural link are ONE node once it is in the
+    # baseline, so only one of them may be a candidate: two rows carrying the
+    # identical number for one node is not a ranking, and grounding either end
+    # would make U rank-deficient and trip the "spec is REDUNDANT" note about a
+    # redundancy the screen invented itself.
+    merged_into: dict[int, int] = {}
+    if structural_cpl:
+        parent = list(range(n))
+
+        def _find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        for cpl in structural_cpl:
+            if isinstance(cpl, ShortPair):
+                ra, rb = _find(cpl.port_i), _find(cpl.port_j)
+                if ra != rb:
+                    parent[max(ra, rb)] = min(ra, rb)
+        for p in cands:
+            root = _find(p)
+            if root != p and root in cands:
+                merged_into[p] = root
 
     pp: dict[int, PortTermination] = {}
     declared: dict[int, str] = {}
@@ -2703,8 +3199,12 @@ def cold_start_context(Y: np.ndarray,
             dropped_decl.append(f"{_declared_label(terminations, p)} "
                                 f"on port {p + 1}")
     for p in cands:
+        # A merged end stays ON the screen -- it is dropped from the SCAN, not
+        # from the report.  A table of "which ports matter" that silently omits
+        # a port is a wrong answer with a plausible shape (PortScreenRow).
         declared[p] = _declared_label(terminations, p)
-        pp[p] = Ground()
+        if p not in merged_into:
+            pp[p] = Ground()
 
     if dropped_decl:
         notes.append(
@@ -2718,12 +3218,18 @@ def cold_start_context(Y: np.ndarray,
               "how robust it is.")
 
     csc_ctx = build_context(
-        Y, freqs, TerminationSet(per_port=pp, couplings=list(keep_short)),
-        freq_hz)
+        Y, freqs, TerminationSet(per_port=pp, couplings=list(keep_cpl)),
+        freq_hz, baseline=baseline)
 
     element_of_port = {e.ports[0]: e.index for e in csc_ctx.elements
                        if e.kind == "ground" and len(e.ports) == 1}
     unreachable: dict[int, str] = {}
+    for p, root in sorted(merged_into.items()):
+        unreachable[p] = (
+            f"the same NODE as port {root + 1}: a cross-file link ties them "
+            "together and that link is IN the baseline, so grounding this end "
+            f"and grounding port {root + 1} are the same hypothesis. The "
+            f"number is on port {root + 1}'s row")
     baseline_grounded: list[int] = []
     for el in csc_ctx.folded:
         if el.kind == "ground" and el.ports[0] in declared:
@@ -2776,21 +3282,35 @@ def cold_start_context(Y: np.ndarray,
             "There is nothing to screen: every port either carries a "
             "measurement port or could not be evaluated from the baseline.")
 
+    structural_note = ""
+    if structural_cpl:
+        # SHORT here, long in `notes`.  `baseline_description()` is one line of
+        # a report header; COMPOSED_BASELINE_TEXT is a paragraph and belongs
+        # with the other notes, printed once at the bottom.
+        structural_note = (
+            "The cross-file link(s) "
+            + ", ".join(f"{c.port_i + 1}-{c.port_j + 1}" for c in structural_cpl)
+            + " are IN this baseline and were NOT dropped with the rest of the "
+              "spec, so the files are CONNECTED here.")
+        notes.append(structural_note + " " + COMPOSED_BASELINE_TEXT)
+
     return ColdStartContext(
         ctx=csc_ctx, candidates=cands, element_of_port=element_of_port,
         unreachable=unreachable, port_names=tuple(names), declared=declared,
         baseline_grounded=tuple(sorted(baseline_grounded)),
+        structural_note=structural_note,
         notes=list(csc_ctx.notes) + notes,
         warnings=list(csc_ctx.warnings))
 
 
 def _cs_context(Y, freqs, terminations, freq_hz, context, candidates=None,
-                port_names=None) -> ColdStartContext:
-    """`context` if given, otherwise build one.  One line, four call sites."""
+                port_names=None, baseline=None) -> ColdStartContext:
+    """`context` if given, otherwise build one.  One line, six call sites."""
     if context is not None:
         return context
     return cold_start_context(Y, freqs, terminations, freq_hz,
-                              candidates=candidates, port_names=port_names)
+                              candidates=candidates, port_names=port_names,
+                              baseline=baseline)
 
 
 def _cs_value(csc: ColdStartContext, spec: _QuantitySpec, a: int, b: int,
@@ -2815,7 +3335,8 @@ def cold_start_bracket(Y: np.ndarray, freqs: np.ndarray,
                        freq_hz: float, quantity: str = "M",
                        *, context: ColdStartContext | None = None,
                        candidates: Sequence[int] | None = None,
-                       port_names: Sequence[str] | None = None) -> Bracket:
+                       port_names: Sequence[str] | None = None,
+                       baseline: BaselineLinks | None = None) -> Bracket:
     """
     STEP 0. The quantity with every non-probe port OPEN against every one of
     them at IDEAL GROUND, and the dB between them.
@@ -2831,7 +3352,7 @@ def cold_start_bracket(Y: np.ndarray, freqs: np.ndarray,
     """
     spec = _resolve_quantity(quantity)
     csc = _cs_context(Y, freqs, terminations, freq_hz, context,
-                      candidates, port_names)
+                      candidates, port_names, baseline)
     ctx = csc.ctx
     a = ctx.port_index(victim)
     b = ctx.port_index(aggressor)
@@ -2866,6 +3387,7 @@ def cold_start_bracket(Y: np.ndarray, freqs: np.ndarray,
         reconciliation_rel=recon, caveat=COLD_START_BRACKET_CAVEAT,
         baseline_grounded=csc.baseline_grounded,
         baseline_note=csc.baseline_description(),
+        composed_note=csc.structural_note,
         notes=tuple(notes), warnings=tuple(csc.warnings))
 
 
@@ -2875,7 +3397,8 @@ def cold_start_screen(Y: np.ndarray, freqs: np.ndarray,
                       freq_hz: float, quantity: str = "M",
                       *, context: ColdStartContext | None = None,
                       candidates: Sequence[int] | None = None,
-                      port_names: Sequence[str] | None = None
+                      port_names: Sequence[str] | None = None,
+                      baseline: BaselineLinks | None = None
                       ) -> list[PortScreenRow]:
     """
     STEP 1. Every candidate port, with BOTH coupling columns and the exact
@@ -2895,7 +3418,7 @@ def cold_start_screen(Y: np.ndarray, freqs: np.ndarray,
     """
     spec = _resolve_quantity(quantity)
     csc = _cs_context(Y, freqs, terminations, freq_hz, context,
-                      candidates, port_names)
+                      candidates, port_names, baseline)
     ctx = csc.ctx
     a = ctx.port_index(victim)
     b = ctx.port_index(aggressor)
@@ -2977,7 +3500,8 @@ def cold_start_pairs(Y: np.ndarray, freqs: np.ndarray,
                      *, context: ColdStartContext | None = None,
                      screen: Sequence[PortScreenRow] | None = None,
                      candidates: Sequence[int] | None = None,
-                     port_names: Sequence[str] | None = None
+                     port_names: Sequence[str] | None = None,
+                     baseline: BaselineLinks | None = None
                      ) -> list[PairEffect]:
     """
     STEP 2. Every pair among the top `top_k` of the screen, grounded TOGETHER,
@@ -3009,7 +3533,7 @@ def cold_start_pairs(Y: np.ndarray, freqs: np.ndarray,
     """
     spec = _resolve_quantity(quantity)
     csc = _cs_context(Y, freqs, terminations, freq_hz, context,
-                      candidates, port_names)
+                      candidates, port_names, baseline)
     ctx = csc.ctx
     a = ctx.port_index(victim)
     b = ctx.port_index(aggressor)
@@ -3059,7 +3583,8 @@ def cold_start_leave_one_out(Y: np.ndarray, freqs: np.ndarray,
                              freq_hz: float, quantity: str = "M",
                              *, context: ColdStartContext | None = None,
                              candidates: Sequence[int] | None = None,
-                             port_names: Sequence[str] | None = None
+                             port_names: Sequence[str] | None = None,
+                             baseline: BaselineLinks | None = None
                              ) -> list[SensitivityResult]:
     """
     STEP 2, THE MIRROR DIRECTION: start from EVERY candidate grounded and open
@@ -3078,7 +3603,7 @@ def cold_start_leave_one_out(Y: np.ndarray, freqs: np.ndarray,
     already means "from all-grounded".
     """
     csc = _cs_context(Y, freqs, terminations, freq_hz, context,
-                      candidates, port_names)
+                      candidates, port_names, baseline)
     return leave_one_out(csc.ctx, victim, aggressor, quantity)
 
 
@@ -3090,7 +3615,8 @@ def cold_start_cumulative(Y: np.ndarray, freqs: np.ndarray,
                           saturation_rel: float = COLD_START_SATURATION_REL,
                           *, context: ColdStartContext | None = None,
                           candidates: Sequence[int] | None = None,
-                          port_names: Sequence[str] | None = None
+                          port_names: Sequence[str] | None = None,
+                          baseline: BaselineLinks | None = None
                           ) -> CumulativeCurve:
     """
     STEP 3. Ground the best port, RE-RANK, ground the next best, and so on:
@@ -3124,7 +3650,7 @@ def cold_start_cumulative(Y: np.ndarray, freqs: np.ndarray,
     """
     spec = _resolve_quantity(quantity)
     csc = _cs_context(Y, freqs, terminations, freq_hz, context,
-                      candidates, port_names)
+                      candidates, port_names, baseline)
     ctx = csc.ctx
     a = ctx.port_index(victim)
     b = ctx.port_index(aggressor)
@@ -3353,16 +3879,22 @@ def cold_start_report(Y: np.ndarray, freqs: np.ndarray,
                       max_k: int = COLD_START_MAX_K,
                       candidates: Sequence[int] | None = None,
                       port_names: Sequence[str] | None = None,
-                      *, context: ColdStartContext | None = None
+                      *, context: ColdStartContext | None = None,
+                      baseline: BaselineLinks | None = None
                       ) -> ColdStart:
     """
     All four steps and the name-family suggestions, off ONE O(N^3) context.
 
     This is what a CLI or a GUI should call: building a context per step costs
     350.6 ms each at 153 ports (measured) and buys nothing.
+
+    On a COMPOSED network pass `baseline=BaselineLinks(...)`, which is not
+    optional there: without it the screen's own rewrite drops the cross-file
+    links and every port of the far file comes back with `delta` exactly 0.0
+    and `defined = True`.  See `cold_start_context`.
     """
     csc = _cs_context(Y, freqs, terminations, freq_hz, context,
-                      candidates, port_names)
+                      candidates, port_names, baseline)
     br = cold_start_bracket(Y, freqs, terminations, victim, aggressor,
                             freq_hz, quantity, context=csc)
     rows = cold_start_screen(Y, freqs, terminations, victim, aggressor,
@@ -4019,6 +4551,12 @@ def format_decomposition(dec: Decomposition) -> list[str]:
     out.append(f"Attribution of {dec.quantity} "
                f"({dec.victim} <- {dec.aggressor}) at "
                f"{format_freq(dec.freq_hz)}")
+    # The gauge goes in the HEADER, above the totals, not among the notes at
+    # the bottom: it decides what every number below it means, and two reports
+    # are only comparable when it matches.  Absent by default, so nothing about
+    # an ordinary single-file report moves.
+    if dec.baseline_gauge:
+        out.append("  baseline: " + dec.baseline_gauge)
     # The label changes with `reference_applicable`, because the number does
     # not mean the same thing: under a what-if `zt` the engine was asked about
     # the DECLARED spec, which is a different network, and printing it under
@@ -4095,9 +4633,17 @@ def format_cold_start(cs: ColdStart) -> list[str]:
     # format_decomposition re-labels `total_reference` under a what-if: the
     # number does not mean the same thing, and printing it under a heading that
     # claims all-open is a false claim about a different network.
-    lo_label = ("every non-probe port OPEN     " if not br.baseline_grounded
-                else "all open EXCEPT "
-                     + collapse_ports([p + 1 for p in br.baseline_grounded]))
+    if br.baseline_grounded:
+        lo_label = ("all open EXCEPT "
+                    + collapse_ports([p + 1 for p in br.baseline_grounded]))
+    elif br.composed_note:
+        # A COMPOSED baseline's low end is "the files connected, everything
+        # else open".  Under the all-open heading it would read as "the
+        # package is irrelevant", which is the exact claim this gauge exists
+        # to stop being made by accident.
+        lo_label = "files LINKED, everything else open"
+    else:
+        lo_label = "every non-probe port OPEN     "
     out.append(f"  {lo_label:<30}: {_fmt_q(br.value_open, u)}")
     out.append(f"  {'every non-probe port GROUNDED':<30}: "
                f"{_fmt_q(br.value_grounded, u)}")
