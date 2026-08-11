@@ -1636,6 +1636,253 @@ def _make_plot_trace(aux: Optional[dict] = None, **kwargs) -> PlotTrace:
     return PlotTrace(**kwargs)
 
 
+# ============================================================================
+# Frequency provenance -- what a printed marker frequency actually IS
+# ============================================================================
+#
+# extract_rlc_at_freq and extract_coupling_at_freq both pick their point with
+# argmin(|freqs - target|) and report nothing at all about the distance, so the
+# tool used to print TWO different frequencies on one screen and explain
+# neither: the Calculate header and the run page printed f_rlc_hz (what the
+# user typed) while the Z-matrix line printed cres.freq_hz (the point the
+# numbers actually came from).  A real user read "@ 5.6 GHz" and "@ 5.512 GHz"
+# in the same report and had no way to know which one their L belonged to.
+#
+# It is not a corner case.  Measured on tests/fixtures/diff_pair_4port.s4p
+# (401 points, 1 MHz .. 10 GHz, step 24.9975 MHz) at the default marker of
+# 0.1 GHz: the nearest point is 0.10099 GHz.  Every default session in this
+# repo snaps by 990 kHz, and said nothing.
+#
+# FreqSnap is that fact as a value and marker_freq_text is the ONE renderer for
+# it -- the Calculate header, the run headline, the run page, the results
+# table, the Z-matrix line and the CSV all go through it, so they cannot drift
+# apart again.  THE RULE: when the requested frequency IS a data point, every
+# one of those renders byte-for-byte what it rendered before.  The common case
+# must not grow a parenthetical, tests elsewhere pin those strings, and
+# tests/fixtures/render_reference.json pins the Z-matrix line.
+
+# A difference smaller than this fraction of the grid step is float noise, not
+# a snap.  The noise is real and it comes from the parser's UNIT SCALING, not
+# from parse_si (which is exact for every value anyone types: "5.6" -> 5.6e9 to
+# the bit).  A file written in MHz or kHz carries its axis as decimal text that
+# is multiplied by 1e6 / 1e3, and `33023.73 * 1e6` is 33023730000.000004 where
+# the same point typed as "33.02373" GHz is 33023730000.0 exactly -- measured,
+# worst case 3.8e-6 Hz over a 400-point decimal sweep in either unit.  Against
+# that, the snaps worth reporting are megahertz: the default marker on
+# diff_pair_4port.s4p moves 990 kHz.  1e-6 of that file's 25 MHz step is 25 Hz,
+# which sits between the two with ten orders of magnitude to spare on each side.
+FREQ_EXACT_FRAC = 1e-6
+# ... and with no gap to scale against (a one-point sweep), relative to the
+# requested frequency instead.
+FREQ_EXACT_REL = 1e-9
+# A sweep counts as uniform when every gap is within this fraction of the
+# median gap.  Real linear sweeps carry decimal round-off in the axis (the
+# fixture above: 0.0 spread); a log sweep or a band densified round a resonance
+# is orders of magnitude away from passing, and gets "nearest point" with no
+# step rather than a made-up number.
+FREQ_UNIFORM_TOL = 1e-3
+
+# Precision used by every site ONCE it has to name two frequencies at once.
+# Each caller keeps its own historical precision for the unchanged case (the
+# banner has always printed 4 significant digits, the run headline 3 decimals,
+# the Z-matrix line 6), but a line whose whole job is to tell two nearby
+# frequencies apart must not round them into each other -- and two sites
+# rounding one point differently, on one screen, is the very shape of the
+# disagreement this section exists to end.  Measured: at 4 significant digits
+# the banner said "0.101 GHz" over a table saying "0.10099 GHz".
+FREQ_WIDE_FMT = "{:.6g}"
+
+
+@dataclass(frozen=True)
+class FreqSnap:
+    """Where a value was actually read, against where it was asked for.
+
+    Floats only, deliberately: this ends up on a RunSnapshot, and
+    tests/test_run_snapshot.py walks every ndarray reachable from a run to
+    prove a record does not grow with the sweep.
+    """
+    requested_hz: float
+    # NaN means "not resolved against any grid" -- a record restored before any
+    # Calculate, or a pure-text caller.  Such a snap renders like a bare float.
+    actual_hz: float = float("nan")
+    # The sweep's step, NaN when it is not uniform.  Display only.
+    step_hz: float = float("nan")
+    # The widest gap adjacent to the chosen point.  This, not `step_hz`, is
+    # what the snap is JUDGED against -- see `off_grid`.
+    local_step_hz: float = float("nan")
+    # False when several sweeps in one run resolved to different points, so
+    # there is no single frequency to print.
+    agreed: bool = True
+
+    @property
+    def resolved(self) -> bool:
+        return math.isfinite(self.actual_hz)
+
+    @property
+    def delta_hz(self) -> float:
+        if not self.resolved:
+            return float("nan")
+        return self.actual_hz - self.requested_hz
+
+    @property
+    def exact(self) -> bool:
+        """True when the requested frequency IS a data point.
+
+        This is the predicate that keeps the common case silent, so it has to
+        tolerate float noise: see FREQ_EXACT_FRAC.
+        """
+        if not self.resolved:
+            return True
+        d = abs(self.delta_hz)
+        if d == 0.0:
+            return True
+        if math.isfinite(self.local_step_hz) and self.local_step_hz > 0.0:
+            return d <= FREQ_EXACT_FRAC * self.local_step_hz
+        return d <= FREQ_EXACT_REL * max(abs(self.requested_hz), 1.0)
+
+    @property
+    def off_grid(self) -> bool:
+        """The requested frequency is not between two points -- it is OUTSIDE
+        the swept band, and that is what earns a warning rather than a note.
+
+        For any monotone axis the two statements are the same one.  If the
+        target lies inside the band it falls in some gap [f_i, f_i+1], and the
+        nearer end of that gap is at most half of it away -- so a distance
+        greater than half the adjacent gap can only mean the target is off the
+        end.  Judging against the LOCAL gap rather than the median is what
+        makes this hold on a log sweep too, and taking the WIDER of the two
+        adjacent gaps is what keeps it free of false alarms where the spacing
+        changes.
+        """
+        if self.exact or not self.resolved:
+            return False
+        if math.isfinite(self.local_step_hz) and self.local_step_hz > 0.0:
+            return abs(self.delta_hz) > 0.5 * self.local_step_hz
+        # A one-point sweep has no gap at all: anything but that point is a
+        # request the file cannot answer.
+        return True
+
+
+def freq_grid_step(freqs) -> float:
+    """The sweep's step in Hz, or NaN when the sweep is not uniform."""
+    f = np.asarray(freqs, dtype=float).ravel()
+    if f.size < 2:
+        return float("nan")
+    d = np.abs(np.diff(f))
+    med = float(np.median(d))
+    if not math.isfinite(med) or med <= 0.0:
+        return float("nan")
+    if float(np.max(np.abs(d - med))) > FREQ_UNIFORM_TOL * med:
+        return float("nan")
+    return med
+
+
+def snap_to_grid(freqs, requested_hz: float) -> FreqSnap:
+    """
+    Resolve a requested marker frequency against a real frequency axis, the
+    same way extract_rlc_at_freq / extract_coupling_at_freq do -- and keep the
+    two things they throw away: how far it moved, and how coarse the grid is.
+
+    Measured cost: 13.4 us on the 401-point fixture and 26.4 us on a
+    5000-point sweep (median of five runs of 2000 calls, numpy 2.x).  It runs
+    once per FILE per Calculate, not once per trace, so it is invisible next to
+    the reduction it precedes.
+    """
+    f = np.asarray(freqs, dtype=float).ravel()
+    req = float(requested_hz)
+    if f.size == 0 or not math.isfinite(req):
+        return FreqSnap(requested_hz=req)
+    idx = int(np.argmin(np.abs(f - req)))
+    actual = float(f[idx])
+    gaps = []
+    if idx > 0:
+        gaps.append(abs(actual - float(f[idx - 1])))
+    if idx + 1 < f.size:
+        gaps.append(abs(float(f[idx + 1]) - actual))
+    return FreqSnap(requested_hz=req, actual_hz=actual,
+                    step_hz=freq_grid_step(f),
+                    local_step_hz=max(gaps) if gaps else float("nan"))
+
+
+def combine_freq_snaps(snaps) -> Optional[FreqSnap]:
+    """
+    One FreqSnap for a whole run.  None when there is nothing to combine.
+
+    Two traces may name two different files -- multi-file comparison is a
+    feature, not an accident -- and two files rarely carry the same sweep, so a
+    run does not always HAVE one frequency.  When the resolved points differ
+    the combined snap says so (`agreed=False`) instead of picking one of them,
+    which would be the same silent snap committed one level up.
+    """
+    snaps = [s for s in snaps if s is not None]
+    if not snaps:
+        return None
+    resolved = [s for s in snaps if s.resolved]
+    if not resolved:
+        return FreqSnap(requested_hz=snaps[0].requested_hz)
+    if len({s.actual_hz for s in resolved}) > 1:
+        return replace(resolved[0], agreed=False)
+    return resolved[0]
+
+
+def marker_freq_text(freq, fmt: str = "{:.4g}") -> str:
+    """
+    THE renderer for a printed marker frequency, with its provenance.
+
+    `freq` is a FreqSnap, or a bare frequency in Hz for the sites that have no
+    grid to compare against (a run record restored before any Calculate).
+    `fmt` formats the value in GHz and is the caller's existing precision, so
+    that the unchanged case really is unchanged.
+
+    A bare float, an unresolved snap and an exact snap all render as the plain
+    "<f> GHz" this tool has always printed.  Returns "" when there is no finite
+    frequency at all -- the caller decides what to say instead, because "no
+    marker" is a sentence and this function returns a value.
+    """
+    if not isinstance(freq, FreqSnap):
+        if freq is None or not math.isfinite(float(freq)):
+            return ""
+        return f"{fmt.format(float(freq) / 1e9)} GHz"
+
+    if not math.isfinite(freq.requested_hz):
+        return ""
+    # Every branch below this point prints two frequencies, or names one that
+    # is not the one the numbers came from, so all of them use FREQ_WIDE_FMT
+    # rather than the caller's precision -- see its comment.  `fmt` governs the
+    # unchanged case and only the unchanged case.
+    req_txt = FREQ_WIDE_FMT.format(freq.requested_hz / 1e9)
+    if not freq.agreed:
+        # No single number is true here, so no single number is printed.  Two
+        # different things arrive at this branch -- several FILES whose sweeps
+        # disagree (combine_freq_snaps) and a table holding a row from an
+        # earlier run at another marker (_table_freq_note) -- so the wording
+        # states the fact both have in common and points at nothing it may not
+        # be able to deliver.  The per-file lines under the table and each
+        # coupling block's own Z-matrix line carry the individual points where
+        # they exist.
+        return (f"several points  (requested {req_txt} GHz; the values are not "
+                f"all at one frequency)")
+    if not freq.resolved or freq.exact:
+        hz = freq.actual_hz if freq.resolved else freq.requested_hz
+        return f"{fmt.format(hz / 1e9)} GHz"
+
+    # Snapped.  The PRIMARY number is the point the numbers came from -- that
+    # is the whole correction -- and the bracket names what was asked for.
+    act_txt = FREQ_WIDE_FMT.format(freq.actual_hz / 1e9)
+    if req_txt == act_txt:
+        # Different, but not at this precision.  Widening the one in brackets
+        # beats printing "0.1 GHz (requested 0.1 GHz)", which reads as a bug.
+        req_txt = f"{freq.requested_hz / 1e9:.9g}"
+    if freq.off_grid:
+        return (f"{act_txt} GHz  (requested {req_txt} GHz is outside the swept "
+                f"band; nearest point, {format_si(abs(freq.delta_hz), 'Hz')} "
+                f"away)")
+    if math.isfinite(freq.step_hz):
+        return (f"{act_txt} GHz  (requested {req_txt} GHz; nearest point, grid "
+                f"step {format_si(freq.step_hz, 'Hz')})")
+    return f"{act_txt} GHz  (requested {req_txt} GHz; nearest point)"
+
+
 def _write_coupling_csv(fh, writer, tc: "TraceConfig", fe: "FileEntry") -> None:
     """
     Mode-6 CSV block: Re/Im of every Z_ij, then M_nH and k for every unordered
@@ -1849,10 +2096,15 @@ def run_tab_label(number: int, when, kept: bool, unseen: bool) -> str:
             f"#{int(number)} {hhmm}")
 
 
-def _run_marker_text(hz: float) -> str:
-    if hz is None or not math.isfinite(hz):
-        return "no marker"
-    return f"@ {hz / 1e9:.3f} GHz"
+def _run_marker_text(freq) -> str:
+    """
+    '@ <freq>' for a run, with its provenance when the marker snapped.
+
+    Takes a FreqSnap or a bare Hz value -- a record built before any Calculate
+    has only the number the user typed, and renders exactly as it always did.
+    """
+    text = marker_freq_text(freq, "{:.3f}")
+    return f"@ {text}" if text else "no marker"
 
 
 def run_trace_ids(run: "RunSnapshot") -> list[int]:
@@ -1864,12 +2116,35 @@ def run_trace_ids(run: "RunSnapshot") -> list[int]:
     return sorted(out)
 
 
+def run_freq_snap(run: "RunSnapshot"):
+    """
+    This run's marker as a FreqSnap -- or as the bare requested Hz value when
+    the record carries no resolved grids (a run built before any Calculate).
+
+    `marker_freq_hz` stays the REQUESTED frequency and nothing here changes
+    that: it is the run's identity, it is what the entry box says, and several
+    tests pin it.  Where the numbers were read is `freqs`, one entry per file
+    the run touched.
+    """
+    if not run.freqs:
+        return run.marker_freq_hz
+    return combine_freq_snaps([s for _, s in run.freqs])
+
+
+def run_file_freq(run: "RunSnapshot", file_label: str):
+    """This run's marker as it resolved against ONE file's sweep."""
+    for lbl, snap in run.freqs:
+        if lbl == file_label:
+            return snap
+    return run_freq_snap(run)
+
+
 def run_headline(run: "RunSnapshot") -> str:
     """Line 1 inside a run tab, and the Runs menu's entry for it."""
     ids = run_trace_ids(run)
     when = run.when.strftime("%H:%M:%S") if run.when is not None else "--:--:--"
     plural = "trace" if len(ids) == 1 else "traces"
-    return (f"Run #{run.number} · {when} · {_run_marker_text(run.marker_freq_hz)}"
+    return (f"Run #{run.number} · {when} · {_run_marker_text(run_freq_snap(run))}"
             f" · {len(ids)} {plural} [{','.join(str(i) for i in ids)}]")
 
 
@@ -2047,6 +2322,12 @@ class CouplingSnapshot:
     color_idx: int
     file_label: str
     cres: object                # CouplingResult -- a fresh object per run
+    # Where this block's marker frequency came from, against this file's own
+    # sweep.  None for a block whose numbers Calculate did not produce this run
+    # (a frozen trace, or one "Calculate This Trace" skipped): their cres was
+    # resolved against some earlier request, and this run's request says
+    # nothing true about them.  A None here renders exactly as before.
+    freq: Optional[FreqSnap] = None
 
 
 @dataclass(frozen=True)
@@ -2071,6 +2352,9 @@ class RunSnapshot:
     """
     number: int
     when: datetime
+    # The frequency that was REQUESTED.  This is the run's identity and the
+    # number the entry box was showing; where the values were actually read is
+    # `freqs`, because that is a property of each FILE's sweep, not of the run.
     marker_freq_hz: float
     rows: tuple = ()
     blocks: tuple = ()
@@ -2082,6 +2366,13 @@ class RunSnapshot:
     signatures: tuple = ()
     prev_number: int = 0
     changed: tuple = ()
+    # ((file_label, FreqSnap), ...): where `marker_freq_hz` actually landed, one
+    # entry per file this run touched, resolved at Calculate time while the
+    # frequency axes were in hand.  Declared LAST because every construction in
+    # the repo is by keyword and a new field in the middle would silently
+    # reorder anything that is not.  Floats only, so a run record still does not
+    # grow with the sweep (tests/test_run_snapshot.py walks it to prove that).
+    freqs: tuple = ()
 
     def with_visibility(self, traces) -> "RunSnapshot":
         """
@@ -2118,12 +2409,12 @@ def _snapshot_row(tc: "TraceConfig", file_label: str, res) -> RowSnapshot:
 
 
 def _snapshot_block(tc: "TraceConfig", file_label: str,
-                    cres) -> CouplingSnapshot:
+                    cres, freq: Optional[FreqSnap] = None) -> CouplingSnapshot:
     return CouplingSnapshot(id=tc.id, label=tc.label,
                             port_desc=tc.port_descriptor(),
                             enabled=bool(tc.enabled),
                             color_idx=int(tc.color_idx),
-                            file_label=file_label, cres=cres)
+                            file_label=file_label, cres=cres, freq=freq)
 
 
 def _snapshot_fit(tc: "TraceConfig", text: str) -> FitSnapshot:
@@ -2147,7 +2438,39 @@ class RunTab:
     unseen: bool = False                # arrived while the reader was elsewhere
 
 
-def _format_results_table(rows: Sequence[RowSnapshot], units_mode: str) -> str:
+def _table_freq_note(rows: Sequence[RowSnapshot],
+                     freq: Optional[FreqSnap]) -> str:
+    """
+    The results table's "read at" line, or "" when there is nothing to say.
+
+    The ACTUAL frequency is taken from the rows, not from `freq`: every
+    RLCResult carries the point it was read at, and a row Calculate did not
+    produce this run -- a frozen trace, or one that "Calculate This Trace"
+    skipped -- carries an older one.  So the rows decide where, and `freq`
+    only supplies what was asked for.  When the rows disagree among
+    themselves the line says so instead of picking one, which is the same
+    rule combine_freq_snaps follows for several files.
+    """
+    if not isinstance(freq, FreqSnap) or not math.isfinite(freq.requested_hz):
+        return ""
+    actuals = set()
+    for r in rows:
+        hz = getattr(r.res, "freq_hz", float("nan"))
+        if hz is not None and math.isfinite(hz):
+            actuals.add(float(hz))
+    if not actuals:
+        return ""
+    if len(actuals) == 1:
+        shown = replace(freq, actual_hz=actuals.pop(), agreed=True)
+    else:
+        shown = replace(freq, agreed=False)
+    if shown.agreed and shown.exact:
+        return ""
+    return f"{_SWATCH_PAD} ! read at: {marker_freq_text(shown, '{:.6g}')}"
+
+
+def _format_results_table(rows: Sequence[RowSnapshot], units_mode: str,
+                          freq: Optional[FreqSnap] = None) -> str:
     """
     rows: list of RowSnapshot. Returns a multi-line aligned table.
     units_mode in {'smart', 'aligned'}.
@@ -2157,6 +2480,13 @@ def _format_results_table(rows: Sequence[RowSnapshot], units_mode: str) -> str:
     prefix and colours them.  Nothing here knows the colours: this stays a
     pure text function and the palette lookup stays in the one place that owns
     a Text widget.
+
+    `freq` supplies what the rows cannot know -- the frequency that was ASKED
+    for -- and buys the table a "read at" line whenever that is not where the
+    numbers came from.  It is None for every pure caller (and for
+    tests/_render_capture.py), and a None, or a marker that landed on a data
+    point, adds no line at all: the table below has to look exactly as it
+    always did in the case that is almost always the case.
     """
     if not rows:
         return ""
@@ -2189,6 +2519,10 @@ def _format_results_table(rows: Sequence[RowSnapshot], units_mode: str) -> str:
         ))
     else:
         lines.append(f"{_SWATCH_PAD} file: {file_labels_in_order[0]}")
+
+    note = _table_freq_note(rows, freq)
+    if note:
+        lines.append(note)
 
     # Header
     if units_mode == "aligned":
@@ -2445,10 +2779,19 @@ def _format_coupling_block(block: CouplingSnapshot, units_mode: str) -> str:
     """
     cres = block.cres
     names = list(cres.names)
+    # cres.freq_hz is authoritative for WHERE this matrix was read -- it always
+    # was, and it is the number this line has always printed.  The snapshot's
+    # FreqSnap contributes only what cres cannot know: what was ASKED for, and
+    # how coarse the grid is.  Overriding the snap's own actual with cres's is
+    # what stops the two from ever drifting into printing different numbers,
+    # which is the whole failure this change exists to end.
+    freq = cres.freq_hz
+    if isinstance(block.freq, FreqSnap):
+        freq = replace(block.freq, actual_hz=float(cres.freq_hz))
     lines = [
         f"  [{block.id}] {block.label}  |  file: {block.file_label}  |  "
         f"{block.port_desc}",
-        f"  Z matrix @ {cres.freq_hz / 1e9:.6g} GHz   (Ω, Re+jIm; "
+        f"  Z matrix @ {marker_freq_text(freq, '{:.6g}')}   (Ω, Re+jIm; "
         f"off-diagonal = mutual, every other port open)",
         _format_z_matrix(names, cres.Z_matrix),
     ]
@@ -5564,9 +5907,35 @@ class App(tk.Tk):
         # two runs of an unchanged spec are equal in every field and are still
         # two different runs.
         self._run_counter += 1
+
+        # Resolve the marker against every sweep this run will touch, BEFORE
+        # the header is printed.  The header has to name the frequency the
+        # numbers under it actually come from, and until this existed it named
+        # the one the user typed while the Z-matrix line twenty lines further
+        # down named the other, with nothing on screen to reconcile them.
+        #
+        # One argmin per FILE, deduplicated, not one per trace: 13.4 us on the
+        # 401-point fixture and 26.4 us on a 5000-point sweep, against a Schur
+        # reduction measured in tens of milliseconds.
+        freq_snaps: list = []
+        for tc in self.traces:
+            fe = self._file_by_label(tc.file_label)
+            if fe is None or any(lbl == fe.label for lbl, _ in freq_snaps):
+                continue
+            freq_snaps.append((fe.label, snap_to_grid(fe.ts.freqs, f_rlc_hz)))
+        run_freq = combine_freq_snaps([s for _, s in freq_snaps])
+        # A snap SMALLER than half a grid step is the tool doing its job on a
+        # sampled axis, and is reported without badging the Log.  A snap larger
+        # than that means the requested frequency is off the end of the sweep
+        # (see FreqSnap.off_grid), which is a different thing entirely: the
+        # answer is the band edge, not the frequency that was asked for.
+        freq_sev = (LOG_WARN if any(s.off_grid for _, s in freq_snaps)
+                    else LOG_INFO)
         scope = "" if only is None else f" [{only.id}] {only.label} only"
-        self._append_result("\n=== Calculate @ {:.4g} GHz{} ==="
-                            .format(f_rlc_hz / 1e9, scope))
+        self._append_result(
+            f"\n=== Calculate @ "
+            f"{marker_freq_text(run_freq if run_freq is not None else f_rlc_hz)}"
+            f"{scope} ===", freq_sev)
 
         # First pass: compute Z and per-freq RLC; collect rows + fit_lines.
         #
@@ -5683,7 +6052,10 @@ class App(tk.Tk):
                         f"  [{tc.id}] {tc.label}: ERROR {e}", LOG_ERROR)
                     self._append_result(traceback.format_exc(), LOG_ERROR)
                     continue
-                coupling_blocks.append(_snapshot_block(tc, fe.label, cres))
+                coupling_blocks.append(_snapshot_block(
+                    tc, fe.label, cres,
+                    freq=next((s for lbl, s in freq_snaps
+                               if lbl == fe.label), None)))
                 if do_fit:
                     fit_lines.append(_snapshot_fit(
                         tc,
@@ -5767,7 +6139,7 @@ class App(tk.Tk):
             blocks=tuple(coupling_blocks), fits=tuple(fit_lines),
             signatures=sigs,
             prev_number=(prev.number if prev is not None else 0),
-            changed=changed)
+            changed=changed, freqs=tuple(freq_snaps))
         self._render_results(self._last_run)
         self._add_run_tab(self._last_run)
 
@@ -5963,9 +6335,10 @@ class App(tk.Tk):
         hidden = [r for r in run.rows if not r.enabled]
         hidden += [b for b in run.blocks if not b.enabled]
 
+        run_freq = run_freq_snap(run)
         segs: list = []
         if shown_rows:
-            segs.append((_format_results_table(shown_rows, units),
+            segs.append((_format_results_table(shown_rows, units, run_freq),
                          tuple(r.color_idx for r in shown_rows), LOG_INFO))
             for f in run.fits:
                 if f.enabled:
@@ -5973,6 +6346,16 @@ class App(tk.Tk):
                     # that worked, so the severity has to come off the text.
                     segs.append((f.text, (),
                                  LOG_WARN if "ERROR" in f.text else LOG_INFO))
+        if (isinstance(run_freq, FreqSnap) and not run_freq.agreed
+                and (shown_rows or shown_blocks)):
+            # Several files, several sweeps, several answers: no one line can
+            # name the frequency, so each file names its own.  Built here
+            # rather than at the Calculate call site because the run PAGE has
+            # to carry it too -- _run_report_segments is the one builder.
+            for lbl, snap in run.freqs:
+                segs.append((f"  {lbl}: read at "
+                             f"{marker_freq_text(snap, '{:.6g}')}", (),
+                             LOG_WARN if snap.off_grid else LOG_INFO))
         for block in shown_blocks:
             segs.append(("", (), LOG_INFO))
             segs.append((_format_coupling_block(block, units), (), LOG_INFO))
@@ -6405,9 +6788,23 @@ class App(tk.Tk):
                                  f"{_freeze_stamp_of(tc.label)}, numbers from "
                                  f"an earlier run\n")
                     elif run is not None:
+                        # The marker stays the REQUESTED frequency here, and
+                        # deliberately: this line is the run's identity -- the
+                        # number that was in the entry box -- and the rows
+                        # below it are the FULL sweep, so nothing in this file
+                        # was snapped to anything.  What the snap does change
+                        # is the results pane, so where it moved gets its own
+                        # key line rather than a parenthetical buried inside a
+                        # value a script may be reading.
                         fh.write(f"# Run: #{run.number} "
                                  f"{_run_marker_text(run.marker_freq_hz)}, "
                                  f"{run.when.strftime('%H:%M:%S')}\n")
+                        snap = run_file_freq(run, fe.label)
+                        if (isinstance(snap, FreqSnap)
+                                and not (snap.exact and snap.agreed)):
+                            fh.write(
+                                f"# Marker: the reported R/L/C/Q/M/k were read "
+                                f"at {marker_freq_text(snap, '{:.6g}')}\n")
                     # Gate on the DATA, not the mode -- _on_calculate routes on
                     # the measurement-port count, so a Mode 5 spec with two
                     # probes has a full Zmat too.  Gating on `mode == 6` used to

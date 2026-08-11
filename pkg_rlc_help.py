@@ -845,6 +845,13 @@ then use it in your circuit simulator, where the loading is
 modelled. Just do not confuse the open-port M with a
 short-circuit transfer measurement; they are different numbers.
 
+The OTHER half of the assumption is what you did with the ports
+that are not probes. Everything you did not name is OPEN, and
+whether a package's ground balls are ideal grounds, series
+inductors or left open moves M by decibels, not percent. The
+"Where the number came from" section at the bottom of this tab is
+the tool that answers "how much of my M is that assumption?".
+
 What each reported value means
 ------------------------------
 
@@ -1113,6 +1120,287 @@ Common mistakes
 - Reading M/L as a measured current ratio far below the tank
   frequency. It is a first-order (R-free) budget number; see the
   M/L entry above.
+
+
+Where the number came from: attribution (advanced)
+--------------------------------------------------
+Everything above tells you WHAT M is. This section is about WHERE
+it came from, and it exists because of a real 6.07 dB argument:
+the same two coils, out of the same EM solve, extracted twice,
+gave |M| = 1.71 pH and |M| = 3.44 pH. Both runs were correct. What
+differed was the grounding assumption -- and nothing on the screen
+said so.
+
+`pkg_rlc_attrib.py` answers two questions about ONE frequency of
+ONE spec:
+
+  Q2  ATTRIBUTION. Split the Z_ab you just read into "the bare EM
+      coupling" plus one signed term per termination you declared.
+      The terms add up to the total EXACTLY -- this is
+      superposition, not a linearisation, not a sensitivity
+      estimate, not a percentage anyone apportioned by hand.
+  Q1  SENSITIVITY. What would Z_ab be if that ground ball were
+      open instead? A 50 ohm resistor? A 1 nH lead? Also exact:
+      it re-solves the network, it does not extrapolate.
+
+The algebra, if you want it, is one Woodbury update: terminating a
+set of ports is a low-rank change to the file's own admittance, so
+the whole answer is a small dense solve on an m x m matrix, where
+m is the number of terminations you declared. See docs/theory.md
+section 13.
+
+The baseline
+------------
+The split is always relative to a stated BASELINE, and the
+baseline is: probe sides merged, EVERY OTHER PORT OPEN. Nothing
+else -- no ground, no short, no lumped element. Each declared
+termination is then one element on top of it:
+
+      ground / vdd     one terminal, impedance 0
+      lumped_to_gnd    one terminal, impedance from R/L/C
+      short_to         two terminals, impedance 0
+      lumped_between   two terminals, impedance from R/L/C
+
+Change the baseline and every term changes, even though the total
+and the physics do not. That is the same caveat PEEC states about
+partial inductances: individually reference-dependent, only
+collectively physical. The report names the baseline it used, so
+compare two reports only when their baselines match.
+
+Sign convention -- printed on every report and every export
+-----------------------------------------------------------
+  * The victim reading is V(+) - V(-) of the victim measurement
+    port.
+  * The aggressor is driven with +1 A into its (+) side and out of
+    its (-) side. So every term is signed the way Z_ab = V_a / I_b
+    is.
+  * An element current I_e > 0 flows OUT of the structure into
+    ground for a SHUNT element (ground / vdd / lumped_to_gnd), and
+    from the first port to the second for a SERIES element
+    (short_to / lumped_between).
+  * Flip either measurement port's +/- assignment and every term
+    flips together. RELATIVE signs between terms are physical;
+    absolute signs are a labelling choice.
+
+Three caveats, and none of them is a footnote
+---------------------------------------------
+1. IT IS BLIND TO OPEN PORTS. An open port contributes no element
+   and therefore no term -- it is absent from the table, not small
+   in it. So the contribution table is NOT a ranking of ports; it
+   is a ranking of the DECLARATIONS in your spec. The 45 open
+   ports of a package file are simply not in it. Ports you have
+   not decided about yet are covered only by the sensitivity side,
+   and it covers them by hypothesising a termination, not by
+   measuring one.
+
+2. THE SPLIT DEPENDS ON HOW THE SPEC IS SPELLED. These two are the
+   same network:
+
+        3 ground                3 short_to 4
+        4 ground                3 ground
+
+   Same total M, to the last digit that means anything. Different
+   split. Measured on tests/fixtures/diff_pair_4port.s4p at 5 GHz
+   with "agg = 1", "vic = 2":
+
+        3 ground / 4 ground         3 short_to 4 / 3 ground
+          bare EM      251 pH         bare EM      251 pH
+          ground 3     252 pH         ground 3     253 pH
+          ground 4     506 pH         short 3-4    506 pH
+          total       1.01 nH         total       1.01 nH
+
+   Both are right. Two ways of describing one network are two
+   different tearings of it, and they answer different questions.
+   Reorganise your connection table for readability and the
+   contribution column can move -- that is not a defect.
+
+3. MOST OF THE RETURN CURRENT CAN BE INSIDE THE EM MODEL. The
+   reference plane in your EM solve is not a port, so no
+   declaration of yours reaches it. Every report therefore prints
+   a return-path budget: how much of the aggressor's return
+   current went through your declared elements versus through the
+   model's own reference. On a representative package case that
+   split was 0.05% declared / 99.95% inside the model, and when
+   the model dominates the report says in plain words that the
+   decomposition CANNOT separate the return path. Do not read a
+   "forward path minus return path" conclusion out of small
+   numbers in the table.
+
+   A fourth boundary, while you are here: re-terminating existing
+   ports cannot evaluate NEW METAL. A shield, an extra via, a
+   widened return path -- none of those is a termination of a port
+   that already exists. They change the EM answer itself and need
+   a new solve. Sensitivity output looks like a layout-exploration
+   tool and is not one.
+
+What can and cannot be split per term
+-------------------------------------
+A quantity splits if it is a fixed real scalar times something
+R-LINEAR in Z_ab, read at one configuration:
+
+      YES:  Z_ab, Re Z_ab, Im Z_ab, M, M/L_a, k
+      NO:   C_c, Q, |Z|, anything in dB
+
+C_c = -1/(omega*Im Z_ab) is a RECIPROCAL: superposition adds
+impedances, not their inverses, so the per-element terms of C_c do
+not sum to C_c. C_c is still reported as a TOTAL -- it is the
+right reading whenever Im(Z_ab) < 0 -- just never per term. Q is a
+ratio of two decomposable things; |Z| is a norm; dB is a logarithm
+of a magnitude and has no sign. Ask for one of those per term and
+the tool refuses BY NAME and tells you which linear quantity to
+decompose instead.
+
+Where to run it
+---------------
+There is no window for this yet. It lives on the --cli path:
+add "--attribute VICTIM,AGGRESSOR" to any "--mode coupling" run,
+where both sides are measurement-port NAMES as you gave them to
+--mport. Everything below came out of that.
+
+      python pkg_rlc_extractor.py --cli <file> --mode coupling \\
+          --mport "agg = 1" --mport "vic = 2" --gnd "3,4" \\
+          --freq 5.0 --attribute vic,agg
+
+Five more flags, all inert without --attribute:
+
+  --attribute-alt SPEC
+      A candidate termination for the sensitivity scan;
+      repeatable. "open", "ideal", or a series R/L/C in the same
+      spelling the connections table uses -- R=50, L=0.3n,
+      "R=0.5,L=1n", C=100p. With none given the scan is limited
+      to "open" and "ideal", the two STRUCTURAL candidates that
+      need no judgement about your package. The tool will not
+      guess your ball's lead inductance for you.
+  --attribute-ground-model MODEL
+      "diag" (default, exactly as declared), "diag:SPEC" (each
+      shunt lead gets SPEC on its own INDEPENDENT lead) or
+      "shared:SPEC" (they all ALSO share SPEC back to the
+      reference). See the last section on this tab -- the choice
+      is worth 6 to 10 dB.
+  --attribute-freqs 1,5,10
+      Re-rank the contributions at each of these too, so a
+      ranking read off one frequency can be checked against the
+      band.
+  --attribute-group row | flat | name
+      How elements are grouped for the joint-effect section.
+      "row" (default) groups by the flag that declared the port.
+      "name" groups by port names with the trailing index
+      stripped -- a NAMING HEURISTIC, and the report says so.
+  --attribute-csv PATH
+      Every record, one row each, tagged by a "section" column.
+      The terminal caps some tables for readability; the CSV
+      does not.
+
+Worked example, from a fixture in this repo
+-------------------------------------------
+tests/fixtures/diff_pair_4port.s4p is two coupled lines: port 1
+(in_p) runs to port 3 (out_p), port 2 (in_n) runs to port 4
+(out_n). Drive line one, listen on line two, with both far ends
+grounded:
+
+      agg = 1     vic = 2     GND = 3,4     f = 5 GHz
+
+That is exactly the command above, and section 1 of its report
+reads:
+
+   group        element            |I_e|   M term   share   quad
+   -----------  ----------------  ------  -------  ------  -----
+   --gnd 3,4    ground port 3        1 A   252 pH  25.00%  -0.00%
+   --gnd 3,4    ground port 4     997 uA   506 pH  50.12%   0.00%
+   (baseline)   bare EM coupling      --   251 pH  24.88%  -0.00%
+
+with the reconciliation in section 2:
+
+   Z_ab total (compute_z_matrix) : -2.49471e-09 + j31.7316 ohm
+   Z_ab total (sum of the terms) : -2.49469e-09 + j31.7316 ohm
+   M    total                    : 1.01 nH
+   residual 6.42e-13 relative, floor 3.62e-09
+
+How to read that:
+
+  * THREE QUARTERS OF THE ANSWER IS THE GROUNDING, not the metal.
+    Open both grounds and M falls from 1.01 nH to the 251 pH bare
+    term. If you were arguing about a 6 dB discrepancy, this is
+    where it lives.
+  * The two ground balls are NOT worth the same. Port 4 is the far
+    end of the VICTIM's own line and contributes 506 pH; port 3 is
+    the far end of the aggressor's and contributes 252 pH. That
+    asymmetry is physical and is exactly what the table is for.
+  * "share" is a signed PROJECTION onto the total,
+    Re(term * conj(total)) / |total|^2 -- not a complex ratio and
+    not a magnitude ratio. "quad" is the part at 90 degrees to the
+    total, which inflates any magnitude-based cancellation measure
+    while being harmless. Here quad is 0.00% because everything is
+    in phase. The share column is suppressed outright, with a
+    named reason, when the total is near zero: shares of a number
+    that is pure cancellation mean nothing.
+  * The residual is the cross-check. The AUTHORITATIVE total is
+    always compute_z_matrix's; the sum of the terms is the check
+    on it. 6.42e-13 against a floor of 3.62e-09 means the two
+    algorithms agree far better than they had to. The floor is
+    condition-aware, not fixed: a well-conditioned 4-port reaches
+    1e-13 and a 153-port package cannot beat ~1e-7, so a fixed
+    gate would refuse exactly the files this exists for. If the
+    residual is ever catastrophic the per-element split is
+    withheld -- the totals never are.
+
+Now ask the other question. What if those grounds were not ideal?
+
+  * ONE AT A TIME. Opening ground 3 alone: -506 pH. Opening
+    ground 4 alone: -506 pH.
+  * BOTH AT ONCE: -759 pH, not -1.01 nH. The non-additivity is
+    +254 pH -- a THIRD of the effect, out of only two elements.
+    With sixty ground balls, every single-ball delta is nearly
+    zero because the other fifty-nine already carry the return,
+    and so is every pairwise second difference: the effect is
+    order-sixty. That is why there is a group-level and a
+    cumulative answer and not just a one-at-a-time list.
+  * THE WHOLE RANGE, in closed form. Z_ab as a function of one
+    element's impedance z is a Mobius map (alpha + beta*z) /
+    (gamma + delta*z), so the endpoints, the interval and the
+    extremum are analytic -- no loop, no sampling. Sweeping
+    ground 3's series inductance on this fixture:
+        ideal (L = 0)   1.01 nH
+        open  (L = inf)  504 pH
+        actual range over all L >= 0:  [504 pH, 1.18 nH]
+    Note the range is WIDER than the two endpoints. A series L
+    resonates with the structure's shunt C, so the [ideal, open]
+    pair is not a bound; here the peak is 1.18 nH at L = 505 nH.
+    The tool detects that and says so instead of quoting a
+    bracket that does not hold.
+
+One more thing this changes about your GND field
+------------------------------------------------
+A ground field written as N independent lumped_to_gnd inductors
+says the balls have N independent return paths. Real package
+ground balls share a return plane. N independent z in parallel is
+z/N; N balls sharing one z is z -- so the independent spelling
+understates the common-mode return inductance by roughly
+(1 + (N-1)*k_ret), and that is worth more decibels than most
+things being argued about. Measured three times on three
+different networks: 9.60 dB, 8.09 dB, and 6.03 dB on
+diff_pair_4port.s4p above. Monotone in the coupling, no threshold,
+so there is no safe default and the tool refuses to pick one.
+
+On the CLI that is one flag: --attribute-ground-model diag:L=1n
+versus shared:L=1n, and the report prints both against the spec
+as declared.
+
+You can also spell it right here in Mode 5, with no attribution
+code at all: tie the whole ground set with one short_to row, then
+hang ONE lumped_to_gnd on any port of it.
+
+      independent:  3 lumped_to_gnd L=1n
+                    4 lumped_to_gnd L=1n        M = 1.0120 nH
+
+      shared:       3 short_to 4
+                    3 lumped_to_gnd L=1n        M = 2.0259 nH
+
+Same file, same probes, same frequency: 6.03 dB apart. (It does
+not matter WHICH port of the set carries the inductor -- by then
+they are one node, and the two spellings give bit-identical
+answers.) Which one is right is a question about your package,
+not about this tool -- but you should answer it on purpose.
 """
 
 
@@ -1252,6 +1540,27 @@ window:
 The window stays open while you edit and follows what you type. The
 same open-port check also appears on the validation strip under the
 tables, so you see it without opening anything.
+
+What a connection row costs you, in decibels
+--------------------------------------------
+Every row above is an assumption, and the assumptions are not
+small. On tests/fixtures/diff_pair_4port.s4p at 5 GHz, three
+quarters of the extracted M comes from the two "ground" rows and
+only a quarter from the metal; and rewriting the same ground set
+as one SHARED return
+
+      3 short_to 4                (instead of two separate
+      3 lumped_to_gnd L=1n         lumped_to_gnd L=1n rows)
+
+moves M by 6.03 dB, because N independent z in parallel is z/N
+while N balls sharing one z is z.
+
+"Where the number came from" on the Mode 6 tab is the section that
+splits an extracted M into one signed term per row you wrote here,
+and tells you what each row would be worth if it were open, a
+resistor or a lead inductance instead. It also states, in those
+words, what the split is blind to: a port you left OPEN
+contributes no row, so it contributes no term.
 """
 
 
@@ -1369,6 +1678,34 @@ Reads:   L_wA = 1.8 nH, L_wB = 1.9 nH
 
 See the "Mode 6 (Coupling)" tab for what each number means and for
 the layout-iteration loop.
+
+
+Example F2: how much of that M is the GND field?
+-------------------------------------------------
+Same file as Example F. You changed "GND Ports = 5,6" to
+"GND Ports = 5" and M moved by several dB, and now you need to
+know which reading to defend.
+
+That is what "Where the number came from" at the bottom of the
+Mode 6 tab is for. It splits the extracted M into
+
+      bare EM coupling  +  one signed term per GND / short /
+                           lumped row you declared
+
+with the terms summing to the total EXACTLY (superposition, not an
+estimate), and it answers the other direction too -- what M would
+be with any of those rows open, resistive, or a lead inductance,
+and the whole range in closed form.
+
+Measured on tests/fixtures/diff_pair_4port.s4p with "agg = 1",
+"vic = 2", GND = 3,4 at 5 GHz: of M = 1.01 nH, the bare EM
+coupling is 251 pH and the two ground rows are 252 pH and 506 pH.
+Open both grounds and M is the 251 pH. Ground 4 is worth twice
+ground 3 because it is the far end of the VICTIM's own line.
+
+Read the three caveats on that tab before quoting any of it -- in
+particular, the table ranks the rows you DECLARED, so a port you
+left open is absent from it rather than small in it.
 
 
 Example G: PDN impedance with mixed VDD/GND balls

@@ -4,6 +4,8 @@ A desktop tool for RF and analog IC engineers to extract R, L, C, and Q from Tou
 
 The mental model for a measurement is a pair of multimeter probes: a **red probe** on the `+` ports and a **black probe** on the `-` ports. One such probe pair gives a self impedance; several of them alive at once give a G x G impedance matrix whose diagonal is the self impedances and whose off-diagonal is the open-circuit mutual impedance.
 
+A separate layer, [port attribution](#port-attribution-where-a-coupling-number-comes-from), answers the question that follows: of the `M` you just extracted, how much is the metal and how much is the grounding you assumed? It splits one `Z_ab` into the bare EM coupling plus one signed term per termination you declared — exactly, by superposition — and tells you what the answer would be with any of those terminations changed.
+
 ---
 
 ## Installation
@@ -161,6 +163,10 @@ CLI flags:
 | `--diagnose` | Print the file-structure report and exit (`0` = nothing wrong, `1` = something is). Needs no `--cli` |
 | `--lenient` | Skip values that do not parse instead of refusing the file            |
 
+`--mode coupling` additionally takes the `--attribute*` flags, which are listed in their own
+`--help` group and are documented under
+[Port attribution](#port-attribution-where-a-coupling-number-comes-from).
+
 ---
 
 ## Reading files
@@ -266,6 +272,12 @@ with no visible difference. The full matrix is now produced whenever the spec de
 or more measurement ports, whichever mode wrote it.
 
 Mode codes are stable and are never renumbered, so saved configurations keep working.
+
+Beside the modes there is one **post-processing layer**, which is not a mode and gets no code:
+
+| Layer | Module | What it answers |
+|-------|--------|-----------------|
+| Port attribution | `pkg_rlc_attrib.py` | Of the `Z_ab` a mode just produced, how much is the bare EM coupling and how much is each termination you declared — and what the answer would be if any of them were different. Exact both ways. See [Port attribution](#port-attribution-where-a-coupling-number-comes-from). |
 
 ### Mode 4 is retired: VDD ports go into the GND field
 
@@ -392,12 +404,233 @@ at 1 GHz. At the tank frequency — where the budget lives — they agree.
 
 ---
 
+## Port attribution: where a coupling number comes from
+
+The loop above assumes the extracted `M` is a property of the layout. It is not, entirely.
+The same two coils out of the same EM solve, extracted twice, gave `|M| = 1.71 pH` and
+`|M| = 3.44 pH` — **6.07 dB apart**, both runs correct. What differed was the grounding
+assumption, and nothing on screen said so. `pkg_rlc_attrib.py` is the layer that says so.
+
+It answers two questions about **one frequency of one spec**:
+
+| | Question | Exactness |
+|---|---|---|
+| **Q2 — attribution** | Split `Z_ab` into the bare EM coupling plus one signed term per termination you declared. | Exact. The terms sum to the total by superposition — not a linearisation, not an estimate, not percentages apportioned by hand. |
+| **Q1 — sensitivity** | What would `Z_ab` be if that ground ball were open? A 50 Ω resistor? A 1 nH lead? All of them at once? | Exact. It re-solves the network through a Woodbury update; it does not extrapolate. |
+
+The algebra is one rank-`m` update, where `m` is the number of terminations you declared, so
+a 60-ball ground field costs a 60x60 solve rather than another Schur reduction of the whole
+file. The derivation, the prior art it rederives (Kron diakoptics, the adjoint variable
+method, PEEC partial elements, transfer-path analysis) and the precise statement of which
+quantities decompose are in [docs/theory.md §13](docs/theory.md).
+
+### Running it — CLI
+
+Add `--attribute VICTIM,AGGRESSOR` to any `--mode coupling` run. Both sides are measurement
+port **names** as given to `--mport` (a plain integer is read as a 1-based position in that
+list), and they must differ — `Z_ab` is a mutual impedance.
+
+```bash
+python pkg_rlc_extractor.py --cli tests/fixtures/diff_pair_4port.s4p --mode coupling \
+    --mport "agg = 1" --mport "vic = 2" --gnd "3,4" --freq 5.0 \
+    --attribute vic,agg
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--attribute VICTIM,AGGRESSOR` | Turn the whole attribution report on. `--mode coupling` only; every flag below is inert without it and is refused by name if you pass it anyway. |
+| `--attribute-alt SPEC` | A candidate termination for the sensitivity scan; **repeatable**. `open`, `ideal`, or a series R/L/C in the Mode 5 DSL's own spelling (`R=50`, `L=0.3n`, `R=0.5,L=1n`, `C=100p`). With none given the scan is limited to the two **structural** candidates, `open` and `ideal`, which need no judgement about your package — the tool will not guess your ball's lead inductance. Any finite candidate is also used as a victim load in the exact current-transfer ratio. |
+| `--attribute-ground-model MODEL` | `diag` (default) = exactly as declared. `diag:SPEC` = every shunt lead gets `SPEC` as its own **independent** series impedance. `shared:SPEC` = every shunt lead keeps what it declares and they all **also** share `SPEC` back to the reference (a dense element-impedance matrix). See [below](#the-ground-field-independent-leads-understate-the-return-inductance) — this is worth 6-10 dB. |
+| `--attribute-freqs LIST` | Extra frequencies in GHz to re-rank the contributions at, so a ranking read off one frequency can be checked for stability across the band. `--freq` is always the first column. |
+| `--attribute-group row \| flat \| name` | How elements are grouped for the joint-effect section. `row` (default) groups by the flag that declared the port — this CLI's equivalent of the GUI's connection-table provenance. `flat` is one element per group. `name` groups by the file's port names with the trailing index stripped, which is a **naming heuristic**, not a fact about the network, and the report says so. |
+| `--attribute-csv PATH` | Write every record — terms, the **uncapped** sensitivity scan, joint effects, the cumulative curve, the sweeps, the cross-frequency ranks — one row per record, tagged by a `section` column. The terminal caps some tables for readability; the CSV does not, which is what makes the `(see --attribute-csv)` pointers true. |
+
+The report comes out in nine numbered sections: the sign convention, the decomposition, the
+reconciliation against `compute_z_matrix`, the return-path budget, the ground-model
+comparison, the sensitivity scan and leave-one-out, the joint effects, the cumulative curve,
+the closed-form sweeps, and cross-frequency rank stability. Section 1 of the run above:
+
+```
+  group                element            |I_e|           Z term (Ω)  M term   share    quad
+  -------------------  ----------------  ------  -------------------  ------  ------  ------
+  --gnd 3,4            ground port 3        1 A  -6.041e-10 + j7.933  252 pH  25.00%  -0.00%
+  --gnd 3,4            ground port 4     997 uA  -2.214e-09 + j15.91  506 pH  50.12%   0.00%
+  (baseline: bare EM)  bare EM coupling      --   3.231e-10 + j7.894  251 pH  24.88%  -0.00%
+```
+
+Three quarters of that `M` is the grounding, not the metal: open both grounds and it falls to
+the 251 pH bare term. The two balls are not worth the same, either — port 4 is the far end of
+the **victim's** own line and is worth twice port 3, the far end of the aggressor's. There is
+no GUI window yet (stage 4 of `docs/design_port_attribution.md`); the CLI report and the CSV
+are the whole surface today.
+
+### Running it — from Python
+
+`pkg_rlc_attrib.py` imports `pkg_rlc_core` and nothing else, so it is usable directly against
+any `TerminationSet` from any mode — `build_terminations_coupling`, `build_terminations_rows`
+(the Mode 5 tables) or `parse_custom_termination_text` (the DSL). From the repo root:
+
+```python
+import numpy as np
+from pkg_rlc_core import (parse_touchstone, s_to_y, parse_mport_spec,
+                          build_terminations_coupling)
+from pkg_rlc_attrib import build_context, decompose, format_decomposition
+
+d = parse_touchstone("tests/fixtures/diff_pair_4port.s4p")
+Y = s_to_y(d.s, d.z0)
+terms = build_terminations_coupling(
+    [parse_mport_spec("agg = 1"), parse_mport_spec("vic = 2")],
+    gnd_ports=[3, 4], nports=d.nports)
+
+ctx = build_context(Y, d.freqs, terms, freq_hz=5e9)
+print("\n".join(format_decomposition(decompose(ctx, "vic", "agg", "M"))))
+```
+
+The API, all exact and all verified in `tests/test_attrib_core.py` and
+`tests/test_attrib_vs_engine.py` against an honest recompute through `compute_z_matrix` with
+a rebuilt `TerminationSet`:
+
+| Call | Answers |
+|------|---------|
+| `decompose(ctx, victim, aggressor, quantity)` | the split above, for `Z` / `ReZ` / `ImZ` / `M` / `M/L_a` / `k` |
+| `sensitivity(...)` | every element against every candidate termination |
+| `group_joint(...)` | a whole connection-table **row** changed at once, plus the non-additivity against the sum of the individuals |
+| `cumulative_curve(...)` | rank by single-element effect, then change the top `k = 1, 2, 4, 8, …` together |
+| `leave_one_out(...)` | start from all-ideal and remove one at a time — usually more informative than one-at-a-time from all-open |
+| `sweep_mobius(...)` | `Z_ab` versus one element's impedance in **closed form**: both endpoints, the whole interval and the extremum, with no loop |
+| `transfer_ratio(...)` | the exact `-Z_ab/Z_aa` current-transfer ratio, and a loaded `-Z_ab/(Z_aa + Z_load)`, against the `M/L_a` Norton approximation |
+| `termination_impedance_diagonal` / `_shared_return` | the two `Zt` topologies behind `--attribute-ground-model` |
+
+### Sign convention, stated on every report
+
+The victim reading is `V(+) − V(−)` of the victim measurement port; the aggressor is driven
+`+1 A` into its `+` side and out of its `−` side, so every term is signed the way
+`Z_ab = V_a / I_b` is. An element current `I_e > 0` flows **out of the structure into ground**
+for a shunt element (`ground` / `vdd` / `lumped_to_gnd`) and **from the first port to the
+second** for a series element (`short_to` / `lumped_between`). Flipping either measurement
+port's `+/−` assignment flips every term together: **relative** signs between terms are
+physical, absolute ones are a labelling choice.
+
+### Three things it cannot do
+
+- **It is blind to open ports.** An open port contributes no element and therefore no term —
+  it is *absent* from the table, not small in it. The contribution table is a ranking of the
+  **declarations in your spec**, never of ports. Only the sensitivity side reaches a port you
+  have not decided about, and it reaches it by hypothesising a termination.
+- **The split depends on how the spec is spelled.** `3 ground` + `4 ground` and
+  `3 short_to 4` + `3 ground` are the same network and give the same total; measured on
+  `diff_pair_4port.s4p` at 5 GHz they split as `bare 251 pH / gnd3 252 pH / gnd4 506 pH`
+  and `bare 251 pH / gnd3 253 pH / short 3-4 506 pH`. Both are right — two descriptions of
+  one network are two different tearings of it. Reorganise your table for readability and
+  the contribution column can move; that is not a defect.
+- **Most of the return current can be inside the EM model.** The reference plane is not a
+  port, so no declaration of yours reaches it. Every report prints a return-path budget; on
+  a representative package case it read **0.05 % declared / 99.95 % inside the model**, and
+  when the model dominates the report says in plain words that the decomposition cannot
+  separate the return path. Do not read a "forward path minus return path" conclusion out of
+  small numbers in the table.
+
+Also: re-terminating existing ports **cannot evaluate new metal**. A shield, an extra via, a
+widened return path — none of those is a termination of a port that already exists. They
+change `Y` itself and need a new EM run.
+
+### What can and cannot be split per term
+
+A quantity decomposes iff it is a fixed real scalar times an **R-linear** functional of
+`Z_ab`, read at one configuration:
+
+- **Yes:** `Z_ab`, `Re Z_ab`, `Im Z_ab`, `M = Im/ω`, `M/L_a`, `k`.
+- **No:** `C_c = -1/(ω·Im Z_ab)` (a reciprocal — superposition adds impedances, not their
+  inverses), `Q` (a ratio of two decomposable things), `|Z|` (a norm), anything in dB (a
+  logarithm of a magnitude, and unsigned).
+
+`C_c` stays a first-class **total** — it is the right reading whenever `Im(Z_ab) < 0` — it
+just has no per-term split. Ask for one and the tool refuses **by name** and says which
+linear quantity to decompose instead.
+
+The `share` column is a signed **projection**, `Re(term · conj(total)) / |total|²`, with the
+quadrature part reported separately: a term at 90° to the total inflates any magnitude-based
+cancellation measure while being harmless. Where `|total|` is near zero the column is
+suppressed outright, with a named reason — shares of a number that is pure cancellation mean
+nothing.
+
+### The ground field: independent leads understate the return inductance
+
+This is the single most expensive modelling choice in the whole flow, and it is easy to make
+by accident. A GND field written as *N* independent `lumped_to_gnd` inductors says the balls
+have *N* independent return paths. Real package ground balls **share a return plane**. *N*
+independent `z` in parallel is `z/N`; *N* balls sharing one `z` is `z` — so the independent
+spelling understates the common-mode return inductance by roughly `(1 + (N−1)·k_ret)`.
+
+Measured three times, on three different networks:
+
+| Network | Independent vs shared |
+|---|---|
+| Synthetic 4-ball cluster (review) | **9.60 dB** |
+| Independently constructed 6-node 4-ball cluster, 5 GHz (`docs/design_port_attribution.md` §5.2) | **8.09 dB** |
+| `tests/fixtures/diff_pair_4port.s4p`, `agg = 1`, `vic = 2`, grounds 3 and 4, 5 GHz | **6.03 dB** |
+
+All three are **larger than the 6.07 dB discrepancy this feature exists to settle**. The
+effect is monotone in the return coupling with no threshold behaviour, so there is no safe
+default and the tool refuses to pick one for you.
+
+On the CLI it is one flag. Run the same command twice — the report gets a section 3b for
+whichever model you asked for, measured against the spec as declared:
+
+```
+--attribute-ground-model diag:L=1n        --attribute-ground-model shared:L=1n
+  M as declared        = 1.01 nH            M as declared          = 1.01 nH
+  M under 'diag:L=1n'  = 1.012 nH           M under 'shared:L=1n'  = 2.026 nH
+  difference           = 0.0173 dB          difference             = 6.05 dB
+```
+
+Each `difference` is against the **declared** ideal-ground spec; `diag` versus `shared` —
+the comparison that matters — is the 6.03 dB in the table above. The report says so and tells
+you to run it twice, because the two are not a refinement of each other.
+
+Section 3b prints the **full per-element split under the model**, not just the total: under
+`shared:L=1n` the 2.026 nH breaks down as 1.52 nH from ground 3, 253 pH from ground 4 and
+251 pH of bare EM coupling, and those add up to the total above them. What the model does
+*not* get is a second opinion — a dense element-impedance matrix **cannot be written as a
+`TerminationSet`**, so `compute_z_matrix` has never been asked about that network, and the
+report labels its number `compute_z_matrix, DECLARED spec — a DIFFERENT network` rather than
+pretending the two are the same measurement. The reconciliation you see is of the **declared**
+configuration through the same machinery, which is what checks the arithmetic the modelled
+totals came out of.
+
+**You can also spell the shared return in Mode 5, in the GUI, with no attribution code at
+all.** Tie the whole ground set together with one `short_to` row, then hang **one**
+`lumped_to_gnd` on any port of it:
+
+```
+# independent — N separate return paths
+3 lumped_to_gnd L=1n
+4 lumped_to_gnd L=1n          ->  M = 1.0120 nH
+
+# SHARED — one return path for the whole set
+3 short_to 4
+3 lumped_to_gnd L=1n          ->  M = 2.0259 nH        6.03 dB apart
+```
+
+(`3 short_to 4` and `3 lumped_to_gnd` versus `3 short_to 4` and `4 lumped_to_gnd` give
+bit-identical answers — the set is one node by then, so it does not matter which port of it
+carries the inductor. In the connection table that is one `short` row with the whole ground
+range in **To**, plus one `rlc_gnd` row.) Verified against `compute_z_matrix` with no
+attribution code in the path, and separately against `pkg_rlc_attrib`'s dense
+`termination_impedance_shared_return` builder, agreeing to `3.2e-13` relative.
+
+Which spelling is right is a question about your package, not about this tool — but answer it
+on purpose rather than by default.
+
+---
+
 ## Important Notes
 
 - **Results are TOTAL values, not per-unit-length.** `L`, `C`, `R` are reported for the network as seen between the chosen signal ports. To get per-unit-length values, divide by your known trace length yourself. The tool does not perform distributed (RLGC-per-length) extraction; that requires multi-section ABCD or `gamma`/`Z_0` extraction.
 - **AC small-signal only.** `vdd` is an alias for `ground` because at AC the supply is an ideal short. The distinction exists in the UI for documentation clarity; Mode 4 was retired for the same reason.
 - **Unlisted ports are OPEN, not grounded.** This is the most common source of wrong results. A forgotten GND ball floats and is Schur-eliminated, which preserves the behaviour at the kept ports but does *not* tie the port to the reference node.
 - **The mutual `Z_ab` is the open-circuit one.** `Z[a][b]` is defined with every *other* measurement port carrying no current — that is the textbook definition of M, and the right primitive to hand to a simulator, where the real loading is modelled. It is not the same number as a short-circuit transfer measurement.
+- **The termination spec is worth decibels, and there is a tool that says how many.** How you spell the ground field is not a detail: on `diff_pair_4port.s4p` three quarters of the extracted `M` comes from the two `ground` rows, and rewriting the same set as a shared return rather than independent leads moves `M` by 6.03 dB. [Port attribution](#port-attribution-where-a-coupling-number-comes-from) splits an extracted `Z_ab` into the bare EM coupling plus one signed term per declared termination, exactly, and answers the what-if exactly too. Read its three caveats before quoting it — in particular that it is **blind to ports you left open**, so its table ranks your declarations and never your ports.
 - **Signs are physical and are never clipped.** `R / L / C / Q` and `M / C_c / k` all keep their sign (Cadence convention). `L` and `Q` go negative past SRF; `C_c` comes out negative whenever the coupling is inductive; `M` comes out negative when it is capacitive. Both readings are always computed — use the sign of `Im(Z_ab)` to pick which one to headline. `k` is `NaN` (with a note) where `L_a <= 0` or `L_b <= 0`, and `abs(k) > 1` is flagged rather than clamped.
 - **Content-based file detection.** Port count is inferred from token count and frequency monotonicity — extension is ignored. Files without an option line are assumed `# GHZ S MA R 50` and a warning is emitted.
 - **Numerical fallbacks.** Schur reduction uses `np.linalg.solve`; if `Y_oo` is singular, it falls back to `lstsq` and reports the offending frequency. The contraction onto the probe nodes uses `pinv`, so a fully floating differential structure works — see the next note.
@@ -419,17 +652,26 @@ SNP_RLC_Extractor/
   VERSION                    Commit stamp, filled in by the red-zone packer
   pkg_rlc_core.py            Touchstone parser, S->Y, termination model + DSL, Schur,
                              compute_z / compute_z_matrix, RLC + coupling extraction, fits
+  pkg_rlc_attrib.py          Port attribution: splits one Z_ab into the bare EM coupling
+                             plus one term per declared termination, and answers the
+                             exact what-if. Imports pkg_rlc_core only (acyclic)
   pkg_rlc_plot.py            Matplotlib plot panel with M / V / Delete / drag features
                              (R, L, C, |Z|, Re, Im, Q, k subplots)
   pkg_rlc_gui.py             Tkinter GUI with file/trace management, and the
                              JSON session format (Save / Load / Restore Config)
   pkg_rlc_help.py            In-app Help window (one tab per mode + syntax + examples)
-  pkg_rlc_extractor.py       Entry point (GUI + CLI)
+  pkg_rlc_extractor.py       Entry point (GUI + CLI), incl. the --attribute report
   reduce_snp.py              Standalone CLI: shrink a big .sNp to a few ports
   deploy.sh                  Red-zone update entry point (top level by design)
   tests/
     test_core.py
     test_coupling.py         Mode 6: probe pairs, Z matrix, M / k / C_c / M-over-L
+    test_attrib_core.py      Port attribution: reconciliation against compute_z_matrix,
+                             and every fast what-if against an honest rebuild
+    test_attrib_vs_engine.py   Independent cross-check over the golden case registry,
+                             plus a 4000-spec fuzz with a two-sided contract
+    test_attrib_degenerate.py  Singular baselines, redundant specs, resonant returns —
+                             the failures that produce a plausible number, not an error
     test_golden_regression.py  Bit-exact replay of the pre-coupling behaviour
     test_port_parser.py
     test_content_sniffer.py
@@ -438,7 +680,8 @@ SNP_RLC_Extractor/
     generate_test_snp.py
     _golden_capture.py       Script (not a test) that (re)builds the golden .npz
   docs/
-    theory.md                Math, circuit diagrams, mode derivations
+    theory.md                Math, circuit diagrams, mode derivations, attribution
+    design_port_attribution.md  Why pkg_rlc_attrib.py is shaped the way it is
   deploy/
     pack.ps1                 Windows: build the red-zone package
     doctor.sh                Red zone: what can this box actually run?
@@ -488,8 +731,9 @@ Full procedure, rollback, and how to keep your own data across deploys:
 ## Theory
 
 For the math behind each mode (S->Y conversion, Schur complement, the unified termination
-abstraction, the `+/-` probe model and the M / k / M-over-L derivations, and the broadband
-fitting models) see [docs/theory.md](docs/theory.md).
+abstraction, the `+/-` probe model and the M / k / M-over-L derivations, the broadband
+fitting models, and the superposition / Woodbury derivation behind port attribution) see
+[docs/theory.md](docs/theory.md).
 
 The in-app **Help** button opens the same material as a tabbed reference — one tab per mode,
 plus input syntax and worked examples.

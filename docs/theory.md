@@ -7,6 +7,12 @@ coupling theory — it builds the whole thing from Faraday's law and one matrix 
 explains why each modelling choice was made rather than only what it is. If coupling is what
 brought you here, sections 2, 3 and 8 are enough.
 
+**Section 13** (port attribution) is the follow-on: sections 4-8 compute a number from a set
+of termination assumptions, and section 13 takes that number apart into "the bare EM
+coupling" plus one exact term per assumption. Read section 8 first; §13 leans on §8.5 (why
+open-circuit is the right primitive) and §8.8 (M/L versus the exact current-transfer ratio)
+throughout.
+
 ---
 
 ## 1. What is a Touchstone file?
@@ -820,3 +826,540 @@ per-length or per-turn quantity, and it is the **open-circuit** one (section 8.5
 loaded transfer measurement. `M/L` is a first-order Norton equivalent for budgeting, not a
 spur prediction and not the exact current-transfer ratio (section 8.8); the tool has no model
 of your tank Q, drive amplitude or nonlinearity.
+
+---
+
+## 13. Port attribution — decomposing `Z_ab` into its causes
+
+Everything above computes **a** number from **a** set of termination assumptions. This
+section is about taking that number apart: of the `Z_ab` that came out, how much is the metal
+and how much is the grounding you assumed? And what would it have been under a different
+assumption?
+
+The implementation is `pkg_rlc_attrib.py`, which imports `pkg_rlc_core` and nothing else from
+the repo — the same acyclic relationship `pkg_rlc_plot` has — driven from the CLI by
+`--attribute VICTIM,AGGRESSOR` and its flag group (`--mode coupling` only; there is no GUI
+surface). The engineering rationale, the measurements behind every design rule, and what was
+deliberately left out are in `docs/design_port_attribution.md`. This section is the
+mathematics.
+
+### 13.1 Why the question exists
+
+The same two coils, out of the same EM solve, extracted twice:
+
+```
+|M| = 1.71 pH        |M| = 3.44 pH        6.07 dB apart
+```
+
+Both runs are correct. Broken down one factor at a time, the frequency marker moved by
+0.6 dB and the **grounding assumption** by 6.1 dB. (They do not sum to 6.07 dB — the factors
+are not additive, which is itself the effect §13.7 exists for.)
+
+The bottleneck is not EM accuracy. It is that `compute_z_matrix` returns the **open-circuit**
+matrix, every port that is neither a probe nor explicitly grounded is left **open**, and
+until now that convention was stated in §8.5 and nowhere on screen. Two different, equally
+defensible spellings of a package's ground balls produce two answers 6 dB apart with nothing
+in the output that names the difference.
+
+### 13.2 Notation
+
+`N` ports in the file, `Y(f)` the `N x N` admittance from §2.
+
+`A` merges each measurement-port **side** — every port sharing one `(group, sign)` — into a
+single node, mirroring exactly what §8.2 does when it sums the `Y_red` block. Then
+
+```
+Ybase = A^T Y A          Zbase = Ybase^-1
+```
+
+**The baseline is: probe sides merged, every other port OPEN.** Nothing else is in it — no
+ground, no short, no lumped element. `w_g` is the injection vector of measurement port `g`:
+`+1` on its plus node, `-1` on its minus node, exactly the `W` of §8.2.
+
+Every **non-probe declaration** in the `TerminationSet` is then one two-terminal element
+stamped on top of that baseline:
+
+| Declaration | `u` | Element impedance |
+|-------------|-----|-------------------|
+| `ground` / `vdd` | `e_p` | `0` |
+| `lumped_to_gnd` | `e_p` | `1 / y_series_rlc(ω)` |
+| `short_to` | `e_p - e_q` | `0` |
+| `lumped_between` | `e_p - e_q` | `1 / y_series_rlc(ω)` |
+
+`U` is the `(n_nodes x m)` matrix of those `u` vectors as columns and `Zt` the `(m x m)`
+element **impedance** matrix. Writing the elements as impedances rather than admittances is
+the whole trick: an ideal ground is `Zt[e,e] = 0`, so **no infinity ever enters the
+arithmetic**. `Zt` is also allowed to be dense — see §13.8.
+
+Note the name: `Zbase`, not `Z0`. `Z0` already means the reference impedance everywhere else
+in this tool and the collision is a real source of bugs.
+
+### 13.3 The decomposition
+
+Drive 1 A into aggressor `b` and read the open-circuit voltage at victim `a`. With no
+elements at all that is the baseline, by definition:
+
+```
+Z_ab^base = w_a^T Zbase w_b
+```
+
+Now add the elements. Each carries an unknown current `I_e` out of the structure. By
+superposition the node voltages are the baseline response to the drive plus the baseline
+response to every element current:
+
+```
+V = Zbase (w_b - U I)
+```
+
+Element `e`'s constitutive law is `u_e^T V = Zt[e, :] I` — the voltage across it equals its
+own impedance times the currents. (A *dense* row is what lets an element's voltage depend on
+the *other* elements' currents, which is precisely the shared-return case of §13.8.)
+Stacking all `m` of them:
+
+```
+U^T Zbase w_b  -  U^T Zbase U I  =  Zt I
+      p_b      -        G I      =  Zt I
+```
+
+which is one small dense solve:
+
+```
+G   = U^T Zbase U            H = Zt + G
+p_b = U^T Zbase w_b          I = solve(H, p_b)
+r_a = U^T Zbase^T w_a        (its own solve — see §13.5)
+```
+
+and then
+
+```
+Z_ab = w_a^T Zbase w_b  -  r_a · I
+     = direct term      -  sum over e of  I_e · r_a[e]
+```
+
+**This is exact.** It is superposition: no linearisation, no small-signal expansion about a
+nominal, no first-order term dropped. `I_e` is the physical current in element `e`; `r_a[e]`
+is the **baseline** transimpedance from element `e` to the victim. The per-element terms
+`-I_e · r_a[e]` are an exact additive, signed decomposition of the total.
+
+### 13.4 Why this is a Woodbury identity
+
+Terminating a set of ports is a rank-`m` update to `Ybase`:
+
+```
+Yterm = Ybase + U D U^T,        D = Zt^-1
+Zterm = inv(Yterm)
+      = Zbase - Zbase U (D^-1 + U^T Zbase U)^-1 U^T Zbase
+      = Zbase - Zbase U (Zt + G)^-1 U^T Zbase
+```
+
+Sandwich that between `w_a^T` and `w_b` and you get §13.3 term for term. Writing it in the
+`Zt` form rather than the `D` form is what keeps it finite: `D` is infinite for an ideal
+ground, `Zt` is zero, and `H = Zt + G` is well conditioned whenever `G` is. `H` is also the
+only matrix inverted on this path, which is why its condition number is what gates the
+reconciliation tolerance in §13.6.
+
+Cost: `O(m^3)` to factor `H` plus `O(n_nodes^2 · m)` to build `G`, against `O(n_open^3)` per
+chunk for the engine's Schur solve. A package with 60 declared ground balls has `m = 60`,
+which is nothing — and the same factorisation is reused for every what-if in §13.7.
+
+### 13.5 Prior art this rederives
+
+None of §13.3-13.4 is new, and naming the prior art is not decoration: each of these
+literatures already found the trap that the corresponding rule below guards against, and
+"this is diakoptics, and diakoptics has the following known failure mode" is cheaper than
+rediscovering it.
+
+- **Kron diakoptics / multiport network connection.** Tear a network at chosen ports, solve
+  the pieces, reconnect them through a small dense matrix at the tear. `H = Zt + G` *is*
+  Kron's connection matrix, and §13.10's "the split depends on how you spelled the spec" is
+  the statement that two spellings are two different **tearings** of one network.
+- **The adjoint variable method.** `r_a` is the adjoint (victim-driven) solution and `p_b`
+  the direct (aggressor-driven) one. One extra solve buys the sensitivity of one output to
+  *every* element — which is exactly what §13.7 exploits. It is also why `r_a` must be its
+  own solve: reciprocity would make `r_a = p_a`, but real EM data is only approximately
+  reciprocal (§8.10), and the user's own file sits at `3.4e-10`, a thousand times the
+  residual this method advertises. Reusing `p_a` would silently spend that error budget.
+  For the same reason the transposes are plain `.T` and never `.conj().T` — `Y` is
+  complex-**symmetric**, not Hermitian, and the conjugate transpose is simply the wrong
+  operator here.
+- **PEEC partial elements.** PEEC's canonical warning applies verbatim: partial inductances
+  are individually reference-dependent and only collectively physical. Substitute
+  "baseline-dependent" and it is §13.10's gauge caveat, unchanged.
+- **Norton path decomposition** and **transfer-path analysis (TPA)** from structural
+  acoustics / NVH. TPA already knows that the sum of path *contributions* is not the sum of
+  path *magnitudes* (§13.6), that paths interact (§13.7), and that a path you did not
+  instrument is invisible rather than zero (§13.10).
+
+### 13.6 Reading the output: reconciliation, shares, the return budget
+
+**The authoritative total is always `compute_z_matrix`'s.** The decomposition's own sum is
+the *check* on it, never the answer. Two genuinely different routes to the same number — a
+Schur elimination plus a `pinv` contraction versus a node-space inverse plus a Woodbury
+update — will not agree to the last bit, and the tolerance is **condition-aware** rather than
+fixed. A fixed `1e-9` gate would refuse exactly the files this exists for: measured
+cross-algorithm agreement is `3e-16` on a trivial 4-port and no better than `~1e-7` on a
+153-port package whose condition numbers run `1e7`-`1e9`. When the residual is catastrophic
+the tool withholds the **per-element split** and never the total. Measured on the fixture
+worked in §13.12: residual `6.4e-13` against a reported floor of `3.6e-9`.
+
+**A share is a projection, not a complex ratio.** Reporting `term / total` for complex
+numbers produces a complex "percentage" nobody can read, and reporting `|term| / |total|`
+double-counts anything out of phase. The signed inline share is
+
+```
+share_inline = Re(term · conj(total)) / |total|^2
+```
+
+with the quadrature part reported alongside it. A term at 90 degrees to the total inflates
+any magnitude-based cancellation measure while contributing nothing to the total. Where
+`|total|` is near zero — pure cancellation, or smaller than the reconciliation residual
+itself — the share column is **suppressed outright with a named reason**, because a share of
+a number that is not really there means nothing.
+
+**The return budget is always reported**, and it is what stops the decomposition from being
+read as something it is not. The EM model's reference plane is **not a port**, so no
+declaration can reach it. The report gives the current returning through the model's own
+reference against the current returning through declared elements. Measured on
+`diff_pair_4port.s4p` with probes on 1 and 2: with **one** ground on port 3 the declared
+element carries 99.5 %, but on the representative package case that motivated the rule the
+split was **0.05 % declared, 99.95 % inside the model**. When the model dominates the report
+says so in words, because a "forward path minus return path" hypothesis is **not falsifiable
+this way** and small numbers in the table must not be read as a null result.
+
+### 13.7 Sensitivity: why per-port and pairwise are not enough
+
+The same factorisation answers the other direction exactly: replace one element's `Zt` entry
+(or a whole block of them) and re-solve. Sherman-Morrison for one, a bordered Schur or a
+rank-`|S|` Woodbury for a set. This is **not** a first-order sensitivity — it is the answer
+the network actually has.
+
+What matters is *which* deltas are worth computing:
+
+- **Per element** — one at a time, against a candidate termination (open, ideal, `R = Z0`,
+  series `L`, series `R+L`, shunt `C`).
+- **Per group** — a whole connection-table row changed at once. The rows already define the
+  groups, so this is free, and it is the one that answers the question actually being asked.
+- **Non-additivity**, `Δ_joint − Σ Δ_individual`, for groups and for pairs.
+- **A cumulative curve** — rank by single-element delta, then evaluate with the top
+  `k = 1, 2, 4, 8, 16, …` changed together.
+- **Leave-one-out from all-grounded**, which is usually more informative than one-at-a-time
+  from all-open.
+
+The reason the last four exist, rather than only the first: **with 60 ground balls every
+single-port delta is nearly zero**, because the other 59 already carry the return — and so is
+every pairwise second difference. The collective effect is order-60, not order-2, and a
+one-at-a-time table would report "nothing matters" about a factor of two. Even at `m = 2`
+this bites. Measured on `diff_pair_4port.s4p` at 5 GHz, `agg = 1`, `vic = 2`, grounds on 3
+and 4, opening grounds:
+
+```
+open port 3 alone            -506 pH
+open port 4 alone            -506 pH
+                    sum      -1012 pH
+open BOTH at once             -759 pH
+              non-additivity  +254 pH        a third of the effect, from two elements
+```
+
+### 13.8 One element's impedance: a Möbius map, not a loop
+
+`Z_ab` as a function of a single element's impedance `z` is a bilinear (Möbius) function
+
+```
+Z_ab(z) = (alpha + beta*z) / (gamma + delta*z)
+```
+
+which follows immediately from §13.4: `z` enters `H = Zt + G` in exactly one entry, so the
+solve is a ratio of two affine functions of it. Therefore the endpoints `z = 0` (ideal) and
+`z → ∞` (open), the whole interval between them, and the extremum over `z ∈ [0, ∞)` are all
+**closed form** — a Möbius map takes the real line to a circular arc, so the extremum is
+analytic. No sampling loop, and the headline is an interval rather than a curve:
+"M lies in [1.71, 3.44] pH over any physical ground inductance."
+
+**The curve need not be monotone, and the endpoints are not a bound.** A series `L` resonates
+with the package's shunt `C` and `M` can leave the `[ideal, open]` bracket entirely. Measured
+on `diff_pair_4port.s4p`, sweeping the series inductance of the ground on port 3:
+
+```
+ideal (L = 0)        1.01 nH
+open  (L = inf)       504 pH
+actual range         [504 pH, 1.18 nH]      peak at L = 505 nH
+```
+
+The tool detects that and says so rather than quoting a bracket that does not hold. On an
+**unbounded** sweep an extremum orders of magnitude past the bracket is a near-pole of the
+map, not a design margin, and is reported as such.
+
+**Tying a whole group to one value is a degree-`|S|` rational function, and two things about
+it are easy to get wrong.** First, do not expand it into polynomial coefficients. The
+canonical form is the partial fraction
+
+```
+Z_ab(t) = c0 - sum_j  c_j / (lambda_j + t)          poles at t = -lambda_j
+```
+
+in which `t → ∞` is exactly `c0` and `t = 0` is one sum. Multiplying it out multiplies `|S|`
+eigenvalues together, and when the parameter is an inductance every `lambda_j` is of order
+`1e-9`: on a synthetic package sweeping one ground group, the constant term of the expanded
+denominator measures `5.98e-273` at 30 balls, `3.70e-309` at 34 and **exactly zero at 36** —
+so an endpoint read as `num[-1]/den[-1]` returns `+inf`, then `NaN`, while the interior of
+the curve evaluates perfectly and the interval printed beside it looks entirely confident.
+§13.7's whole argument is about 60 ground balls.
+
+Second, `|S| ≥ 2` puts several poles on the curve, and they can be *clustered*. Finding the
+extremum by rooting the expanded degree-`2|S|` critical polynomial loses them: measured on
+`diff_pair_4port.s4p` at 5 GHz, sweeping **both** grounds as one group, the two poles sit at
+`t = 5.05000e-7` and `5.05503e-7` — a tenth of a percent apart, both on the positive real
+axis — and the reported interval came back `(+7.5e-21, +2.1e-3) H` against a true
+`(−5.19, +5.19) H`: the maximum three orders of magnitude too small and the minimum the
+wrong sign. The single-element sweep on the same file was exact throughout, which is why the
+defect needs `|S| ≥ 2` to show at all — i.e. precisely the "change a whole connection-table
+row" case §13.7 exists for. The extremum search therefore **seeds from the poles** (a pole at
+`p` contributes a feature of half-width `|Im p|`, so `Re(p) ± c·|Im p|` finds it) and then
+polishes each seed with Newton on `Z'` and `Z''`, both in partial-fraction form. Every
+candidate is a point the curve genuinely passes through, so the reported interval is always
+*achieved*: it can be too narrow, never too wide, which is what makes it safe to keep adding
+candidates.
+
+**And this is why `Zt` may be dense.** Real package ground balls share a return plane. `N`
+independent `z` in parallel is `z/N`; `N` balls sharing one `z` is `z`, so modelling a ground
+field as `N` independent series inductors understates the effective common-mode return
+inductance by roughly `(1 + (N-1)·k_ret)`. Measured on three different networks — 9.60 dB,
+8.09 dB, and 6.03 dB on `diff_pair_4port.s4p` — every one of them **larger than the 6.07 dB
+dispute of §13.1**, monotone in `k_ret` with no threshold behaviour. There is therefore no
+defensible default and the tool refuses to pick one; it offers `diag(z)` and
+`diag(z_self) + z_ret · ones(m, m)` and makes you choose. `H = Zt + G` accepts a dense `Zt`
+with zero change to the mathematics and zero change to the cost.
+
+The same physics is expressible in the Mode 5 table today with no new code: one `short_to`
+row tying the ground set together, then **one** `lumped_to_gnd` on any port of it.
+
+### 13.9 Precisely what does and does not decompose
+
+**A quantity decomposes iff it is (a fixed real scalar) × (an R-linear functional of `Z_ab`),
+evaluated at ONE configuration.** Multiplying an exact additive decomposition by a constant,
+or taking `Re` / `Im` of it term by term, is still exact. Anything with `Z_ab` in a
+denominator, inside an absolute value, or inside a logarithm is not.
+
+| | Quantity | Why |
+|---|---|---|
+| **Yes** | `Z_ab` | the decomposition itself |
+| **Yes** | `Re Z_ab`, `Im Z_ab` | `Re` and `Im` are R-linear; the terms' real parts sum to the total's real part |
+| **Yes** | `M = Im(Z_ab)/ω` | `1/ω` is a fixed real scalar at one frequency |
+| **Yes** | `M/L_a`, `k = M/sqrt(L_a·L_b)` | the divisor is a *fixed* real scalar **of the configuration being evaluated**, so it multiplies through that evaluation |
+| **No** | `C_c = -1/(ω·Im Z_ab)` | a **reciprocal**. Superposition adds impedances, not their inverses |
+| **No** | `Q = Im(Z)/Re(Z)` | a ratio of two decomposable quantities is not itself decomposable |
+| **No** | `\|Z_ab\|` | a norm, not R-linear |
+| **No** | anything in dB | a logarithm of a magnitude: neither linear nor signed |
+
+Two consequences worth being explicit about.
+
+`C_c` is a **first-class output of this tool** and is the right reading whenever
+`Im(Z_ab) < 0` (§8.7). It therefore still appears — as a **total**, never per term. A
+per-term `C_c` would be a column of numbers that do not add up to the number above them. The
+API refuses a per-term request for a non-decomposable quantity **by name**, with the reason
+and with the linear quantity to ask for instead, because "unsupported quantity" would send
+the caller hunting for a typo.
+
+The `M/L_a` and `k` rows carry a caveat inherited from §8.8. "A fixed real scalar evaluated
+at **one** configuration" means fixed *within one evaluation* — that is what keeps the terms
+additive — and it emphatically does **not** mean frozen at the declared spec while the
+network changes underneath it. `L_a` and `L_b` are properties of the network, and every
+sensitivity row, every group and every leave-one-out row is a different network.
+
+For a `decompose()` of the spec as declared the divisor is read off `compute_z_matrix`'s
+matrix, the same one the results pane and the CSV print, so the number here means the same
+thing as the number there rather than a second, slightly different self inductance. For every
+**what-if** it is read off the `(G, G)` matrix of the configuration actually being evaluated.
+The difference is not academic. Measured on `diff_pair_4port.s4p` at 5 GHz with probes on
+ports 1 and 2 and grounds on 3 and 4, opening `ground port 3` takes `L_a` from `+5.026 nH` to
+`−505.3 nH`:
+
+| | `M/L_a` after opening ground 3 | `k` after opening ground 3 |
+|---|---|---|
+| divisor frozen at the declared `L_a` | `+0.100227` | `+0.100227` |
+| divisor of the network being asked about | `−0.000997` | `NaN` |
+
+The sign is flipped and the magnitude is a hundred times out, and the `k` column is worse
+than wrong: with `L_a < 0` the coupling coefficient is **undefined** by the same rule
+`extract_coupling_at_freq` applies (§8.7), and a plausible positive number in its place is
+exactly the failure mode this tool's signed-value convention exists to prevent.
+
+The **sweep** (§13.9) cannot resolve this the same way, because a curve has no single
+configuration to take a scalar from: `L_a` moves with the swept parameter. `sweep_mobius`
+therefore **refuses `M/L_a` and `k` by name**, and points at `M` / `Im Z_ab` for a curve or
+at `sensitivity()` for exact `M/L_a` and `k` at named alternatives.
+
+`M/L_a` is also **not** the exact current-transfer ratio: `I_a/I_b = -Z_ab/Z_aa` has `Z_ab`
+in a denominator and is therefore in the "No" column above (§8.8 measures them 1098 % apart
+at 10 MHz for `L = 2 nH`, `R = 1.5 Ω`). The attribution layer exposes that exact ratio, and a
+loaded `-Z_ab/(Z_aa + Z_load)`, as a **total**, so the Norton approximation and the exact
+ratio can be compared directly instead of by hand.
+
+### 13.10 What the method is blind to
+
+Prominent, not a footnote. Each of these is a question a user asks within a week, and each
+answer is "no".
+
+**It is blind to open ports.** An open port contributes no element and therefore no term. It
+is not a small contribution; it is *absent*. So the contribution table is **not a ranking of
+ports** — it is a ranking of the **declarations in the spec**. A table headed "contributions
+by port" that silently omits the 45 open ports of a package file would be a wrong answer with
+a plausible shape. Only the sensitivity side of §13.7 reaches ports the user has not decided
+about, and it reaches them by *hypothesising* a termination, not by measuring one.
+
+This is where the reviews surfaced a distinction worth stating carefully. **A port left open
+because the SIMULATOR owns it is a different thing from a port left open because nobody
+decided, and only the first is safe.** In case one — a die pad that the circuit netlist
+drives, a pin whose load lives in the schematic — "open" is the correct and deliberate
+primitive, exactly as §8.5 argues for the mutual `Z_ab`: extract the open-circuit quantity,
+then let the simulator apply the real loading, because the simulator models it better than
+any single termination you could type. In case two — a ground ball nobody listed, a shield
+tap left blank — "open" is not a model of anything. It is the absence of a decision, and it
+silently became a boundary condition. The two are indistinguishable in the file, in the
+`TerminationSet`, and in the attribution table, which is precisely why the Ports & Roles
+window flags an open port whose *name* matches a set that was grounded or probed elsewhere.
+When you read an attribution table, the open ports it does not mention are the ones to check
+first.
+
+**The split depends on how the spec is spelled.** These describe the same network:
+
+```
+6:1:14 ground                             ->  9 elements
+6 short_to 7:1:14   +   6 ground          ->  8 shorts + 1 ground
+```
+
+Same total `Z_ab`, to the reconciliation floor; completely different per-element splits.
+Measured on `diff_pair_4port.s4p` at 5 GHz with `agg = 1`, `vic = 2`:
+
+```
+   3 ground / 4 ground              3 short_to 4 / 3 ground
+     bare EM      251 pH              bare EM      251 pH
+     ground 3     252 pH              ground 3     253 pH
+     ground 4     506 pH              short 3-4    506 pH
+     -------------------              -----------------------
+     total       1.01 nH              total       1.01 nH
+```
+
+This is not a bug and it cannot be fixed: the elements **are** the user's declarations, and
+two declarations describing one network are two different tearings of it in the Kron sense
+(§13.5). The report says so, so that a user who reorganises their table for readability and
+sees the contribution column move finds the sentence before filing a defect.
+
+**Re-terminating existing ports cannot evaluate new metal.** A shield, an extra via, a moved
+trace, a widened return path — none of these is a termination of an existing port. They
+change `Y` itself, which needs a new EM run. This is the boundary between "which of my
+assumptions moved the answer" (this section) and "which layout is better" (a new solve), and
+it is worth drawing sharply, because §13.7's output looks exactly like a layout-exploration
+tool and is not one.
+
+**The decomposition is gauge-dependent.** Change the baseline and every term changes. Fold
+one element into the baseline — which the implementation does automatically when `Ybase` is
+singular, the case of the repo's own flagship floating fixture at `cond(Y) = 2.5e16` — and
+the remaining terms all move, even though the network, the total and the physics are
+identical. What does **not** change is the element currents `I_e`: those are physical. The
+*attribution of voltage* to each of them is a choice of gauge. This is PEEC's
+partial-inductance warning restated, and it is why the report names the baseline it used
+every time: two reports are comparable only when their baselines match.
+
+### 13.11 Sign convention
+
+Stated once, globally, and carried verbatim into every export:
+
+- The victim reading is `V(+) − V(−)` of the victim measurement port.
+- The aggressor is driven `+1 A` into its `+` side and out of its `−` side, so every term is
+  signed the way `Z_ab = V_a / I_b` is.
+- An element current `I_e > 0` flows **out of the structure into ground** for a shunt element
+  (`u = e_p`), and **from `p` to `q`** for a series element (`u = e_p − e_q`).
+- Flipping either measurement port's `+/−` assignment flips **every** term together.
+  **Relative** signs between terms are physical; absolute signs are a labelling choice.
+
+That last point is the same one §8.7 makes about `M`, `k` and `C_c`, and for the same reason:
+two coupling paths that cancel must not be reported as two paths that add.
+
+### 13.12 Worked example
+
+`tests/fixtures/diff_pair_4port.s4p` is two coupled lines — port 1 (`in_p`) runs to port 3
+(`out_p`), port 2 (`in_n`) runs to port 4 (`out_n`), `L_self = 5 nH`, `M = 1 nH`, with 1 fF
+to ground at every port. Drive line one, listen on line two, both far ends grounded:
+
+```
+agg = 1     vic = 2     GND = 3,4     f = 5 GHz
+```
+
+Output, verbatim:
+
+```
+Attribution of M (vic <- agg) at 5 GHz
+  total (compute_z_matrix) : 1.01 nH
+  total (sum of terms)     : 1.01 nH   residual 6.42e-13 (floor 3.62e-09)
+  cond(Ybase) 506   cond(H) 1   reciprocity 4.79e-15
+
+  element                          contribution     share      quad
+  bare EM coupling                       251 pH    24.88%     0.00%
+  ground port 3                          252 pH    25.00%     0.00%
+  ground port 4                          506 pH    50.12%     0.00%
+```
+
+Three readings:
+
+1. **Three quarters of the answer is the grounding, not the metal.** Open both grounds and
+   `M` falls to the 251 pH bare term. A 6 dB argument about this structure is an argument
+   about the ground spec.
+2. **The two ground balls are not worth the same.** Port 4 is the far end of the **victim's**
+   own line and contributes 506 pH; port 3 is the far end of the aggressor's and contributes
+   252 pH. That asymmetry is physical and it is what the table exists to expose — it is
+   invisible in the single number `M = 1.01 nH`.
+3. **`quad` is 0.00 % here** because everything is in phase at this frequency. On a lossy
+   package it is not, and that column is what stops a 90-degree term from being read as
+   cancellation.
+
+Removing one ground gives a two-element case with a clean 50/50 split
+(`bare EM 251 pH / ground 3 252 pH`, total 504 pH), which is a useful sanity check that the
+bare term is the same object in both runs — it is, because the baseline is defined
+independently of what was declared.
+
+### 13.13 The singular baseline, and how it recovers
+
+`Zbase = Ybase^-1` does not always exist, and the case where it does not is the repo's own
+flagship coupling example. `coupled_4port_float.s4p` (`c1 = 1/2`, `c2 = 3/4`, no ground) has
+`cond(Y) = 2.5e16` at 5 GHz: a fully floating differential structure has a singular node
+admittance whose null direction is the common mode, exactly as §8.4 describes. A naive
+implementation of §13.3 is wrong on day one against the tool's own worked example.
+
+Two mechanisms recover it, in this order, and neither is a new user-facing concept.
+
+**Elements outside the range of `Ybase` are folded into the baseline.** SVD `Ybase`, partition
+the elements by whether `u_e` lies in `range(Ybase)` using core's existing `PROBE_RANGE_TOL`
+(§8.4), fold the out-of-range ones in — which makes `Ybase'` nonsingular — and Woodbury only
+the rest. A folded element has **no term of its own**, and it is reported by name rather than
+silently absorbed:
+
+```
+Port(s) 4 are IN THE BASELINE because the structure has no reference without
+them: with every non-probe port open the node admittance is singular, so
+port 4 -> gnd was folded in and has no term of its own.
+```
+
+This is a gauge change in the sense of §13.10, which is why it is named on every report that
+uses it: two reports are comparable only when their baselines match. Measured on that fixture
+with a single `4 lumped_to_gnd R=50`, folding takes the effective condition number from
+`7.3e15` to `5.7`.
+
+**Otherwise `Zbase` is a pseudo-inverse**, and the report says which directions are therefore
+untrustworthy. With no declared elements at all there is nothing to fold, so this is the path
+`coupled_4port_float.s4p` actually takes: `pinv`, plus the warning that only probes and
+elements orthogonal to the null space are meaningful. That is not a degradation here — it is
+§8.4's argument again. A **balanced** `+/-` probe is orthogonal to the common-mode null
+direction, so the pseudo-inverse is *exact* for it, which the numbers confirm: **zero**
+declared elements, the decomposition is the bare EM term and nothing else, `M = 800 pH`, and
+a reconciliation residual of exactly `0.0` against `compute_z_matrix`. The effective
+condition number seen by the probes is `2.2`.
+
+Both paths are structural checks and both come **before** any conditioning check. A rank
+deficiency in `U` — the same port written `ground` twice through overlapping ranges, or a
+`short_to` between two ports that are already grounded — is a **spec bug**, and reporting it
+as "genuinely unattributable physics" would be the worst available outcome. It is tested
+structurally on integer port-index sets first, with the offending elements named; only then
+is `cond(G)` looked at. Elements whose `u` is the zero vector after probe-side merging are
+dropped as already inert — the same class `inert_lumped_messages` reports on the Mode 5
+validation strip.

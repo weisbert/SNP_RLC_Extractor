@@ -36,6 +36,7 @@ import math
 import re
 import textwrap
 import traceback
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Sequence, Union
@@ -49,7 +50,39 @@ import numpy as np
 DEFAULT_Z0 = 50.0
 FREQ_UNIT_SCALE = {"HZ": 1.0, "KHZ": 1e3, "MHZ": 1e6, "GHZ": 1e9, "THZ": 1e12}
 SCHUR_LSTSQ_RCOND = 1e-15
+
+# Port counts the content sniffer sweeps before it will consult the file name.
+# The body is one modulo plus -- only for the few N whose record size actually
+# divides the value count -- a monotonicity walk of the frequency column.
+# Measured at 38 ns per N, i.e. 9.5 us for a full 1..256 sweep, and a file big
+# enough to reach 256 pays it on every parse: the loop runs to the end unless
+# three candidates turn up.  (Smaller files stop at _max_possible_nports.)
+# This is deliberately NOT the ceiling on how many ports a file may have; see
+# SNIFF_HARD_CAP.  It is the point past which a port count inferred from
+# divisibility alone stops being the best evidence available.
 MAX_SNIFF_NPORTS = 256
+
+# ...and this is the ceiling on a port count inferred from the numbers ALONE,
+# reached only after the cheap sweep AND the file name have both failed.  A
+# 300-port package export renamed to .txt -- the normal fate of these files, and
+# the case the content sniffer exists for -- had no route into this tool at all
+# before this: the sweep stopped at 256, the name said nothing, and force_nports
+# was the only way in.
+#
+# 4096 is set where the arithmetic stops being the binding constraint.  One
+# frequency point of a 4096-port file is 1 + 2*4096^2 = 33.6M numbers: 268 MB of
+# parsed doubles plus another 268 MB of complex S, so a file with more ports than
+# this cannot be held in memory on any machine this tool runs on, and refusing it
+# with a verdict beats spending an afternoon on it.  The sweep is self-limiting
+# besides -- _max_possible_nports stops it at isqrt((T-1)/2), because a record
+# longer than the whole file cannot divide it -- so this cap can only ever bind
+# on a file of >= 33.6M values.  Measured: a full 1..4096 sweep is 157 us
+# (against 9.5 us for 1..256), which on a file big enough to reach it is
+# invisible next to the tens of seconds spent reading it.  On
+# tests/fixtures/pi_2port.s2p (3609 values) it costs exactly nothing: the sweep
+# cannot run past N=42 there, so the wide range 257..42 is empty, and the whole
+# sniff went 0.030 ms -> 0.012 ms against the single-sweep version it replaced.
+SNIFF_HARD_CAP = 4096
 
 # Frequencies per chunk in the batched linear algebra (s_to_y / y_to_s /
 # compute_z_matrix).  Everything is stacked into (F, N, N) arrays and handed to
@@ -319,9 +352,25 @@ PARSE_WARN_CAP = 3
 ENCODING_SNIFF_BYTES = 4096
 
 # Data lines whose (line_no, value offset) the diagnosis pass remembers, so a
-# value index can be turned back into a line number.  8 bytes each; the cap
-# stops a pathological 50M-line file from costing more than the parse did.
+# value index can be turned back into a line number.  16 bytes per line (two
+# array('q')); the cap stops a pathological 50M-line file from costing more than
+# the parse did.  It is not generous: a 153-port sweep written 4 pairs to the
+# line -- what the Touchstone spec asks for -- is 5967 data lines per frequency,
+# so at 3000 frequencies the index stops recording 11% of the way in.
+#
+# Raising it was measured and rejected: the head index is already ~50% on top of
+# scan.values (8 bytes per value, uncapped, 4 values to the line), and 20M lines
+# would be 320 MB on an ERROR path.  What the cap actually cost was the one fact
+# the report exists to state -- a truncated file breaks at its END, past the head
+# index -- so the fix is the tail ring below, not a bigger head.
 DIAGNOSE_MAX_LINES = 2_000_000
+
+# ...and the last N data lines, kept in a ring once the head index is full, so
+# the end of a big file stays nameable.  Costs ~4.7 MB (two deques of boxed
+# ints), against 2.4 GB for indexing every line of the 3000-frequency 153-port
+# file above.  65536 lines is ~5 whole records of that file at 4 pairs to the
+# line, which is what it takes to reach back over the truncated last record.
+DIAGNOSE_TAIL_LINES = 1 << 16
 
 # Fault classes carried by TouchstoneParseError.  The whole point of the class
 # is that nobody should have to guess which one they are looking at: "is my
@@ -828,7 +877,7 @@ def _parse_touchstone(path: Path, force_nports: int | None,
                 kind=(diag.kind if diag.kind in (FAULT_FILE, FAULT_UNSUPPORTED,
                                                  FAULT_ACCESS)
                       else FAULT_FILE),
-                context=diag.lines,
+                context=diag.lines, verdict=diag.verdict,
                 hint=diag.hint or ("if you know the port count, force it "
                                    "(--force-nports N on the CLI)")) from e
 
@@ -874,6 +923,19 @@ def _parse_touchstone(path: Path, force_nports: int | None,
     # zero depending on the sign of the imaginary zero) is not worth
     # reproducing; +0.0 in every case is the sane reading of "this entry is
     # zero".  See tests/test_core.py:TestParserSignedZero.
+    #
+    # The MA/DB branch is where this parser's peak memory lives, and it is NOT
+    # chunked over frequency.  Measured for a 153-port, 5000-frequency export:
+    # values 1.87 GB + s 1.87 GB + the three float64 temporaries below 2.81 GB
+    # = 6.55 GB peak, against 3.75 GB for the same file written as RI.  Chunking
+    # would recover that 2.81 GB, and it was deliberately not done: numpy's
+    # sin/cos take a different inner loop depending on where a strided view
+    # starts and how the buffered blocks split, so a chunked evaluation is not
+    # guaranteed bit-identical to a whole-array one -- and EVERY fixture in
+    # tests/fixtures is RI, so golden_legacy.npz would not catch the drift.  An
+    # unguarded 1-ULP change on the format most EDA tools export is a worse
+    # trade than the memory.  Chunk it only together with an MA and a DB fixture
+    # in the golden reference.
     s = np.empty(body.shape[:-1], dtype=complex)
     if fmt == "RI":
         np.add(body[..., 0], 0.0, out=s.real)
@@ -1093,58 +1155,149 @@ def _check_s_values(s: np.ndarray, warnings_out: list[str],
     return s_max
 
 
+# Elements of the frequency column compared per pass in _strictly_increasing.
+# The bool temporary is one byte per element, so this is a 64 KB working set
+# whatever the file size -- see the function.
+_MONO_CHUNK = 1 << 16
+
+
+def _strictly_increasing(x: np.ndarray) -> bool:
+    """
+    Is every element greater than the one before it?  Chunked, with early exit.
+
+    `np.all(np.diff(x) > 0)` says the same thing and was what the sniffer used,
+    but it says it by materialising the whole difference -- and the candidates
+    that cost the most are the WRONG ones, where the strided view is enormous
+    (N=1 on a 153-port file is a third of every number in it) and the answer is
+    settled by the first pair.  Measured on the N=1 view of a 153-port,
+    600-frequency array (9.36M elements): 85.1 ms and 84 MB of temporaries for
+    the np.diff form, against 64 KB and one chunk here.  Whole-sniff A/B on the
+    same arrays: N=153/F=900 59.7 ms -> 0.18 ms, N=153/F=600 27.1 ms -> 0.06 ms,
+    N=60/F=4000 7.8 ms -> 0.19 ms.  That cost was proportional to the file: the
+    sniffer walked ~T/3 + T/9 + ... values before it answered.
+    It also stopped numpy printing "invalid value encountered in subtract" to
+    fd 2 on a file carrying inf/nan, where a double-clicked GUI has no fd 2.
+
+    `a - b > 0` and `a > b` agree for every pair of IEEE doubles -- two distinct
+    finite doubles never subtract to zero (gradual underflow makes the
+    subtraction exact when they are close), and nan/inf pairs answer False both
+    ways -- so this is the same predicate, not a looser one.  Fuzz-checked over
+    2000 random arrays drawn from {0, -0, +-1, +-inf, nan, +-1e308, denormals}.
+    """
+    n = int(x.size)
+    if n < 2:
+        return True
+    for start in range(0, n - 1, _MONO_CHUNK):
+        # +1 so the pair straddling the chunk boundary is tested too.
+        chunk = x[start:min(start + _MONO_CHUNK + 1, n)]
+        if not bool(np.all(chunk[1:] > chunk[:-1])):
+            return False
+    return True
+
+
+def _sniff_range(values: np.ndarray, lo: int, hi: int) -> list[int]:
+    """Port counts in [lo, hi] whose record size fits; at most three of them."""
+    T = int(values.size)
+    out: list[int] = []
+    for n in range(lo, hi + 1):
+        rec = 1 + 2 * n * n
+        if T % rec != 0:
+            continue
+        if _strictly_increasing(values[0::rec]):
+            out.append(n)
+            if len(out) >= 3:
+                break
+    return out
+
+
 def _sniff_nports(values: np.ndarray, warnings_out: list[str],
                   path: Path | None = None) -> int:
     """
     Find the smallest N whose record size fits and whose frequencies increase.
 
-    Content first, always: EDA tools rename these files constantly, so the
-    extension is not evidence of anything on its own.  It IS the tiebreak when
-    the content admits several answers (picking the smallest silently is how a
-    2-port file gets read as a 1-port one), and the last resort when the
-    content admits none -- which, since the loop applies exactly the same two
-    tests to every N up to MAX_SNIFF_NPORTS, can only mean the port count is
-    above that cap.  A package export with 300+ ports is the normal case this
-    tool exists for, and "could not infer port count" was a dead end for it.
+    Four steps, each more speculative than the last, and each one says in a WARN
+    line that it was reached:
+
+      1. the content, N = 1..MAX_SNIFF_NPORTS.  Content first, always: EDA tools
+         rename these files constantly, so the extension is not evidence of
+         anything on its own.  Silent when it gives one answer.
+      2. the file name, when the content gave none -- but only after
+         `_nports_fits` has checked the name against the content, so it is
+         corroborated evidence, not a label.  It stays AHEAD of step 3 because
+         at N > 256 a bare divisibility hit rests on the arithmetic of one huge
+         number with nothing else agreeing with it, while the name is what the
+         exporter said the file was.  When both agree the answer is identical;
+         when they disagree the name is the only external evidence there is.
+      3. the content again, N up to SNIFF_HARD_CAP.  This is the renamed 300-port
+         package export -- the one case where the tool used to have nothing to
+         offer but force_nports.
+      4. refuse, naming the cap that was exceeded and the way past it.
+
+    The extension also breaks a tie inside step 1: picking the smallest
+    candidate silently is how a 2-port file gets read as a 1-port one.
     """
     T = int(values.size)
     if T == 0:
         raise ValueError("No data tokens found in file")
     ext_n = _ext_nports(path) if path is not None else None
-    candidates: list[int] = []
-    for n in range(1, MAX_SNIFF_NPORTS + 1):
-        rec = 1 + 2 * n * n
-        if T % rec != 0:
-            continue
-        freqs = values[0::rec]
-        ok = freqs.size < 2 or bool(np.all(np.diff(freqs) > 0))
-        if ok:
-            candidates.append(n)
-            if len(candidates) >= 3:
-                break
-    if not candidates:
-        if ext_n is not None and _nports_fits(values, ext_n):
+
+    n_possible = _max_possible_nports(T)
+    candidates = _sniff_range(values, 1, min(MAX_SNIFF_NPORTS, n_possible))
+    if candidates:
+        if len(candidates) > 1:
+            if ext_n in candidates:
+                warnings_out.append(
+                    f"Port count ambiguous: candidates {candidates}. The file "
+                    f"name says N={ext_n}, which is one of them, so that is "
+                    f"what was used.")
+                return ext_n
             warnings_out.append(
-                f"Port count could not be detected from the content "
-                f"(nothing up to N={MAX_SNIFF_NPORTS} fits {T} numbers); the "
-                f"file name says N={ext_n}, which does fit, so that is what "
-                f"was used.")
-            return ext_n
-        raise ValueError(
-            f"Could not infer port count from {T} tokens. "
-            "Pass force_nports if you know it."
-        )
-    if len(candidates) > 1:
-        if ext_n in candidates:
-            warnings_out.append(
-                f"Port count ambiguous: candidates {candidates}. The file "
-                f"name says N={ext_n}, which is one of them, so that is what "
-                f"was used.")
-            return ext_n
+                f"Port count ambiguous: candidates {candidates}. "
+                f"Using N={candidates[0]}.")
+        return candidates[0]
+
+    if ext_n is not None and _nports_fits(values, ext_n):
         warnings_out.append(
-            f"Port count ambiguous: candidates {candidates}. Using N={candidates[0]}."
-        )
-    return candidates[0]
+            f"Port count could not be detected from the content "
+            f"(nothing up to N={MAX_SNIFF_NPORTS} fits {T} numbers); the "
+            f"file name says N={ext_n}, which does fit, so that is what "
+            f"was used.")
+        return ext_n
+
+    wide = _sniff_range(values, MAX_SNIFF_NPORTS + 1,
+                        min(SNIFF_HARD_CAP, n_possible))
+    if wide:
+        also = (f" ({len(wide) - 1} other port count(s) also fit: "
+                f"{wide[1:]})" if len(wide) > 1 else "")
+        warnings_out.append(
+            f"Port count N={wide[0]} was found only by searching past "
+            f"N={MAX_SNIFF_NPORTS}: nothing at or below that fits {T} numbers "
+            f"and the file name says nothing usable{also}. Nothing corroborates "
+            f"it, so check the port count on the numbers you get -- and if it "
+            f"is wrong, force the right one (force_nports=N, --force-nports N "
+            f"on the CLI).")
+        return wide[0]
+
+    raise ValueError(
+        f"Could not infer port count from {T} tokens: no N from 1 to "
+        f"{_sniff_reach(T)} divides them into whole records with an increasing "
+        f"frequency column. Pass force_nports if you know it.")
+
+
+def _max_possible_nports(n_values: int) -> int:
+    """
+    Largest N whose record could divide `n_values` at all.
+
+    rec = 1 + 2N^2 > T > 0 gives T % rec == T != 0, so no larger N can ever be a
+    candidate.  Bounding the sweeps by this is what keeps SNIFF_HARD_CAP free on
+    ordinary files -- the 2-port fixture's 3609 values stop it at N=42.
+    """
+    return math.isqrt(max(0, (n_values - 1) // 2))
+
+
+def _sniff_reach(n_values: int) -> int:
+    """Largest N _sniff_nports could have tried for a file of `n_values`."""
+    return min(SNIFF_HARD_CAP, _max_possible_nports(n_values))
 
 
 def _nports_fits(values: np.ndarray, n: int) -> bool:
@@ -1152,8 +1305,7 @@ def _nports_fits(values: np.ndarray, n: int) -> bool:
     rec = 1 + 2 * n * n
     if int(values.size) % rec != 0:
         return False
-    freqs = values[0::rec]
-    return freqs.size < 2 or bool(np.all(np.diff(freqs) > 0))
+    return _strictly_increasing(values[0::rec])
 
 
 # ============================================================================
@@ -1182,6 +1334,12 @@ class _Diagnosis:
     # points the user at the wrong thing entirely.
     headline: str | None = None
     hint: str | None = None
+    # Overrides the _VERDICT text for `kind` when the diagnosis can say
+    # something more specific than the fault class can.  "Your file may simply
+    # have more ports than this tool will guess at" is not "THE FILE is
+    # inconsistent", and printing the latter sends the user to re-export a file
+    # that was never broken.
+    verdict: str | None = None
 
 
 @dataclass
@@ -1202,6 +1360,14 @@ class _LineScan:
     starts: array.array = field(default_factory=lambda: array.array("q"))
     dlines: array.array = field(default_factory=lambda: array.array("q"))
     truncated: bool = False
+    # Value offset of the first data line the head index above did NOT record,
+    # and a ring of the last DIAGNOSE_TAIL_LINES lines.  A truncated file breaks
+    # at its END, which on anything big is past the head -- see _value_line.
+    head_end: int = -1
+    tail_starts: deque = field(
+        default_factory=lambda: deque(maxlen=DIAGNOSE_TAIL_LINES))
+    tail_dlines: deque = field(
+        default_factory=lambda: deque(maxlen=DIAGNOSE_TAIL_LINES))
 
 
 def _scan_lines(path: Path, encoding: str) -> _LineScan:
@@ -1253,7 +1419,11 @@ def _scan_lines(path: Path, encoding: str) -> _LineScan:
                 scan.starts.append(len(scan.values))
                 scan.dlines.append(line_no)
             else:
-                scan.truncated = True
+                if not scan.truncated:
+                    scan.truncated = True
+                    scan.head_end = len(scan.values)
+                scan.tail_starts.append(len(scan.values))
+                scan.tail_dlines.append(line_no)
             good = 0
             for tok in toks:
                 val = _to_float(tok)
@@ -1270,13 +1440,36 @@ def _scan_lines(path: Path, encoding: str) -> _LineScan:
 
 
 def _value_line(scan: _LineScan, index: int) -> int | None:
-    """Physical line number holding value `index`, or None if not recorded."""
-    if not scan.dlines or index < 0:
+    """
+    Physical line number holding value `index`, or None if not recorded.
+
+    Two indexes, because DIAGNOSE_MAX_LINES stops recording at the head of a big
+    file and a truncated file breaks at its end.  Falling off the head used to
+    return the LAST recorded line -- bisect_right lands past the array and the
+    clamp reads back its final entry -- so on a file with more data lines than
+    the cap the report said "the leftover starts at line 2000000" about a break
+    at line 17000000.  Demonstrated with the cap patched down to 10 on a
+    41-data-line file: it named line 11 for a break at line 42.  A wrong line
+    number in the one report whose whole job is naming the line is worse than no
+    line number, so past the head this answers from the tail ring or not at all.
+    """
+    if index < 0:
         return None
-    i = bisect.bisect_right(scan.starts, index) - 1
-    if i < 0 or i >= len(scan.dlines):
-        return None
-    return int(scan.dlines[i])
+    if not scan.truncated or index < scan.head_end:
+        if not scan.dlines:
+            return None
+        i = bisect.bisect_right(scan.starts, index) - 1
+        if i < 0 or i >= len(scan.dlines):
+            return None
+        return int(scan.dlines[i])
+    if scan.tail_starts and index >= scan.tail_starts[0]:
+        # Materialised because bisect indexes a deque in O(n); one 64K-element
+        # list per candidate, on an error path, is not worth a second structure.
+        starts = list(scan.tail_starts)
+        i = bisect.bisect_right(starts, index) - 1
+        if 0 <= i < len(scan.tail_dlines):
+            return int(scan.tail_dlines[i])
+    return None
 
 
 def _nports_from_record(n_values: int) -> int | None:
@@ -1302,6 +1495,13 @@ def _diag_candidate(scan: _LineScan, values: np.ndarray, n: int, source: str,
         if line is not None:
             out.append(f"      the leftover starts at line {line} -- the file "
                        f"ends mid-record there")
+        elif scan.truncated:
+            # Say why the line is missing.  Omitting it silently reads as "the
+            # tool did not look", which is the wrong complaint to send upstream.
+            out.append(f"      (the leftover is past the first "
+                       f"{DIAGNOSE_MAX_LINES} data lines and further back than "
+                       f"the {DIAGNOSE_TAIL_LINES}-line tail window, so its "
+                       f"line number was not recorded)")
         return False
     freqs = values[0::rec] if rec <= total else values[:0]
     if freqs.size >= 2:
@@ -1353,8 +1553,10 @@ def _diagnose(path: Path, force_nports: int | None = None) -> _Diagnosis:
             out.append(f"               {lines_with} line(s) carry {cnt} "
                        f"(first at line {scan.first_of_count.get(cnt, 0)})")
     if scan.truncated:
-        out.append(f"  (line numbers past the first {DIAGNOSE_MAX_LINES} data "
-                   f"lines were not recorded)")
+        out.append(f"  (line numbers were recorded for the first "
+                   f"{DIAGNOSE_MAX_LINES} data lines and the last "
+                   f"{DIAGNOSE_TAIL_LINES}; the middle of the file was not "
+                   f"indexed)")
 
     for ln, text in scan.v2_keywords[:PARSE_WARN_CAP]:
         out.append(f"  v2 keyword : line {ln}: {_clip(text)}")
@@ -1386,7 +1588,7 @@ def _diagnose(path: Path, force_nports: int | None = None) -> _Diagnosis:
             _add(_sniff_nports(values, [], path), "content sniffing")
         except ValueError:
             out.append(f"  port count : nothing from N=1 to "
-                       f"N={MAX_SNIFF_NPORTS} fits {total} numbers with an "
+                       f"N={_sniff_reach(total)} fits {total} numbers with an "
                        f"increasing frequency column")
 
     consistent = [n for n, src in candidates
@@ -1394,6 +1596,7 @@ def _diagnose(path: Path, force_nports: int | None = None) -> _Diagnosis:
 
     headline: str | None = None
     hint: str | None = None
+    verdict: str | None = None
     if scan.v2_keywords:
         kind = FAULT_UNSUPPORTED
         ln = scan.v2_keywords[0][0]
@@ -1417,6 +1620,27 @@ def _diagnose(path: Path, force_nports: int | None = None) -> _Diagnosis:
         headline = "the file has no numeric data at all"
         out.append("  VERDICT    : THE FILE has no numeric data at all. If it "
                    "is not empty, it is not a Touchstone file.")
+    elif consistent and consistent[0] > _sniff_reach(total):
+        # The file is fine and the parser would still not open it: N is past the
+        # cap on what the sniffer will infer, and the file name did not say.
+        # The "please report a parser bug" wording below must NOT stand for this
+        # -- it is a documented limit with a documented way out, and sending the
+        # user to file an issue instead of typing --force-nports wastes both
+        # their time and ours.  The kind stays FAULT_NONE because it is true:
+        # nothing is wrong with the file, so `--diagnose` still exits 0.
+        kind = FAULT_NONE
+        n_ok = consistent[0]
+        headline = (f"the data reads cleanly as N={n_ok}, which is past the "
+                    f"N={SNIFF_HARD_CAP} this tool will infer from the numbers "
+                    f"alone")
+        hint = (f"force the port count (force_nports={n_ok} in the API, "
+                f"--force-nports {n_ok} on the CLI)")
+        verdict = (f"THE FILE looks fine. THE PARSER will not guess a port "
+                   f"count above N={SNIFF_HARD_CAP}, so a file this wide has to "
+                   f"be opened with its port count given explicitly.")
+        out.append(f"  VERDICT    : the data reads cleanly as N={n_ok}, but the "
+                   f"port-count search stops at N={SNIFF_HARD_CAP}. Nothing is "
+                   f"wrong with the file -- open it with --force-nports {n_ok}.")
     elif consistent:
         kind = FAULT_NONE
         out.append(f"  VERDICT    : no inconsistency found -- the data reads "
@@ -1439,12 +1663,37 @@ def _diagnose(path: Path, force_nports: int | None = None) -> _Diagnosis:
                    "usually truncated.")
     else:
         kind = FAULT_FILE
+        reach = _sniff_reach(total)
         headline = (f"the port count could not be established: no N from 1 to "
-                    f"{MAX_SNIFF_NPORTS} divides {total} numbers into whole "
-                    f"records with an increasing frequency column")
-        out.append("  VERDICT    : THE FILE's port count could not be "
-                   "established at all. Force it if you know it.")
-    return _Diagnosis(kind, out, headline, hint)
+                    f"{reach} divides {total} numbers into whole records with "
+                    f"an increasing frequency column")
+        hint = ("pass the port count explicitly (force_nports=N in the API, "
+                "--force-nports N on the CLI)")
+        if reach >= SNIFF_HARD_CAP:
+            # Naming the cap only belongs here.  On a small file the search
+            # stopped because no record size could divide the numbers, not
+            # because it ran out of road, and mentioning a cap it never came
+            # near just invites the user to go looking for a setting.
+            hint += (f"; nothing above N={SNIFF_HARD_CAP} is inferred from the "
+                     f"numbers alone")
+            # The search stopped at the cap rather than at what the file could
+            # hold, so "too many ports" is genuinely on the table.  Say both
+            # readings: no test on a single number can separate a 5000-port
+            # export from a corrupt file, and claiming the file is broken sends
+            # the user to re-export something that may be perfectly good.
+            verdict = (
+                f"EITHER THE FILE has more ports than this tool will infer "
+                f"(the search stopped at N={SNIFF_HARD_CAP}) OR its data "
+                f"section is inconsistent. The numbers alone cannot tell those "
+                f"apart -- forcing the port count is what settles it.")
+            out.append(f"  VERDICT    : THE FILE's port count could not be "
+                       f"established at all, and the search stopped at the "
+                       f"N={SNIFF_HARD_CAP} cap -- so it may simply have more "
+                       f"ports than that. Force it if you know it.")
+        else:
+            out.append("  VERDICT    : THE FILE's port count could not be "
+                       "established at all. Force it if you know it.")
+    return _Diagnosis(kind, out, headline, hint, verdict)
 
 
 def _safe_diagnose(path: Path, force_nports: int | None = None) -> _Diagnosis:

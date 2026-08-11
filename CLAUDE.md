@@ -6,11 +6,14 @@ Conventions for Claude Code sessions on this repo. The authoritative spec is `CL
 
 Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files via Y-parameter Schur-complement reduction — and, with more than one measurement port defined, the mutual coupling between them (M, k, M/L, C_c). Used for IC packages, EMX layout traces, DCO inductors, decap, and inductor-to-inductor pulling / spur budgeting.
 
+`pkg_rlc_attrib.py` is a layer on top of that, not a mode: it takes one extracted `Z_ab` apart into the bare EM coupling plus one exact signed term per declared termination, and answers the exact what-if. It exists because the reduction assumption — everything unlisted is OPEN — moved a real answer by 6.07 dB with nothing on screen saying so.
+
 ## Module map
 
 | File                    | Responsibility                                                                  |
 |-------------------------|---------------------------------------------------------------------------------|
 | `pkg_rlc_core.py`       | Touchstone parser (+ `TouchstoneParseError` / `diagnose_touchstone` / `check_touchstone`), S<->Y, unified `TerminationSet` model + the Mode 5 DSL (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`), the connection-table row model (`MeasPortRow`, `ConnectionRow`, `rows_to_dsl_text`, `dsl_text_to_rows`, `build_terminations_rows`), `parse_mport_spec`, `resolve_meas_ports`, `compute_z_matrix` / `compute_z`, `extract_rlc_at_freq` / `extract_coupling_at_freq`, `fit_inductor` / `fit_capacitor` / `fit_auto`. |
+| `pkg_rlc_attrib.py`     | **Port attribution.** Given `Y(f)` and a `TerminationSet`, answers two questions at one frequency: an EXACT additive signed decomposition of `Z_ab` into the bare EM coupling plus one term per declared termination (`build_context` / `decompose` / `format_decomposition`), and the EXACT what-if of changing any of them (`sensitivity`, `group_joint`, `cumulative_curve`, `leave_one_out`, `sweep_mobius`, `transfer_ratio`). Plus `Element` / `Term` / `ReturnBudget` / `Decomposition` / `AttribContext`, the `DECOMPOSABLE` / `NON_DECOMPOSABLE` registries, the `Alternative` builders, `termination_impedance_diagonal` / `termination_impedance_shared_return`, `SIGN_CONVENTION_TEXT` and `AttribError`. Imports `pkg_rlc_core` ONLY (acyclic, the `pkg_rlc_plot` rule), no scipy. `pkg_rlc_extractor.py` drives it from the `--attribute*` flag group (`--mode coupling` only); **no GUI surface** — stage 4 of `docs/design_port_attribution.md` is unstarted. |
 | `pkg_rlc_plot.py`       | Matplotlib plot panel: multi-subplot grid over R/L/C/\|Z\|/Re/Im/Q/**k**, draggable freq marker, M / V / Delete keys, fullscreen window, and the `ReflowRow` / `reflow_rows` control strip that wraps instead of losing its tail. Quantities that cannot be derived from one `(freqs, Z)` pair (today only `k`) arrive via the optional `Trace.aux` dict. |
 | `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), the frozen-trace snapshot (`_freeze_trace_config`, `freeze_label`, `freeze_refusal`, the Traces-list right-click menu), the File menu and the JSON session format (`session_to_dict` / `session_from_dict` / `SessionError` / `autosave_path`), the results pane (a `ttk.Notebook` whose tab 0 is the Log, with `log_tab_label` / `_append_result(severity)` / `_select_results_tab`), and the immutable run record (`RowSnapshot` / `CouplingSnapshot` / `FitSnapshot` / `RunSnapshot`, `_snapshot_row` / `_snapshot_block` / `_snapshot_fit`) that `_render_results` consumes instead of live traces. Re-exports the DSL helpers it no longer defines. |
 | `pkg_rlc_gui.py` (cont.) | Plus the **Ports & Roles** window (`PortRolesWindow`, `_trace_role_rows`, `_role_warnings`, `_roles_header`, `apply_ports_as`), which is what `Show Ports` now opens. |
@@ -23,7 +26,13 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `tests/test_session.py` | Save Config / Load Config / Restore Last Session. Pure round trip (no Tk) for the trace fields, the refusal verdicts, the hand-edit tolerance and the path precedence; Tk-driven for the App-level save→wipe→load, the missing-file path, the autosave, and that the File menu and its accelerators are reachable. Also the guard on the Help window's tab strip, which the tenth tab pushed past the old 950 px. |
 | `tests/test_results_notebook.py` | The Results pane's `ttk.Notebook`: that the Log is tab 0, selected and MAPPED at startup (both are mechanical preconditions of tests elsewhere), the width-stable badge measured in the tab strip's own font, the unseen-warning count, the ERROR claim on the pane and the severity routing of the real call sites, plus the measured proof that a 30-tab strip does not move the left panel. Every guard mutation-checked. |
 | `tests/test_plot_controls.py` | The plot panel's control strip: the pure `reflow_rows` wrap (no item is ever dropped, at any width), and — off a mapped window at 575 / 700 / 1040 / 1200 / 1500 px — that every control lies WHOLLY inside the strip, that it wraps only when it has to, that `place` keeps the strip's requested width out of `PlotPanel`, and that the layout settles instead of oscillating. The FIRST test in the repo to touch this panel. Every guard mutation-checked. |
-| `tests/`                | `unittest`-based suite (906 tests covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/test_attrib_core.py` | Port attribution. The load-bearing one is the **reconciliation**: `decompose`'s sum against `compute_z_matrix` over every (spec, frequency) pair on every fixture, and every fast low-rank what-if (`sensitivity` / `group_joint` / `sweep_mobius`) against an HONEST recompute through a rebuilt `TerminationSet` — a Woodbury update that agrees with itself and with nothing else is the failure mode this module has. Plus the twelve requirements one by one: the reciprocity solve, the dense `Zt`, the singular-baseline fold, the structural rank check, the condition-aware residual floor, the return budget, the projection share, the refusal-by-name of non-decomposable quantities, non-additivity, the Möbius endpoints/interval/extremum, the sign convention, and the mode-1/2/3 ground-beats-probe precedence. Every guard mutation-checked. |
+| `tests/test_attrib_vs_engine.py` | A deliberately INDEPENDENT second opinion on the one claim everything else rests on — that the node-space decomposition and the engine's Schur reduction are two routes to one number. It differs from the acceptance suite on purpose in four ways: it walks the case registry in `tests/_golden_capture.py` (so "every mode is covered" is a property of the walk, not a docstring claim) and anchors on the bit-exact `golden_legacy.npz` array rather than on the `compute_z_matrix` call `build_context` makes for itself; it computes its TOLERANCE here, from the file's own admittance slice, because comparing the module's residual against the module's own floor proves only self-consistency — which it would keep with both of them wrong; it pins requirement 12 STRUCTURALLY (which declaration became an element, which was thrown away), not only as a number that happens to agree; and it FUZZES — 4000 random specs over six fixtures, two-sided contract: either it agrees with the engine inside the condition-aware budget or the `Decomposition` says so out loud. |
+| `tests/test_attrib_degenerate.py` | What the module does when the spec, the network or the data is BROKEN — the only interesting question here, because **every failure mode below produces a plausible number rather than an exception**: no DC reference (`cond(Y) = 2.5e16`) inverting to garbage; a redundant spec making `H` exactly singular (which must read as a spec bug, not as "unattributable physics"); an ill-conditioned baseline putting the decomposition's own sum 100% away from the engine with both numbers finite; independent-per-ball grounds reading **9.6 dB low** against the shared return real balls have; **eight** ground balls where every one-at-a-time and every pairwise measurement reads ~0 while the collective effect is **600x larger and the OTHER SIGN**; a ground inductance resonating with a package capacitance putting `M` outside the [ideal, open] bracket; one NaN in one S entry. It CONSTRUCTS each degeneracy — the repo's 2- and 4-port fixtures cannot express an eight-ball package or a resonant return — and checks against an honest rebuild through `compute_z_matrix`, so both sides come from shipped code. Every guard mutation-checked, with the defeating mutation named in each test's own docstring. |
+| `tests/run_parallel.py` | **The test runner to use.** Class-sharded, longest-first. Measured when it was written: `python -m unittest discover -s tests` 293 s against `python tests/run_parallel.py` 108 s over the same 906 tests (2.7x). `--fast` is 1.3 s for the seven no-Tk modules; `-m <substr>` picks modules by name. Sharded by CLASS not module because `test_run_history` alone is 86 s of the serial 293. Exit code 0 means every shard passed. NOT auto-discovered (no `test_` prefix). |
+| `tests/test_freq_label.py` | Frequency-label honesty: the marker frequency a report prints says where the numbers came from. Both extractors snap to the nearest grid point via `argmin`, and the default 0.1 GHz marker on `diff_pair_4port.s4p` lands on 0.10099 GHz — every default session in the repo snapped and said nothing. |
+| `tests/test_large_files.py` | How big a file the tool will read and what it says when it will not: the escalating port-count sniff past `MAX_SNIFF_NPORTS` to `SNIFF_HARD_CAP`, the refusal as a `TouchstoneParseError`, and the memory envelope. |
+| `tests/`                | `unittest`-based suite (1219 tests at the time of writing, covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, port attribution and its cross-check against the engine, the bit-exact golden regression, and `reduce_snp`). |
 | `tests/test_editor_autoapply.py` | The commit-step removal: WHEN the editor writes into a `TraceConfig` and WHICH one it lands on (the deferral, the object capture, the flush-before-selection-change), the style picker's storage / reachability / honesty about multi-curve traces, and that hiding a curve neither recomputes it nor destroys the cursors. Every guard here was mutation-checked. |
 | `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see, and the reordering hazard that forces `_import_dsl_text`'s verbatim fallback. |
 | `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
@@ -150,12 +159,357 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 - **A probe port may not also be a GND port (Mode 6 only).** A probe side is tied together, so grounding one of its ports grounds the whole side; `build_terminations_coupling` raises. `build_terminations_mode1/2/3` keep their historical "ground wins" precedence — do not "fix" those, the golden reference pins them.
 - **`compute_z` warns when `G > 1`.** It returns only measurement port 1. Only Mode 5 can get there (the named builders always produce `G == 1`), and Mode 5 is exactly the free-text mode where `signal V` instead of `signal B` silently defines a second measurement port and changes the answer by 37%.
 - **`RECIPROCITY_WARN = 1e-3` lives in `pkg_rlc_core`** and is imported by both `pkg_rlc_gui` and `pkg_rlc_extractor`. They used to disagree (1e-3 vs 1e-12), so the same file got opposite verdicts and the CLI cried wolf on every real EM file. The metric skips non-finite off-diagonal entries so one undefined measurement port cannot poison it.
-- **`M/L` is the Norton injection ratio, NOT the current-transfer ratio.** The exact ratio into a shorted port `a` is `I_a/I_b = -Z_ab/Z_aa`; `M/L_a` equals its magnitude only where `w*L_a >> R_a` (1098% apart at 10 MHz for `L=2n, R=1.5`). The label is "coupling ratio" everywhere — core docstring, CLI report, GUI legend, Help, README, theory.md. Keep the five in sync.
+- **`M/L` is the Norton injection ratio, NOT the current-transfer ratio.** The exact ratio into a shorted port `a` is `I_a/I_b = -Z_ab/Z_aa`; `M/L_a` equals its magnitude only where `w*L_a >> R_a` (1098% apart at 10 MHz for `L=2n, R=1.5`). The label is "coupling ratio" everywhere — core docstring, CLI report, GUI legend, Help, README, theory.md, and `pkg_rlc_attrib`'s `DECOMPOSABLE` entry. Keep the six in sync. `pkg_rlc_attrib.transfer_ratio` is where the EXACT ratio is available as a number rather than as a caveat.
 - **The GUI's pair list is RANKED by `max(|M/L_a|, |M/L_b|)` and floored at `COUPLING_FLOOR_DB = -60`.** Six measurement ports make 15 pairs, and nested-loop `(a, b)` order carries no information about which of them matter. `|k|` alone is the wrong key: `|k| = 0.02` between two 2 nH coils and between a 2 nH and a 500 pH coil are different problems — same `M`, 4x the injection into the small one. `rank_coupling_pairs` is pure and mutation-checked, and **magnitude appears there and nowhere else** — every printed cell stays signed. Three rules are load-bearing: `_pair_strength` is computed **linearly**, not from the `*_dB` fields (`_ratio_db(0)` is NaN, and a pair with `M = 0` is the weakest there is, not an undefined one); a pair with an **undefined** ratio sorts last and is **never** folded away (NaN is a missing measurement, not a small number); and the **strongest** pair is never folded away either, or a block can consist of nothing but "3 pairs were too weak to list". The `(see Export CSV)` pointer is true because `_write_coupling_csv` enumerates every unordered pair straight off the Z matrix and has no floor — do not give it one.
 - **`compute_z` is a thin wrapper returning `Zmat[:, 0, 0]`** — the self impedance of the FIRST measurement port, and a strided **view**, not a fresh contiguous array. Copy before writing into it or before handing it to code that assumes C-contiguity (the GUI does `np.ascontiguousarray`).
 - **`tests/fixtures/golden_legacy.npz` is the guard for all of the above.** It pins `parse_touchstone -> s_to_y -> compute_z` bit-for-bit for every fixture and for representative Mode 1/2/3/4/5 cases. If it fails, the reduction path changed: fix the change, do not regenerate the reference to make the test pass.
 - **The Mode 5 DSL and its helpers live in `pkg_rlc_core.py`** (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`) — terminations belong to core. `pkg_rlc_gui.py` re-imports them so `from pkg_rlc_gui import parse_si` and friends keep resolving; keep that re-export list intact.
 - **DSL signal syntax is `<port> signal <groupname> [+|-]`.** Group names are arbitrary strings; the sign is a **separate whitespace token** defaulting to `+`, and anything other than exactly `+` or `-` raises. A name whose `.upper()` is `A` or `B` is upper-cased so legacy `signal a` / `signal b` keep working. There is deliberately **no** "signal group must be A or B" validation any more, in either `compute_z_matrix` or the DSL — don't reintroduce it.
+
+### Port attribution (`pkg_rlc_attrib.py`)
+
+Design note: `docs/design_port_attribution.md`. Theory: `docs/theory.md` §13.
+User docs: Help → Mode 6 → "Where the number came from", and the README's
+"Port attribution" section. `tests/test_attrib_core.py`,
+`tests/test_attrib_vs_engine.py` and `tests/test_attrib_degenerate.py` are the
+guards, and every claim below was mutation-checked.
+
+Stages 1-3 are done — the engine plus the CLI report (`--attribute` and its
+flag group in `pkg_rlc_extractor.py`, `--mode coupling` only). **Stage 4, a
+`Toplevel`, is unstarted and `pkg_rlc_gui.py` does not import this module.**
+That order was deliberate: the output of this feature is a table and a
+paragraph, both of which a CLI can print, and every pixel in the GUI is
+already spoken for by the measurements elsewhere in this file. If a GUI
+surface is ever built it is a `Toplevel` like Ports & Roles — **not** a
+notebook tab beside the plot, for the reasons under "Rejected UI proposals".
+
+**Why it exists at all.** The user extracted `M` between the same two coils
+from the same EM solve twice and got 1.71 pH and 3.44 pH — **6.07 dB apart**,
+both correct. 6.1 dB of that was the grounding assumption and 0.6 dB the
+frequency marker. `compute_z_matrix` returns the OPEN-circuit matrix and
+everything unlisted is open; that convention was stated in `theory.md` §8.5
+and **nowhere on screen**. Every rule below is there because the alternative
+was measured and was worse.
+
+- **`Zbase`, never `Z0`.** `Z0` already means the reference impedance
+  everywhere in this repo. The collision is a real bug source, not a style
+  preference.
+- **The baseline is: probe sides merged, EVERY other port OPEN.** Nothing else
+  — no ground, no short, no lumped element. Every non-probe declaration is an
+  element on top of it. Change that definition and every term changes, which
+  is why the report names the baseline it used on every line of output.
+- **`Zt` is the element IMPEDANCE matrix, so an ideal element is `0` and NO
+  INFINITY EVER ENTERS THE ARITHMETIC.** The Woodbury identity in the `D = Zt^-1`
+  form has `D = inf` for an ideal ground; in the `Zt` form `H = Zt + G` is well
+  conditioned whenever `G` is. `H` is also the only matrix inverted on this
+  path, which is what makes `cond(H)` the right thing to gate the tolerance on.
+- **`r_a` is ITS OWN SOLVE, never `p_a`, and the transposes are plain `.T`.**
+  Reciprocity is not assumed. The user's real file sits at `3.41e-10`, a
+  thousand times the residual this feature advertises, so aliasing them would
+  silently spend the whole error budget. `.conj().T` is the easy numpy slip and
+  is simply the wrong operator: `Y` is complex-**symmetric**, not Hermitian.
+  `|r_a - p_a| / |p_a|` is reported as a diagnostic. The repo has **no fixture
+  that can catch this shortcut** — that is precisely why it is written down.
+- **`Zt` MAY BE DENSE, and the default ground topology must not be diagonal.**
+  Real package ground balls share a return plane. `N` independent `z` in
+  parallel is `z/N`; `N` balls sharing one `z` is `z`, so independent
+  per-lead inductors understate the common-mode return inductance by
+  `(1 + (N-1)k_ret)`. Measured on three different networks: **9.60 dB** (review,
+  synthetic 4-ball), **8.09 dB** (design note §5.2, independently constructed
+  4-ball), **6.03 dB** (`diff_pair_4port.s4p`, `agg=1`/`vic=2`, grounds 3+4,
+  5 GHz: 1.0120 nH independent vs 2.0259 nH shared). Every one **larger than
+  the 6.07 dB dispute this feature exists to settle**, monotone in `k_ret` with
+  no threshold, so there is no safe default and the module refuses to pick one:
+  `termination_impedance_diagonal` and `termination_impedance_shared_return`
+  are both explicit. `H = Zt + G` takes a dense `Zt` with zero math change and
+  zero cost change. The same physics is spellable in Mode 5 TODAY with no new
+  code — one `short_to` row tying the set, one `lumped_to_gnd` on any port of
+  it — and the two spellings of *which* port carries the inductor are
+  **bit-identical** (measured, `==`), because the set is one node by then.
+- **The reconciliation compares TWO ALGORITHMS ON ONE NETWORK, so it is always
+  taken on the DECLARED configuration — never on a what-if.** `ctx.Zop_declared`
+  exists for exactly this and is the left-hand side of the residual whatever
+  `zt` is in force. Comparing the what-if's answer against the engine's value
+  for the declared spec compares two *networks*, and the difference is one the
+  caller asked for: measured on `diff_pair_4port.s4p` (probes 1/2, grounds 3/4,
+  5 GHz), a shared 1 nH return doubles M, so the residual read **1.01**, sailed
+  past `RESIDUAL_CATASTROPHIC`, emptied `terms`, and printed *"the two
+  algorithms disagree about the answer itself"* about **2.026 nH, which was
+  right** — i.e. requirement 2's headline feature could never produce the split
+  it exists for, at the setting that matters most. A plain `diagonal` `zt` was
+  the quieter half: 0.2% is under the gate, so the table survived and the
+  spurious `Reconciliation:` warning printed anyway. Do NOT "fix" this back by
+  exempting `zt` from the gate — the arithmetic is still checked, on the
+  declared configuration, which is one extra `O(m^3)` solve and is the check
+  that was always meant.
+- **What a dense `Zt` genuinely loses is the second OPINION, not the check, and
+  `reference_applicable` is how that is said.** `compute_z_matrix` cannot be
+  handed a dense element-impedance matrix at all — a shared return is a mutual
+  impedance between ground leads and the DSL has no node to hang one on — so
+  `total_reference` stays the **declared** spec's answer and is re-labelled
+  *"compute_z_matrix, DECLARED spec — a DIFFERENT network"* rather than printed
+  under a heading that claims to be the same measurement. `ctx.notes` says
+  compute_z_matrix was NEVER ASKED ABOUT THIS NETWORK. Both halves matter:
+  dropping the engine's number hides a comparison the reader wants, and leaving
+  it unlabelled is a lie.
+- **A SINGULAR baseline auto-recovers; it must never refuse.** Measured:
+  `coupled_4port_float.s4p`, the repo's flagship Mode 6 example (used in
+  `theory.md` and the README), has `cond(Y) = 2.5e16`, so `inv(Ybase)` does not
+  exist and a naive implementation is red on day one. Recovery is automatic and
+  introduces no new user concept: SVD `Ybase`, partition elements by whether
+  `u_e` is in `range(Ybase)` using core's existing `PROBE_RANGE_TOL`, fold the
+  OUT-OF-RANGE ones into the baseline, Woodbury the rest, and **report by
+  name** — "Port(s) X are IN THE BASELINE because the structure has no
+  reference without them". A folded element has no term of its own, which is a
+  gauge change (see below) and is why naming it is not optional. Measured with
+  one `4 lumped_to_gnd R=50` on that fixture: effective cond `7.3e15 -> 5.7`.
+  With no elements at all there is nothing to fold, so `Zbase` is a `pinv` and
+  the balanced `+/-` probe is orthogonal to the common-mode null direction —
+  exact, residual `0.0`, effective cond `2.2`. Same argument as §8.4.
+- **STRUCTURAL rank check BEFORE any conditioning check.** A rank-deficient `U`
+  from a redundant spec — one port written `ground` twice through overlapping
+  ranges, a `short_to` between two already-grounded ports — is a **SPEC BUG**,
+  and reporting it as "genuinely unattributable physics" is the worst available
+  outcome. Test it on integer port-index sets first and NAME the offending
+  elements; only then look at `cond(G)`. Elements whose `u` is the zero vector
+  after probe-side merging are dropped as already inert — the same class
+  `inert_lumped_messages` reports on the Mode 5 strip.
+- **Reconciliation DEGRADES, never refuses outright, and its tolerance is
+  CONDITION-AWARE.** The authoritative total is always `compute_z_matrix`'s;
+  the decomposition's own sum is the check. Measured cross-algorithm agreement
+  is `3e-16` on a trivial 4-port and `~1e-7` at best on a 153-port file with
+  `cond(Ybase)*cond(G) ~ 1e7-1e9`, so a **fixed `1e-9` gate would refuse
+  exactly the files this exists for**. The gate is
+  `RESIDUAL_SAFETY * (cond(Ybase) + cond(H)) * eps * (S / |Z_ab|)` and the
+  `S/|Z_ab|` factor is NOT decoration: measured on `diff_pair_4port.s4p` at
+  1 MHz, `cond(Ybase) = 1.3e10` and `cond(H) = 1` give a cond-only bound of
+  `4.5e-5` while the actual disagreement is `0.25` — an inverse is accurate
+  relative to its LARGEST entry, and there the largest entry of `Zbase` is the
+  1 fF port capacitance's 159 kΩ while the answer is a 6 mΩ mutual. Report the
+  residual AND its achievable floor; only withhold the per-element **split**
+  when the residual is catastrophic, and **never** the total.
+- **The RETURN-PATH BUDGET is always reported, and it is what stops the output
+  being over-read.** The EM model's reference plane is not a port, so no
+  declaration reaches it. Report `|1^T Ybase V|` against `sum|I_e|`. Measured
+  on `diff_pair_4port.s4p` with both far ends grounded the declared elements
+  carry 99.41%, but on the representative package case the split was **0.05%
+  declared / 99.95% inside the EM model** — so the decomposition **cannot**
+  confirm or refute a "forward path minus return path" hypothesis and must
+  print that in words rather than let a user infer a null result from small
+  numbers.
+- **The SHARE of a complex term is not a complex ratio.** Report the signed
+  projection `Re(term * conj(total)) / |total|^2` PLUS a separate quadrature
+  component. A term at 90° to the total inflates any magnitude-based
+  cancellation measure while being harmless. Suppress the share column
+  entirely, **with a named reason**, when `|total|` is near zero — including
+  when it is smaller than the reconciliation residual, because a total smaller
+  than our own error bar is not a total.
+- **ONLY DECOMPOSE WHAT IS DECOMPOSABLE, and refuse the rest BY NAME.** A
+  quantity decomposes iff it is (fixed real scalar) x (R-linear functional of
+  `Z_ab`) at ONE configuration. YES: `Z`, `ReZ`, `ImZ`, `M`, `M/L_a`, `k`. NO:
+  `C_c = -1/(omega*Im Z_ab)` (a reciprocal — superposition adds impedances, not
+  their inverses), `Q` (a ratio of two decomposable things), `|Z|` (a norm),
+  anything in dB. **`C_c` is a first-class output of this tool** and is the
+  right reading whenever `Im(Z_ab) < 0`, so it must still be shown — as a
+  TOTAL only, never per term — `Decomposition.C_c_total` and one line in
+  `format_decomposition`, headlined when `Im(Z_ab) < 0`. The refusal names the
+  quantity and the linear one to ask for instead; "unsupported quantity" would
+  send the caller hunting for a typo, and a refusal pointing at a facility that
+  does not exist is worse still.
+- **"At ONE configuration" means fixed WITHIN one evaluation, NOT frozen at the
+  declared spec.** `M/L_a` and `k` divide by `L_a` (and `L_b`), and those are
+  properties of the NETWORK — every sensitivity row, group, cumulative point
+  and leave-one-out row is a different network. `_scale_from` therefore takes
+  the scale from the `(G, G)` matrix of the configuration being evaluated;
+  `_quantity_scale` is the wrapper that supplies `ctx.Zref` for the DECLARED
+  spec, so `decompose(..., "k")` still means byte-for-byte what the results
+  pane and the CSV print. Measured on `diff_pair_4port.s4p` at 5 GHz, opening
+  `ground port 3` takes `L_a` from `+5.026 nH` to `-505.3 nH`, so the frozen
+  scale reported `M/L_a = +0.100227` where the truth is `-0.000996976` —
+  **sign flipped, 100x** — and `k = +0.100227` where `L_a < 0` makes `k`
+  genuinely NaN by `extract_coupling_at_freq`'s own rule. On the first row of
+  the default scan. **`sweep_mobius` REFUSES `k` and `M/L_a` by name**
+  (`_SWEEP_REFUSED`): a curve has no single configuration to take a scale from,
+  so the only thing it could deliver is that same bug drawn as a graph.
+- **Sensitivity must include GROUP-LEVEL and CUMULATIVE, not only per-port and
+  pairwise.** With 60 ground balls every single-port delta is ~0 (the other 59
+  already carry the return) and so is every pairwise second difference: the
+  collective effect is order-60. Even at `m = 2` it bites — measured on
+  `diff_pair_4port.s4p`, opening ground 3 alone is `-506 pH`, ground 4 alone is
+  `-506 pH`, and **both at once is `-759 pH`, not `-1012 pH`**: non-additivity
+  `+254 pH`, a third of the effect from two elements. So: per element, per
+  GROUP (a whole connection-table row at once — the rows already define the
+  groups, so this is free), the non-additivity for groups AND pairs, a greedy
+  cumulative curve at `k = 1,2,4,8,16,…`, and leave-one-out from all-grounded.
+  **Every fast low-rank result MUST be verified in tests against an honest
+  recompute through `compute_z_matrix` with a rebuilt `TerminationSet`. That is
+  the single most important test in the file** — a Woodbury update that agrees
+  with itself and with nothing else is this module's characteristic failure.
+- **The series-L sweep is a CLOSED-FORM MÖBIUS MAP, not a loop.** `z` enters
+  `H` in exactly one entry, so `Z_ab(z) = (alpha + beta*z)/(gamma + delta*z)`:
+  exact endpoints (`z=0` ideal, `z=inf` open), the whole interval in closed
+  form, and the extremum over `[0, inf)` analytic (a Möbius map takes the real
+  line to a circular arc). **The INTERVAL is the headline scalar** ("M lies in
+  [1.71, 3.44] pH over any physical ground inductance"); the sampled curve is
+  secondary. **The curve need not be monotone and the endpoints are NOT a
+  bound** — a series L resonates with the package's shunt C. Measured on
+  `diff_pair_4port.s4p` sweeping ground port 3: ideal `1.01 nH`, open `504 pH`,
+  actual range `[504 pH, 1.18 nH]` peaking at `L = 505 nH`. Detect it and say
+  so. On an UNBOUNDED sweep an extremum `NEAR_POLE_RATIO` past the bracket is a
+  near-pole, not a design margin. **`bracket` must be in the SAME quantity as
+  `interval`** — for the complex `quantity="Z"` the interval is of `|Z|`, so
+  the bracket has to be too: measured with `t_max=20 nH`, the real-part
+  spelling put `(-2.49 nOhm, 376 pOhm)` beside an interval of
+  `(31.7 Ohm, 32.4 Ohm)` and announced a `1.3e10`-times-the-bracket near-pole
+  that does not exist.
+- **The sweep is evaluated from its PARTIAL FRACTIONS, never from the expanded
+  polynomial.** `Z(t) = c0 - sum_j residues[j]/(lam[j] + t)`, with the poles at
+  `t = -lam[j]`; `t -> inf` is exactly `c0` and `t = 0` is one sum, both
+  overflow-free at any `|S|`. Expanding it multiplies `|S|` eigenvalues
+  together, and with `param="L"` each is of order `1e-9`: measured on a
+  synthetic package sweeping one ground group, `den[-1]` is `5.98e-273` at 30
+  balls, `3.70e-309` at 34 and **exactly 0 at 36** — so `value_ideal`, which
+  was `num[-1]/den[-1]`, printed `+inf` at 36, `NaN` at 38 and `NaN` for the
+  whole curve at 60, with `method` still saying `"closed-form"` and `notes`
+  empty. **Requirement 9 is written around 60 ground balls.** `num` / `den`
+  survive as DIAGNOSTIC fields and are EMPTIED (with a note) rather than left
+  holding underflowed garbage — two redundant halves, `_EXPAND_MAX_DEGREE` and
+  the `den[-1] == 0` check, either of which alone does the job.
+- **The extremum search SEEDS FROM THE POLES and then polishes; `np.roots` on
+  the expanded critical polynomial is not enough.** Every candidate is a point
+  the curve really passes through, so the interval is always ACHIEVED and can
+  only ever be too narrow — that one-sidedness is what makes extending the
+  candidate set safe. Measured on `diff_pair_4port.s4p` at 5 GHz sweeping BOTH
+  grounds as one group over `L`: the two poles sit at `5.05000e-7` and
+  `5.05503e-7`, **0.1% apart, both on the positive real axis**, and the
+  degree-4 critical polynomial's roots found neither — reported
+  `(+7.46e-21, +2.138e-3) H` against a true `(-5.187, +5.187) H`, i.e. the
+  maximum `2.4e3x` too small and the minimum **the wrong sign**. The
+  single-element sweep on the same file was correct throughout, which is why it
+  went unnoticed: the defect needs `|S| >= 2`, i.e. exactly requirement 9b's
+  "change a whole connection-table row". Seeds are `Re(p) +/- c*|Im p|` for
+  `_POLE_SEED_OFFSETS`; the Newton polish on `Z'` / `Z''` (partial-fraction
+  form, no expanded coefficient anywhere) is what reaches a BROAD extremum that
+  sits on no seed — measured on a two-pole case, `-0.058971` without it against
+  `-0.059261` with it and on a 2M-point grid.
+- **The SIGN CONVENTION is declared globally and in every export**
+  (`SIGN_CONVENTION_TEXT`, one string so exports carry it verbatim). Victim
+  reference = `V(+) - V(-)` of the victim port; aggressor driven `+1 A` into
+  its `+` side; `I_e > 0` flows OUT of the structure into ground for a shunt
+  element (`u = e_p`) and from `p` to `q` for a series one (`u = e_p - e_q`).
+  Flipping either measurement port's `+/-` flips every term together:
+  **relative** signs between terms are physical, absolute ones are a labelling
+  choice. Same rule and same reason as `M`/`k`/`C_c` in core.
+- **Replicate `compute_z_matrix`'s PRECEDENCE EXACTLY.** Modes 1/2/3 let a
+  `Ground` beat a `Signal` (`merge_terms`, pinned by
+  `TestTerminationPrecedence`); `build_terminations_coupling` raises on the same
+  overlap. `_normalize_signal` is imported from core **on purpose** —
+  reimplementing the legacy "B == minus side of A" alias here is exactly how
+  the two would drift, and the symptom would be a reconciliation failure on the
+  specs the reconciliation exists to guard.
+- **The contribution table is a ranking of DECLARATIONS, never of PORTS.** A
+  port that is open contributes no element and therefore no term — it is
+  **absent**, not small. A table headed "contributions by port" that omits the
+  45 open ports of a package is a wrong answer with a plausible shape. Only the
+  sensitivity side reaches ports the user has not decided about, and it does so
+  by hypothesising a termination. State this in the docstring AND in the report
+  header, in those words. Related distinction the reviews surfaced and the docs
+  now carry: **a port left open because the SIMULATOR owns it is a different
+  thing from a port left open because nobody decided, and only the first is
+  safe** — the two are indistinguishable in the file, in the `TerminationSet`
+  and in the table, which is what the Ports & Roles open-port name check exists
+  to catch.
+- **The split depends on how the spec is SPELLED, and that cannot be fixed.**
+  `6:1:14 ground` (9 elements) and `6 short_to 7:1:14` + `6 ground` (8 shorts +
+  1 ground) are the same network, give the same total, and decompose
+  differently — they are two different *tearings* of it in the Kron sense.
+  Measured on `diff_pair_4port.s4p`: `3 ground / 4 ground` splits as
+  `bare 251 pH / gnd3 252 pH / gnd4 506 pH`, and `3 short_to 4 / 3 ground` as
+  `bare 251 pH / gnd3 253 pH / short 3-4 506 pH`, both totalling 1.01 nH. Say
+  so in the report — a user who reorganises their table for readability and
+  sees the contribution column move must find that sentence before filing a
+  defect.
+- **A NaN residual is NOT a pass — `split_trustworthy` requires
+  `math.isfinite(resid)`.** A NaN means nothing was checked at all, and the
+  cases that produce one are exactly where the module is most convincing and
+  most wrong: measured on `coupled_4port_float.s4p` with only one of the two
+  coils referenced, `compute_z_matrix` says NaN ("'c2' has no return path")
+  while this module folds the single ground in and reports **400.000 pH —
+  exactly half** the fixture's real 800 pH. The warning said "could not be
+  measured" and a caller gating on `split_trustworthy` got a green light. The
+  TOTAL is still reported; only the apportionment is withheld.
+- **A non-finite `Y` at the analysed frequency is REFUSED BY NAME, and so is a
+  non-finite caller-supplied `zt`.** The first escaped as numpy's bare
+  `LinAlgError("SVD did not converge")` out of `build_context` — no verdict, no
+  frequency, no file, in a repo whose `TouchstoneParseError` contract exists to
+  answer exactly that question; `compute_z_matrix` survives the same input and
+  returns NaN with a warning, so the user still has the engine's reading and
+  this module says which frequency it cannot follow it at. The second is the
+  only route round the `Zt = D^-1` formulation's guarantee that **no infinity
+  ever enters the arithmetic** (contract priority 4): an OPEN element is
+  spelled by leaving it out, never by a large or infinite impedance. The dead
+  `z_declared[i] = complex("inf")` branch that used to sit in `build_context`
+  is gone with a comment saying why it was unreachable — a zero-admittance
+  element is dropped as inert before it can get there.
+- **A multi-element what-if models the replaced leads as INDEPENDENT unless
+  told otherwise, and it SAYS SO.** `group_joint` / `cumulative_curve` /
+  `sweep_mobius` take `z_ret=`, which puts one shared return impedance across
+  the changed block — measured, that reproduces the equivalent
+  `termination_impedance_shared_return` context **bit-identically** (rel `0.0`)
+  and lands **6.06 dB** from the independent answer on a two-ball spec. With
+  `z_ret = 0` and two or more shunt elements changed, `notes` carries the
+  `(1 + (n-1)k)` warning: `build_context`'s DIAGONAL note inspects `ctx.Zt`
+  only and therefore cannot see a what-if, which is exactly where the model is
+  chosen rather than inherited.
+- **`cond(G)` and `cond(Ybase)` are DIAGNOSTICS, not trust signals.** Measured:
+  a node space collapsed by a 1 pΩ tie reports `cond(G) = 1.0` — `Gm` has
+  underflowed to `~1e-14` times the identity, so its condition number is
+  perfect — while `Zop[a, b]` is exactly 0 against the engine's 305 pH. The
+  reconciliation residual is what catches that; the condition numbers only
+  explain it afterwards. Said in `AttribContext`'s docstring for the same
+  reason.
+- **The decomposition is GAUGE-DEPENDENT.** Change the baseline and every term
+  changes; fold one element in and the rest all move, though the network, the
+  total and the physics are identical. What does **not** change is the element
+  currents `I_e` — those are physical; the attribution of *voltage* to them is
+  a gauge choice. This is PEEC's partial-inductance warning restated, and it is
+  the reason the report names its baseline every time: two reports are
+  comparable only when their baselines match.
+- **Re-terminating existing ports cannot evaluate NEW METAL.** A shield, an
+  extra via, a widened return path — none is a termination of an existing port.
+  They change `Y` itself and need a new EM run. Worth drawing sharply because
+  the sensitivity output looks exactly like a layout-exploration tool and is
+  not one.
+- **Also expose the EXACT current-transfer ratio.** `-Z_ab/Z_aa`, and an
+  optional loaded `-Z_ab/(Z_aa + Z_load)`. `theory.md` §8.8 documents that
+  `M/L_a` is only the first-order Norton approximation to it (1098% apart at
+  10 MHz for `L=2n, R=1.5`); the user measured 0.87 dB of difference on their
+  own file by hand. It is a TOTAL, not a decomposable quantity — `Z_ab` is in
+  the denominator.
+- **The prior art is named on purpose** (`theory.md` §13.5): Kron diakoptics
+  (`H = Zt + G` *is* the connection matrix), the adjoint variable method (`r_a`
+  is the adjoint solution — which is why requirement 1 is stated in adjoint
+  language), PEEC partial elements (the gauge warning, verbatim), and Norton
+  path decomposition / transfer-path analysis. Each of those literatures
+  already found the trap the corresponding rule guards against; "this is
+  diakoptics, and diakoptics has the following known failure mode" is cheaper
+  than rediscovering it.
+- **No scipy, and no explicit `inv`.** The contract permitted
+  `scipy.linalg.lu_factor` / `lu_solve`; the module ships without it because
+  `np.linalg.solve` with a multi-column right-hand side IS one LU factorisation
+  plus k triangular solves — exactly what those two buy — and
+  `deploy/doctor.sh`'s tiers assume numpy is this repo's only hard dependency.
+  Adding scipy would silently move the red-zone bar. Don't, without a
+  measurement that justifies it.
+- **`compute_z_matrix` is called on a ONE-FREQUENCY SLICE, first**, before any
+  attribution arithmetic. Its Schur solve is a gufunc and its contraction is
+  already per-frequency, so the slice returns exactly what a full sweep would
+  put at that index — microseconds instead of hundreds of milliseconds on a
+  5000-point file — and calling it first is what validates the port indices,
+  resolves the measurement ports and raises on conflicting signal groups.
+  **Nothing in this module may modify `compute_z_matrix`, `_probe_impedance`,
+  `_is_singular_2x2` or anything else `golden_legacy.npz` pins.**
+
 ### Connection table (the Mode 5 / Mode 6 row editor)
 
 Design note: `docs/design_connection_table.md`. Stages 0-3 are done; stage 4
@@ -1322,8 +1676,23 @@ recorded here rather than in a commit message nobody will find.
 ## How to run tests
 
 ```bash
-python -m unittest discover -s tests
+python tests/run_parallel.py            # the whole suite -- use this
+python tests/run_parallel.py --fast     # 1.3 s, 267 tests, the seven no-Tk modules
+python tests/run_parallel.py -m attrib coupling core    # substring on module name
 ```
+
+`python -m unittest discover -s tests` still works and is still the ground truth, but it is
+**2.7x slower for the same tests** — measured at the time `run_parallel.py` was written,
+293 s serial against 108 s parallel over 906 tests. The runner shards by test CLASS (not
+module: `test_run_history` alone was 86 s of that 293), longest-first, and exit code 0 means
+every shard passed; failing shards print their full output. Measured here at 1130 tests:
+120 s on an idle box, 339 s with another agent competing for the same cores — the wall time
+tracks contention, so read the exit code, not the clock.
+
+While iterating, run the **narrowest set that can still catch your mistake**: `--fast` for
+numeric-only changes, `-m <your modules>` otherwise. **87 % of the suite is Tk GUI tests**
+that a change to `pkg_rlc_core` numerics or to `pkg_rlc_attrib` cannot affect. Run the full
+parallel suite once before reporting — never the serial `discover`.
 
 ## How to add a new measurement mode
 
