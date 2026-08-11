@@ -540,21 +540,34 @@ MEASUREMENT PORTS -- Name / "+ ports" / "- ports". Identical to
 Mode 6; see that tab. Two or more rows give you the coupling matrix
 (M, k) between them, in Mode 5 exactly as in Mode 6.
 
-CONNECTIONS -- Type / Port / To / R / L / C:
+CONNECTIONS -- the cells a row has FOLLOW ITS TYPE:
 
-   Type          Attaches                            uses To?  R/L/C?
-   ------------  ----------------------------------  --------  ------
-   ground        V = 0                               no        no
-   vdd           V = 0 as well (AC small-signal)     no        no
-   open          nothing (the default anyway)        no        no
-   short         ties Port to To                     YES       no
-   rlc_gnd       series R-L-C from Port to ground    no        YES
-   rlc_between   the same element from Port to To    YES       YES
+   Type          Attaches                           cells on that row
+   ------------  ---------------------------------  ------------------
+   ground        V = 0                              Port
+   vdd           V = 0 as well (AC small-signal)    Port
+   open          nothing (the default anyway)       Port
+   short         ties the whole listed group        Port, Net
+                 into ONE node
+   rlc_gnd       series R-L-C from Port to ground   Port, R, L, C
+   rlc_between   the same element between two       Port, To, R, L, C
+                 ports
 
-   * Port and To take the full range syntax, so a package's ground
-     balls are ONE row: "6-14" or "35:1:45". See the Input syntax
-     tab. ("35:45" is an error -- the MATLAB form needs all three
-     fields.)
+   A short row has ONE port field, not two: list the whole tied
+   group in it ("5,6,7,8", "23-25"). A group of shorted pins has no
+   natural "from" and "to", and splitting it across two cells was
+   arbitrary. The freed cell is the node's NAME -- see "Naming a
+   node" below.
+
+   The column headings follow the table: with no rlc_gnd/rlc_between
+   row in it the R/L/C headings are blank and the port field is that
+   much wider, and the third heading reads "To", "Net", "To / Net"
+   or nothing depending on what the rows actually put there.
+
+   * Every port field takes the full range syntax, so a package's
+     ground balls are ONE row: "6-14" or "35:1:45". See the Input
+     syntax tab. ("35:45" is an error -- the MATLAB form needs all
+     three fields.)
    * The Port / To dropdowns list port NUMBERS, not names. To see
      which ball is which on an unfamiliar file, click "Show Ports"
      at the top of the left panel: it opens the "Ports & Roles"
@@ -563,17 +576,35 @@ CONNECTIONS -- Type / Port / To / R / L / C:
      selection back into these tables as a collapsed range. (A
      name-bearing dropdown does not fit the editor's width; it is
      planned, not forgotten.)
-   * "To" is ignored by ground / vdd / open / rlc_gnd, which are
-     always to ground. rlc_between takes exactly ONE partner port
-     (an N-to-M lumped element is ambiguous -- star? mesh?).
-   * A range on an rlc_gnd row is ONE ELEMENT PER PORT, not one
-     element shared by them. "21:1:25" with L = 80p is five
-     separate 80 pH inductors, one from each of ports 21..25 to
-     ground -- the right model for five ground balls each with its
-     own ball inductance. (If those five ports are one net inside
-     the file, the five inductors end up in parallel there, so the
-     die sees ~16 pH.) For ONE shared 80 pH instead, take two rows:
-     "short 21:1:25 -> 21", then "rlc_gnd 21 L=80p".
+   * rlc_between is the only Type with two port fields, because a
+     two-terminal element really has two ends. It takes exactly ONE
+     partner port (an N-to-M lumped element is ambiguous -- star?
+     mesh?). ground / vdd / open / rlc_gnd have no second field at
+     all: they are always to ground.
+   * A range on an rlc_gnd or rlc_between row is ONE ELEMENT PER
+     PORT, not one element shared by them. "21:1:25" with L = 80p
+     is five separate 80 pH inductors, one from each of ports
+     21..25 to ground -- the right model for five ground balls each
+     with its own ball inductance. (If those five ports are one net
+     inside the file, the five inductors end up in parallel there,
+     so the die sees ~16 pH.)
+     For ONE shared 80 pH instead, short the ports and hang the
+     element off the NODE:
+
+         short     21:1:25   as gnd_ring
+         rlc_gnd   gnd_ring  L=80p
+
+     Any ONE member port does the same job ("rlc_gnd 21 L=80p"),
+     because the short has already made them one node; the name
+     just says so out loud.
+
+     What you must NOT write is "rlc_gnd 21:1:25 L=80p" after the
+     short. That is five 80 pH inductors between the SAME two
+     nodes, i.e. 16 pH, and it is a plausible-looking number that
+     nothing else on screen would question. The strip refuses it by
+     name: "ports 21-25 are ALREADY ONE NODE ... L 80 pH becomes
+     16 pH". Without the short those same five ports are five real
+     ball inductances and nothing is said.
    * Two rlc_between rows on the SAME port pair are two elements in
      PARALLEL -- their admittances add, which is how to write
      R_on || C_ds for a switch. Two rlc_gnd rows on the same PORT
@@ -591,6 +622,60 @@ CONNECTIONS -- Type / Port / To / R / L / C:
      is "no capacitor in the series branch"; C = 0 would be an open
      circuit. An element row with NO R, L and C at all is a 0-ohm
      short and gives NaN everywhere; the strip says so.
+
+Naming a node
+-------------
+A short row creates a NODE, and the cell it does not need for a
+second port field is that node's NAME:
+
+   Type    Port          Net
+   ------  ------------  ----------
+   short   23,24,25      coil_tap
+
+Any port field in either table may then say "coil_tap" instead of
+a port number -- an element row, a probe's "+" or "-" side, a
+later ground row:
+
+   Type          Port      To       L
+   ------------  --------  -------  -----
+   rlc_between   coil_tap  10       10f
+
+which reads the way you would say it out loud: "these three are one
+point, and an inductor goes from that point to port 10".
+
+The name is pure convenience. It resolves to one member port of the
+node, so the answer is bit-identical to typing "23" there, and
+"Edit as text..." shows exactly that:
+
+   23,24,25  short           as coil_tap
+   coil_tap  lumped_between  10  L=10f
+
+What a name may be:
+   * NOT a number or a range. "1", "6-14" and "35:1:45" are refused
+     -- the port field is the one place a number and a name share a
+     slot, and nothing could tell them apart.
+   * No spaces, and none of  :  ,  -  #  . Those are how this
+     syntax separates ports, ranges and comments.
+   * Not one of the syntax's own words (ground, vdd, open, signal,
+     short, as, ...), and not "A" or "B", which are reserved for
+     the legacy signal groups.
+   * Matched WITHOUT regard to case ("Coil_tap" finds "coil_tap"),
+     stored exactly as you typed it.
+
+Two refusals, both deliberate:
+   * A name nothing defines is an ERROR naming the ones that are
+     defined -- it is never quietly treated as a new, empty node,
+     which would hang your element off a dangling point and change
+     the answer with nothing on screen.
+   * Two names for ONE node is an error. If a short ties 1,2 and
+     another ties 2,3, ports 1-3 are one node and it cannot answer
+     to two names; put them all on one short row.
+
+Every merged node appears at the TOP of the Port / To dropdowns --
+its name, or its first member port when it has no name -- above the
+bare port numbers. That is on purpose: picking the node from the
+top of the list is the right gesture, and typing out all of its
+members is the one that multiplies your element by N.
 
 Under the tables, two lines:
 
@@ -641,9 +726,18 @@ kind:
   <port>  ground                        (or 'gnd')
   <port>  vdd                           (alias of ground)
   <port>  open                          (default if not listed)
-  <port>  short_to <other_port>
+  <ports> short                         (ties the whole list into
+                                         ONE node -- what a single-
+                                         cell short row serialises to)
+  <port>  short_to <other_port>         (the same thing in two fields)
+  <ports> short [as <name>]             (...and name the node)
   <port>  lumped_to_gnd <R/L/C params>
   <port>  lumped_between <other_port> <R/L/C params>
+
+Any <port> above may be a NODE NAME given by an "as" on a short
+line -- see "Naming a node" above. Only a short line may carry an
+"as"; putting one anywhere else is an error rather than a silently
+dropped word.
 
 R/L/C parameters use 'R=...', 'L=...', 'C=...' (any subset).
 Series RLC is computed automatically: Z = R + jwL + 1/(jwC).
@@ -1784,20 +1878,26 @@ other, they are different answers, and the report says so.
 
 You can also spell it right here in Mode 5, with no attribution
 code at all -- and if you take one thing from this section, take
-this one. Tie the whole ground set with one short_to row, then
-hang ONE lumped_to_gnd on any port of it.
+this one. Tie the whole ground set with ONE short row, then hang
+ONE lumped_to_gnd on that node.
 
       independent:  3 lumped_to_gnd L=1n
                     4 lumped_to_gnd L=1n        M = 1.0120 nH
 
-      shared:       3 short_to 4
-                    3 lumped_to_gnd L=1n        M = 2.0259 nH
+      shared:       3,4 short as pkg_gnd
+                    pkg_gnd lumped_to_gnd L=1n  M = 2.0259 nH
 
 Same file, same probes, same frequency: 6.03 dB apart. (It does
 not matter WHICH port of the set carries the inductor -- by then
-they are one node, and the two spellings give bit-identical
-answers.) Which one is right is a question about your package,
-not about this tool -- but you should answer it on purpose.
+they are one node, so "3 lumped_to_gnd L=1n" is bit-identical, and
+so is the older two-field spelling "3 short_to 4". The name simply
+saves you having to pick a port and remember why.) What you must
+not write is "3,4 lumped_to_gnd L=1n" after the short: once they
+are one node that is two 1 nH leads in PARALLEL on it, i.e. a
+500 pH shared return, which is neither of the two models above.
+The validation strip refuses it and prints both numbers. Which
+model is right is a question about your package, not about this
+tool -- but you should answer it on purpose.
 """
 
 
@@ -1828,6 +1928,31 @@ preserving order.
 
 NOTE the MATLAB range needs all THREE fields. "35:45" is an error;
 write "35:1:45" or "35-45".
+
+Node names (Mode 5)
+-------------------
+A short row ties its listed ports into ONE node, and can give that
+node a name in its Net cell ("coil_tap"). Every port field above
+then also accepts that name, which resolves to the node:
+
+   23,24,25   short           as coil_tap
+   coil_tap   lumped_between  10  L=10f
+
+A name may NOT be a number or a range, may not contain whitespace
+or any of  :  ,  -  #  , may not be one of the syntax's own words
+(ground / vdd / open / signal / short / short_to / lumped_to_gnd /
+lumped_between / as) and may not be "A" or "B". It is matched
+without regard to case and stored as typed. A name nothing defines
+is an error listing the names that ARE defined; it never becomes a
+new empty node.
+
+The name is convenience, not capability: it stands for ONE member
+port, so "coil_tap" and "23" compute the identical number. What it
+buys you is that the wrong spelling stops looking natural: listing
+every member of an already-merged node ("23,24,25 lumped_between
+10 L=10f") is THREE elements in parallel, so 10 fH reads as
+3.33 fH. The validation strip refuses that by name and prints both
+numbers.
 
 Short-pair / short-group syntax
 -------------------------------

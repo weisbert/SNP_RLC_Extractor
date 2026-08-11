@@ -41,6 +41,7 @@ import numpy as np
 
 from pkg_rlc_core import (
     CONN_KINDS,
+    CONN_KINDS_WITH_NET,
     CONN_KINDS_WITH_RLC,
     DEFAULT_Z0,
     RECIPROCITY_WARN,
@@ -81,6 +82,8 @@ from pkg_rlc_core import (
     fit_capacitor,
     fit_inductor,
     inert_lumped_messages,
+    merged_nodes,
+    parallel_stamp_messages,
     parse_custom_termination_text,
     parse_kv_rlc_params,
     parse_mport_spec,
@@ -678,12 +681,55 @@ def _rlc_echo(row: ConnectionRow) -> str:
     return f"port {row.ports.strip()} → {to or '?'}: " + " + ".join(bits)
 
 
-def _validation_messages(mport_rows: Sequence, conn_rows: Sequence,
-                         extra_lines: str = "",
-                         nports: Optional[int] = None,
-                         port_names: Optional[Sequence[str]] = None) -> list[str]:
+# ---- how much a validation message COSTS the reader (R1-5) -----------------
+#
+# VALIDATION_STRIP_LINES is 2 and the footer summarises the rest as a count, so
+# the first two messages ARE what gets read.  Emitting them in check order put
+# "connection row 3 has values but no Port" -- which is visible on row 3, in
+# the table, with an empty cell in it -- above "this element is shorted out",
+# which is the one failure that produces a plausible number and says nothing.
+#
+# The ordering rule is therefore by CONSEQUENCE:
+#
+#   V_WRONG_NUMBER  Calculate succeeds and the number is not the one you asked
+#                   for, and nothing else on screen says so.  A merged-node
+#                   parallel stamp, an annihilated element, a probe a ground
+#                   row silently outranks, two measurement-port rows that
+#                   collapse into one, an open-port remnant.
+#   V_NO_RESULT     Calculate raises, or every value comes back NaN.  Loud, so
+#                   it ranks below a quiet wrong answer -- but above a row
+#                   whose only symptom is on the row itself.
+#   V_ROW_INERT     This row contributes nothing.  Its own cells show it.
+#   V_OK            The '✓' echoes.  Never mixed with the above: the echoes
+#                   are only reached when nothing else fired.
+#
+# Sorting is STABLE, so within a tier the emission order (which is row order)
+# is preserved -- '5m' vs '5M' is a property of the row it is on and the rows
+# must stay in the order they are on screen.
+V_WRONG_NUMBER = 0
+V_NO_RESULT = 1
+V_ROW_INERT = 2
+V_OK = 3
+
+
+@dataclass(frozen=True)
+class _VMsg:
+    """One validation message, its consequence tier, and the row it is about.
+
+    `anchor` is ("conn"|"mport", 0-based index into the NON-BLANK rows), which
+    is what the footer strip routes to (R1-4).  None means the message is
+    about the spec as a whole and there is no single row to scroll to."""
+    tier: int
+    text: str
+    anchor: Optional[tuple] = None
+
+
+def _validation_report(mport_rows: Sequence, conn_rows: Sequence,
+                       extra_lines: str = "",
+                       nports: Optional[int] = None,
+                       port_names: Optional[Sequence[str]] = None) -> list:
     """
-    Everything worth saying about the two tables, worst first.
+    Everything worth saying about the two tables, worst CONSEQUENCE first.
 
     MUST NOT RAISE.  It runs from a Tk variable trace on every keystroke, where
     a raised exception does not reach a handler we control -- Tk prints it to
@@ -694,23 +740,21 @@ def _validation_messages(mport_rows: Sequence, conn_rows: Sequence,
     name check -- the one thing here that catches a spec which is internally
     consistent and still wrong.  Omit it and that check simply does not run.
     """
-    msgs: list[str] = []
-    term: Optional[TerminationSet] = None
-    try:
-        term = build_terminations_rows(mport_rows, conn_rows, extra_lines,
-                                       nports=nports)
-    except Exception as e:
-        msgs.append(f"⚠ {e}")
+    msgs: list = []
+    # Row indices as the STRIP numbers them: blanks are dropped by
+    # RowTable.get_rows, so row i of this list is row i on screen.
+    conn_live = [r for r in conn_rows if not r.is_blank()]
+    mport_live = [r for r in mport_rows if not r.is_blank()]
 
     # Rows that are not blank but contribute nothing. rows_to_dsl_text skips a
     # connection row with an empty Port silently -- no error, no line, no hint
     # that the R=50 sitting next to it was thrown away.
-    for i, row in enumerate(conn_rows, start=1):
-        if row.is_blank():
-            continue
+    for i, row in enumerate(conn_live, start=1):
+        anchor = ("conn", i - 1)
         if not row.ports.strip():
-            msgs.append(f"⚠ connection row {i} has values but no Port "
-                        "-- it does nothing.")
+            msgs.append(_VMsg(V_ROW_INERT,
+                              f"⚠ connection row {i} has values but no Port "
+                              "-- it does nothing.", anchor))
         elif (row.kind in CONN_KINDS_WITH_RLC
                 and not (row.R.strip() or row.L.strip() or row.C.strip())):
             # The mirror image of the check above, and the one that hurts:
@@ -718,24 +762,51 @@ def _validation_messages(mport_rows: Sequence, conn_rows: Sequence,
             # infinite-admittance short and Z comes out NaN at EVERY frequency
             # -- with a warning that blames the measurement port's return path
             # rather than the empty cells.
-            msgs.append(f"⚠ connection row {i} ({row.kind}) has no R, L or C "
-                        "-- a lumped element with no value is a 0 Ω short and "
-                        "the result is NaN everywhere.")
-    for i, row in enumerate(mport_rows, start=1):
-        if row.is_blank() or row.plus.strip():
+            msgs.append(_VMsg(V_NO_RESULT,
+                              f"⚠ connection row {i} ({row.kind}) has no R, L "
+                              "or C -- a lumped element with no value is a "
+                              "0 Ω short and the result is NaN everywhere.",
+                              anchor))
+    # V_NO_RESULT, not V_ROW_INERT.  A measurement-port row that resolves to
+    # nothing is not "a row that does nothing": it is the measurement itself
+    # going missing.  With one row that is a Calculate that RAISES ("no
+    # measurement port defined"), and this message is its CAUSE -- the repo
+    # already pins cause-above-consequence for the probe/ground overlap, and
+    # the cause is the one you act on.  With several rows it is a coupling
+    # curve that silently is not there.  Either way it outranks an element row
+    # with an empty Port cell, which is R1-5's named example of the low tier.
+    for i, row in enumerate(mport_live, start=1):
+        if row.plus.strip():
             continue
+        anchor = ("mport", i - 1)
         if row.minus.strip():
-            msgs.append(f"⚠ measurement port row {i} has a '−' side but no "
-                        "'+' side -- it does nothing.")
+            msgs.append(_VMsg(V_NO_RESULT,
+                              f"⚠ measurement port row {i} has a '−' side but "
+                              "no '+' side -- it does nothing.", anchor))
         else:
             # Name typed, ports never filled in. is_blank() is False, so
             # neither branch used to see it and the row vanished silently.
-            msgs.append(f"⚠ measurement port row {i} has a name but no ports "
-                        "-- it does nothing.")
+            msgs.append(_VMsg(V_NO_RESULT,
+                              f"⚠ measurement port row {i} has a name but no "
+                              "ports -- it does nothing.", anchor))
+
+    term: Optional[TerminationSet] = None
+    try:
+        term = build_terminations_rows(mport_rows, conn_rows, extra_lines,
+                                       nports=nports)
+    except Exception as e:
+        # Deliberately UNANCHORED. The builder speaks in DSL line numbers, and
+        # mapping one back to a table row means a second copy of
+        # rows_to_dsl_text's emission order living here -- which would drift,
+        # and whose drift shows up as the footer route landing on the wrong
+        # row. The route falls back to the validation strip, where the whole
+        # message is written out.
+        msgs.append(_VMsg(V_NO_RESULT, f"⚠ {e}"))
 
     if term is not None:
         # Overlaps first: grounding a probe is what CAUSES 'no measurement
-        # port defined', so naming the cause above the consequence.
+        # port defined', so naming the cause above the consequence.  Both are
+        # tiered, so that order survives the sort.
         msgs.extend(_probe_ground_messages(mport_rows, term))
         msgs.extend(_measured_port_messages(mport_rows, term, nports))
         # An element the reduction annihilates (shorted out / both ends
@@ -743,7 +814,17 @@ def _validation_messages(mport_rows: Sequence, conn_rows: Sequence,
         # tick reading '✓ port 5 → 6: 20 Ω' next to an answer that does not
         # depend on the 20 at all. The echoes below are only reached when msgs
         # is empty, so appending here is what suppresses that.
-        msgs.extend(inert_lumped_messages(term))
+        msgs.extend(_VMsg(V_WRONG_NUMBER, m)
+                    for m in inert_lumped_messages(term))
+        # Its sibling, and the reason this whole tier exists: N identical
+        # elements stamped across ONE merged node.  Measured by core on the
+        # 5-port probe network -- '1,2,3 lumped_between 4 L=10f' after
+        # '1 short_to 2,3' reads 3.333 fH where 10 fH was typed, with nothing
+        # raised and nothing warned.  A number that is wrong by a factor of N
+        # and looks entirely plausible outranks every "this row does nothing"
+        # below it, which is exactly what V_WRONG_NUMBER buys.
+        msgs.extend(_VMsg(V_WRONG_NUMBER, m)
+                    for m in parallel_stamp_messages(term))
         # The one check that reads the FILE rather than the spec: ports whose
         # names say they belong to a set the user terminated, left open. Every
         # message above says "your spec is inconsistent"; this one says "your
@@ -751,24 +832,36 @@ def _validation_messages(mport_rows: Sequence, conn_rows: Sequence,
         # failure that survives review and costs three weeks.
         if port_names and nports is not None:
             try:
-                msgs.extend(open_port_name_messages(
-                    port_roles(term, nports, port_names)))
+                msgs.extend(_VMsg(V_WRONG_NUMBER, m)
+                            for m in open_port_name_messages(
+                                port_roles(term, nports, port_names)))
             except Exception:       # pragma: no cover - see MUST NOT RAISE
                 pass
 
     if msgs:
-        return msgs
+        # STABLE: row order is preserved inside a tier.
+        return sorted(msgs, key=lambda m: m.tier)
 
     # One message per element row, not one line naming the first and counting
     # the rest: the echo exists to catch '5m' typed as '5M', which is a
     # property of the row it is on. _validation_strip_text caps the strip;
     # Calculate prints the full list to the Results pane.
-    echoes = ["✓ " + e for e in (_rlc_echo(r) for r in conn_rows) if e]
-    return echoes or ["✓ no problems found"]
+    echoes = [_VMsg(V_OK, "✓ " + e, ("conn", i))
+              for i, e in enumerate(_rlc_echo(r) for r in conn_live) if e]
+    return echoes or [_VMsg(V_OK, "✓ no problems found")]
+
+
+def _validation_messages(mport_rows: Sequence, conn_rows: Sequence,
+                         extra_lines: str = "",
+                         nports: Optional[int] = None,
+                         port_names: Optional[Sequence[str]] = None) -> list[str]:
+    """The text of _validation_report, which is what the strips render."""
+    return [m.text for m in _validation_report(mport_rows, conn_rows,
+                                               extra_lines, nports, port_names)]
 
 
 def _measured_port_messages(mport_rows: Sequence, term: TerminationSet,
-                            nports: Optional[int]) -> list[str]:
+                            nports: Optional[int]) -> list:
     """
     Every way the measurement ports that will be MEASURED differ from the rows.
 
@@ -783,15 +876,20 @@ def _measured_port_messages(mport_rows: Sequence, term: TerminationSet,
     NOTHING resolves (Calculate would raise), and MORE resolve than the table
     has rows -- which can only come from the lines kept as text, and is how a
     trace silently acquires a second probe and routes to the coupling path.
+
+    Tiered (R1-5): "nothing resolves" is a Calculate that RAISES, while a
+    silent collapse of two rows into one measurement port is a number that
+    comes back and is 37% wrong -- so the collapse outranks it.
     """
     rows = [r for r in mport_rows if not r.is_blank() and r.plus.strip()]
     try:
         resolved = resolve_meas_ports(term, _scan_count(term, nports))
     except Exception as e:
-        return [f"⚠ {e}"]
+        return [_VMsg(V_NO_RESULT, f"⚠ {e}")]
     if not resolved:
-        return ["⚠ no measurement port defined -- add a row to the "
-                "measurement-port table and fill in its '+' side."]
+        return [_VMsg(V_NO_RESULT,
+                      "⚠ no measurement port defined -- add a row to the "
+                      "measurement-port table and fill in its '+' side.")]
     if len(resolved) > len(rows):
         hidden = [mp.name for mp in resolved
                   if mp.name not in {r.name.strip() for r in rows}]
@@ -799,9 +897,10 @@ def _measured_port_messages(mport_rows: Sequence, term: TerminationSet,
         named = f" ('{hidden[0]}')" if len(hidden) == 1 else ""
         head = ("1 measurement port is" if len(resolved) == 1
                 else f"{len(resolved)} measurement ports are")
-        return [f"⚠ {head} measured but the measurement-port table has "
-                f"{len(rows)} row(s): {extra_n} more{named} from the lines "
-                "kept as text. Open 'Edit as text…' to see them."]
+        return [_VMsg(V_WRONG_NUMBER,
+                      f"⚠ {head} measured but the measurement-port table has "
+                      f"{len(rows)} row(s): {extra_n} more{named} from the "
+                      "lines kept as text. Open 'Edit as text…' to see them.")]
     if len(rows) < 2 or len(resolved) >= len(rows):
         return []
     head = (f"⚠ {len(rows)} measurement-port rows define only "
@@ -809,17 +908,19 @@ def _measured_port_messages(mport_rows: Sequence, term: TerminationSet,
     names = [r.name.strip() for r in rows]
     upper = {n.upper() for n in names}
     if "A" in upper and "B" in upper:
-        return [f"{head}: 'B' is the legacy minus side of 'A'. "
-                "Rename one of them."]
+        return [_VMsg(V_WRONG_NUMBER,
+                      f"{head}: 'B' is the legacy minus side of 'A'. "
+                      "Rename one of them.")]
     dupes = sorted({n for n in names if n and names.count(n) > 1})
     if dupes:
-        return [f"{head}: the name '{dupes[0]}' is used twice, so both rows "
-                "feed one measurement port. Rename one."]
-    return [f"{head}."]
+        return [_VMsg(V_WRONG_NUMBER,
+                      f"{head}: the name '{dupes[0]}' is used twice, so both "
+                      "rows feed one measurement port. Rename one.")]
+    return [_VMsg(V_WRONG_NUMBER, f"{head}.")]
 
 
 def _probe_ground_messages(mport_rows: Sequence,
-                           term: TerminationSet) -> list[str]:
+                           term: TerminationSet) -> list:
     """
     Ports listed as a probe that a later connection row grounds.
 
@@ -827,6 +928,9 @@ def _probe_ground_messages(mport_rows: Sequence,
     ground wins, exactly as build_terminations_mode1/2/3 always have.
     build_terminations_coupling raises on the same overlap.  Do not unify them
     -- just say which one happened.
+
+    V_WRONG_NUMBER: nothing raises, nothing is NaN, and the port the user
+    thinks they are probing is at 0 V.
     """
     probe_ports: set[int] = set()
     for row in mport_rows:
@@ -842,8 +946,9 @@ def _probe_ground_messages(mport_rows: Sequence,
     listed = ", ".join(str(p) for p in hit)
     noun = "port" if len(hit) == 1 else "ports"
     verb = "is" if len(hit) == 1 else "are"
-    return [f"⚠ {noun} {listed} {verb} both a probe and a ground row "
-            "-- the ground row wins."]
+    return [_VMsg(V_WRONG_NUMBER,
+                  f"⚠ {noun} {listed} {verb} both a probe and a ground row "
+                  "-- the ground row wins.")]
 
 
 def _extra_lines_indicator(extra_lines: str) -> str:
@@ -1094,6 +1199,27 @@ def _footer_strip_text(term: Optional[TerminationSet],
     if len(ports) > budget:
         ports = ports[:budget - 1] + "…"
     return f"{ports}  {status}"
+
+
+def editor_scroll_fraction(top: int, height: int, view: int, total: int,
+                           margin: int = 6) -> float:
+    """
+    The canvas yview fraction that brings a form widget on screen (R1-4).
+
+    `top` is the widget's y INSIDE the form, `total` the form's height, `view`
+    the canvas viewport's.  Pure, so the arithmetic can be pinned without a
+    display -- and the arithmetic is the whole of it: at the 1040x600 minsize
+    the mode-5 form is 516 px against a 45 px viewport, so a scroll that is a
+    few pixels out puts the target off screen just as thoroughly as no scroll.
+
+    A widget already fully visible is left where it is (returning its own top
+    would jerk the view for nothing).  Otherwise it goes to the top of the
+    viewport, less a small margin so it does not sit flush against the edge.
+    """
+    if total <= 0 or view <= 0 or total <= view:
+        return 0.0
+    want = max(0.0, min(float(top - margin), float(total - view)))
+    return want / float(total)
 
 
 # ============================================================================
@@ -3333,6 +3459,50 @@ class ColumnSpec:
     default: str = ""
 
 
+@dataclass(frozen=True)
+class TableLayout:
+    """
+    Where every cell of a RowTable goes -- decided for the WHOLE table at once.
+
+    `headers` and `weights` are one entry per GRID column; `rows` carries, per
+    row, the cells that row shows as (column key, grid column, columnspan).  A
+    key absent from a row's tuple is not gridded at all.
+
+    ONE function for the whole table rather than one per row, because the two
+    decisions are coupled: a cell may only spread into a grid column that NO
+    row is using, and that is exactly the column whose header must be blank.
+    Split them and you get a "To" title sitting over a port field -- which is
+    the header half of R1-1 and the reason this type exists rather than a
+    per-row `shape_fn`.
+
+    Frozen and made of tuples so `==` is cheap and total: RowTable recomputes
+    the layout on every keystroke and re-grids only when the answer changed.
+    """
+    ncols: int
+    headers: tuple = ()
+    weights: tuple = ()
+    rows: tuple = ()
+
+
+def identity_layout(columns: Sequence[ColumnSpec],
+                    values_per_row: Sequence[dict]) -> TableLayout:
+    """
+    Every column, every row, one grid column each -- the historical shape.
+
+    This is what a RowTable with no `layout_fn` uses, and it is byte-for-byte
+    what the measurement-port table had before layouts existed (weight 1 on
+    every non-static column, titles straight off the ColumnSpecs).
+    """
+    keys = [c.key for c in columns]
+    cells = tuple((k, i, 1) for i, k in enumerate(keys))
+    return TableLayout(
+        ncols=len(keys),
+        headers=tuple(c.title for c in columns),
+        weights=tuple(1 if c.kind != "static" else 0 for c in columns),
+        rows=tuple(cells for _ in values_per_row),
+    )
+
+
 class RowTable(ttk.Frame):
     """
     A '+ Add' button over a scrollable grid of editable rows.
@@ -3346,16 +3516,30 @@ class RowTable(ttk.Frame):
 
     def __init__(self, master, columns: Sequence[ColumnSpec], row_factory,
                  on_change=None, min_rows: int = 1, max_visible: int = 6,
-                 add_text: str = "+ Add", **kwargs):
+                 add_text: str = "+ Add", layout_fn=None,
+                 to_cells=None, from_cells=None, **kwargs):
         super().__init__(master, **kwargs)
         self._columns = list(columns)
         self._row_factory = row_factory
         self._on_change = on_change
+        # layout_fn(values_per_row) -> TableLayout.  None keeps the historical
+        # fixed grid (see identity_layout), which is what the measurement-port
+        # table still uses.
+        self._layout_fn = layout_fn
+        # to_cells(row) -> {key: text} and from_cells({key: text}) -> row.
+        # The pair exists so a row's STORAGE and its CELLS can differ: the
+        # connections table shows a short's tied group in one cell while
+        # ConnectionRow still stores it as ports + to, which is what keeps
+        # rows_to_dsl_text and every saved session untouched.
+        self._to_cells = to_cells
+        self._from_cells = from_cells
         self._min_rows = max(0, int(min_rows))
         self._max_visible = max(1, int(max_visible))
         self._rows: list[dict] = []      # per row: {key: tk.StringVar} + widgets
         self._resize_pending = False
         self._editable = True
+        self._layout: Optional[TableLayout] = None
+        self._bulk = False               # suspend layout during set_rows
 
         # --- add button (outside the scroll area) ---
         head = ttk.Frame(self)
@@ -3390,13 +3574,20 @@ class RowTable(ttk.Frame):
         # from row 1), so they line up exactly.  A separate header frame packed
         # above cannot: its labels measure in characters of a different font
         # than the Entry widgets below, and the last title ends up clipped.
-        for c, col in enumerate(self._columns):
-            ttk.Label(self._inner, text=col.title, anchor="w",
-                      font=("TkDefaultFont", 8)
-                      ).grid(row=0, column=c, sticky="w", padx=1)
+        #
+        # They are created on demand and PLACED by _apply_layout, because a
+        # layout may retitle or blank one: a shared header states a column's
+        # meaning once, so on a table whose rows have different shapes the
+        # title has to follow what the rows actually put there.  There is one
+        # per GRID column, which is not the same count as len(columns) -- the
+        # connections table's Net cell shares a grid column with To.
+        self._header_lbls: list = []
 
+        self._bulk = True
         for _ in range(self._min_rows):
             self.add_row(notify=False)
+        self._bulk = False
+        self._apply_layout(force=True)
 
     # ------------------------------------------------------------------ scroll
 
@@ -3456,9 +3647,8 @@ class RowTable(ttk.Frame):
     # ------------------------------------------------------------------- rows
 
     def add_row(self, values: dict | None = None, notify: bool = True) -> None:
-        r = len(self._rows) + 1          # grid row 0 holds the column headers
         entry: dict = {"_vars": {}, "_widgets": []}
-        for c, col in enumerate(self._columns):
+        for col in self._columns:
             var = tk.StringVar(value=(values or {}).get(col.key, col.default))
             entry["_vars"][col.key] = var
             if col.kind == "combo":
@@ -3471,24 +3661,37 @@ class RowTable(ttk.Frame):
                               anchor="w")
             else:
                 w = ttk.Entry(self._inner, textvariable=var, width=col.width)
-            w.grid(row=r, column=c, sticky="we", padx=1, pady=1)
+            # NOT gridded here: _apply_layout owns every cell's grid column,
+            # its columnspan and whether it is shown at all.
             entry["_widgets"].append(w)
-            if self._on_change is not None:
-                var.trace_add("write", lambda *_a: self._on_change())
+            var.trace_add("write", self._on_cell_write)
         btn = ttk.Button(self._inner, text="✕", width=2,
                          command=lambda: self._delete_row(entry))
-        btn.grid(row=r, column=len(self._columns), padx=1, pady=1)
         entry["_widgets"].append(btn)
         self._rows.append(entry)
-        for c, col in enumerate(self._columns):
-            self._inner.columnconfigure(c, weight=1 if col.kind != "static" else 0)
         if not self._editable:
             # set_rows() runs before the editor decides whether the trace it is
             # loading is frozen, so a row created now has to inherit the state
             # rather than come back live under a greyed-out table.
             self._set_state(entry["_widgets"], False)
-        self._schedule_resize()
+        if not self._bulk:
+            self._apply_layout(force=True)
+            self._schedule_resize()
         if notify and self._on_change is not None:
+            self._on_change()
+
+    def _on_cell_write(self, *_a) -> None:
+        """
+        A cell's variable changed.
+
+        The layout is re-derived FIRST and re-applied only if it actually moved
+        (TableLayout is a frozen tuple-of-tuples, so `==` settles it), then the
+        owner's on_change runs.  Doing it the other way round would let the
+        owner read the table through get_rows() while the widgets still show
+        the previous kind's shape.
+        """
+        self._apply_layout()
+        if self._on_change is not None:
             self._on_change()
 
     def _delete_row(self, entry: dict) -> None:
@@ -3497,45 +3700,192 @@ class RowTable(ttk.Frame):
         for w in entry["_widgets"]:
             w.destroy()
         self._rows.remove(entry)
-        self._regrid()
         if len(self._rows) < self._min_rows:
             self.add_row(notify=False)
+        self._apply_layout(force=True)
         self._schedule_resize()
         if self._on_change is not None:
             self._on_change()
 
-    def _regrid(self) -> None:
-        for r, entry in enumerate(self._rows, start=1):   # 0 is the header row
-            for c, w in enumerate(entry["_widgets"]):
-                w.grid_configure(row=r, column=c)
+    # --------------------------------------------------------------- layout
+
+    def _cell_values(self) -> list:
+        """Every row's cells as plain text -- the layout function's only input."""
+        return [{col.key: entry["_vars"][col.key].get()
+                 for col in self._columns} for entry in self._rows]
+
+    def _compute_layout(self) -> TableLayout:
+        vals = self._cell_values()
+        if self._layout_fn is None:
+            return identity_layout(self._columns, vals)
+        return self._layout_fn(vals)
+
+    def _apply_layout(self, force: bool = False) -> None:
+        """
+        Re-grid the headers and every cell from the current TableLayout.
+
+        `force` is for structural changes (a row added or deleted), where the
+        layout can be VALUE-identical and still have to be re-applied because
+        the widgets are new or their grid rows have shifted.  Everything else
+        goes through the equality check: this runs from a variable trace on
+        every keystroke, and re-gridding 7 widgets per row per character is
+        both wasted work and a visible flicker.
+
+        Measured on a six-row connections table, per variable write: 31 us for
+        a keystroke that does not move the layout (15.6 us of it deriving the
+        layout to find that out) against 263 us for a Kind change, which
+        re-grids every cell of every row.  The equality check is what keeps
+        the common case off the second number.
+
+        It cannot oscillate: the inputs are the cells' TEXT and the outputs
+        are grid options, so nothing it writes can change what it reads.  That
+        is the same fixed-point property _apply_editor_scrollbars needs and
+        for the same reason -- a layout rule that reads a size it can itself
+        change flips forever and update() never returns.
+        """
+        layout = self._compute_layout()
+        if not force and layout == self._layout:
+            return
+        self._layout = layout
+        while len(self._header_lbls) < layout.ncols:
+            self._header_lbls.append(
+                ttk.Label(self._inner, text="", anchor="w",
+                          font=("TkDefaultFont", 8)))
+        for c, lbl in enumerate(self._header_lbls):
+            if c < layout.ncols:
+                lbl.configure(text=(layout.headers[c]
+                                    if c < len(layout.headers) else ""))
+                lbl.grid(row=0, column=c, sticky="w", padx=1)
+            else:
+                lbl.grid_remove()
+        for c in range(max(layout.ncols, len(self._header_lbls)) + 1):
+            weight = (layout.weights[c] if c < len(layout.weights) else 0)
+            self._inner.columnconfigure(c, weight=weight)
+        key_index = {col.key: i for i, col in enumerate(self._columns)}
+        for r, entry in enumerate(self._rows, start=1):  # 0 is the header row
+            cells = (layout.rows[r - 1] if r - 1 < len(layout.rows) else ())
+            shown = {key for key, _c, _s in cells}
+            for key, col, span in cells:
+                idx = key_index.get(key)
+                if idx is None:
+                    continue
+                entry["_widgets"][idx].grid(
+                    row=r, column=col, columnspan=max(1, span),
+                    sticky="we", padx=1, pady=1)
+            for col_spec in self._columns:
+                if col_spec.key not in shown:
+                    entry["_widgets"][key_index[col_spec.key]].grid_remove()
+            # The ✕ is always in the same grid column, on every row and in
+            # every shape: a delete button that moved with the row's kind
+            # would be a moving target on a table the user is editing.
+            entry["_widgets"][-1].grid(row=r, column=layout.ncols,
+                                       padx=1, pady=1)
+        self._schedule_resize()
 
     def clear(self) -> None:
         for entry in list(self._rows):
             for w in entry["_widgets"]:
                 w.destroy()
         self._rows.clear()
+        self._layout = None
 
     # ------------------------------------------------------------ get / set
+
+    def _row_object(self, entry: dict):
+        """One widget row -> the row dataclass it stores."""
+        vals = {col.key: entry["_vars"][col.key].get().strip()
+                for col in self._columns}
+        if self._from_cells is not None:
+            return self._from_cells(vals)
+        row = self._row_factory()
+        for key, val in vals.items():
+            setattr(row, key, val)
+        return row
 
     def get_rows(self) -> list:
         """Row dataclasses, blanks dropped (the row type decides what blank is)."""
         out = []
         for entry in self._rows:
-            row = self._row_factory()
-            for col in self._columns:
-                setattr(row, col.key, entry["_vars"][col.key].get().strip())
+            row = self._row_object(entry)
             if not row.is_blank():
                 out.append(row)
         return out
 
     def set_rows(self, rows: Sequence) -> None:
         self.clear()
-        for row in rows:
-            self.add_row({col.key: str(getattr(row, col.key, "") or "")
-                          for col in self._columns}, notify=False)
-        while len(self._rows) < self._min_rows:
-            self.add_row(notify=False)
+        self._bulk = True
+        try:
+            for row in rows:
+                if self._to_cells is not None:
+                    vals = self._to_cells(row)
+                else:
+                    vals = {col.key: str(getattr(row, col.key, "") or "")
+                            for col in self._columns}
+                self.add_row(vals, notify=False)
+            while len(self._rows) < self._min_rows:
+                self.add_row(notify=False)
+        finally:
+            self._bulk = False
+        self._apply_layout(force=True)
         self._schedule_resize()
+
+    def see_row(self, widget) -> int:
+        """
+        Scroll this table's OWN canvas so `widget` is visible; return where it
+        ends up, in pixels from the top of this RowTable frame.
+
+        Two scrollable regions are nested here -- the editor form's canvas and
+        this table's -- and a row past `max_visible` is clipped by the inner
+        one, so scrolling the outer one alone cannot reach it.  Measured: with
+        7 rows in a max_visible=6 table the seventh sits 192 px down a 190 px
+        viewport, and the editor scroll landed it 37 px ABOVE the editor
+        canvas.
+
+        The answer is COMPUTED, not re-measured: a canvas yview_moveto does
+        not reach winfo_rooty until the next idle pass (measured 192 -> 192
+        with no idle, 164 after one), and forcing one from a click handler is
+        exactly the update_idletasks() this repo has been bitten by.
+        """
+        if not (widget.winfo_exists() and self._inner.winfo_exists()):
+            return 0
+        inner_h = max(1, self._inner.winfo_height())
+        view_h = max(1, self._canvas.winfo_height())
+        y = widget.winfo_rooty() - self._inner.winfo_rooty()
+        frac = editor_scroll_fraction(y, widget.winfo_height(), view_h, inner_h)
+        self._canvas.yview_moveto(frac)
+        return ((self._canvas.winfo_rooty() - self.winfo_rooty())
+                + int(round(y - frac * inner_h)))
+
+    def data_row_widget(self, index: int, key: Optional[str] = None):
+        """
+        The widget for the `index`-th NON-BLANK row -- what a validation
+        message's row number refers to, since get_rows() drops the blanks.
+
+        `key` picks a column; without one it is the first cell the row's
+        current shape actually shows, which is the one worth putting a caret
+        in.  Returns None when the index is out of range or the row shows
+        nothing, so a caller can fall back rather than guess.
+        """
+        seen = -1
+        key_index = {col.key: i for i, col in enumerate(self._columns)}
+        for r, entry in enumerate(self._rows):
+            if self._row_object(entry).is_blank():
+                continue
+            seen += 1
+            if seen != index:
+                continue
+            cells = (self._layout.rows[r]
+                     if self._layout is not None and r < len(self._layout.rows)
+                     else ())
+            order = [k for k, _c, _s in cells] or [c.key for c in self._columns]
+            if key is not None and key in order:
+                order = [key]
+            for k in order:
+                idx = key_index.get(k)
+                if idx is not None:
+                    return entry["_widgets"][idx]
+            return None
+        return None
 
     @staticmethod
     def _set_state(widgets, editable: bool) -> None:
@@ -3563,16 +3913,29 @@ class RowTable(ttk.Frame):
             widgets.extend(entry["_widgets"])
         self._set_state(widgets, self._editable)
 
+    def column_values(self, key: str) -> tuple:
+        """A combo column's current choices."""
+        for col in self._columns:
+            if col.key == key:
+                return tuple(col.values)
+        return ()
+
     def set_column_values(self, key: str, values: Sequence[str]) -> None:
         """Repopulate a combo column's choices (e.g. after a file change)."""
         idx = next((i for i, c in enumerate(self._columns) if c.key == key), None)
         if idx is None:
             return
+        values = tuple(values)
+        if values == tuple(self._columns[idx].values):
+            # Cheap enough to call from the strip pass, which fires on every
+            # keystroke: the merged-node entries at the top of the connections
+            # dropdowns have to follow the short rows as they are typed.
+            return
         for entry in self._rows:
             w = entry["_widgets"][idx]
             if isinstance(w, ttk.Combobox):
                 w.configure(values=list(values))
-        self._columns[idx] = replace(self._columns[idx], values=tuple(values))
+        self._columns[idx] = replace(self._columns[idx], values=values)
 
 
 # Per-mode placeholder hints for the remaining PlaceholderEntry fields, keyed
@@ -3698,15 +4061,39 @@ MUTUAL_CURVE_HINT = (
 # ABOVE it and spans all four form columns instead of sitting beside a label.
 # At these widths the table asks for 405 px and the whole mode-5 form for 418,
 # so the headroom under the 431 px viewport is 13 px, not 22. Measure it again
-# before adding a column -- CLAUDE.md carries the same two numbers.
+# before adding a column -- CLAUDE.md carries the same two numbers.  405 px is
+# still the WORST case (every Kind present at once); what changed in R1-1 is
+# that a table of one Kind now asks for far less -- see conn_table_layout.
 #
 # Type is a readonly combo -- a kind that is not in CONN_KINDS raises at build
 # time, so there is nothing useful to type. Port and To are NOT readonly: a
 # range ('6-14', '35:1:45') has to be typeable, and a readonly combo cannot be
-# typed into at all. Their values are the file's bare port numbers, filled in
-# by _refresh_port_choices; there is deliberately no 'GND' entry, because "to
-# ground" is a KIND here (ground / rlc_gnd) and 'short_to GND' is a parser
-# error the user could not connect to what they clicked.
+# typed into at all. Their values are the file's bare port numbers (with any
+# merged node's ref in front of them), filled in by _refresh_port_choices;
+# there is deliberately no 'GND' entry, because "to ground" is a KIND here
+# (ground / rlc_gnd) and 'short_to GND' is a parser error the user could not
+# connect to what they clicked.
+
+# Where the net name a short row carries is STORED.  R1-2 -- the net rules and
+# the storage -- is core's half of this round; the cell is rendered here.
+# Feature-detected rather than assumed, because a cell bound to a field that
+# does not exist would take a name, show it, and lose it on the next Duplicate
+# or session save: dataclasses.replace() and asdict() both work off fields(),
+# so an attribute set by setattr on the instance simply is not there.  If core
+# ever renames the field, this constant is the ONE place to reconcile, and
+# conn_table_layout(..., net=False) is the shape the table falls back to.
+CONN_NET_KEY = "net"
+CONN_NET_SUPPORTED = CONN_NET_KEY in {f.name for f in fields(ConnectionRow)}
+
+# Grid columns of the connections table.  SIX, exactly as before -- the Net
+# cell shares grid column 2 with To rather than adding a seventh, because the
+# measured headroom under the 431 px editor canvas is 13 px and a seventh
+# column is 41 px at its narrowest.  The ✕ button is always at _CONN_NCOLS,
+# so it does not move when a row changes shape.
+_CONN_COL_TYPE, _CONN_COL_PORT, _CONN_COL_SECOND = 0, 1, 2
+_CONN_COL_R, _CONN_COL_L, _CONN_COL_C = 3, 4, 5
+_CONN_NCOLS = 6
+
 CONN_TABLE_COLUMNS = (
     ColumnSpec("kind", "Type", 11, kind="combo", values=CONN_KINDS,
                readonly_combo=True, default="ground"),
@@ -3715,30 +4102,187 @@ CONN_TABLE_COLUMNS = (
     ColumnSpec("R", "R Ω", 5),
     ColumnSpec("L", "L H", 5),
     ColumnSpec("C", "C F", 5),
-)
+) + ((ColumnSpec(CONN_NET_KEY, "Net", 9),) if CONN_NET_SUPPORTED else ())
+# width=9 is a MEASURED number, not a taste: grid column 2 is 74 px wide
+# because a 7-character ttk.Combobox asks 72, and a ttk.Entry asks 55 / 62 /
+# 69 / 76 px at 7 / 8 / 9 / 10 characters.  At 9 the Net cell costs the column
+# nothing; at 10 it would widen the whole table by 4 px against 13 px of
+# headroom.  The three candidate titles measure 12 ("To") / 18 ("Net") / 48
+# ("To / Net") px in TkDefaultFont 8, all under 72, so the header cannot widen
+# it either.  Re-measure both before changing this.
 
-CONN_TABLE_HINT_SHORT = "one row per connection; Port takes a range (6-14, 35:1:45)"
+
+def conn_table_layout(values_per_row: Sequence[dict],
+                      net: bool = CONN_NET_SUPPORTED) -> TableLayout:
+    """
+    Which cells each connection row shows -- decided by its Kind.
+
+    The complaint this answers, verbatim: "不同的连接，出现的表格都是一样的
+    ... 多个pin连接到一起的时候，我很自然的感觉就是一个blank，输入我要短接
+    的PIN就行，但是现在有两个blank".  A short group has no natural from/to;
+    a ground row has no To at all.  Measured on the shipping table (405 px, 6
+    columns): a ground row's To + R + L + C are 195 px of dead cells, 48% of
+    the width, and a short row's R + L + C are 123 px, 30%.
+
+    What this gives back, measured as the table's own reqwidth (cell padding
+    included, which is why the deltas are a few px larger than the figures
+    above):  ground-only 405 -> 202, short-only -> 273, rlc_gnd-only -> 331,
+    and every Kind at once -> 405, i.e. the WORST case is exactly the table
+    this replaces.  At 150% font scaling: 413 -> 210 / 281 / 339 / 413.
+    tests/test_conn_rowshape.py::TestTableWidth is the guard.
+
+    Two rules, and the second is what keeps the HEADER honest:
+
+      1. A row shows only the cells its Kind uses.
+      2. A cell may spread rightwards ONLY over grid columns that no row in
+         the table is using -- which are exactly the columns whose title is
+         blank.  So a wide cell never sits under someone else's heading, and
+         a table of nothing but ground rows collapses to one wide Port field.
+
+    Grid column 2 carries To (rlc_between) or the net Name (short), so its
+    title follows what is in the table: "To", "Net", "To / Net", or nothing.
+    A static "To" there was a lie on a short row even with the cell hidden.
+
+    Pure: takes the cells as text, returns a TableLayout.  `net` is passed in
+    rather than read from the module constant so both branches are testable
+    before core lands the storage.
+    """
+    kinds = [(v.get("kind") or "").strip() for v in values_per_row]
+    known = set(CONN_KINDS)
+    wants_to = "rlc_between" in kinds
+    # CONN_KINDS_WITH_NET, not a literal "short": core decides which kinds
+    # create a node (only a short does), and a second one must not need an
+    # edit here as well as there.
+    wants_net = bool(net) and any(k in CONN_KINDS_WITH_NET for k in kinds)
+    wants_rlc = any(k in CONN_KINDS_WITH_RLC for k in kinds)
+    # An unrecognised kind gets the full six-cell shape: the table must not
+    # hide a cell it cannot reason about (a session hand-edited to a kind this
+    # build does not know would otherwise lose its values with no symptom).
+    wants_all = any(k not in known for k in kinds)
+
+    second = ("To / Net" if wants_to and wants_net else
+              "To" if wants_to else "Net" if wants_net else "")
+    if wants_all:
+        second = second or "To"
+        wants_rlc = True
+    headers = ("Type", "Port", second,
+               *(("R Ω", "L H", "C F") if wants_rlc else ("", "", "")))
+    weights = (1, 1, 1 if second else 0,
+               *((1, 1, 1) if wants_rlc else (0, 0, 0)))
+
+    rows = tuple(_conn_row_cells(k, bool(second), wants_rlc, net, wants_all)
+                 for k in kinds)
+    return TableLayout(_CONN_NCOLS, headers, weights, rows)
+
+
+def _conn_row_cells(kind: str, second_used: bool, rlc_used: bool,
+                    net: bool, wants_all: bool) -> tuple:
+    """
+    One row's cells, as (column key, grid column, columnspan).
+
+    A cell spreads only over columns the TABLE is not using, and it cannot
+    jump one: a Port field with grid column 2 in use stops at 1 even when
+    3-5 are free, because grid has no way to skip a column mid-span.
+    """
+    head = (("kind", _CONN_COL_TYPE, 1),)
+    rlc = (("R", _CONN_COL_R, 1), ("L", _CONN_COL_L, 1), ("C", _CONN_COL_C, 1))
+    both_ports = (("ports", _CONN_COL_PORT, 1), ("to", _CONN_COL_SECOND, 1))
+    if wants_all or kind not in CONN_KINDS or kind == "rlc_between":
+        return head + both_ports + rlc
+    if kind == "rlc_gnd":
+        # Recovers the 74 px of To that an rlc_gnd row has always wasted
+        # (a 7-character combobox asks 72 px plus 2 px of padding), whenever
+        # nothing else in the table needs that column.
+        return head + (("ports", _CONN_COL_PORT, 1 if second_used else 2),) + rlc
+    if kind in CONN_KINDS_WITH_NET and net:
+        # The freed To cell holds the node name (design note §4b): a short row
+        # needs one port field, so the second slot is where "these three are
+        # one point" gets a name other rows can reference.
+        return head + (("ports", _CONN_COL_PORT, 1),
+                       (CONN_NET_KEY, _CONN_COL_SECOND,
+                        1 if rlc_used else _CONN_NCOLS - _CONN_COL_SECOND))
+    # ground / vdd / open, and short with no net storage: ONE port field, as
+    # wide as the table can spare.
+    if second_used:
+        span = 1
+    elif rlc_used:
+        span = 2
+    else:
+        span = _CONN_NCOLS - _CONN_COL_PORT
+    return head + (("ports", _CONN_COL_PORT, span),)
+
+
+# ---- the short row's tied group: one cell over ports + to -------------------
+#
+# A short row now stores its whole tied group in `ports` and leaves `to` empty
+# (`5,6,7,8 short`), which is what makes ONE cell the storage as well as the
+# display.  `to` stays live as the LEGACY two-field spelling: a session saved
+# before this round, and the synthetic rows _trace_role_rows builds for mode 3,
+# both carry `short 5 -> 6,7,8` and still emit `5 short_to 6,7,8`.  The pair
+# below is the only place that knows both spellings: it MERGES the legacy pair
+# into the single cell for display, and writes the merged form back, so a
+# legacy row is converted the first time it is edited and never afterwards.
+
+def _join_short_group(ports: str, to: str) -> str:
+    """('5', '6,7,8') -> '5,6,7,8'.  NO SPACES -- collapse_ports's rule, for
+    the same reason: the DSL is whitespace-tokenised and the port field is
+    parts[0], so '5, 6' would parse as the field '5,' with a stray '6'."""
+    parts = [p for p in ((ports or "").strip(), (to or "").strip()) if p]
+    return ",".join(parts)
+
+
+def conn_cells_from_row(row) -> dict:
+    """ConnectionRow -> the cell texts the table shows."""
+    vals = {col.key: str(getattr(row, col.key, "") or "")
+            for col in CONN_TABLE_COLUMNS}
+    if (vals.get("kind") or "").strip() == "short":
+        vals["ports"] = _join_short_group(vals.get("ports", ""),
+                                          vals.get("to", ""))
+        vals["to"] = ""
+    return vals
+
+
+def conn_row_from_cells(vals: dict) -> ConnectionRow:
+    """The cell texts -> the ConnectionRow they store."""
+    row = ConnectionRow()
+    for col in CONN_TABLE_COLUMNS:
+        setattr(row, col.key, (vals.get(col.key) or "").strip())
+    if (row.kind or "").strip() == "short":
+        # The cell IS the group; `to` is emptied rather than back-filled, or
+        # the row would carry the same ports twice.
+        row.to = ""
+    return row
+
+
+CONN_TABLE_HINT_SHORT = "one row per connection; the Kind decides which cells it has"
 CONN_TABLE_HINT = (
-    "One row per connection. Type picks what is attached: ground / vdd (both "
-    "are V=0 for AC), open, short (ties Port to To), rlc_gnd (a series R-L-C "
-    "from Port to ground) or rlc_between (the same element from Port to To). "
-    "Port and To take ranges -- 6-14 or 35:1:45 -- so a package's ground balls "
-    "are one row. A range on an rlc_gnd row is one element PER PORT, not one "
-    "shared by them: 21:1:25 with L=80p is five separate 80 pH inductors to "
-    "ground (for one shared element, short the ports together first and put "
-    "the element on one of them). Two rlc_between rows on the same pair are "
-    "two elements in PARALLEL; two rlc_gnd rows on the same port are not -- "
-    "the lower row wins. R/L/C hold the bare value with SI suffixes and the "
-    "unit is "
-    "in the header: 5m is 5 milli, 5M is 5 Mega, and the value must be ONE "
-    "word -- '5 m' and '1 uF' are rejected. A blank R/L/C means OMITTED, "
-    "which is not zero -- an omitted C is no capacitor, C=0 would be an open "
-    "circuit. 'To' is ignored by ground/vdd/open/rlc_gnd, which are always to "
-    "ground; rlc_between takes exactly ONE partner port. The dropdowns list "
-    "port NUMBERS; for the file's port names click 'Show Ports' at the top of "
-    "this panel. It opens 'Ports & Roles', which lists every port with its "
-    "name and its role, flags the open ones whose names match a set you "
-    "grounded, and can write a selection back here as a collapsed range."
+    "One row per connection, and the cells a row has follow its Type. "
+    "ground / vdd (both are V=0 for AC) and open take ONE port field and "
+    "nothing else. short takes one field too -- list the whole tied group in "
+    "it, 5,6,7,8 or 23-25; there is no from/to, because a group of shorted "
+    "pins has neither. The cell the short row frees up is its Net name: give "
+    "the node a name there ('coil_tap') and any port field can say that name "
+    "instead of a port number. rlc_gnd is one port field plus R/L/C (a series "
+    "R-L-C from each port to ground), and rlc_between is the only Type with "
+    "two port fields, because a two-terminal element really has two ends. "
+    "Every port field takes ranges -- 6-14 or 35:1:45 -- so a package's "
+    "ground balls are one row. A range on an rlc_gnd or rlc_between row is "
+    "one element PER PORT, not one shared by them: 21:1:25 with L=80p is five "
+    "separate 80 pH inductors (for one shared element, short the ports "
+    "together first and hang the element off the NODE -- its net name, or any "
+    "one member port; both are at the top of the dropdown. Listing every "
+    "member instead is N elements in parallel, and the strip says so). Two "
+    "rlc_between rows on "
+    "the same pair are two elements in PARALLEL; two rlc_gnd rows on the same "
+    "port are not -- the lower row wins. R/L/C hold the bare value with SI "
+    "suffixes and the unit is in the header: 5m is 5 milli, 5M is 5 Mega, and "
+    "the value must be ONE word -- '5 m' and '1 uF' are rejected. A blank "
+    "R/L/C means OMITTED, which is not zero -- an omitted C is no capacitor, "
+    "C=0 would be an open circuit. The dropdowns list port NUMBERS; for the "
+    "file's port names click 'Show Ports' at the top of this panel. It opens "
+    "'Ports & Roles', which lists every port with its name and its role, "
+    "flags the open ones whose names match a set you grounded, and can write "
+    "a selection back here as a collapsed range."
 )
 
 # What the "Edit as text…" dialog promises, verbatim. The round trip is
@@ -4322,8 +4866,30 @@ class App(tk.Tk):
         # before, since pack unmaps from the END: if the footer is ever
         # squeezed it must be this label that goes, not Calculate This Trace.
         self._ed_foot = foot
+        # R1-4: the footer verdict is the only always-visible pixel of the
+        # editor, and it used to be a dead end -- measured at the 1040x600
+        # minsize, the messages it counts sit 366 and 387 px below the fold of
+        # a 45 px viewport, and every mode change scrolls the form back to the
+        # top.  Clicking it scrolls to the row it is talking about.  It costs
+        # ZERO pixels: the affordance is the hand cursor plus an underline on
+        # hover, and an underline changes no font metric (measured: the
+        # label's reqwidth/reqheight are identical with and without it).
+        self._ed_footer_font = tkfont.Font(font="TkDefaultFont")
+        self._ed_footer_font_u = tkfont.Font(font="TkDefaultFont")
+        self._ed_footer_font_u.configure(underline=1)
         self.ed_footer_strip = ttk.Label(foot, anchor="w", wraplength=0,
-                                         foreground=PLACEHOLDER_FG)
+                                         foreground=PLACEHOLDER_FG,
+                                         cursor="hand2",
+                                         font=self._ed_footer_font)
+        self.ed_footer_strip.bind("<Button-1>", self._on_footer_route)
+        self.ed_footer_strip.bind(
+            "<Enter>",
+            lambda _e: self.ed_footer_strip.configure(
+                font=self._ed_footer_font_u))
+        self.ed_footer_strip.bind(
+            "<Leave>",
+            lambda _e: self.ed_footer_strip.configure(
+                font=self._ed_footer_font))
 
         self._ed_body = body = ttk.Frame(parent)
         body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
@@ -4675,6 +5241,11 @@ class App(tk.Tk):
             parent, columns=CONN_TABLE_COLUMNS, row_factory=ConnectionRow,
             on_change=self._on_editor_rows_changed,
             min_rows=1, max_visible=6,
+            # R1-1: the cells a row has follow its Kind, and the short row's
+            # tied group is ONE cell over the two fields ConnectionRow still
+            # stores it in.
+            layout_fn=conn_table_layout,
+            to_cells=conn_cells_from_row, from_cells=conn_row_from_cells,
         )
         self.ed_conn_table.grid(row=row, column=0, columnspan=4, sticky="we",
                                 padx=2, pady=1)
@@ -5647,9 +6218,25 @@ class App(tk.Tk):
         as the widget, so a 7-char Port cell shows '12: VDD_bal…' truncated in
         the list as well as in the cell.  A name-bearing dropdown needs ~105 px
         the editor does not have; the names stay reachable through Show Ports.
+
+        MERGED NODES COME FIRST (R1-2).  Referring to a node by any ONE of its
+        member ports already works; listing every member is the spelling that
+        silently multiplies an element by N (measured by core on a 5-port
+        probe network: '1,2,3 lumped_between 4 L=10f' after '1 short_to 2,3'
+        is 3.333 fH where 10 fH was typed).  So the right gesture has to be
+        the cheap one: the node's `ref` -- its net name, or its first member --
+        sits at the TOP of the list, above the bare port numbers.
         """
         n = self._editor_nports() or 0
         values = [str(i) for i in range(1, n + 1)]
+        try:
+            nodes = merged_nodes(self.ed_mp_table.get_rows(),
+                                 self.ed_conn_table.get_rows(),
+                                 self._ed_extra_lines)
+        except Exception:       # pragma: no cover - merged_nodes never raises
+            nodes = []
+        refs = [nd.ref for nd in nodes if nd.ref]
+        values = refs + [v for v in values if v not in set(refs)]
         self.ed_conn_table.set_column_values("ports", values)
         self.ed_conn_table.set_column_values("to", values)
 
@@ -5723,16 +6310,20 @@ class App(tk.Tk):
         if not self.ed_overview.winfo_exists():
             return
         try:
-            mports = self.ed_mp_table.get_rows()
-            conn = self.ed_conn_table.get_rows()
-            extra = self._ed_extra_lines
-            nports = self._editor_nports()
+            mports, conn, extra, nports, names = self._editor_spec_inputs()
+            # The merged-node entries at the top of the Port / To dropdowns
+            # follow the short rows as they are typed, so they are refreshed
+            # here rather than only on a file or trace change.  This writes
+            # combobox CHOICES, never a cell's value -- it cannot alter the
+            # spec, which is the property that keeps _sync_editor_to_trace the
+            # only writer -- and set_column_values returns immediately when the
+            # list has not moved, which on a keystroke is the normal case.
+            self._refresh_port_choices()
             try:
                 term = build_terminations_rows(mports, conn, extra,
                                                nports=nports)
             except Exception:
                 term = None
-            names = self._editor_port_names()
             msgs = _validation_messages(mports, conn, extra, nports, names)
             self.ed_style.set_span(self._editor_curve_span(term))
             self.ed_overview.configure(
@@ -5775,6 +6366,83 @@ class App(tk.Tk):
         # function.  `_strips_wanted` is what gets us here at all in mode 6;
         # see the note there.
         refresh_attribution_windows(self)
+
+    def _editor_spec_inputs(self) -> tuple:
+        """
+        Everything the validation pass needs, read off the LIVE editor.
+
+        One reader, because the strips and the footer's route (R1-4) must
+        answer about the same spec: a route computed from a cached message list
+        would send the user to a row number from before their last keystroke.
+        """
+        return (self.ed_mp_table.get_rows(),
+                self.ed_conn_table.get_rows(),
+                self._ed_extra_lines,
+                self._editor_nports(),
+                self._editor_port_names())
+
+    def _on_footer_route(self, _event=None) -> None:
+        """
+        Click the footer verdict -> scroll to the row it is about (R1-4).
+
+        It follows the FIRST message's anchor and no other.  The list is
+        ordered by consequence (see V_WRONG_NUMBER and friends), so scanning
+        down for one that happens to have a row would take the reader to a
+        row belonging to a LOWER-priority message than the one the footer is
+        counting -- a route that quietly answers a different question.  When
+        the top message is about the spec rather than a row ("no measurement
+        port defined", or the builder's own error) the fallback is the
+        validation strip, which is where the full text is written.
+
+        Never raises: this is a Tk binding, and an exception here reaches no
+        handler we control.  Same contract as _apply_editor_strips.
+        """
+        try:
+            mports, conn, extra, nports, names = self._editor_spec_inputs()
+            report = _validation_report(mports, conn, extra, nports, names)
+            target = None
+            anchor = report[0].anchor if report else None
+            if anchor is not None:
+                kind, idx = anchor
+                table = (self.ed_conn_table if kind == "conn"
+                         else self.ed_mp_table)
+                # 'ports' / 'plus' is the cell worth putting a caret in; the
+                # Type combo is first in the row and is not what is wrong.
+                target = table.data_row_widget(
+                    idx, "ports" if kind == "conn" else "plus")
+            if target is None:
+                self._scroll_editor_to(self.ed_validation)
+                return
+            # The table scrolls FIRST -- a row past max_visible is clipped by
+            # the table's own canvas, and the editor canvas cannot reach it.
+            inside = table.see_row(target)
+            self._scroll_editor_to(
+                target,
+                top=inside + (table.winfo_rooty()
+                              - self._ed_form.winfo_rooty()))
+            try:
+                target.focus_set()
+            except Exception:                       # pragma: no cover
+                pass
+        except Exception:                           # pragma: no cover
+            pass
+
+    def _scroll_editor_to(self, widget, top: Optional[int] = None) -> None:
+        """
+        Bring a widget inside the editor form on screen.
+
+        `top` overrides the measured y for a widget that is about to move --
+        see RowTable.see_row, which returns where its row lands rather than
+        forcing an idle pass to re-measure it.
+        """
+        form = self._ed_form
+        if not (widget.winfo_exists() and form.winfo_exists()):
+            return
+        if top is None:
+            top = widget.winfo_rooty() - form.winfo_rooty()
+        self._ed_canvas.yview_moveto(editor_scroll_fraction(
+            top, widget.winfo_height(), self._ed_canvas.winfo_height(),
+            form.winfo_height()))
 
     def _editor_port_names(self) -> Optional[Sequence[str]]:
         """Port names of the file the editor points at, or None."""

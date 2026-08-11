@@ -34,7 +34,7 @@ Basic flow:
 
 1. **Add File...** — load any Touchstone file. The parser content-sniffs the port count and ignores the file extension; `.s2p`, `.s45p`, `.txt`, `.dat`, or no extension all work. Each load prints a summary — port count, point count, `Z0`, the option line actually used, **the frequency span**, and `max |S|` — and the span is repeated on the file's line in the list. See [Reading files](#reading-files) for what a load failure tells you and what **Check File** is for.
 2. A default trace is auto-created against the loaded file. Select it in the **Traces** listbox to edit.
-3. In **Edit Selected Trace**, pick a measurement mode (Modes 1-3, `+/- Ports / Coupling`, or Custom) and fill in the relevant port fields. Modes 5 and 6 are filled in as **tables** with a `+ Add` button rather than typed as text: Mode 6 gets the measurement-port table, Mode 5 that table plus a connections table underneath, with a port-overview line and a validation line under both. Every port cell takes port **numbers**; **Show Ports** opens the **Ports & Roles** window, which is where to look on an unfamiliar package — see [Ports & Roles](#ports--roles). R/L/C cells take one word with an SI suffix and no unit (`5m`, `0.5n`, `1u`) — the unit is in the column header, and a value with a space in it is rejected rather than silently truncated.
+3. In **Edit Selected Trace**, pick a measurement mode (Modes 1-3, `+/- Ports / Coupling`, or Custom) and fill in the relevant port fields. Modes 5 and 6 are filled in as **tables** with a `+ Add` button rather than typed as text: Mode 6 gets the measurement-port table, Mode 5 that table plus a connections table underneath, with a port-overview line and a validation line under both. In the connections table the cells a row has **follow its Type** — a `ground` row is one wide Port field, a `short` row is one Port field for the whole tied group plus that node's **Net** name, and `rlc_between` is the only Type with two port fields. Every port cell takes port **numbers** or a Net name; **Show Ports** opens the **Ports & Roles** window, which is where to look on an unfamiliar package — see [Ports & Roles](#ports--roles). R/L/C cells take one word with an SI suffix and no unit (`5m`, `0.5n`, `1u`) — the unit is in the column header, and a value with a space in it is rejected rather than silently truncated. The **verdict line in the editor's footer is clickable**: it scrolls the form to the row it is talking about and puts the caret in it, which is the only route to messages that otherwise sit a few hundred pixels below the fold.
 4. Pick the curve's **Style** — click the line preview to open a palette of the 12 colours and 4 line styles, drawn as they will be drawn on the plot. On a coupling trace the preview also shows the run of colours the trace's expanded curves will occupy, and `×n` for how many.
 5. Set **RLC Freq (GHz)** for single-point extraction, optionally enter a **Band Fit** range and model.
 6. Click **Calculate All & Plot**. Results appear in the right pane and overlay on the multi-subplot view. **Calculate This Trace**, in the editor's footer, recomputes only the selected trace — the fast path when you are iterating on one port spec with several traces loaded.
@@ -272,7 +272,7 @@ Rules:
 | 2    | `A <-> B`               | Impedance between two port groups; collapse to 2x2 then `Z = Z11 + Z22 - Z12 - Z21`.              |
 | 3    | `A <-> B + Short Pairs` | Like Mode 2, but with explicit `i-j` shorts (Y-matrix row/col merging) before reduction.          |
 | 4    | *(retired)*             | Was `A <-> B + VDD/GND`. See below.                                                               |
-| 5    | `Custom (advanced)`     | Two tables: the measurement-port table (Name / `+` / `−`) plus a connections table (Type / Port / To / R / L / C), where Type is `ground / vdd / open / short / rlc_gnd / rlc_between`. Port and To take the full range syntax, so `6-14` or `35:1:45` is one row. **Edit as text…** shows and takes back the equivalent DSL — `open / ground / vdd / signal <name> [+ or -] / short_to / lumped_to_gnd / lumped_between`, one directive per line — which is what the tables serialise to and what is actually computed. |
+| 5    | `Custom (advanced)`     | Two tables: the measurement-port table (Name / `+` / `−`) plus a connections table whose **cells follow the row's Type** — `ground / vdd / open` take one port field and nothing else, `short` takes one port field for the whole tied group plus that node's **Net** name, `rlc_gnd` is one port field + R/L/C, and `rlc_between` is the only Type with two port fields. Every port field takes the full range syntax (`6-14`, `35:1:45`) or a Net name. **Edit as text…** shows and takes back the equivalent DSL — `open / ground / vdd / signal <name> [+ or -] / short [as <name>] / short_to / lumped_to_gnd / lumped_between`, one directive per line — which is what the tables serialise to and what is actually computed. |
 | 6    | `+/- Ports / Coupling (M, k)` | Any number of measurement ports, each a `+` / `-` probe pair, entered as table rows. Produces the G x G impedance matrix: self impedance on the diagonal, **open-circuit mutual impedance** off it, and from that M, k, C_c and the M/L ratios. |
 
 Defining more than one measurement port gives you the coupling matrix **in either mode** —
@@ -837,8 +837,8 @@ configuration through the same machinery, which is what checks the arithmetic th
 totals came out of.
 
 **You can also spell the shared return in Mode 5, in the GUI, with no attribution code at
-all.** Tie the whole ground set together with one `short_to` row, then hang **one**
-`lumped_to_gnd` on any port of it:
+all.** Tie the whole ground set together with one `short` row, name that node, then hang
+**one** `lumped_to_gnd` on the node:
 
 ```
 # independent — N separate return paths
@@ -846,16 +846,26 @@ all.** Tie the whole ground set together with one `short_to` row, then hang **on
 4 lumped_to_gnd L=1n          ->  M = 1.0120 nH
 
 # SHARED — one return path for the whole set
-3 short_to 4
-3 lumped_to_gnd L=1n          ->  M = 2.0259 nH        6.03 dB apart
+3,4      short  as pkg_gnd
+pkg_gnd  lumped_to_gnd L=1n   ->  M = 2.0259 nH        6.03 dB apart
 ```
 
-(`3 short_to 4` and `3 lumped_to_gnd` versus `3 short_to 4` and `4 lumped_to_gnd` give
-bit-identical answers — the set is one node by then, so it does not matter which port of it
-carries the inductor. In the connection table that is one `short` row with the whole ground
-range in **To**, plus one `rlc_gnd` row.) Verified against `compute_z_matrix` with no
-attribution code in the path, and separately against `pkg_rlc_attrib`'s dense
-`termination_impedance_shared_return` builder, agreeing to `3.2e-13` relative.
+(The name is convenience, not capability: it stands for one member port, so
+`3 lumped_to_gnd L=1n` after the short — and the older two-field spelling `3 short_to 4` —
+give bit-identical answers. The set is one node by then, so it does not matter which port of
+it carries the inductor. In the connection table that is one `short` row with the whole
+ground range in its single **Port** cell and the name in **Net**, plus one `rlc_gnd` row.)
+Verified against `compute_z_matrix` with no attribution code in the path, and separately
+against `pkg_rlc_attrib`'s dense `termination_impedance_shared_return` builder, agreeing to
+`3.2e-13` relative.
+
+What you must **not** write is `3,4 lumped_to_gnd L=1n` after the short. Once those ports are
+one node that is two 1 nH leads in **parallel** on it — a 500 pH shared return, which is
+neither of the two models above, and it looks exactly like the line that would have been
+right without the short. Measured on the probe network: `1 nH` reads back as `498.9 pH`.
+The validation strip refuses it by name and prints both numbers
+(`⚠ ports 3-4 are ALREADY ONE NODE … L 1 nH becomes 500 pH`); without a short those same two
+rows are two real, independent ball inductances and nothing is said.
 
 Which spelling is right is a question about your package, not about this tool — but answer it
 on purpose rather than by default.

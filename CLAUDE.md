@@ -38,10 +38,12 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `tests/run_parallel.py` | **The test runner to use.** Class-sharded, longest-first. Measured when it was written: `python -m unittest discover -s tests` 293 s against `python tests/run_parallel.py` 108 s over the same 906 tests (2.7x). Re-measured here: **1703 tests in 310 s**, and `--fast` **699 tests in 4.4 s** over the fifteen no-Tk modules (the two cold-start ones were added — neither imports tkinter, which is the one property that list has); `-m <substr>` picks modules by name. Sharded by CLASS not module because `test_run_history` alone is 86 s of the serial 293. Exit code 0 means every shard passed. NOT auto-discovered (no `test_` prefix). |
 | `tests/test_freq_label.py` | Frequency-label honesty: the marker frequency a report prints says where the numbers came from. Both extractors snap to the nearest grid point via `argmin`, and the default 0.1 GHz marker on `diff_pair_4port.s4p` lands on 0.10099 GHz — every default session in the repo snapped and said nothing. |
 | `tests/test_large_files.py` | How big a file the tool will read and what it says when it will not: the escalating port-count sniff past `MAX_SNIFF_NPORTS` to `SNIFF_HARD_CAP`, the refusal as a `TouchstoneParseError`, and the memory envelope. |
-| `tests/`                | `unittest`-based suite (1703 tests run by `tests/run_parallel.py` at the time of writing, covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, the `RowTable` widget, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, port attribution and its cross-check against the engine, the Attribution window, the cold-start screen, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/`                | `unittest`-based suite (1849 tests run by `tests/run_parallel.py` at the time of writing, covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, named merged nodes, the `RowTable` widget and its per-kind layout, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, port attribution and its cross-check against the engine, the Attribution window, the cold-start screen, the bit-exact golden regression, and `reduce_snp`). |
 | `tests/test_editor_autoapply.py` | The commit-step removal: WHEN the editor writes into a `TraceConfig` and WHICH one it lands on (the deferral, the object capture, the flush-before-selection-change), the style picker's storage / reachability / honesty about multi-curve traces, and that hiding a curve neither recomputes it nor destroys the cursors. Every guard here was mutation-checked. |
 | `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see, and the reordering hazard that forces `_import_dsl_text`'s verbatim fallback. |
 | `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
+| `tests/test_conn_nets.py` | Named merged nodes and the parallel-stamp refusal (core's half of round 1): the measurements that prove the wrong number is real (10.000 fH typed reads 3.333 fH), every net-name rule with its own refusal, the forward-reference pre-pass, that a name resolves to ONE member and is therefore bit-identical to typing that member, the legacy `short_to` round trip, and that the refusal does not depend on Union-Find root ordering. Every guard mutation-checked. |
+| `tests/test_conn_rowshape.py` | Per-kind row shape and the footer route (the GUI's half of round 1): `conn_table_layout`'s two rules over all 63 kind subsets (a cell never spreads under someone else's heading, and it spreads whenever it may), the measured table widths, the short-group cell shim's `TerminationSet` equivalence, the R1-5 consequence tiers, and — Tk-driven — that clicking the footer reaches a row past the table's OWN scroll and that it costs zero pixels. Every guard mutation-checked. |
 | `tests/test_mode5_editor.py` | Stage 3: the pure text<->rows import decision and both strip renderers, plus Tk-driven editor wiring, per-mode widget visibility, the text hatch, the CSV gate, wheel routing, and the LAYOUT numbers (`ismapped` / `reqwidth` / `xview` / `scrollregion` / `sashpos`) measured off a mapped window — including that a mode with no table fits the 431 px canvas outright and every mode shows the same editor height at the minsize. |
 | `tests/test_freeze_trace.py` | "Freeze as new trace": the pure copy rules (config copied, lists element-wise, results REFERENCED), the two refusals (Calculate skips it, the editor cannot write it), the two *entry* refusals (`freeze_refusal` — no numbers, and a STALE spec), the `freeze_label` budget that keeps the `<HH:MM>` stamp inside `MAX_LABEL_LEN`, that everything else still works (plot / show-hide / CSV / Remove), that the CSV does not attribute a snapshot's numbers to the newest run, the right-click menu, and the session round trip that comes back without numbers and says so. Every guard mutation-checked. |
 | `tests/test_port_roles.py` | Port names put to work: the pure classifier (`port_roles`), the provenance map (`row_sources`), the run-collapser, the open-port name check with its false-alarm cases run against every real fixture, `_trace_role_rows` (any mode → rows), and the Tk-driven Ports & Roles window — filter, sort-on-the-raw-value, both Treeview hazards, the flagged rows (with the probe-and-ground message following the MODE), and the collapsed-range write-back. Every guard mutation-checked. |
@@ -1350,7 +1352,8 @@ looking at the screen.
   that deletion is the mechanical reason nobody could remember the syntax. Do not
   "restore" per-cell placeholders, and do not wire `ColumnSpec.placeholder` into
   anything. A table-based mode therefore registers **no** `MODE_PLACEHOLDERS` entry.
-- **Port cells take NUMBERS; `Show Ports` is the only route to the file's port names.**
+- **Port cells take NUMBERS (or a net name); `Show Ports` is the only route to the file's
+  port names.**
   A name-bearing dropdown does not fit the editor width (design note §5a — a ttk popdown
   is only as wide as the widget, and 15 chars ≈ 105 px the 431 px viewport does not have),
   so it is deferred to stage 4. `Show Ports` is no longer a *substitute* for it — it opens
@@ -1382,6 +1385,8 @@ looking at the screen.
 - **The connections table's column widths are a measured budget.** 405 px table / 418 px
   form against a **431 px** viewport (the editor canvas once its vertical scrollbar shows,
   which in Mode 5 is always) — so the headroom for a new column is **13 px**, not 22.
+  405 px is now the WORST case (every Kind present at once); per-kind row shape gives
+  most of it back — see "Per-kind row shape" below.
   Re-measure `_ed_form.winfo_reqwidth()` before adding one; the in-file comment beside
   `CONN_TABLE_COLUMNS` carries the same two numbers. The table is gridded across all four
   form columns with its caption **above** it, because a label beside it costs 91 px. The
@@ -1431,8 +1436,12 @@ looking at the screen.
   `after_idle`-coalesced, must never raise (a raised error there reaches no handler you
   control — Tk prints it and the GUI carries on showing a stale "spec is fine"), and must
   write to nothing but its three Labels (overview, validation, and the kept-as-text marker
-  on the Connections caption). `_sync_editor_to_trace` stays the only writer to a
-  `TraceConfig`. `_on_editor_rows_changed` returns early while `_suppress_editor_sync` is
+  on the Connections caption), the style preview, and the Port / To dropdowns' combobox
+  **choices** — never a cell's VALUE. That last one is what lets the merged-node entries
+  follow the short rows as they are typed (`_refresh_port_choices` is called from here);
+  `set_column_values` early-returns when the list has not moved, which on a keystroke is
+  the normal case. Writing a choice list cannot alter the spec, which is the property that
+  keeps `_sync_editor_to_trace` the only writer to a `TraceConfig`. `_on_editor_rows_changed` returns early while `_suppress_editor_sync` is
   set — that flag was inert before stage 3, and leaving it inert while adding an
   `on_change` is exactly how it becomes a re-entrancy bug.
 - **A green tick has to mean "Calculate will work".** `_validation_messages` reports every
@@ -1492,6 +1501,150 @@ looking at the screen.
   `tc.Zmat is not None`, the same predicate `_on_calculate` routes on — gating on
   `tc.mode == 6` exported a two-probe Mode 5 trace as a well-formed scalar table with
   every M and every k silently absent.
+
+### Per-kind row shape, nets, and the parallel stamp (round 1)
+
+The user's complaint, verbatim: *"不同的连接，出现的表格都是一样的，比如多个pin连接
+到一起的时候，我很自然的感觉就是一个blank，输入我要短接的PIN就行，但是现在有两个
+blank"*. The shorting example is the instance; the complaint is that every Kind gets
+the same table. `tests/test_conn_nets.py` (core) and `tests/test_conn_rowshape.py`
+(GUI) are the guards, and every claim below was mutation-checked.
+
+- **`RowTable` lays out through a `TableLayout`, and `_regrid` is GONE.** `layout_fn`
+  returns one frozen `TableLayout` for the WHOLE table — `ncols`, `headers`, `weights`,
+  and per row the cells it shows as `(column key, grid column, columnspan)`. It is one
+  function and not a per-row `shape_fn` because the two decisions are coupled: a cell
+  may spread only into grid columns NO row is using, and those are exactly the columns
+  whose heading must be blank. Two hazards made the obvious implementation wrong and
+  both fail silently: the old `_regrid` re-gridded **by list position** (it enumerated
+  `entry["_widgets"]` and called `grid_configure(column=c)`), and `grid_configure`
+  **re-manages a `grid_remove()`d slave**, so a per-kind widget set both misplaced cells
+  and un-hid them. `_widgets` therefore stays parallel to `_columns` — `set_column_values`
+  and the frozen-state path index it and are untouched — and only the grid column varies.
+  `_apply_layout` recomputes on every cell write and re-grids only when the layout
+  actually moved (`TableLayout` is tuples, so `==` is total). It CANNOT oscillate: it
+  reads cell TEXT and writes GRID OPTIONS, so nothing it writes can change what it reads —
+  the same fixed-point property `_apply_editor_scrollbars` needs and for the same reason.
+  Measured per variable write on a six-row table: **31 µs** when the layout does not move
+  (15.6 µs of it deriving the layout to find that out) against **263 µs** on a Kind change.
+- **The HEADER follows the rows, and that is half of R1-1.** A shared grid header states
+  a column's meaning once, so `To` was a lie on a short row even with the cell hidden.
+  Grid column 2's title is derived — `""` / `"To"` / `"Net"` / `"To / Net"` — and the
+  R/L/C titles vanish when no row carries them.
+  `test_a_cell_never_spreads_under_someone_elses_heading` and its converse check all
+  **63** kind subsets. An unrecognised kind keeps all six cells: a session hand-edited to
+  a kind this build does not know must not lose its values.
+- **Measured table `winfo_reqwidth()`, Microsoft YaHei UI 9 (150% in brackets):**
+  ground only **405 → 202** (413 → 210), short only 405 → 273 (281), rlc_gnd only
+  405 → 331 (339), **every kind at once 405 → 405** (413) — i.e. the worst case is
+  exactly the table this replaces, so the 13 px headroom rule above is unchanged.
+  A rendered ground row's Port cell goes 76 → **185 px**. The inert cells it recovers:
+  a ground row wasted To+R+L+C = 195 px = **48%** of the table, a short row R+L+C =
+  123 px = 30%, an rlc_gnd row To = 72 px.
+- **The Net cell shares grid column 2 with To; it is NOT a seventh column.** `width=9`
+  is measured: grid column 2 is 74 px because a 7-char `ttk.Combobox` asks 72, and a
+  `ttk.Entry` asks 55 / 62 / 69 / 76 px at 7 / 8 / 9 / 10 chars — at 9 the cell costs
+  the column nothing, at 10 it would take 4 px of the 13. The widest candidate title
+  `"To / Net"` is 48 px, also free.
+- **A short row stores its whole tied group in `ports` and leaves `to` empty**
+  (`5,6,7,8 short`), so one cell is the storage as well as the display. `to` stays live
+  as the LEGACY two-field spelling — a pre-round-1 session, and the synthetic rows
+  `_trace_role_rows` builds for mode 3, both carry `short 5 → 6,7,8` and must keep
+  working. `conn_cells_from_row` / `conn_row_from_cells` are the only place that knows
+  both spellings; `rows_to_dsl_text` emits `short_to` verbatim for a legacy row, so its
+  answer cannot move on load (measured bit-identical, `==` on the complex Z).
+- **A net is SUGAR, and it resolves to ONE representative member port.** Referring to a
+  merged node by any one member already worked (measured: after `1 short_to 2,3`,
+  `1 lumped_between 4 L=10f` gives 10.000 fH); what was missing was a refusal and an
+  affordance. Expanding a name to every member would reintroduce the ×N bug inside the
+  sugar meant to remove it. `_collect_nets` is a separate PRE-PASS because
+  `rows_to_dsl_text` emits every measurement port above every connection, so a probe on
+  a named node is always a forward reference — a single-pass parser would refuse it for
+  a reason that is pure table layout.
+- **Net-name rules, each from a measured collision.** A name `parse_port_range` would
+  accept is refused (the port field is the one slot where a number and a name share a
+  token — the collision `reduce_snp.py` already documents); `A`/`B` plus the DSL's own
+  keywords are reserved; no whitespace and none of `:,-#` (`:` is also what a future
+  file prefix may not use — `parse_port_range('PKG:12')` raises); matched
+  case-insensitively, stored as typed; an unknown name is a HARD refusal naming the
+  defined nets, never a new empty node (that would hang the element off a dangling node
+  and change the answer in silence); two names on one merged node is an error, because
+  every echo and every Ports & Roles row would otherwise pick one arbitrarily. Only a
+  `short` row may carry an `as` — anywhere else it would be dropped by
+  `parse_kv_rlc_params` in silence and the user would go on referring to a node that was
+  never named.
+- **Merged nodes sit at the TOP of the Port / To dropdowns, and `MergedNode.ref` is one
+  member, never the group.** The right gesture has to be the cheap one: offering the
+  whole group is precisely the spelling that multiplies the element by N.
+- **`parallel_stamp_messages` is the refusal, and it fires only when the listed ports are
+  ALREADY ONE node.** N separate elements from a range is documented, intended and the
+  normal flip-chip case (54 VSS bumps each with its own 20 pH) — never refuse that.
+  Measured on the 5-port probe network: `1 short_to 2,3` then `1,2,3 lumped_between 4
+  L=10f` reads **3.333 fH** where 10 fH was typed, ratio exactly 3.000; `1 short_to
+  2,3,4` then `1,2,3 lumped_to_gnd R=50` reads **15.625 Ω** (250‖16.7) instead of
+  41.667 Ω (250‖50). Nothing raises and `inert_lumped_messages` says nothing — it reports
+  elements worth EXACTLY zero, these are worth **N times too much**. It returns messages
+  and does not raise (the strips' contract), and the GUI appends it before the `✓` echoes
+  exactly as it does for `inert_lumped_messages`, so the green tick is suppressed.
+- **The effective value is stated PER ELEMENT TYPE — R/N, L/N, N·C — never templated**,
+  and only the values the user actually typed are shown (an omitted R is 0 and an omitted
+  C is inf; neither is a number anybody wrote down). That is why `params` was added to
+  `LumpedToGnd` / `LumpedBetween`: `y_func` is an opaque closure, and without the numbers
+  the message could only say "3 identical elements", not "10 fH becomes 3.33 fH".
+  `params` is metadata — nothing in the reduction reads it and a set built in code leaves
+  it `None`, so the golden reference is untouched.
+- **The merged side is found from the PORT LISTS, never from `lo`/`hi`.** Those are
+  Union-Find ROOTS — arbitrary integers whose order falls out of which port won its union
+  — and the first implementation tested only the `lo` side. Measured: `1,2,3 short` +
+  `1,2,3 lumped_between 10 L=10f` was refused while `21,22,23 short` + `21,22,23
+  lumped_between 1 L=10f`, the SAME network with the same 3.3333 fH against a typed
+  10 fH, was **silent**, purely because port 1's root was the smaller number. Whether a
+  user is warned about a factor-of-N error may not depend on their port numbering. The
+  final message ORDER is sorted by port number for the same reason: the strip shows two
+  lines, so which one is first must be decided by something the reader can see.
+  Three exclusions stay and are each pinned: `lo == hi` (both ends on one node — worth
+  zero, `inert_lumped_messages` owns it, and two messages about one element would
+  contradict each other); one distinct port on each side (the same line typed twice is
+  visible on its own row, and "ports 1 are ALREADY ONE NODE" would be false about a spec
+  with no short in it); and grouping by `(node pair, R/L/C)` rather than node pair alone,
+  so a deliberate R‖L stays silent.
+- **The footer verdict is a ROUTE, and it costs zero pixels.** It is the only
+  always-visible pixel of the editor, and it was a dead end: measured at the 1040x600
+  minsize the messages it counts sit **366 and 387 px** below the fold of a 45 px
+  viewport, and every mode change scrolls the form back to the top. `<Button-1>` →
+  `_validation_report` → the FIRST message's anchor → `RowTable.see_row` → the editor
+  canvas → `focus_set`. **The table scrolls first**: a row past `max_visible=6` is
+  clipped by the table's OWN canvas and the editor scroll alone cannot reach it (measured:
+  row 7 landed 37 px ABOVE the editor viewport). `see_row` COMPUTES where the row lands
+  rather than re-measuring — `yview_moveto` does not reach `winfo_rooty` until the next
+  idle pass (measured 192 → 192 with no idle, 164 after one) and forcing one from a click
+  handler is the `update_idletasks()` this repo has been bitten by. The affordance is
+  `cursor="hand2"` plus a hover underline, measured **191x21 px identical** with and
+  without it (291x29 at 150%). It follows the first message's anchor and NO other:
+  scanning down for one that happens to have a row would take the reader to a
+  lower-priority message's row, answering a different question than the footer is
+  counting. Never raises — same contract as `_apply_editor_strips`.
+- **Validation messages are ordered by CONSEQUENCE, not by check order.**
+  `VALIDATION_STRIP_LINES` is 2 and the footer summarises the rest as a count, so the
+  first two messages ARE what gets read. `_validation_report` returns
+  `_VMsg(tier, text, anchor)` and `_validation_messages` is its `.text`; the sort is
+  STABLE, so row order survives inside a tier. `V_WRONG_NUMBER` (parallel stamp,
+  annihilated element, a probe a ground row outranks, measurement-port rows that collapse
+  into one, an open-port remnant) → `V_NO_RESULT` (Calculate raises or every value is
+  NaN) → `V_ROW_INERT` (this row does nothing — its own cells show it) → `V_OK`. A
+  *measurement-port* row that resolves to nothing is `V_NO_RESULT`, not `V_ROW_INERT`:
+  it is the measurement itself going missing, and
+  `test_mode5_editor.py::test_flags_a_measurement_port_row_with_a_name_but_no_ports`
+  pins cause-above-consequence.
+- **KNOWN GAP, deliberate: every `V_WRONG_NUMBER` message is UNANCHORED**, so the footer
+  route falls back to the validation strip for exactly the tier R1-5 promoted to the top.
+  Those messages come from `parallel_stamp_messages` / `inert_lumped_messages` /
+  `open_port_name_messages`, which take a `TerminationSet` — by then the row structure is
+  gone. Anchoring them needs either a second copy of `rows_to_dsl_text`'s emission order
+  (rejected here, and whose drift would show up as the route landing on the WRONG row) or
+  a line↔row map out of `rows_to_dsl_text`. The fallback is not a dead end: the strip
+  carries the full text of the top message, including the ports it names and the repair.
+  Fix it from the row side if it is ever fixed, not by parsing the message.
 
 ### Auto-apply, the style picker, plot visibility
 

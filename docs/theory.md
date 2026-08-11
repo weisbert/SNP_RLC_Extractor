@@ -1168,8 +1168,19 @@ reconciled, whatever model is in force, is the **declared** configuration throug
 machinery (§13.6), which checks the arithmetic the modelled total came out of; the modelled
 number itself is this module's alone and every surface that prints it says so.
 
-The same physics is expressible in the Mode 5 table today with no new code: one `short_to`
-row tying the ground set together, then **one** `lumped_to_gnd` on any port of it.
+The same physics is expressible in the Mode 5 table today with no new code: one `short`
+row tying the ground set together, then **one** `lumped_to_gnd` on that node —
+
+```
+3,4      short  as pkg_gnd
+pkg_gnd  lumped_to_gnd L=1n
+```
+
+— where the name is convenience only: it stands for one member port, so `3 lumped_to_gnd`
+after the short (and the older two-field `3 short_to 4`) give bit-identical answers. What
+must **not** be written is `3,4 lumped_to_gnd L=1n` after the short: once those ports are
+one node that is two 1 nH leads in *parallel* on it, a 500 pH shared return, which is
+neither model. `parallel_stamp_messages` refuses it by name and prints both numbers.
 
 ### 13.9 Precisely what does and does not decompose
 

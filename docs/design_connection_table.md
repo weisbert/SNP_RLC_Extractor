@@ -191,6 +191,32 @@ test and wants review.
 Stage 4 rewrites the main editor skeleton and changes what every existing
 workflow looks like. It waits.
 
+### 5-R1. Per-kind row shape, nets and the parallel stamp (landed after stage 3)
+
+Not stage 4, and not a prerequisite for it. The user came back with a second
+complaint about the same table — *"不同的连接，出现的表格都是一样的 … 多个pin
+连接到一起的时候，我很自然的感觉就是一个blank"* — and the fix is orthogonal to
+the preset question:
+
+| | What landed |
+|---|---|
+| R1-1 | The cells a row shows follow its **Kind**. `ground`/`vdd`/`open` one port field, `short` one port field for the whole tied group plus a Net name, `rlc_gnd` port + R/L/C, `rlc_between` the only two-port-field kind. The shared **header** follows the rows too, because `To` was a lie on a short row even with the cell hidden. **No column added** — the 13 px budget is untouched and the worst case (every kind at once) is still 405 px. |
+| R1-2 | A short row may **name** the node it creates, and any port field may use that name. Sugar: it resolves to one member port, so the answer is bit-identical to typing that member — which already worked. |
+| R1-3 | `parallel_stamp_messages` **refuses** an element row whose left side expands to N ports that are already ONE node. Measured 3.333 fH against a typed 10 fH, with nothing on screen saying so. |
+| R1-4 | The footer verdict is **clickable** and scrolls to the offending row. Zero pixels. |
+| R1-5 | Validation messages are ordered by **consequence**, not check order. |
+
+CLAUDE.md § *Per-kind row shape, nets, and the parallel stamp* carries the
+measured numbers and the hazards; `tests/test_conn_nets.py` and
+`tests/test_conn_rowshape.py` are the guards.
+
+Two things §5a below said are now out of date and are corrected here rather
+than rewritten above, so the reasoning stays readable: the Port/To dropdowns
+still carry NUMBERS, but they now carry every **merged node's** reference token
+above them (a name, or its first member); and the parsed-value echo's strip is
+now consequence-ordered, so an echo is only ever reached when nothing worse
+fired.
+
 ## 5a. What shipped differs from the mock
 
 Four decisions taken during stage 3, each for a measured reason:
