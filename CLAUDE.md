@@ -1677,7 +1677,7 @@ recorded here rather than in a commit message nobody will find.
 
 ```bash
 python tests/run_parallel.py            # the whole suite -- use this
-python tests/run_parallel.py --fast     # 1.3 s, 267 tests, the seven no-Tk modules
+python tests/run_parallel.py --fast     # 2.9 s, 523 tests, the eleven no-Tk modules
 python tests/run_parallel.py -m attrib coupling core    # substring on module name
 ```
 

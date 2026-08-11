@@ -6,7 +6,7 @@ Why this exists (all numbers measured on this repo, 20 logical cores):
 
     python -m unittest discover -s tests          293 s   906 tests
     python tests/run_parallel.py                  108 s   906 tests   (2.7x)
-    python tests/run_parallel.py --fast           1.2 s   267 tests
+    python tests/run_parallel.py --fast           2.9 s   523 tests
 
 Where the time goes: 87% of the suite is the eight Tk-driven modules, and
 HALF of that is `App()` being rebuilt in setUp -- 258 ms a time (against 31 ms
