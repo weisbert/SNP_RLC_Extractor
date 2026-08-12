@@ -18,7 +18,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `pkg_rlc_attrib_gui.py` | **The Attribution window** (`AttributionWindow`, `open_attribution_window`, `ATTRIB_MENU_LABEL`, `attribution_refusal`, `refresh_attribution_windows`, `attribution_session_state` / `apply_attribution_session_state`) plus the pure formatters it is testable through with no display (`render_table` / `Column` / `TableText`, `contributions_table`, `sensitivity_table`, `detail_lines`, `sweep_caption`, `reconciliation_verdict` / `reconciliation_line`, `provenance_lines`, `staleness_text`, `stability_line`, `report_text`, `csv_records`, `signed_str`, `parse_candidate`). A modeless `Toplevel` over `pkg_rlc_attrib`; `pkg_rlc_gui.py` holds only the Analyze-menu entry, the Traces right-click entry, the Results-pane pointer line and the refresh hooks. It is a separate module because `pkg_rlc_gui.py` was already 7000+ lines; `pkg_rlc_gui` imports it, and it imports `pkg_rlc_gui` back only from **inside functions** (`_gui()`), so the cycle never exists at import time. |
 | `pkg_rlc_files_gui.py`  | **Which FILES a trace is made of** (round 3): the `Files in this trace…` window (`FilePairWindow`, `open_files_window`, `FILES_MENU_LABEL`, `files_refusal`, `refresh_files_windows`, `slots_of` / `FileSlot`, `spec_problems`), the port-cell scope rules (`render_port_cell` / `cell_scope` / `cell_is_foreign` / `port_choices` / `resolve_cell`, `ALIAS_MAX_CHARS`, `PORT_CELL_CHARS`) and the GUI rendering of the reference-node check (`reference_checks_of`, `reference_strip_text`, `reference_report_lines`, `reference_provenance`, `REFERENCE_HEADLINE`). Same split as `pkg_rlc_attrib_gui` against `pkg_rlc_attrib`: `pkg_rlc_compose` does every piece of arithmetic and this is presentation, budget and refusal. Both `pkg_rlc_gui` and `pkg_rlc_attrib_gui` import it at module level; it imports `pkg_rlc_gui` only from inside functions. |
 | `pkg_rlc_plot.py`       | Matplotlib plot panel: multi-subplot grid over R/L/C/\|Z\|/Re/Im/Q/**k**, draggable freq marker, M / V / Delete keys, fullscreen window, and the `ReflowRow` / `reflow_rows` control strip that wraps instead of losing its tail. Quantities that cannot be derived from one `(freqs, Z)` pair (today only `k`) arrive via the optional `Trace.aux` dict. |
-| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), the frozen-trace snapshot (`_freeze_trace_config`, `freeze_label`, `freeze_refusal`, the Traces-list right-click menu), the File menu and the JSON session format (`session_to_dict` / `session_from_dict` / `SessionError` / `autosave_path`), the results pane (a `ttk.Notebook` whose tab 0 is the Log, with `log_tab_label` / `_append_result(severity)` / `_select_results_tab`), and the immutable run record (`RowSnapshot` / `CouplingSnapshot` / `FitSnapshot` / `RunSnapshot`, `_snapshot_row` / `_snapshot_block` / `_snapshot_fit`) that `_render_results` consumes instead of live traces. Re-exports the DSL helpers it no longer defines. |
+| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), the frozen-trace snapshot (`_freeze_trace_config`, `freeze_label`, `freeze_refusal`, the Traces-list right-click menu), the File menu and the JSON session format (`session_to_dict` / `session_from_dict` / `SessionError` / `autosave_path`), the results pane (a `ttk.Notebook` whose tab 0 is the Log, with `log_tab_label` / `_append_result(severity)` / `_select_results_tab`), and the immutable run record (`RowSnapshot` / `CouplingSnapshot` / `FitSnapshot` / `RunSnapshot`, `_snapshot_row` / `_snapshot_block` / `_snapshot_fit`) that `_render_results` consumes instead of live traces, and the THREE RESULTS VIEWS (`RESULTS_VIEWS` / `VIEW_DETAIL` / `VIEW_SUMMARY` / `VIEW_COMPARE`, the `View:` combobox on the `ReflowRow` header, `_on_results_view_changed` / `_rerender_every_page`, and the pure formatters `_format_summary_self` / `_format_summary_coupling` / `_format_compare` / `_compare_groups` / `_delta_cell` / `_render_columns` / `_file_alias_map`) that `_run_report_segments` dispatches over, above the shared `_footer_segments`. Re-exports the DSL helpers it no longer defines. |
 | `pkg_rlc_gui.py` (cont.) | Plus the **Ports & Roles** window (`PortRolesWindow`, `_trace_role_rows`, `_role_warnings`, `_roles_header`, `apply_ports_as`), which is what `Show Ports` now opens; and the **Attribution hooks** — the `Analyze` cascade, the third Traces right-click entry, `_on_attribution`, the Results-pane pointer line, and the `refresh_attribution_windows` calls. The window itself is `pkg_rlc_attrib_gui.py`. Plus the **multi-file schema and engine** (round 3): `TraceConfig.file_labels` and its helpers (`trace_file_labels` / `trace_file_aliases` / `trace_is_composed` / `trace_file_legend` / `trace_file_scope` / `compose_spec_problems`), the port-field scopers (`_scope_port_field` / `_scope_dsl_text` / `_scope_conn_rows` / `_scope_mport_rows`, `ComposeSpecError`), `SolveNetwork` / `_trace_network` / `_cached_trace_network` / `_namespace_network` / `_trace_namespace`, `_reference_checks`, `set_trace_home_file`, and the `Files in this trace…` entries on the Analyze cascade and on BOTH right-click menus. |
 | `pkg_rlc_help.py`       | In-app Help window content (`HELP_TOPICS`, `HelpWindow`, `HELP_WINDOW_WIDTH`). One tab per mode + syntax + save/load + worked examples. **Ten tabs, and there is no room for an eleventh** — port attribution, the Attribution window and the cold-start screen all live at the bottom of `Mode 6 (Coupling)`, cross-referenced from `Overview`, `Input syntax` and `Worked examples`. See the measurement under "Port attribution". |
 | `pkg_rlc_extractor.py`  | Entry point: dispatches GUI vs CLI from argv. CLI `--mode gnd \| p2p \| coupling`, `--mport` repeatable. |
@@ -29,7 +29,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `tests/test_parse_diagnostics.py` | The robust-reading work: what a file says about itself (span, sweep description, DC / \|S\|>1 notes) and what happens when it cannot be read. Every refusal test pins the **verdict** and the **line number**, not just "raises ValueError" — that would have passed before any of it existed. Plus the recovery cases (UTF-16, BOM, commas, `D` exponents, extension tiebreak) and the two GUI affordances. |
 | `tests/test_session.py` | Save Config / Load Config / Restore Last Session. Pure round trip (no Tk) for the trace fields, the refusal verdicts, the hand-edit tolerance and the path precedence; Tk-driven for the App-level save→wipe→load, the missing-file path, the autosave, and that the File menu and its accelerators are reachable. Also the guard on the Help window's tab strip, which the tenth tab pushed past the old 950 px. |
 | `tests/test_results_notebook.py` | The Results pane's `ttk.Notebook`: that the Log is tab 0, selected and MAPPED at startup (both are mechanical preconditions of tests elsewhere), the width-stable badge measured in the tab strip's own font, the unseen-warning count, the ERROR claim on the pane and the severity routing of the real call sites, plus the measured proof that a 30-tab strip does not move the left panel. Every guard mutation-checked. |
-| `tests/test_plot_controls.py` | The plot panel's control strip: the pure `reflow_rows` wrap (no item is ever dropped, at any width), and — off a mapped window at 575 / 700 / 1040 / 1200 / 1500 px — that every control lies WHOLLY inside the strip, that it wraps only when it has to, that `place` keeps the strip's requested width out of `PlotPanel`, and that the layout settles instead of oscillating. The FIRST test in the repo to touch this panel. Every guard mutation-checked. |
+| `tests/test_plot_controls.py` | The plot panel's control strip: the pure `reflow_rows` wrap (no item is ever dropped, at any width), and — off a mapped window at 575 / 700 / 1040 / 1200 / 1500 px — that every control lies WHOLLY inside the strip, that it wraps only when it has to, that `place` keeps the strip's requested width out of `PlotPanel`, and that the layout settles instead of oscillating. The FIRST test in the repo to touch this panel. Every guard mutation-checked. Plus `TestAGrownChildIsRePlaced`, which owns the two `ReflowRow` bugs the Results header turned up: a child whose TEXT grows must not be drawn through its neighbour (the `_applied` key had to learn the item widths — without them `refresh()` called `_reflow()` and `_reflow()` returned early), and must not be CLIPPED even when nobody calls `refresh()` at all (an ordinary control is placed with no explicit width, so Tk tracks its request). |
 | `tests/test_attrib_core.py` | Port attribution. The load-bearing one is the **reconciliation**: `decompose`'s sum against `compute_z_matrix` over every (spec, frequency) pair on every fixture, and every fast low-rank what-if (`sensitivity` / `group_joint` / `sweep_mobius`) against an HONEST recompute through a rebuilt `TerminationSet` — a Woodbury update that agrees with itself and with nothing else is the failure mode this module has. Plus the twelve requirements one by one: the reciprocity solve, the dense `Zt`, the singular-baseline fold, the structural rank check, the condition-aware residual floor, the return budget, the projection share, the refusal-by-name of non-decomposable quantities, non-additivity, the Möbius endpoints/interval/extremum, the sign convention, and the mode-1/2/3 ground-beats-probe precedence. Every guard mutation-checked. |
 | `tests/test_attrib_vs_engine.py` | A deliberately INDEPENDENT second opinion on the one claim everything else rests on — that the node-space decomposition and the engine's Schur reduction are two routes to one number. It differs from the acceptance suite on purpose in four ways: it walks the case registry in `tests/_golden_capture.py` (so "every mode is covered" is a property of the walk, not a docstring claim) and anchors on the bit-exact `golden_legacy.npz` array rather than on the `compute_z_matrix` call `build_context` makes for itself; it computes its TOLERANCE here, from the file's own admittance slice, because comparing the module's residual against the module's own floor proves only self-consistency — which it would keep with both of them wrong; it pins requirement 12 STRUCTURALLY (which declaration became an element, which was thrown away), not only as a number that happens to agree; and it FUZZES — 4000 random specs over six fixtures, two-sided contract: either it agrees with the engine inside the condition-aware budget or the `Decomposition` says so out loud. |
 | `tests/test_attrib_degenerate.py` | What the module does when the spec, the network or the data is BROKEN — the only interesting question here, because **every failure mode below produces a plausible number rather than an exception**: no DC reference (`cond(Y) = 2.5e16`) inverting to garbage; a redundant spec making `H` exactly singular (which must read as a spec bug, not as "unattributable physics"); an ill-conditioned baseline putting the decomposition's own sum 100% away from the engine with both numbers finite; independent-per-ball grounds reading **9.6 dB low** against the shared return real balls have; **eight** ground balls where every one-at-a-time and every pairwise measurement reads ~0 while the collective effect is **600x larger and the OTHER SIGN**; a ground inductance resonating with a package capacitance putting `M` outside the [ideal, open] bracket; one NaN in one S entry. It CONSTRUCTS each degeneracy — the repo's 2- and 4-port fixtures cannot express an eight-ball package or a resonant return — and checks against an honest rebuild through `compute_z_matrix`, so both sides come from shipped code. Every guard mutation-checked, with the defeating mutation named in each test's own docstring. |
@@ -59,6 +59,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `tests/test_run_history.py` | The run tabs: the width-stable label pair measured in the tab strip's own font, the three header lines, the named-signature diff (pinned one-for-one against `_config_signature`), and — Tk-driven — that eviction touches only the auto ring, that the kept cap bites at Keep time and the button says so, that the page being read survives as the SAME widget, the widget-count leak guard after a churn loop, the conditional auto-switch in all three directions (including that a KEPT page is never yanked away), the units re-render creating no tab and reaching EVERY page, the Keep button's readability at 150% font scaling, and that no run reaches the session file. Every guard mutation-checked. |
 | `tests/test_run_snapshot.py` | The immutable run snapshot: that the rendered page is byte-identical to `tests/fixtures/render_reference.json` (captured before the refactor), that a record does not move when its `TraceConfig` is relabelled / renumbered / re-ported, that no per-frequency array is reachable from a run, and the run number / frozen-visibility rules. Every guard mutation-checked. |
 | `tests/_render_capture.py` | Script + case registry that (re)generates `render_reference.json`, and the ONE place that knows the renderers' signatures. NOT auto-discovered (leading underscore). Regenerate ONLY in the same commit that justifies moving the reference. |
+| `tests/test_results_views.py` | The Results pane's THREE VIEWS and the slimming under all of them (53 tests). Pure with no display: that no block carries a legend any more and every legend line is inside the pane's measured **144 columns**; that the reciprocity line is a verdict; that the `G <= 2` Z-matrix fold LOSES NO NUMBER (checked by looking for every entry of the matrix elsewhere in the block, not by counting lines) while `G >= 3` is untouched and gains no trailing whitespace; the summary's row-per-port / row-per-pair shape, its colour order, and that it ranks through `rank_coupling_pairs` rather than sorting for itself; and `_delta_cell`'s four forms — percentage, factor past ×10, dB difference, and `—` for a value that is not there. Tk-driven: the three views round-tripping through the session (a bad value dropped with a note), that a view switch creates no run tab and repaints EVERY page, that `compare` falls back to the summary naming the reason, and that every control lies WHOLLY inside the Results header at 100% and 150% at both the default size and the minsize. Every guard mutation-checked: 18 mutations, 18 caught. |
 | `tests/test_report_readability.py` | Four display-only changes, none of which touches a number: the ranked / floored coupling list (pure — the key, the two things never hidden, the sign invariant), the coloured trace Listbox, the tagged results-table swatch, and the editor's footer summary line (mapped window at the 1040x600 minsize). Every guard mutation-checked. |
 | `tests/generate_test_snp.py` | Builds synthetic fixtures with analytically known R/L/C/M; run as a script to (re)generate `tests/fixtures/`. The `COUPLED_*` module constants are the single source of truth for the coupled-coil fixtures. |
 | `tests/test_golden_regression.py` | Replays `tests/fixtures/golden_legacy.npz` through the current API and asserts `assert_array_equal`. This is the guard on every "stays bit-identical" claim below. |
@@ -2638,6 +2639,154 @@ mutation-checked.
   `#7 10:42` and not a timestamp — a timestamped label is what drove a 50-tab
   strip to a 8808 px requested width in the measurements — and why the caps
   are what they are. See "Run history" below.
+
+### The three results views (`detail` / `summary` / `compare`)
+
+`tests/test_results_views.py` is the guard (66 tests with
+`tests/test_plot_controls.py`'s new ReflowRow class), and every claim below was
+mutation-checked — 18 mutations, 18 caught, each named in the test that catches
+it.
+
+The user's complaint: *"目前字太多了，而且不是很直观可看"*. Measured on the run
+they were reading — two composed mode-6 traces — the report was **40 lines and
+3538 characters** against a Results pane that is `wrap=tk.NONE` and **144
+columns** wide at the default 1500x900 window (measured: 1014 px of Consolas 9
+at 7 px/glyph), **102** at 1200x800 and **79** at the 1040x600 minsize. Twelve
+of the forty lines were over 90 columns and the widest was **272**. The only
+route to a clipped tail is a horizontal scroll, which takes the Port column off
+the left edge at the same moment.
+
+- **THE REPETITION WAS WORSE THAN THE WIDTH, and it is what `_footer_segments`
+  exists for.** The 272-column coupling legend and the 262-column
+  reference-node verdict were each emitted **once per block**, verbatim:
+  **1068 of 3538 characters — 30% of the report was one of two sentences said
+  twice.** Both are now said once per RUN. The legend moved out of
+  `_format_coupling_block` into `COUPLING_LEGEND_LINES` (three lines, each
+  inside the 144-column budget, with the load-bearing *"Norton injection ratio,
+  NOT the exact current ratio `|Z_ab/Z_aa|`"* wording intact — that sentence has
+  six homes that must agree); the reference-node verdicts are grouped on the
+  **FULL** verdict (strip, warn flag and detail lines together) and printed as
+  `[1][4] Reference-node check: …`. Grouping on the strip alone would put one
+  trace's ids on another trace's detail paragraph.
+- **THE Z MATRIX IS A REDUNDANCY CLAIM, NOT A TASTE ONE, and it is checked
+  numerically.** At `G = 2` the matrix is `[[Z_aa, Z_ab], [Z_ab, Z_bb]]` and
+  every entry is printed again in the two tables under it: measured on the
+  reported run, `9.924+112.6j` is the self table's `9.92 Ω` and
+  `112.6/ω = 3.229 nH`, and `-0.04322-0.01799j` is the pair line's
+  `M = -516 fH`. Four lines saying what six lines already say. So at `G <= 2`
+  the diagonal becomes a `Z (Ω)` column of the self table and the single
+  off-diagonal joins the pair's detail line as `Z_ab = …`, and **exactly one
+  place shows each raw complex number**. At `G >= 3` the matrix block is
+  restored and the Z column and the per-pair `Z_ab` are dropped instead — there
+  it is the compact way to show `G(G-1)/2` off-diagonals. The block went from
+  13 lines to 8.
+- **The `Z matrix @ <freq>` line prints at EVERY port count and is unchanged.**
+  It is the block's frequency PROVENANCE — `tests/test_freq_label.py` pins that
+  the Calculate banner and this line name one frequency — and its parenthetical
+  is where the open-circuit convention is stated. Folding the matrix must not
+  take the frequency with it.
+- **`worst M/L` STAYS ON THE PAIR'S HEADLINE.** It was moved to the detail line
+  while the block was being slimmed and
+  `test_report_readability.py::test_the_db_is_on_the_first_line_beside_M_and_k`
+  caught it within the hour: it is the RANK KEY, and with six measurement ports
+  there are 15 pairs, so scanning for the loud one off the headline means
+  reading thirty lines instead of fifteen. The line is 93 columns against a
+  144-column pane — there was nothing to buy.
+- **The reciprocity line is a VERDICT (`✓ reciprocal (2.1e-10)`), not a
+  metric.** What the metric IS — `max|Z_ab-Z_ba| / max|Z_ab|`, alarm above
+  `RECIPROCITY_WARN` — is a definition, the same every run, and it cost 100 of
+  that line's 140 columns for a number the reader is scanning for a tick or a
+  cross. It moved to the legend and to Help → Mode 6, which the legend points
+  at. **The alarm keeps its sentence**, because there the sentence IS the
+  reading.
+- **The view is read LIVE off the App, exactly like the units mode, and for the
+  same reason.** Which rendering is on screen is a RENDERING CHOICE, not a
+  recorded fact, so it is not frozen onto a `RunSnapshot`.
+  `_on_results_view_changed` and `_on_units_mode_changed` share
+  `_rerender_every_page`: **every** page is repainted in place (repainting only
+  the newest leaves one screen showing two formattings and then a silent flip),
+  and **no run tab is created**, because choosing a view measures nothing. The
+  Attribution window is deliberately NOT poked — unlike the units mode it has
+  no view of its own that this can leave stale.
+- **`_footer_segments` is shared by all three views and is NOT gated on the
+  view.** The legend, the attribution pointer, the reference-node verdicts and
+  the hidden-traces line qualify the RUN. A compact view printing `ind`/`cap`
+  and `M/L` with nothing saying what they mean is the same defect one layer
+  down.
+- **`compare` DEGRADES, NAMING THE REASON, and never shows an empty pane.**
+  Same rule as the attribution split. The view is chosen once and then stays
+  chosen, so a run that cannot be compared must still print its numbers: fewer
+  than two records prints `compare: compare needs at least two traces on the
+  plot — showing the summary instead` and then the summary.
+- **THE Δ COLUMN APPEARS ONLY AT EXACTLY TWO RECORDS.** With three it would
+  have to pick a reference, and a column headed `Δ` that is secretly "against
+  whichever trace sorted first" is the kind of quiet decision this tool refuses
+  everywhere else.
+- **A big change is a FACTOR, a dB change is a dB DIFFERENCE, and a missing
+  quantity is an EMPTY CELL.** Measured on the reported run, `M` goes
+  `-516 fH → -7.19 pH`, which is `-1293%` and `13.93×`; the crossover is a
+  factor of ten either way. dB is already a ratio, so a percentage of decibels
+  is meaningless (`-68.77 → -52.36` is `+16.41 dB`, not `+23.9%`). And "this
+  trace has no port called RX" and "RX measured 0" are different statements —
+  `vals.get(r.id)` with no default, so the cell is blank and the Δ column
+  cannot invent a change against a zero nobody measured.
+- **A DIMENSIONLESS QUANTITY MUST NOT TAKE AN SI PREFIX.** `format_si` renders
+  `k = -2.412e-4` as **`-241 u`** — a micro-nothing, which is not a quantity.
+  `k` and `Q` go through `_fmt_plain`; `dB` is excluded from the other end for
+  the same reason (a milli-decibel).
+- **The summary calls `rank_coupling_pairs`, it does not sort for itself.** Two
+  views disagreeing about which coupling matters is worse than either being
+  wrong alone, and the floored tail is counted and pointed at the CSV exactly
+  as the detail view counts it.
+- **`_tag_swatch_rows` consumes EVERY occurrence on a line, not only a leading
+  one.** The compare view puts the swatch in each COLUMN HEADING, because there
+  a column is a trace and the heading is the only cell that names it. No other
+  line this module emits carries the character at all.
+- **THE NEW GLYPHS WERE MEASURED IN THE PANE'S OWN FONT before being used, and
+  two of them are not table-safe.** Consolas 9: `·` **7 px**, `—` **7**, `×`
+  **7**, `Δ` **7** — the same as a space and a digit, so the compare table's Δ
+  column and the delta cells line up like every other column. But `✓` is
+  **12 px** and `⚠` is **16 px** (the Attribution window's rule, re-measured
+  here), so both are confined to the reciprocity VERDICT line, which is a
+  standalone sentence with nothing column-aligned under it. Do not move either
+  into a cell.
+- **THE RESULTS HEADER IS A `ReflowRow` NOW, and that was forced by a
+  measurement.** With five packed controls it already asked **667 px against
+  the 575** it gets at the 1040x600 minsize at 150% font scaling, and `pack`
+  unmaps from the END — the Keep button, whose label is the only place the kept
+  cap is stated at the moment it bites, was the one being squeezed. A `View:`
+  label plus a readonly combobox is a further **127 px at 100% and 240 px at
+  150%**. At 100% the whole strip is **477 px of 575** and stays one row, so
+  nothing about the default window moves. `_refresh_keep_button` calls
+  `_results_header.refresh()`, because a child whose TEXT grows fires neither
+  `add()` nor the strip's own `<Configure>`.
+- **Two latent `ReflowRow` bugs came out of that and are fixed in
+  `pkg_rlc_plot.py`.** (a) `_applied` was keyed on the row ASSIGNMENT and the
+  row height only, so a child that grew without pushing the strip onto another
+  row left both unchanged — `refresh()` called `_reflow()` and `_reflow()`
+  returned early having done nothing, leaving every item after it at its old
+  `x`, i.e. drawn through its neighbour. The item widths are part of the key
+  now. It only ever looked fixed because the case it was first measured on
+  (220 → 307 px in the Attribution header) happened to wrap as well. (b) An
+  ordinary control is placed with **no explicit width**, so Tk sizes it from
+  its own request AND TRACKS IT; a slave pinned to a stale explicit width is
+  CLIPPED with no ellipsis and no overflow marker, which `winfo_ismapped()`
+  cannot see. The wrap DECISION still needs the notification — that is the
+  strip's arithmetic, not the child's.
+- **`render_reference.json` MOVED, deliberately, and `_render_capture.py`'s
+  docstring records exactly what moved.** The five `table_*` cases are
+  BYTE-IDENTICAL across the change and are the evidence the results table did
+  not move; the five `block_*` cases changed in the three ways above and
+  nothing else. This is the documented escape ("regenerate ONLY in the same
+  commit that justifies moving the reference") and it is the first time it has
+  been used.
+- **KNOWN, NOT FIXED: the reference-node strip is still 262 columns on one
+  line.** Wrapping it would be right — it is prose in a pane that does not wrap
+  — but `tests/test_multifile_engine.py` asserts `rec.ref_strip` appears
+  CONTIGUOUSLY in the Log and on the run page, which is a legitimate property
+  (the verdict reaches both surfaces intact). Fix it from the
+  `reference_provenance` side, where the sentence is written, not by re-wrapping
+  it here.
 
 ### Run history (the run tabs after the Log)
 

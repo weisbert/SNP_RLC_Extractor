@@ -131,6 +131,42 @@ Units modes (selectable from the dropdown above the results pane)
 Switching the units mode re-renders the most recent Calculate's table
 without recomputing -- the existing log entries are preserved above.
 
+View: what the report LOOKS like (the dropdown beside Units)
+-------------------------------------------------------------
+One run, three renderings. Nothing is recomputed and no numbers
+change; every page is repainted in place and no new run is created.
+
+   detail   -- everything, one block per trace. What the tool has
+               always printed, and the default.
+   summary  -- the whole run as two tables: one row per measurement
+               port, then one row per coupling pair. Comparing two
+               traces becomes reading down a column instead of paging
+               between blocks.
+   compare  -- the traces become COLUMNS, one quantity per row, with
+               a change column when there are exactly two of them:
+
+                  compare @ 5.55 GHz    [1] before   [4] after       Δ
+                  VCO      R                9.92 Ω     9.81 Ω  -1.13 %
+                           L               3.23 nH    3.23 nH  +0.09 %
+                  VCO x RX M               -516 fH   -7.19 pH  +13.9 ×
+                           worst M/L     -68.77 dB  -52.36 dB  +16.4 dB
+
+               A big change is shown as a FACTOR rather than a
+               percentage (-1293% is not a sentence anybody says out
+               loud), and a dB quantity gets a dB DIFFERENCE, because
+               dB is already a ratio. A trace that does not have a
+               port or pair at all leaves an EMPTY cell -- "this trace
+               has no RX" and "RX measured zero" are different
+               statements.
+
+               With one trace on the plot there is nothing to compare,
+               so it says so and shows the summary instead. With three
+               or more there is no Δ column: a change against
+               "whichever trace happened to be first" is a reference
+               chosen in silence.
+
+The choice is saved with the session, like the units mode.
+
 Editing traces: there is no "Apply"
 -----------------------------------
 Whatever is in the editor IS what the selected trace holds. Type a
@@ -1091,6 +1127,29 @@ reciprocity error -- a self-check, NOT a result
   It is 0.0 by definition when there is only one measurement port.
   Entries that are NaN (see "no return path" below) are left out of
   the metric rather than poisoning it.
+
+  On screen the block prints the VERDICT and the number --
+  "✓ reciprocal (2.1e-10)", or the alarm with its sentence -- and the
+  definition above is what the legend under the report points here
+  for. The definition is the same every run; the number is not.
+
+What the block prints, and what it stopped printing
+----------------------------------------------------
+  * The legend (ind / cap / R<0 / M/L) is printed ONCE per run,
+    under the last block, not under every block.
+  * With THREE or more measurement ports the Z matrix is drawn as a
+    matrix, which is the compact way to show G(G-1)/2 mutual terms.
+    With two, it is not: [[Z_aa, Z_ab], [Z_ab, Z_bb]] has every entry
+    printed again in the two tables underneath, so the diagonal is a
+    "Z (Ω)" column of the self table and the mutual term rides on the
+    pair's own line as "Z_ab = ...". No number was dropped -- check
+    it against R = Re(Z), L = Im(Z)/ω and M = Im(Z_ab)/ω.
+  * "worst M/L" stays on the pair's FIRST line. It is the rank key,
+    and with six measurement ports there are 15 pairs to scan.
+
+  See also the "View" note on the Overview tab: `summary` puts every
+  pair of every trace in one table, and `compare` puts two traces
+  side by side with the change between them.
 
 The pair list is ranked, and its tail is folded away
 ----------------------------------------------------

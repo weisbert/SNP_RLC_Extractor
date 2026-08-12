@@ -107,7 +107,8 @@ from pkg_rlc_core import (
     TouchstoneParseError,
 )
 from pkg_rlc_plot import (
-    COLORS, LINESTYLES, MAX_LABEL_LEN, PlotPanel, Trace as PlotTrace,
+    COLORS, LINESTYLES, MAX_LABEL_LEN, PlotPanel, ReflowRow,
+    Trace as PlotTrace,
 )
 from pkg_rlc_help import HelpWindow
 # `default_alias` is the ONE place that turns a file's position in a trace into
@@ -1912,14 +1913,46 @@ _TRACE_INT_FIELDS = frozenset({"id", "mode", "color_idx", "ls_idx"})
 _TRACE_BOOL_FIELDS = frozenset({"plot_self", "plot_mutual", "enabled",
                                 "frozen"})
 
+# ---- the three results views ----------------------------------------------
+#
+# One run, three renderings, chosen by the reader and never by the code.  They
+# exist because the report had exactly one shape and it was the widest one:
+# measured on a two-trace mode-6 run, 40 lines and 3538 characters against a
+# pane that shows 144 columns at the default 1500x900 window (79 at the
+# 1040x600 minsize) and does NOT wrap, with 12 lines over 90 columns and the
+# widest at 272.
+#
+#   detail   -- everything, one block per trace.  What the tool always had.
+#   summary  -- two tables for the whole run, one row per port and one per
+#               pair.  Reading ACROSS traces is a matter of reading down a
+#               column instead of paging between blocks 17 lines apart.
+#   compare  -- traces become COLUMNS, with a delta.  This is the one that
+#               answers "what did this EM revision change", which is what a
+#               run with two versions of one structure in it is for.
+#
+# The choice is a RENDERING choice, not a recorded fact -- the same rule as
+# the units mode, and the reason both are read live off the App by
+# `_run_report_segments` rather than frozen onto a RunSnapshot.
+VIEW_DETAIL = "detail"
+VIEW_SUMMARY = "summary"
+VIEW_COMPARE = "compare"
+RESULTS_VIEWS = (VIEW_DETAIL, VIEW_SUMMARY, VIEW_COMPARE)
+
+
 # Global controls, and the values the two readonly comboboxes will accept.  A
 # combobox is state="readonly", so a value from outside its list would sit
 # there unselectable with no way back except retyping it into the file.
 _CONTROL_KEYS = ("rlc_freq_ghz", "fit_fmin_ghz", "fit_fmax_ghz",
-                 "fit_model", "units_mode")
+                 "fit_model", "units_mode", "results_view")
 _CONTROL_CHOICES = {
     "fit_model": ("none", "auto", "inductor", "capacitor"),
     "units_mode": ("smart", "aligned"),
+    # Which of the three renderings the Results pane is showing.  Saved for the
+    # same reason the units mode is: it is what the reader had set up, it costs
+    # one string, and a session that came back in a layout the user had already
+    # moved away from would be a silent change to what they are reading.  A
+    # value outside this list is dropped with a note, like every other control.
+    "results_view": RESULTS_VIEWS,
 }
 
 
@@ -3504,6 +3537,60 @@ def _table_freq_note(rows: Sequence[RowSnapshot],
     return f"{_SWATCH_PAD} ! read at: {marker_freq_text(shown, '{:.6g}')}"
 
 
+
+
+def _file_alias_map(records) -> tuple:
+    """
+    ({file label: 'F1'}, [file labels in order of first appearance]).
+
+    One entry per FILE, not per record: a COMPOSED record names several, and
+    its first is its home file, so a single-file record and the home file of a
+    composed one land on the same alias.  Shared by every view, because two
+    tables on one screen calling one file by two letters is the collision this
+    scheme exists to avoid.
+    """
+    order: list = []
+    seen = set()
+    for r in records:
+        for fl in _row_file_labels(r):
+            if fl not in seen:
+                seen.add(fl)
+                order.append(fl)
+    return {fl: f"F{i + 1}" for i, fl in enumerate(order)}, order
+
+
+def _file_cell(rec, alias: dict) -> str:
+    """'F1' for one file, 'F1+F2' for a composition."""
+    return "+".join(alias[fl] for fl in _row_file_labels(rec))
+
+
+def _render_columns(headers: Sequence[str], aligns: Sequence[str],
+                    rows: Sequence[Sequence[str]], lead: str = "",
+                    gap: str = "  ") -> list:
+    """
+    A monospace table: every column as wide as its widest cell OR its header.
+
+    THE HEADER COUNTS TOWARDS THE WIDTH.  Sizing on the values alone puts a
+    7-character value under a 5-character heading and throws the heading one
+    place off the numbers it names -- the cursor-readout rule, and the same one
+    the Attribution window's tables are built on.  Nothing is capped and
+    nothing is ellipsised here: a clipped NUMBER is a plausible wrong number,
+    so callers truncate their own text cells before they get here.
+
+    The last cell of every line is right-stripped, so a table copied into a
+    mail carries no trailing whitespace.
+    """
+    w = [max([len(h)] + [len(r[i]) for r in rows]) for i, h in enumerate(headers)]
+
+    def line(cells):
+        out = gap.join(
+            (c.rjust(w[i]) if aligns[i] == ">" else c.ljust(w[i]))
+            for i, c in enumerate(cells))
+        return (lead + out).rstrip()
+
+    return [line(headers)] + [line(r) for r in rows]
+
+
 def _format_results_table(rows: Sequence[RowSnapshot], units_mode: str,
                           freq: Optional[FreqSnap] = None) -> str:
     """
@@ -3526,34 +3613,23 @@ def _format_results_table(rows: Sequence[RowSnapshot], units_mode: str,
     if not rows:
         return ""
 
-    # One entry per FILE, not per row: a COMPOSED row names several, and its
-    # first is its home file (RowSnapshot.file_label), so a single-file row and
-    # the home file of a composed one land on the same alias.
-    file_labels_in_order = []
-    seen = set()
-    for r in rows:
-        for fl in _row_file_labels(r):
-            if fl not in seen:
-                seen.add(fl)
-                file_labels_in_order.append(fl)
+    # The letters are the TABLE's, assigned in order of appearance across all
+    # rows, and the legend line above the table is what defines them -- that is
+    # what this column has always meant and two traces cannot be given one
+    # letter for two files.
+    #
+    # KNOWN COLLISION, left for whoever owns the composed report: a TRACE's own
+    # file tags are also F1/F2 (positional within that trace, see
+    # trace_file_aliases), so with a single-file trace listed first the table
+    # calls the composed trace's home file F2 while its port cells call it F1.
+    # Both mappings are printed where they are used -- this legend line, and
+    # the Files window's -- and inventing a third scheme here would make it
+    # three.
+    file_alias, file_labels_in_order = _file_alias_map(rows)
     multi_file = len(file_labels_in_order) > 1
-    file_alias = {fl: f"F{i + 1}" for i, fl in enumerate(file_labels_in_order)}
 
-    def _file_cell(r) -> str:
-        # 'F1' for one file, 'F1+F2' for a composition.  The letters are the
-        # TABLE's, assigned in order of appearance across all rows, and the
-        # legend line above the table is what defines them -- that is what this
-        # column has always meant and two traces cannot be given one letter for
-        # two files.
-        #
-        # KNOWN COLLISION, left for whoever owns the composed report: a TRACE's
-        # own file tags are also F1/F2 (positional within that trace, see
-        # trace_file_aliases), so with a single-file trace listed first the
-        # table calls the composed trace's home file F2 while its port cells
-        # call it F1.  Both mappings are printed where they are used -- this
-        # legend line, and the Files window's -- and inventing a third scheme
-        # here would make it three.
-        return "+".join(file_alias[fl] for fl in _row_file_labels(r))
+    def _file_cell_(r) -> str:
+        return _file_cell(r, file_alias)
 
     # Truncation widths
     LABEL_W = 18
@@ -3561,7 +3637,8 @@ def _format_results_table(rows: Sequence[RowSnapshot], units_mode: str,
     # 4 = len('File'), the header.  It only ever grows for a COMPOSED row, so a
     # table of single-file rows is byte-identical to what it always was --
     # every cell is 'F1'/'F2' and max(4, 2) is 4.
-    FILE_W = max([4] + [len(_file_cell(r)) for r in rows]) if multi_file else 4
+    FILE_W = (max([4] + [len(_file_cell_(r)) for r in rows])
+              if multi_file else 4)
     NUM_W = 10  # per numeric cell (smart mode); aligned mode tighter
 
     def _trunc(s: str, w: int) -> str:
@@ -3641,7 +3718,7 @@ def _format_results_table(rows: Sequence[RowSnapshot], units_mode: str,
             f"{_trunc(r.label, LABEL_W):<{LABEL_W}}  ",
         ]
         if multi_file:
-            row_parts.append(f"{_file_cell(r):<{FILE_W}}  ")
+            row_parts.append(f"{_file_cell_(r):<{FILE_W}}  ")
         row_parts.append(f"{_trunc(r.port_desc, PORT_W):<{PORT_W}}  ")
         row_parts.append(f"{r_str:>{NUM_W}}  ")
         row_parts.append(f"{l_str:>{NUM_W}}  ")
@@ -3688,14 +3765,21 @@ def _tag_swatch_rows(txt, base_line: int, text: str,
     """
     pending = iter(color_idxs)
     for off, line in enumerate(text.split("\n")):
-        if not line.startswith(RESULTS_SWATCH):
-            continue
-        idx = next(pending, None)
-        if idx is None:
-            return              # more rows than colours: leave them plain
-        ln = base_line + off
-        txt.tag_add(f"c{idx % len(COLORS)}",
-                    f"{ln}.0", f"{ln}.{len(RESULTS_SWATCH)}")
+        # EVERY occurrence, not only a leading one.  A results table puts one
+        # swatch at the head of each row; the compare view puts one in each
+        # COLUMN HEADING, because there a column is a trace and the heading is
+        # the only cell that names it.  Consuming them left to right, top to
+        # bottom is the same contract either way, and no other line this
+        # module emits carries the character at all.
+        col = line.find(RESULTS_SWATCH)
+        while col >= 0:
+            idx = next(pending, None)
+            if idx is None:
+                return          # more swatches than colours: leave them plain
+            ln = base_line + off
+            txt.tag_add(f"c{idx % len(COLORS)}",
+                        f"{ln}.{col}", f"{ln}.{col + len(RESULTS_SWATCH)}")
+            col = line.find(RESULTS_SWATCH, col + len(RESULTS_SWATCH))
 
 
 def _value_formatter(values, unit: str, units_mode: str):
@@ -3825,6 +3909,40 @@ def _format_z_matrix(names, Zk, indent: str = "      ") -> str:
     return "\n".join(out)
 
 
+#: The legend the coupling blocks used to carry, ONE COPY PER BLOCK.
+#
+# It was a single 272-character line, repeated verbatim under every block.
+# Measured on a two-trace run: the results pane is 144 columns wide at the
+# default 1500x900 window and 79 at the 1040x600 minsize, and the pane is
+# `wrap=tk.NONE` -- so a 272-column line is 53% readable at the default size
+# and 29% at the minimum, and the only way to the tail is a horizontal scroll
+# that takes the Port column off the left edge at the same time.  Two copies
+# of it were 544 of that run's 3538 characters; with the reference-node
+# verdict, which was also repeated verbatim, 30% of the report was one of two
+# sentences said twice.
+#
+# So it is emitted ONCE PER RUN, by _run_report_segments, which is the one
+# builder of both the Log and the run pages.  What survives here is what a
+# number on the screen cannot be read without; the full definitions live in
+# Help -> Mode 6 and in the CSV header, where nothing clips.  The M/L wording
+# is load-bearing and is kept in the shortened form -- "Norton injection
+# ratio, NOT the exact current ratio |Z_ab/Z_aa|" is one of the six places
+# that sentence has to agree (core docstring, CLI, here, Help, README,
+# theory.md).
+# Every line is inside the 144-column budget the default 1500x900 window
+# measures, so the legend never needs the horizontal scrollbar the 272-column
+# line always did.  The reciprocity DEFINITION is not here: it is in Help and
+# in the CSV header, and the block prints a verdict rather than a metric.
+COUPLING_LEGEND_LINES = (
+    "  legend: ind = Im(Z)>0 (read M) · cap = Im(Z)<0 (read C_c) · "
+    "R<0 = non-passive · |k|>1 = check the port setup",
+    "          M/L = Norton injection ratio, NOT the exact current ratio "
+    "|Z_ab/Z_aa| (equal only where wL >> R)",
+    "          signs are physical (Cadence convention), never clipped · "
+    "full definitions: Help → Mode 6",
+)
+
+
 def _format_coupling_block(block: CouplingSnapshot, units_mode: str) -> str:
     """
     Full mode-6 results block for one trace at the marker frequency:
@@ -3833,6 +3951,24 @@ def _format_coupling_block(block: CouplingSnapshot, units_mode: str) -> str:
     Takes a CouplingSnapshot, not a live TraceConfig: the heading is the
     identity of the trace AS MEASURED, and the trace it came from may since
     have been relabelled, re-ported or recomputed.
+
+    TWO MEASUREMENT PORTS GET NO SEPARATE MATRIX BLOCK, and that is a
+    redundancy claim, not a taste one.  At G = 2 the matrix is
+    `[[Z_aa, Z_ab], [Z_ba, Z_aa]]` and every entry of it is printed again
+    directly underneath: measured on the user's own run, the diagonal
+    `9.924+112.6j` is the self table's `9.92 Ω` and `112.6/w = 3.229 nH`, and
+    the off-diagonal `-0.04322-0.01799j` is the pair line's `M = -516 fH`.
+    Four lines saying what the six under them already say.  So at G = 2 the
+    diagonal becomes a column of the self table and the single off-diagonal
+    goes on the pair's detail line, and EXACTLY ONE PLACE shows each raw
+    complex number.  At G >= 3 the matrix earns its block back -- it is the
+    compact way to show G(G-1)/2 off-diagonals -- and the Z column and the
+    per-pair Z_ab are dropped instead, by the same rule.
+
+    The `Z matrix @ <freq>` line prints in both cases and is unchanged: it is
+    this block's frequency provenance (`tests/test_freq_label.py` pins that
+    the banner and this line name one frequency), and its parenthetical is
+    where the open-circuit convention is stated.
     """
     cres = block.cres
     names = list(cres.names)
@@ -3845,6 +3981,11 @@ def _format_coupling_block(block: CouplingSnapshot, units_mode: str) -> str:
     freq = cres.freq_hz
     if isinstance(block.freq, FreqSnap):
         freq = replace(block.freq, actual_hz=float(cres.freq_hz))
+    # G >= 3 keeps the matrix block; G == 2 folds it into the two tables
+    # underneath, which already carry every one of its entries.  See the
+    # docstring -- this is the one switch the whole shape of the block turns on.
+    matrix_block = len(names) >= 3
+
     lines = [
         # 'file: x' for one file -- byte for byte what this line has always
         # said -- and 'files: EM=… + PKG=…' for a composition, because a block
@@ -3854,8 +3995,9 @@ def _format_coupling_block(block: CouplingSnapshot, units_mode: str) -> str:
         f"{block.port_desc}",
         f"  Z matrix @ {marker_freq_text(freq, '{:.6g}')}   (Ω, Re+jIm; "
         f"off-diagonal = mutual, every other port open)",
-        _format_z_matrix(names, cres.Z_matrix),
     ]
+    if matrix_block:
+        lines.append(_format_z_matrix(names, cres.Z_matrix))
 
     # --- self impedance table -------------------------------------------
     ports = list(cres.ports)
@@ -3864,17 +4006,36 @@ def _format_coupling_block(block: CouplingSnapshot, units_mode: str) -> str:
     c_sfx, fmt_c = _value_formatter([p.C_farad for p in ports], "F", units_mode)
     NAME_W = max([len(_trunc_str(n, 14)) for n in names] + [4])
     NUM_W = 11
-    lines.append("  self impedance (diagonal):")
+    # The heading exists to separate this table from the matrix ABOVE it.  With
+    # no matrix there is nothing to separate it from, and the table's own
+    # header row names every column -- so it would be a line spent restating
+    # the line above it.
+    if matrix_block:
+        lines.append("  self impedance (diagonal):")
+    # 'Sign' is padded ONLY when a Z column follows it.  Sign is the last cell
+    # on the line otherwise, and padding a last cell is trailing whitespace on
+    # every row of a table that is copied into mails.  SIGN_W is 7, the widest
+    # _sign_flag can return ('ind,R<0').
+    SIGN_W, Z_W = 7, 18
+    if matrix_block:
+        sign_cell, z_head, z_cells = (lambda s: s), "", (lambda p: "")
+    else:
+        sign_cell = (lambda s: f"{s:<{SIGN_W}}")
+        z_head = f"  {'Z (Ω)':>{Z_W}}"
+        # Rendered exactly as _format_z_matrix renders a cell, so the two
+        # spellings of one number cannot drift.
+        z_cells = (lambda p: "  "
+                   + f"{p.Z.real:.4g}{p.Z.imag:+.4g}j".rjust(Z_W))
     lines.append(
         f"      {'Port':<{NAME_W}}  {'R' + r_sfx:>{NUM_W}}  "
         f"{'L' + l_sfx:>{NUM_W}}  {'C' + c_sfx:>{NUM_W}}  "
-        f"{'Q':>{NUM_W}}  Sign")
+        f"{'Q':>{NUM_W}}  {sign_cell('Sign')}{z_head}")
     for p in ports:
         lines.append(
             f"      {_trunc_str(p.name, 14):<{NAME_W}}  "
             f"{fmt_r(p.R_ohm):>{NUM_W}}  {fmt_l(p.L_henry):>{NUM_W}}  "
             f"{fmt_c(p.C_farad):>{NUM_W}}  {_fmt_plain(p.Q):>{NUM_W}}  "
-            f"{_sign_flag(p)}")
+            f"{sign_cell(_sign_flag(p))}{z_cells(p)}")
 
     # --- per-pair coupling ----------------------------------------------
     pairs = list(cres.pairs)
@@ -3890,10 +4051,24 @@ def _format_coupling_block(block: CouplingSnapshot, units_mode: str) -> str:
                                         units_mode)
         cc_sfx, fmt_cc = _value_formatter([p.C_c_farad for p in shown_pairs],
                                           "F", units_mode)
-        lines.append("  coupling (mutual, all other measurement ports open; "
-                     "strongest first by worst-case M/L):")
+        # The heading says two things: the open-circuit convention, which the
+        # 'Z matrix @' line two lines up has already said, and the RANKING,
+        # which means nothing when there is one pair to rank.  So a single-pair
+        # block (which is every two-measurement-port trace, the common case)
+        # does without it.
+        if len(shown_pairs) + len(weak_pairs) > 1:
+            lines.append("  coupling (mutual, all other measurement ports "
+                         "open; strongest first by worst-case M/L):")
         for p in shown_pairs:
             flag = _pair_flag(p)
+            # 'worst M/L' STAYS ON THE HEADLINE.  It was moved off while this
+            # view was being slimmed and
+            # tests/test_report_readability.py::test_the_db_is_on_the_first_
+            # line_beside_M_and_k caught it: it is the RANK KEY, and with
+            # fifteen pairs -- six measurement ports -- scanning for the loud
+            # one off the headline means reading thirty lines instead of
+            # fifteen.  The line is 93 columns against a 144-column pane, so
+            # there was nothing to buy by moving it.
             lines.append(
                 f"      {p.name_a} x {p.name_b}:  "
                 f"M{m_sfx} = {fmt_m(p.M_henry)}   "
@@ -3901,11 +4076,17 @@ def _format_coupling_block(block: CouplingSnapshot, units_mode: str) -> str:
                 f"worst M/L = {_fmt_plain(_pair_strength_db(p))} dB   "
                 f"C_c{cc_sfx} = {fmt_cc(p.C_c_farad)}"
                 + (f"   [{flag}]" if flag else ""))
+            # Z_ab only where there is no matrix block to read it off.  Both
+            # ratios stay in their SIGNED linear form beside the dB: dB is the
+            # ranking key and takes an abs(), so a dB-only line would be the
+            # one place in this report where a physical sign is hidden.
+            zab = ("" if matrix_block
+                   else f"   Z_ab = {p.Z_ab.real:.4g}{p.Z_ab.imag:+.4g}j")
             lines.append(
                 f"          M/L({p.name_a}) = {_fmt_plain(p.M_over_La)} "
                 f"({_fmt_plain(p.M_over_La_dB)} dB)   "
                 f"M/L({p.name_b}) = {_fmt_plain(p.M_over_Lb)} "
-                f"({_fmt_plain(p.M_over_Lb_dB)} dB)")
+                f"({_fmt_plain(p.M_over_Lb_dB)} dB){zab}")
             for note in p.notes:
                 lines.append(f"          note: {note}")
         if weak_pairs:
@@ -3920,23 +4101,311 @@ def _format_coupling_block(block: CouplingSnapshot, units_mode: str) -> str:
     recip = cres.reciprocity_error
     checkable = any(math.isfinite(p.Z_ab.real) and math.isfinite(p.Z_ab.imag)
                     for p in pairs)
+    # VERDICT AND NUMBER, and nothing else on the line.  What the metric IS
+    # (max|Z_ab-Z_ba| / max|Z_ab| over the finite off-diagonal entries, alarm
+    # above RECIPROCITY_WARN) is a definition, not a reading: it is the same
+    # every run, it is in COUPLING_LEGEND_LINES once per run and in Help, and
+    # putting it here cost 100 of this line's 140 columns for a number the
+    # reader is scanning for a tick or a cross.  The one case that keeps its
+    # sentence is the alarm, because there the sentence IS the reading.
     if not checkable:
-        hint = "nothing to check -- every mutual term is undefined"
+        lines.append("      · reciprocity: nothing to check — every mutual "
+                     "term is undefined")
     elif recip <= RECIPROCITY_WARN:
-        hint = f"data looks reciprocal (alarm above {RECIPROCITY_WARN:g})"
+        lines.append(f"      ✓ reciprocal ({recip:.3g})")
     else:
-        hint = ("LARGE -- Z_ab and Z_ba disagree; the input S-parameters are "
-                "suspect (non-reciprocal or under-converged EM solve)")
-    lines.append(f"  reciprocity error = {recip:.3g}  "
-                 f"(max|Z_ab-Z_ba| / max|Z_ab| over the finite off-diagonal "
-                 f"entries; {hint})")
-    lines.append(
-        "  legend: ind = Im(Z)>0 (inductive, read M) | "
-        "cap = Im(Z)<0 (capacitive, read C_c) | "
-        "R<0 = non-passive | M/L(x) = Norton injection ratio into x (not the "
-        "exact current ratio |Z_ab/Z_aa|; equal only where wL_x >> R_x) | "
-        "signs are physical (Cadence convention), never clipped")
+        lines.append(f"      ⚠ RECIPROCITY {recip:.3g} — Z_ab and Z_ba "
+                     "disagree; the input S-parameters are suspect "
+                     "(non-reciprocal or under-converged EM solve)")
+    # NO LEGEND HERE.  See COUPLING_LEGEND_LINES: it is emitted once per run by
+    # _run_report_segments, not once per block.
     return "\n".join(lines)
+
+
+# ============================================================================
+# The SUMMARY view -- one run, two tables
+# ============================================================================
+#
+# The detail view says everything about one trace before it says anything about
+# the next, so comparing two traces means paging between blocks (17 lines apart
+# on the reported run).  This says one thing about every trace at a time, which
+# turns that comparison into reading down a column.
+#
+# TWO TABLES AND NOT ONE.  A self measurement has R/L/C/Q and a coupling has
+# M/k/M-L/C_c; there is no column set that is honest about both, and a merged
+# table would either leave half its cells empty on every row or put two
+# quantities under one heading.  Splitting them is also what lets each table
+# keep the units mode's per-column SI prefix, which is the whole point of
+# 'aligned'.
+
+def _summary_self_rows(rows, blocks) -> list:
+    """(record, port name, RLC-like) for every self measurement in the run.
+
+    A RowSnapshot contributes one entry and a CouplingSnapshot one per
+    measurement port, so a mode-1 trace and one port of a mode-6 trace sit on
+    the same footing -- which is what the table is for.
+    """
+    out = []
+    for r in rows:
+        # A scalar row's "port" is its port descriptor: that IS the identity of
+        # the thing measured, and it is what the detail table has always shown.
+        out.append((r, "", r.res))
+    for b in blocks:
+        for p in b.cres.ports:
+            out.append((b, p.name, p))
+    return out
+
+
+def _format_summary_self(rows, blocks, units_mode: str) -> tuple:
+    """(text, colour indices) for the self-impedance table, or ('', ())."""
+    entries = _summary_self_rows(rows, blocks)
+    if not entries:
+        return "", ()
+    alias, order = _file_alias_map([e[0] for e in entries])
+    multi = len(order) > 1
+    have_port = any(name for _r, name, _v in entries)
+
+    vals = [v for _r, _n, v in entries]
+    r_sfx, fmt_r = _value_formatter([v.R_ohm for v in vals], "Ω", units_mode)
+    l_sfx, fmt_l = _value_formatter([v.L_henry for v in vals], "H", units_mode)
+    c_sfx, fmt_c = _value_formatter([v.C_farad for v in vals], "F", units_mode)
+
+    # The heading sits over the id DIGITS, not over the bracket: the
+    # swatch and the "[N]" are one cell so a coloured row reads as one
+    # thing, and _tag_swatch_rows finds it by its leading glyph.
+    heads = [_SWATCH_PAD + "  ID ", "Label"]
+    aligns = ["<", "<"]
+    if have_port:
+        heads.append("Port")
+        aligns.append("<")
+    heads += ["R" + r_sfx, "L" + l_sfx, "C" + c_sfx, "Q", "Sign"]
+    aligns += [">", ">", ">", ">", "<"]
+    if multi:
+        heads.append("File")
+        aligns.append("<")
+
+    body, colors = [], []
+    for rec, name, v in entries:
+        cells = [f"{RESULTS_SWATCH} [{rec.id:>2}]", _trunc_str(rec.label, 18)]
+        if have_port:
+            # A scalar row has no measurement-port NAME; its port descriptor is
+            # what identifies it, and is what the detail table prints.
+            cells.append(_trunc_str(name or rec.port_desc, 22))
+        cells += [fmt_r(v.R_ohm), fmt_l(v.L_henry), fmt_c(v.C_farad),
+                  _fmt_plain(v.Q), _sign_flag(v)]
+        if multi:
+            cells.append(_file_cell(rec, alias))
+        body.append(cells)
+        colors.append(rec.color_idx)
+
+    out = _render_columns(heads, aligns, body, lead="  ")
+    if multi:
+        out.insert(0, _SWATCH_PAD + " " + "  ".join(f"{alias[fl]}={fl}"
+                                                    for fl in order))
+    return "\n".join(out), tuple(colors)
+
+
+def _format_summary_coupling(blocks, units_mode: str) -> tuple:
+    """(text, colour indices) for the coupling table, or ('', ()).
+
+    EVERY pair of every block, ranked within its block exactly as the detail
+    view ranks them -- `rank_coupling_pairs` is called here too rather than
+    re-sorted, so a pair the detail view folds under the floor is folded here
+    and the two views cannot disagree about which coupling matters.
+    """
+    entries = []
+    folded = 0
+    for b in blocks:
+        shown, weak = rank_coupling_pairs(list(b.cres.pairs))
+        folded += len(weak)
+        for p in shown:
+            entries.append((b, p))
+    if not entries:
+        return "", ()
+
+    pairs = [p for _b, p in entries]
+    m_sfx, fmt_m = _value_formatter([p.M_henry for p in pairs], "H", units_mode)
+    cc_sfx, fmt_cc = _value_formatter([p.C_c_farad for p in pairs], "F",
+                                      units_mode)
+    heads = [_SWATCH_PAD + "  ID ", "Label", "Pair", "M" + m_sfx, "k",
+             "worst M/L", "C_c" + cc_sfx, "Sign"]
+    aligns = ["<", "<", "<", ">", ">", ">", ">", "<"]
+
+    body, colors = [], []
+    for b, p in entries:
+        body.append([
+            f"{RESULTS_SWATCH} [{b.id:>2}]", _trunc_str(b.label, 18),
+            f"{p.name_a} x {p.name_b}",
+            fmt_m(p.M_henry), _fmt_plain(p.k),
+            f"{_fmt_plain(_pair_strength_db(p))} dB",
+            fmt_cc(p.C_c_farad), _pair_flag(p),
+        ])
+        colors.append(b.color_idx)
+    out = _render_columns(heads, aligns, body, lead="  ")
+    if folded:
+        noun = "pair" if folded == 1 else "pairs"
+        out.append(f"  … +{folded} {noun} below {COUPLING_FLOOR_DB:g} dB "
+                   f"(see Export CSV)")
+    return "\n".join(out), tuple(colors)
+
+
+# ============================================================================
+# The COMPARE view -- traces become columns
+# ============================================================================
+#
+# The question a run with two revisions of one structure in it exists to
+# answer, and the one the other two views answer worst: the numbers being
+# compared are 17 lines apart in `detail` and in different rows of two
+# different tables in `summary`.  Here they are side by side with the change
+# between them computed.
+#
+# It is a VIEW and not a mode: it reads the same RunSnapshot, adds nothing to
+# it, and refuses (in words, with a fallback) rather than inventing a
+# comparison it cannot make.
+
+#: Rows of the compare table, as (quantity label, attribute, kind).  `kind`
+#: picks how the delta is expressed: a ratio for a physical value, a plain
+#: difference for something already in dB.
+_CMP_SELF = (("R", "R_ohm", "Ω"), ("L", "L_henry", "H"),
+             ("C", "C_farad", "F"), ("Q", "Q", ""))
+_CMP_PAIR = (("M", "M_henry", "H"), ("k", "k", ""),
+             ("C_c", "C_c_farad", "F"))
+
+
+def _compare_groups(rows, blocks) -> list:
+    """
+    [(group label, [(quantity, unit, {record id: value})])], in first-seen
+    order: every measurement port of the run, then every pair.
+
+    A record that does not have a group leaves its cell EMPTY rather than
+    zero -- 'this trace has no port called RX' and 'RX measured 0' are
+    different statements and the table has to be able to make both.
+    """
+    order: list = []
+    seen: dict = {}
+
+    def group(label):
+        if label not in seen:
+            seen[label] = {}
+            order.append(label)
+        return seen[label]
+
+    for r in rows:
+        g = group(_trunc_str(r.port_desc, 22))
+        for name, attr, unit in _CMP_SELF:
+            g.setdefault((name, unit), {})[r.id] = getattr(r.res, attr)
+    for b in blocks:
+        for p in b.cres.ports:
+            g = group(p.name)
+            for name, attr, unit in _CMP_SELF:
+                g.setdefault((name, unit), {})[b.id] = getattr(p, attr)
+    for b in blocks:
+        for p in b.cres.pairs:
+            g = group(f"{p.name_a} x {p.name_b}")
+            for name, attr, unit in _CMP_PAIR:
+                g.setdefault((name, unit), {})[b.id] = getattr(p, attr)
+            g.setdefault(("worst M/L", "dB"), {})[b.id] = _pair_strength_db(p)
+
+    out = []
+    for label in order:
+        quantities = [(nm, unit, vals)
+                      for (nm, unit), vals in seen[label].items()]
+        out.append((label, quantities))
+    return out
+
+
+def _delta_cell(a: float, b: float, unit: str) -> str:
+    """
+    How much b differs from a, in the form a reader can act on.
+
+    A dB quantity gets a dB DIFFERENCE -- expressing a change of decibels as a
+    percentage of decibels is meaningless, and dB is already a ratio.
+    Everything else gets a relative change, as a PERCENTAGE while that is
+    readable and as a FACTOR once it is not: measured on the reported run,
+    M goes -516 fH -> -7.19 pH, which is -1293% and 13.9x, and only the second
+    of those is a sentence anybody says out loud.  The crossover is a factor of
+    ten either way.
+
+    A sign change comes out of the same expression correctly (+1 -> -1 is
+    -200%), so nothing special is done for it: the number says so.
+    """
+    if not (math.isfinite(a) and math.isfinite(b)):
+        return "—"
+    if unit == "dB":
+        return f"{b - a:+.4g} dB"
+    if a == 0.0:
+        return "—" if b != 0.0 else "0"
+    rel = (b - a) / abs(a)
+    if abs(rel) <= 9.0:
+        return f"{rel * 100.0:+.3g} %"
+    return f"{b / a:+.4g} ×"
+
+
+def _format_compare(rows, blocks, units_mode: str) -> tuple:
+    """
+    (text, colour indices, refusal).  The refusal is empty when the table is
+    the whole answer and carries the reason when it is not -- the caller falls
+    back to the summary and prints it, which is the "degrade, never refuse"
+    rule this repo applies to the attribution split.
+
+    The delta column appears ONLY at exactly two records.  With three it would
+    have to pick a reference silently, and a column headed 'Δ' that is secretly
+    'against whichever trace sorted first' is the kind of quiet decision this
+    tool refuses everywhere else; with three columns of numbers side by side
+    the reader can see the change without one.
+    """
+    records = list(rows) + list(blocks)
+    if len(records) < 2:
+        return "", (), ("compare needs at least two traces on the plot — "
+                        "showing the summary instead")
+    groups = _compare_groups(rows, blocks)
+    if not groups:
+        return "", (), "nothing to compare — showing the summary instead"
+
+    ids = [r.id for r in records]
+    heads = ["", ""] + [f"{RESULTS_SWATCH} [{r.id}] {_trunc_str(r.label, 14)}"
+                        for r in records]
+    aligns = ["<", "<"] + [">"] * len(records)
+    two = len(records) == 2
+    if two:
+        heads.append("Δ")
+        aligns.append(">")
+
+    body: list = []
+    for label, quantities in groups:
+        first = True
+        for name, unit, vals in quantities:
+            # A DIMENSIONLESS quantity must not be given an SI prefix.  k and Q
+            # have no unit, and format_si on a bare number renders k = -2.412e-4
+            # as '-241 u' -- a micro-nothing, which is not a quantity.  dB is
+            # excluded for the same reason from the other end: it is already a
+            # ratio, so a prefix on it would be a milli-decibel.  Everything
+            # else takes one SI prefix per ROW in aligned mode, because here the
+            # row is the quantity and so it is the row, not the column, that
+            # shares a unit.
+            if unit in ("", "dB"):
+                sfx = ""
+                fmt = ((lambda v: f"{_fmt_plain(v)} dB") if unit == "dB"
+                       else _fmt_plain)
+            else:
+                sfx, fmt = _value_formatter(list(vals.values()), unit,
+                                            units_mode)
+            cells = [label if first else "", name + sfx]
+            for r in records:
+                v = vals.get(r.id)
+                cells.append("" if v is None else fmt(v))
+            if two:
+                a, b = vals.get(ids[0]), vals.get(ids[1])
+                cells.append("" if a is None or b is None
+                             else _delta_cell(a, b, unit))
+            body.append(cells)
+            first = False
+    # The swatch is in the HEADER here, because a column is a trace and the
+    # heading is the only cell that names it.  _tag_swatch_rows consumes every
+    # occurrence on a line, left to right, so the header's swatches are
+    # coloured in column order.
+    return ("\n".join(_render_columns(heads, aligns, body, lead="  ")),
+            tuple(r.color_idx for r in records), "")
 
 
 # ============================================================================
@@ -6525,16 +6994,43 @@ class App(tk.Tk):
         results_frame = ttk.Frame(parent, height=180)
         plot_frame = ttk.Frame(parent)
 
-        header = ttk.Frame(results_frame)
+        # A ReflowRow, not a pack(side=LEFT) run, and that is a measurement.
+        # With five controls the strip already asked for 667 px against the
+        # 575 it gets at the 1040x600 minsize at 150% font scaling, and pack
+        # UNMAPS FROM THE END -- so the Keep button, whose label is the only
+        # place the kept cap is stated at the moment it bites, was the one
+        # being squeezed.  A 'View:' label plus a readonly combobox is a
+        # further 127 px at 100% and 240 px at 150% (measured), which would
+        # have taken it off screen outright with no scrollbar and no other
+        # route to it: exactly the defect tests/test_plot_controls.py exists to
+        # stop recurring.  ReflowRow wraps instead, keeps its own requested
+        # width at 1 px so the strip can never force the pane wider, and reads
+        # an imposed width while writing only a height -- a fixed point, not
+        # the _apply_editor_scrollbars limit cycle.  At 100% the whole strip is
+        # 477 px of 575 and stays one row, so nothing about the default window
+        # moves.
+        header = ReflowRow(results_frame)
         header.pack(side=tk.TOP, fill=tk.X)
-        ttk.Label(header, text="Results", anchor="w").pack(side=tk.LEFT)
-        ttk.Label(header, text="Units:").pack(side=tk.LEFT, padx=(12, 2))
+        header.add(ttk.Label(header, text="Results", anchor="w"))
+        # WHICH RENDERING, not which numbers.  Kept beside Units: because it is
+        # the same kind of choice -- both repaint every run page in place and
+        # neither creates a run.
+        header.add(ttk.Label(header, text="View:"), padx=(6))
+        self.results_view_var = tk.StringVar(value=VIEW_DETAIL)
+        view_combo = ttk.Combobox(
+            header, textvariable=self.results_view_var,
+            values=list(RESULTS_VIEWS), state="readonly", width=8,
+        )
+        header.add(view_combo)
+        view_combo.bind("<<ComboboxSelected>>",
+                        lambda _e: self._on_results_view_changed())
+        header.add(ttk.Label(header, text="Units:"), padx=(6))
         self.units_mode_var = tk.StringVar(value="smart")
         units_combo = ttk.Combobox(
             header, textvariable=self.units_mode_var,
             values=["smart", "aligned"], state="readonly", width=8,
         )
-        units_combo.pack(side=tk.LEFT)
+        header.add(units_combo)
         units_combo.bind("<<ComboboxSelected>>",
                          lambda _e: self._on_units_mode_changed())
         # Tk 8.6's ttk.Notebook has no tab-strip scrolling and no overflow
@@ -6546,12 +7042,16 @@ class App(tk.Tk):
         self._runs_menu = tk.Menu(self._runs_menubutton, tearoff=0)
         self._runs_menubutton["menu"] = self._runs_menu
         self._runs_menu.configure(postcommand=self._rebuild_runs_menu)
-        self._runs_menubutton.pack(side=tk.LEFT, padx=(12, 2))
+        header.add(self._runs_menubutton, padx=(6))
         # Keep is a BUTTON, not a menu entry, because its label is the only
         # place the kept cap can be stated at the moment it bites.
         self._keep_btn = ttk.Button(header, text=keep_button_label(0, 1, "none"),
                                     command=self._on_keep_run)
-        self._keep_btn.pack(side=tk.LEFT, padx=2)
+        header.add(self._keep_btn)
+        #: The strip has to be re-laid when the Keep button's TEXT grows --
+        #: `_reflow` runs from `add()` and from the strip's own <Configure>,
+        #: and neither fires for that.  See ReflowRow.refresh().
+        self._results_header = header
         # The Results pane is a ttk.Notebook and tab 0 is the Log, holding the
         # same ScrolledText it has always held.
         #
@@ -8689,13 +9189,38 @@ class App(tk.Tk):
         here.  A second copy of this code would let the page the user reads and
         the log they scroll back through disagree about a run's contents, with
         nothing to tell them apart.
+
+        THE VIEW IS READ LIVE OFF THE APP, exactly as the units mode is, and
+        for the same reason: which of the three renderings is on screen is a
+        RENDERING CHOICE, not a recorded fact, so freezing it onto the run
+        would leave one page in a layout the switch had already left.  Both
+        halves are the run pages' documented rule -- `_on_results_view_changed`
+        repaints every page in place and creates no tab, because choosing a
+        view measures nothing.
         """
         units = self.units_mode_var.get()
+        view = self.results_view_var.get()
         shown_rows = [r for r in run.rows if r.enabled]
         shown_blocks = [b for b in run.blocks if b.enabled]
         hidden = [r for r in run.rows if not r.enabled]
         hidden += [b for b in run.blocks if not b.enabled]
 
+        if view == VIEW_SUMMARY:
+            segs = self._summary_segments(run, shown_rows, shown_blocks, units)
+        elif view == VIEW_COMPARE:
+            segs = self._compare_segments(run, shown_rows, shown_blocks, units)
+        else:
+            segs = self._detail_segments(run, shown_rows, shown_blocks, units)
+        return segs + self._footer_segments(shown_rows, shown_blocks, hidden)
+
+    def _detail_segments(self, run: RunSnapshot, shown_rows, shown_blocks,
+                         units: str) -> list:
+        """The full report: the results table, the fits, one block per trace.
+
+        This is the view the tool has always had, minus the two paragraphs
+        that were repeated verbatim under every block (see
+        COUPLING_LEGEND_LINES and _footer_segments).
+        """
         run_freq = run_freq_snap(run)
         segs: list = []
         if shown_rows:
@@ -8720,6 +9245,80 @@ class App(tk.Tk):
         for block in shown_blocks:
             segs.append(("", (), LOG_INFO))
             segs.append((_format_coupling_block(block, units), (), LOG_INFO))
+        return segs
+
+    def _run_heading(self, run: RunSnapshot, what: str) -> str:
+        """'self impedance @ 5.55 GHz', with the frequency's provenance.
+
+        The compact views drop the per-block `Z matrix @ <freq>` line, so this
+        is where the frequency they were read at is stated -- a table of
+        numbers with no frequency on it is the two-numbers-one-screen failure
+        `tests/test_freq_label.py` exists about.
+        """
+        return f"  {what} @ {marker_freq_text(run_freq_snap(run), '{:.6g}')}"
+
+    def _summary_segments(self, run: RunSnapshot, shown_rows, shown_blocks,
+                          units: str) -> list:
+        """One run as two tables: every self measurement, then every pair."""
+        segs: list = []
+        text, colors = _format_summary_self(shown_rows, shown_blocks, units)
+        if text:
+            segs.append((self._run_heading(run, "self impedance"), (),
+                         LOG_INFO))
+            segs.append((text, colors, LOG_INFO))
+        # The fits belong to the self table and are already one line each.
+        for f in run.fits:
+            if f.enabled:
+                segs.append((f.text, (),
+                             LOG_WARN if "ERROR" in f.text else LOG_INFO))
+        text, colors = _format_summary_coupling(shown_blocks, units)
+        if text:
+            segs.append(("", (), LOG_INFO))
+            segs.append((self._run_heading(run, "coupling"), (), LOG_INFO))
+            segs.append((text, colors, LOG_INFO))
+        if not segs:
+            segs.append(("  (nothing on the plot)", (), LOG_INFO))
+        return segs
+
+    def _compare_segments(self, run: RunSnapshot, shown_rows, shown_blocks,
+                          units: str) -> list:
+        """Traces as columns, with a delta at exactly two of them.
+
+        FALLS BACK TO THE SUMMARY, NAMING THE REASON, rather than showing an
+        empty pane: the view is chosen once and then stays chosen, so a run
+        that cannot be compared must still print its numbers.  Same rule as
+        the attribution split -- degrade, never refuse, and say which.
+        """
+        text, colors, refusal = _format_compare(shown_rows, shown_blocks,
+                                                units)
+        if refusal:
+            return ([(f"  compare: {refusal}", (), LOG_INFO)]
+                    + self._summary_segments(run, shown_rows, shown_blocks,
+                                             units))
+        return [(self._run_heading(run, "compare"), (), LOG_INFO),
+                (text, colors, LOG_INFO)]
+
+    def _footer_segments(self, shown_rows, shown_blocks, hidden) -> list:
+        """
+        The lines that qualify the whole run, once each, whatever the view.
+
+        EVERY ONE OF THESE USED TO BE PER BLOCK OR PER RECORD, and two of them
+        were the same sentence rendered twice.  Measured on the reported
+        two-trace run: 3538 characters of report, of which the 272-column
+        coupling legend and the 262-column reference-node verdict accounted for
+        1068 -- 30% of the report was one of two paragraphs said twice, in a
+        pane that is 144 columns wide at the default window size and does not
+        wrap.  They are deduplicated here rather than shortened at the source
+        because both of them are honest: what was wrong was the repetition.
+        """
+        segs: list = []
+        # The legend belongs to the coupling blocks, so it is emitted only when
+        # one was printed -- a run of nothing but mode-1 traces has no ind/cap
+        # column and no M/L to qualify.  The results table keeps its own,
+        # shorter legend line, which was never repeated.
+        if shown_blocks:
+            for line in COUPLING_LEGEND_LINES:
+                segs.append((line, (), LOG_INFO))
         # WHERE DID THAT M COME FROM?  This is the pointer that matters: the
         # user is looking at "M = 2.16 pH" here, not at a menu bar, and the
         # "Show Ports needed five pointers before anyone found it" history is
@@ -8727,28 +9326,31 @@ class App(tk.Tk):
         # nobody uses.  Same idiom as the "(see Export CSV)" line inside the
         # block: one line, naming the route.
         #
-        # It is emitted HERE and not inside `_format_coupling_block`, which is
-        # where it belongs on the screen, for one hard reason:
-        # tests/fixtures/render_reference.json pins that function's output byte
-        # for byte (tests/_render_capture.py::render_case calls it directly),
-        # the reference was captured before the run-snapshot refactor to prove
-        # "the page did not move", and regenerating it is forbidden.  One
-        # segment later in the same report is the closest position that keeps
-        # that proof intact -- the line still lands directly under the coupling
-        # numbers, in the Log and on every run page, because
-        # `_run_report_segments` is the one builder of both.
+        # It is emitted HERE and not inside `_format_coupling_block` so that it
+        # is said once per RUN rather than once per block -- the same rule as
+        # the legend above it and the hidden-traces line below: six coupling
+        # traces do not need six copies of one sentence.  (It also keeps that
+        # function's output free of anything the summary and compare views
+        # would have to strip back out.)
         #
         # Gated on a PAIR existing, not merely on a block: a block with one
         # measurement port prints "(only one measurement port ...)" and
         # `attribution_refusal` turns that trace away by name.  Pointing at a
-        # refusal is worse than not pointing at all.  Once per run rather than
-        # once per block, the same rule as the hidden-traces line below: six
-        # coupling traces do not need six copies of one sentence.
+        # refusal is worse than not pointing at all.
+        #
+        # TWO PHRASES ARE LOAD-BEARING and both are pinned by
+        # tests/test_attrib_gui_integration.py: 'where each M above comes from'
+        # is how the line is found, and 'right-click menu' is the second route
+        # -- a pointer that names one way in is a pointer that fails whenever
+        # the reader is already holding the mouse over the Traces list.  The
+        # tail was shortened around them to bring the whole sentence inside the
+        # pane's measured 144 columns; it was 147, so the ROUTE was the part
+        # falling off the right-hand edge.
         if any(b.cres.pairs for b in shown_blocks):
             segs.append((
                 f"  where each M above comes from, and what would move it: "
-                f"select the trace, then Analyze → {ATTRIB_MENU_LABEL} "
-                f"(also on the Traces list's right-click menu)", (), LOG_INFO))
+                f"select the trace → Analyze → {ATTRIB_MENU_LABEL} "
+                f"(or its right-click menu)", (), LOG_INFO))
         # R3-5: THE WELD, WHERE THE NUMBER IS READ.  A weld raises nothing and
         # makes no number look wrong -- measured in pkg_rlc_compose, the
         # package ground pad grounded / open / through 1 nH give
@@ -8762,13 +9364,30 @@ class App(tk.Tk):
         # Read off the SNAPSHOT, frozen at Calculate time.  A page re-rendered
         # by a units switch must not pick up a verdict from a composition that
         # has been rebuilt since.
+        #
+        # IDENTICAL VERDICTS ARE SAID ONCE, NAMING EVERY TRACE THEY ARE ABOUT.
+        # Two traces over the same two files get the same 262-column sentence,
+        # and the reported run printed it twice for [1] and [4] -- 524 of 3538
+        # characters, in a pane that shows 144 of them.  The id list is what
+        # keeps it a statement about specific traces rather than a general
+        # remark, so nothing is lost by saying it once: `[1][4] Reference-node
+        # check: …`.  Grouped on the FULL verdict (strip, warn flag and detail
+        # lines together), so two traces whose checks differ in any way keep
+        # their own lines -- collapsing on the strip alone would put one
+        # trace's id on another trace's detail paragraph.
+        groups: dict = {}
         for rec in list(shown_rows) + list(shown_blocks):
             if not getattr(rec, "ref_strip", ""):
                 continue
-            segs.append((f"  [{rec.id}] {rec.ref_strip}", (),
-                         LOG_WARN if rec.ref_warn else LOG_INFO))
-            if rec.ref_warn:
-                for line in rec.ref_lines:
+            key = (rec.ref_strip, bool(rec.ref_warn),
+                   tuple(rec.ref_lines or ()))
+            groups.setdefault(key, []).append(rec.id)
+        for (strip, warn, detail), ids in groups.items():
+            tag = "".join(f"[{i}]" for i in ids)
+            segs.append((f"  {tag} {strip}", (),
+                         LOG_WARN if warn else LOG_INFO))
+            if warn:
+                for line in detail:
                     segs.append((f"      {line}", (), LOG_WARN))
         if hidden:
             # Named, not silently dropped: Calculate still measured them, and
@@ -8794,12 +9413,43 @@ class App(tk.Tk):
             if colors:
                 _tag_swatch_rows(txt, base, text, colors)
 
+    def _on_results_view_changed(self) -> None:
+        """Repaint the Log and every run page in the newly chosen view.
+
+        SAME RULE AS THE UNITS SWITCH, and deliberately the same code path: the
+        view is a rendering choice, not a recorded fact, so it repaints every
+        page (leaving one page in the previous layout is the "one screen, two
+        formattings, then a silent flip" failure that rule is written from) and
+        it creates NO run tab, because choosing a view measures nothing.
+
+        The Attribution window is NOT poked: it has tables of its own and no
+        view selector, so unlike the units mode there is nothing there this
+        choice can leave stale.
+        """
+        self._rerender_every_page(
+            f"\n--- re-rendered with view={self.results_view_var.get()} ---")
+
     def _on_units_mode_changed(self) -> None:
+        self._rerender_every_page(
+            f"\n--- re-rendered with units={self.units_mode_var.get()} ---")
+        # The ONE caller that passes rerender=True, and the reason is the same
+        # one that makes this repaint every run page: the unit is a RENDERING
+        # choice, not a recorded fact.  An Attribution window's tables are
+        # formatted through the app's units_mode_var exactly as
+        # `_run_report_segments` is, and there is no other way for it to hear
+        # that the choice changed -- it would sit in the previous formatting
+        # beside a Results pane that had already flipped.  Not the default: a
+        # re-render redraws the sweep too, and on the editor's per-keystroke
+        # path that would be a closed-form solve per character.
+        if self._last_run is not None and (self._last_run.rows
+                                           or self._last_run.blocks):
+            refresh_attribution_windows(self, rerender=True)
+
+    def _rerender_every_page(self, log_note: str) -> None:
         run = self._last_run
         if run is None or not (run.rows or run.blocks):
             return
-        self._append_result(
-            f"\n--- re-rendered with units={self.units_mode_var.get()} ---")
+        self._append_result(log_note)
         # The CURRENT run follows the visibility as it stands now -- `enabled`
         # gates the results table as well as the plot, so a row for a curve
         # that is no longer drawn would read as a duplicate of one that is.
@@ -8822,16 +9472,6 @@ class App(tk.Tk):
         if newest is not None and newest.run.number == self._last_run.number:
             newest.run = self._last_run
         self._render_all_run_tabs()
-        # The ONE caller that passes rerender=True, and the reason is the same
-        # one that makes this function repaint every run page: the unit is a
-        # RENDERING choice, not a recorded fact.  An Attribution window's
-        # tables are formatted through the app's units_mode_var exactly as
-        # `_run_report_segments` is, and there is no other way for it to hear
-        # that the choice changed -- it would sit in the previous formatting
-        # beside a Results pane that had already flipped.  Not the default:
-        # a re-render redraws the sweep too, and on the editor's per-keystroke
-        # path that would be a closed-form solve per character.
-        refresh_attribution_windows(self, rerender=True)
 
     def _trace_network(self, tc: TraceConfig) -> "SolveNetwork":
         """
@@ -9062,6 +9702,7 @@ class App(tk.Tk):
                 "fit_fmax_ghz": self.fit_fmax_var.get(),
                 "fit_model": self.fit_model_var.get(),
                 "units_mode": self.units_mode_var.get(),
+                "results_view": self.results_view_var.get(),
             },
             plot_state=self.plot.view_state(),
             base_dir=base_dir,
@@ -9233,7 +9874,8 @@ class App(tk.Tk):
                          ("fit_fmin_ghz", self.fit_fmin_var),
                          ("fit_fmax_ghz", self.fit_fmax_var),
                          ("fit_model", self.fit_model_var),
-                         ("units_mode", self.units_mode_var)):
+                         ("units_mode", self.units_mode_var),
+                         ("results_view", self.results_view_var)):
             if key in controls:
                 var.set(controls[key])
 
@@ -9906,6 +10548,13 @@ class App(tk.Tk):
                 self._keep_btn.state(["!disabled"])
             else:
                 self._keep_btn.state(["disabled"])
+            # The label just changed WIDTH -- 'Keep run' to 'Keep (5/5) — full'
+            # is the whole point of it -- and a ReflowRow re-lays only from
+            # add() and from its own <Configure>, neither of which a child's
+            # new text fires.  Without this the strip goes on forcing the old
+            # width and the button is CLIPPED with no ellipsis, which is
+            # exactly the state the long-label measurement was taken from.
+            self._results_header.refresh()
         except Exception:                               # pragma: no cover
             pass
 

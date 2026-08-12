@@ -29,6 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import tkinter as tk  # noqa: E402
+from tkinter import ttk  # noqa: E402
 
 from pkg_rlc_plot import PlotPanel, ReflowRow, reflow_rows  # noqa: E402
 
@@ -78,6 +79,95 @@ class TestReflowRows(unittest.TestCase):
         for w in (1, 5, 30, 500):
             for rows in [reflow_rows([50, 60, 70], w)]:
                 self.assertTrue(all(rows), f"empty row at width {w}")
+
+
+# ============================================================================
+# 1b -- a child whose TEXT grows
+# ============================================================================
+
+@unittest.skipUnless(TK_OK, "no Tk display available")
+class TestAGrownChildIsRePlaced(unittest.TestCase):
+    """
+    `_reflow` runs from `add()` and from the strip's own <Configure>, and a
+    child whose label got longer fires neither.  `refresh()` exists for that --
+    and for a long time it could not do its job, because `_applied` was keyed
+    on the ROW ASSIGNMENT and the row height only.  A child that grows without
+    pushing the strip onto another row leaves both unchanged, so `refresh()`
+    called `_reflow()` and `_reflow()` returned early having done nothing.
+
+    That is not cosmetic: the items after the grown one keep their OLD x, so
+    the wider child is drawn straight through its neighbour.  It only ever
+    looked fixed because the case it was first measured on (220 px -> 307 px
+    in the Attribution header) happened to wrap as well, which does change the
+    assignment.
+    """
+
+    def setUp(self):
+        self.root = tk.Tk()
+        self.root.geometry("900x120")
+        self.root.deiconify()
+        self.strip = ReflowRow(self.root)
+        self.strip.pack(side=tk.TOP, fill=tk.X)
+        self.kids = [ttk.Label(self.strip, text=t)
+                     for t in ("aa", "bb", "cc")]
+        for k in self.kids:
+            self.strip.add(k)
+        self._settle()
+
+    def tearDown(self):
+        self.root.destroy()
+
+    def _settle(self, rounds=4):
+        for _ in range(rounds):
+            self.root.update_idletasks()
+            self.root.update()
+
+    def _spans(self):
+        return [(w.winfo_x(), w.winfo_x() + w.winfo_width())
+                for w in self.kids]
+
+    def test_the_grown_child_does_not_overlap_the_one_after_it(self):
+        """Mutation: drop `tuple(widths)` from `_applied`."""
+        self.kids[0].configure(
+            text="a very much longer label than it started with")
+        self.strip.refresh()
+        self._settle()
+        spans = self._spans()
+        for (a0, a1), (b0, _b1) in zip(spans, spans[1:]):
+            self.assertLessEqual(
+                a1, b0,
+                f"the strip overlaps itself: {spans}")
+
+    def test_a_grown_child_is_not_clipped_even_with_NO_refresh_call(self):
+        """
+        The second half of the fix, and deliberately tested WITHOUT calling
+        refresh() -- that is the whole property.  An ordinary control is now
+        placed with no explicit width, so Tk sizes it from its own request and
+        TRACKS it; a slave pinned to a stale explicit width is CLIPPED instead,
+        with no ellipsis and no overflow marker, which winfo_ismapped() cannot
+        see.
+
+        The wrap DECISION still needs the notification -- that is the strip's
+        arithmetic, not the child's, and the overlap test above covers it --
+        but a caller who changes a label and forgets to say so can no longer
+        cut it in half in silence.
+
+        Mutation: pass `width=ww, height=wh` to place() again for a non-fill
+        item.
+        """
+        self.kids[1].configure(text="grown considerably wider than before")
+        self._settle()
+        self.assertGreaterEqual(self.kids[1].winfo_width(),
+                                self.kids[1].winfo_reqwidth())
+
+    def test_a_strip_that_did_not_change_is_not_re_laid(self):
+        """The early return is still worth having -- `_reflow` runs from every
+        <Configure>.  Mutation: delete the `if key == self._applied` return."""
+        self._settle()
+        before = self.strip._applied
+        self.strip.refresh()
+        self._settle()
+        self.assertEqual(before, self.strip._applied)
 
 
 # ============================================================================

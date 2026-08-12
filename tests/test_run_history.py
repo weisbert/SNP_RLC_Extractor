@@ -1001,12 +1001,25 @@ class TestRunHistoryIsNotSaved(_AppCase):
         for tr in data["traces"]:
             self.assertNotIn("run", tr)
 
-    def test_the_controls_block_is_unchanged_by_this_stage(self):
+    def test_the_controls_block_carries_no_run_state(self):
+        """
+        The point of this one is the ABSENCE of run history from the session,
+        not the exact membership of the controls block -- run tabs are
+        in-memory only and nothing about them may reach the file.
+
+        It is pinned as an exact set anyway, because that is what makes a run
+        field added here impossible to miss.  `results_view` joined it with the
+        three results views: it is a RENDERING choice, exactly like
+        `units_mode` beside it, and neither is a measurement.  Anything else
+        appearing in this set is what this test is for.
+        """
         data = self.app._session_dict(None)
         self.assertEqual(
             set(data["controls"]),
             {"rlc_freq_ghz", "fit_fmin_ghz", "fit_fmax_ghz", "fit_model",
-             "units_mode"})
+             "units_mode", "results_view"})
+        for key in set(data["controls"]):
+            self.assertNotIn("run", key)
 
     def test_a_session_with_runs_still_encodes(self):
         self._calc(2)

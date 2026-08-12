@@ -19,6 +19,26 @@ was generated from the code as it stood BEFORE the snapshot types existed, and
 tests/test_run_snapshot.py replays every case through the current API and
 demands an exact string match.
 
+MOVED ONCE SINCE, deliberately, for the three-view Results pane.  What changed
+in the five `block_*` cases and nothing else:
+
+  * the 272-column legend line came OFF every block.  It is emitted once per
+    RUN now (COUPLING_LEGEND_LINES, from `App._footer_segments`), so the
+    function this file captures no longer produces it at all -- two blocks used
+    to carry 544 characters of one sentence into a pane 144 columns wide.
+  * `reciprocity error = … (definition; verdict)` became a one-line VERDICT
+    (`✓ reciprocal (1e-09)` / `⚠ RECIPROCITY 0.004 — …`).  The definition is a
+    definition, not a reading, and now lives in the legend and in Help.
+  * a block with FEWER THAN THREE measurement ports no longer draws a separate
+    Z matrix: at G <= 2 every entry of it is printed again in the two tables
+    underneath, so the diagonal became a `Z (Ω)` column of the self table and
+    the single off-diagonal joined the pair's detail line.  `block_single_mport`
+    is the case in this registry that shows it; the three-port cases are
+    untouched, which is the point.
+
+The five `table_*` cases are BYTE-IDENTICAL across that change and are the
+evidence that the results table itself did not move.
+
 Regenerate ONLY in the same commit that justifies moving the reference:
 
     python tests/_render_capture.py

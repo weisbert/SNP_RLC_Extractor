@@ -939,10 +939,19 @@ class ReflowRow(ttk.Frame):
             # will call back; doing nothing here is what keeps the first pass
             # from wrapping every item onto its own line.
             return
-        rows = reflow_rows(self.item_widths(), width)
+        widths = self.item_widths()
+        rows = reflow_rows(widths, width)
         row_h = max(w.winfo_reqheight()
                     for w, _p, _f in self._items) + 2 * self._pady
-        key = (tuple(tuple(r) for r in rows), row_h)
+        # THE ITEM WIDTHS ARE PART OF THE KEY, and leaving them out made
+        # refresh() a no-op in exactly the case it exists for.  A child whose
+        # text grows without pushing the strip onto another row leaves the row
+        # ASSIGNMENT unchanged, so `key` was unchanged, so `_reflow` returned
+        # early and never re-placed it -- refresh() called _reflow() and
+        # _reflow() declined to do anything.  It only ever looked fixed because
+        # the case it was first measured on (220 px -> 307 px in the
+        # Attribution header) happened to wrap as well.
+        key = (tuple(tuple(r) for r in rows), row_h, tuple(widths))
         if key == self._applied:
             return
         self._applied = key
@@ -957,9 +966,17 @@ class ReflowRow(ttk.Frame):
                     w.place(x=x, y=y + self._pady, width=ww,
                             height=row_h - 2 * self._pady)
                 else:
+                    # NO EXPLICIT width/height for an ordinary control.  place
+                    # then sizes the slave from its own request AND TRACKS IT,
+                    # so a child whose label grows is re-sized by Tk on the
+                    # spot instead of staying clipped until something thinks to
+                    # call refresh().  The wrap decision above still needs the
+                    # notification -- it is the strip's own arithmetic, not the
+                    # child's -- but a CLIPPED control, the failure mode with
+                    # no ellipsis and no overflow marker, can no longer happen
+                    # between the change and the relayout.
                     wh = w.winfo_reqheight()
-                    w.place(x=x, y=y + max(0, (row_h - wh) // 2),
-                            width=ww, height=wh)
+                    w.place(x=x, y=y + max(0, (row_h - wh) // 2))
                 x += ww + padx
             y += row_h
         self.configure(height=row_h * len(rows))

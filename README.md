@@ -47,6 +47,25 @@ Basic flow:
 
 **Run history.** The Results pane is a set of tabs. `Log` is the running commentary it has always been; every Calculate adds a page beside it, newest first, labelled `#7 10:42`, holding that run's report under a heading that says which run it is, at what marker frequency, over which traces — and, on the second line, **what you changed since the previous run** (`changed since #11:  [3] gnd 6-14 -> 6-16`). That line is the useful one: twenty runs are all at 5 GHz and nobody remembers what they were doing at 14:32. Old pages are dropped automatically, oldest first, three at a time by default; press **Keep** (or right-click the tab) and that page is never dropped by anything automatic — only by right-click → **Close this run**. The kept pages have their own budget, which is why Calculate can never be blocked by them and can never throw one away: at the cap the Keep button is already disabled and says `Keep (5/5) — close a kept run first`. `Runs ▾` lists every page with its full description, which is where to look once the tabs are too narrow to read, and it is also where the two limits are set. Switching to the new page is **conditional** — it happens only if you were already reading the newest page (or the Log), so a page you deliberately kept open is not yanked away by the next Calculate; an unvisited new page is marked `!` instead. And because the plot and Export CSV always show the *latest* numbers, every older page carries `! the plot and Export CSV show run #12, not this page`. Run history is in memory only; a config file carries the setup, never the results.
 
+**Three ways to read one run.** The `View` dropdown above the Results pane picks the shape of the report; nothing is recomputed and no number changes, and every open run page is repainted with it.
+
+- `detail` — everything, one block per trace. The default, and what the tool has always printed.
+- `summary` — the whole run as two tables: one row per measurement port, then one row per coupling pair, ranked exactly as the detail view ranks them. Comparing traces becomes reading down a column instead of paging between blocks.
+- `compare` — the traces become **columns**, one quantity per row, with a change column when there are exactly two of them. This is the view for "what did this EM revision actually move":
+
+  ```
+  compare @ 5.55 GHz         [1] before      [4] after             Δ
+  VCO      R                     9.92 Ω         9.81 Ω       -1.13 %
+           L                    3.23 nH        3.23 nH      +0.089 %
+  RX       R                     4.83 Ω         10.6 Ω        +119 %
+  VCO x RX M                    -516 fH       -7.19 pH      +13.93 ×
+           worst M/L           -68.77 dB      -52.36 dB     +16.41 dB
+  ```
+
+  A change past a factor of ten is printed as a **factor** rather than a percentage (−1293 % is not a sentence anybody says out loud), and a dB quantity gets a dB **difference**, because dB is already a ratio. A trace that does not have a given port or pair leaves an **empty** cell — "this trace has no RX" and "RX measured zero" are different statements. One trace on the plot cannot be compared, so it says so and falls back to the summary; three or more get no Δ column, because a change against "whichever trace happened to be first" is a reference chosen in silence.
+
+The view is saved with the config, like the units mode.
+
 Use **Export CSV** to dump per-trace `Freq, Re(Z), Im(Z), |Z|, R, L, C, Q` tables. Each trace's header names the run it came from (`# Run: #12 @ 5.000 GHz, 14:32:07`).
 
 **Saving the setup.** `File → Save Config...` (Ctrl+S) writes everything you typed — the loaded files, every trace's mode and port fields and tables, colour and style, the RLC frequency, the fit band and model, and the plot's checkbox row — to a few kB of readable JSON. `File → Load Config...` (Ctrl+O) brings it all back; press **Calculate All & Plot** and the numbers return. The file holds the *setup*, never the results: Export CSV remains the way to save those. Each file in it is recorded both relative to the config and absolutely, and loading tries the relative path first, so copying the whole folder to another machine (or to an offline one) just works; a file that has gone missing is named in the Results pane and the rest of the session still loads. The config is also written automatically on exit to `~/.pkg_rlc_extractor/last_session.json` — the Results pane says on startup what is in it, and `File → Restore Last Session` loads it on request rather than spending tens of seconds re-parsing package exports before you have asked for anything.

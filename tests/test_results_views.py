@@ -1,0 +1,918 @@
+"""
+The Results pane's THREE VIEWS, and the slimming that is common to all of them.
+
+WHY THIS EXISTS.  The report had exactly one shape and it was the widest one.
+Measured on the run that prompted the change -- two composed mode-6 traces --
+it was 40 lines and 3538 characters against a Results pane that shows a
+MEASURED 144 columns at the default 1500x900 window, 102 at 1200x800 and 79 at
+the 1040x600 minsize, with `wrap=tk.NONE` so the tail of a long line is
+reachable only by a horizontal scroll that takes the Port column off the left
+edge at the same time.  Twelve of the forty lines were over 90 columns and the
+widest was 272.
+
+Worse than the width was the REPETITION: the 272-column coupling legend and the
+262-column reference-node verdict were each printed once per trace, verbatim,
+which is 1068 of those 3538 characters -- 30% of the report was one of two
+sentences said twice.
+
+  * `detail`  -- what the tool always had, minus those two paragraphs, minus
+                 the Z matrix in the case where it is provably redundant.
+  * `summary` -- the whole run as two tables, so comparing traces is reading
+                 down a column instead of paging between blocks.
+  * `compare` -- traces as COLUMNS with a delta, which is the question a run
+                 holding two revisions of one structure exists to answer.
+
+The pure formatters are tested with no display; the wiring is tested against a
+real App.  Every guard here was mutation-checked and the defeating mutation is
+named in the test that catches it.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import tkinter as tk  # noqa: E402
+
+import numpy as np  # noqa: E402
+
+from pkg_rlc_core import (  # noqa: E402
+    CouplingResult,
+    MeasPortRow,
+    PairCoupling,
+    PortRLC,
+    RLCResult,
+    parse_touchstone,
+)
+from pkg_rlc_gui import (  # noqa: E402
+    COUPLING_LEGEND_LINES,
+    RESULTS_SWATCH,
+    RESULTS_VIEWS,
+    VIEW_COMPARE,
+    VIEW_DETAIL,
+    VIEW_SUMMARY,
+    App,
+    CouplingSnapshot,
+    FileEntry,
+    RowSnapshot,
+    RunSnapshot,
+    TraceConfig,
+    _delta_cell,
+    _format_compare,
+    _format_coupling_block,
+    _format_summary_coupling,
+    _format_summary_self,
+    _render_columns,
+)
+
+FIX = Path(__file__).resolve().parent / "fixtures"
+FIXTURE = FIX / "diff_pair_4port.s4p"
+
+#: The pane's measured width in characters at the default 1500x900 window
+#: (1014 px of Consolas 9, whose every glyph this report emits is 7 px).  It is
+#: the budget a line has to stay inside to be readable without scrolling.
+PANE_COLS = 144
+
+
+def _ensure_fixtures() -> None:
+    if FIXTURE.exists():
+        return
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import generate_test_snp  # type: ignore
+    generate_test_snp.main()
+
+
+def _tk_available() -> bool:
+    try:
+        root = tk.Tk()
+    except Exception:
+        return False
+    root.destroy()
+    return True
+
+
+TK_OK = _tk_available()
+
+W = 2.0 * math.pi * 5.55e9
+
+
+def _port(name: str, Z: complex) -> PortRLC:
+    return PortRLC(name=name, Z=Z, R_ohm=Z.real, L_henry=Z.imag / W,
+                   C_farad=-1.0 / (W * Z.imag), Q=Z.imag / Z.real)
+
+
+def _db(ratio: float) -> float:
+    if not math.isfinite(ratio) or ratio == 0.0:
+        return float("nan")
+    return 20.0 * math.log10(abs(ratio))
+
+
+def _pair(a: str, b: str, Z_ab: complex, La: float, Lb: float,
+          notes=()) -> PairCoupling:
+    M = Z_ab.imag / W
+    ra, rb = M / La, M / Lb
+    return PairCoupling(name_a=a, name_b=b, Z_ab=Z_ab, M_henry=M,
+                        C_c_farad=-1.0 / (W * Z_ab.imag),
+                        k=M / math.sqrt(abs(La * Lb)),
+                        M_over_La=ra, M_over_Lb=rb,
+                        M_over_La_dB=_db(ra), M_over_Lb_dB=_db(rb),
+                        notes=list(notes))
+
+
+def _block(bid: int, label: str, Zs: dict, pairs=(), color_idx: int = 0,
+           recip: float = 2.1e-10, file_label: str = "em.s4p",
+           **kw) -> CouplingSnapshot:
+    """A coupling snapshot from {port name: Z} and a list of PairCoupling."""
+    names = list(Zs)
+    ports = [_port(n, Zs[n]) for n in names]
+    G = len(names)
+    Zk = np.zeros((G, G), dtype=complex)
+    for i, n in enumerate(names):
+        Zk[i, i] = Zs[n]
+    for p in pairs:
+        i, j = names.index(p.name_a), names.index(p.name_b)
+        Zk[i, j] = Zk[j, i] = p.Z_ab
+    cres = CouplingResult(freq_hz=5.55e9, Z_matrix=Zk, names=names,
+                          ports=ports, pairs=list(pairs),
+                          reciprocity_error=recip)
+    return CouplingSnapshot(id=bid, label=label, port_desc=f"M6: {G} mports",
+                            enabled=True, color_idx=color_idx,
+                            file_label=file_label, cres=cres, **kw)
+
+
+def _two_port_block(bid=1, label="WUR_EM", zaa=9.924 + 112.6j,
+                    zbb=4.831 + 49.40j, zab=-0.04322 - 0.01799j,
+                    color_idx=0, **kw) -> CouplingSnapshot:
+    """The reported run's own numbers, which is what every width claim here
+    was measured on."""
+    Zs = {"VCO": zaa, "RX": zbb}
+    p = _pair("VCO", "RX", zab, zaa.imag / W, zbb.imag / W)
+    return _block(bid, label, Zs, [p], color_idx=color_idx, **kw)
+
+
+def _three_port_block(bid=7, label="osc") -> CouplingSnapshot:
+    Zs = {"L1": 1.5 + 126.0j, "L2": 1.6 + 130.0j, "L3": 1.7 + 140.0j}
+    pairs = [_pair("L1", "L2", 0.01 + 13.0j, 126.0 / W, 130.0 / W),
+             _pair("L1", "L3", 0.01 + 1.3j, 126.0 / W, 140.0 / W),
+             _pair("L2", "L3", 0.01 + 4.0j, 130.0 / W, 140.0 / W)]
+    return _block(bid, label, Zs, pairs)
+
+
+def _row(rid=2, label="tank", R=1.5, L=2.0e-9, C=-1.2e-12, Q=0.84,
+         color_idx=1, file_label="em.s4p", **kw) -> RowSnapshot:
+    res = RLCResult(freq_hz=5.55e9, Z=complex(R, L * W), R_ohm=R, L_henry=L,
+                    C_farad=C, Q=Q)
+    return RowSnapshot(id=rid, label=label, port_desc="M1: 1 -> GND",
+                       enabled=True, color_idx=color_idx,
+                       file_label=file_label, res=res, **kw)
+
+
+def _run(blocks=(), rows=(), number=5) -> RunSnapshot:
+    return RunSnapshot(number=number, when=None, marker_freq_hz=5.55e9,
+                       rows=tuple(rows), blocks=tuple(blocks))
+
+
+# ============================================================================
+# The slimming (common to every view)
+# ============================================================================
+
+class TestTheLegendLeftTheBlock(unittest.TestCase):
+    """
+    It was 272 columns, printed once per block.  Two blocks put 544 characters
+    of ONE sentence into a pane that shows 144 of them.
+    """
+
+    def test_no_block_carries_a_legend_any_more(self):
+        """Mutation: put the legend line back in _format_coupling_block."""
+        for name, block in (("2-port", _two_port_block()),
+                            ("3-port", _three_port_block())):
+            with self.subTest(name):
+                text = _format_coupling_block(block, "smart")
+                self.assertNotIn("legend:", text)
+                self.assertNotIn("Norton", text)
+
+    def test_every_legend_line_fits_the_pane_without_scrolling(self):
+        """
+        The whole complaint about the old one was that it could not be read.
+        Mutation: fold the three lines back into one -- 297 columns.
+        """
+        for line in COUPLING_LEGEND_LINES:
+            with self.subTest(line[:40]):
+                self.assertLessEqual(
+                    len(line), PANE_COLS,
+                    f"{len(line)} columns against a {PANE_COLS}-column pane")
+
+    def test_the_load_bearing_sentence_survived_the_shortening(self):
+        """
+        'M/L is the Norton injection ratio, NOT the exact current ratio' is one
+        of the six places that claim has to agree (core docstring, CLI, this
+        legend, Help, README, theory.md).  Shortening the legend may not drop
+        it.
+        """
+        text = "\n".join(COUPLING_LEGEND_LINES)
+        self.assertIn("Norton injection ratio", text)
+        self.assertIn("NOT the exact current ratio", text)
+        self.assertIn("|Z_ab/Z_aa|", text)
+        self.assertIn("signs are physical", text)
+        self.assertIn("never clipped", text)
+
+
+class TestTheReciprocityLineIsAVerdict(unittest.TestCase):
+    """Verdict and number; the DEFINITION of the metric is not a reading."""
+
+    def _line(self, recip, pairs=None):
+        blk = _two_port_block(recip=recip)
+        if pairs is not None:
+            blk = _block(1, "x", {"VCO": 1 + 1j}, pairs, recip=recip)
+        text = _format_coupling_block(blk, "smart")
+        return next(ln for ln in text.split("\n")
+                    if "reciprocal" in ln or "reciprocity" in ln
+                    or "RECIPROCITY" in ln)
+
+    def test_a_healthy_file_is_a_tick_and_a_number(self):
+        """Mutation: restore the parenthetical definition -- 140 columns."""
+        line = self._line(2.14e-10)
+        self.assertIn("✓ reciprocal", line)
+        self.assertIn("2.14e-10", line)
+        self.assertNotIn("max|Z_ab-Z_ba|", line)
+        self.assertLessEqual(len(line), PANE_COLS)
+
+    def test_the_alarm_keeps_its_sentence_because_there_it_IS_the_reading(self):
+        line = self._line(4e-3)
+        self.assertIn("⚠ RECIPROCITY", line)
+        self.assertIn("4e-03", line.replace("0.004", "4e-03"))
+        self.assertIn("suspect", line)
+
+    def test_nothing_to_check_says_so(self):
+        line = self._line(0.0, pairs=[])
+        self.assertIn("nothing to check", line)
+
+    def test_the_definition_moved_to_the_legend_not_into_thin_air(self):
+        """A definition dropped from one place and added to none is a
+        deletion.  Mutation: remove the Help pointer from the legend."""
+        text = "\n".join(COUPLING_LEGEND_LINES)
+        self.assertIn("Help", text)
+
+
+class TestTheRedundantZMatrixIsFolded(unittest.TestCase):
+    """
+    At two measurement ports the matrix is [[Z_aa, Z_ab], [Z_ab, Z_bb]] and
+    every entry of it is printed again in the two tables underneath.  The claim
+    is REDUNDANCY, so the test checks the numbers, not the shape.
+    """
+
+    def test_at_two_ports_the_matrix_rows_are_gone(self):
+        """Mutation: make `matrix_block` unconditionally True."""
+        text = _format_coupling_block(_two_port_block(), "smart")
+        self.assertNotIn("self impedance (diagonal):", text)
+        # The matrix's own header row is a line of nothing but port names.
+        for line in text.split("\n"):
+            self.assertNotEqual(line.split(), ["VCO", "RX"],
+                                f"the matrix header survived: {line!r}")
+
+    def test_at_three_ports_the_matrix_block_is_untouched(self):
+        """It earns its place there: G(G-1)/2 off-diagonals, and a pair list
+        cannot show them as a matrix.  Mutation: fold at every G."""
+        text = _format_coupling_block(_three_port_block(), "smart")
+        self.assertIn("self impedance (diagonal):", text)
+        self.assertIn("Z (Ω)", text.replace("Z (Ω)", "", 0) or text) \
+            if False else None
+        self.assertNotIn("Z (Ω)", text)
+        self.assertNotIn("Z_ab =", text)
+
+    def test_every_number_the_matrix_carried_is_still_on_screen(self):
+        """
+        THE REDUNDANCY CLAIM ITSELF.  Mutation: drop the Z column, or drop
+        Z_ab from the pair line -- either loses a number the matrix used to
+        show and this goes red.
+        """
+        zaa, zbb, zab = 9.924 + 112.6j, 4.831 + 49.40j, -0.04322 - 0.01799j
+        text = _format_coupling_block(
+            _two_port_block(zaa=zaa, zbb=zbb, zab=zab), "smart")
+        for z in (zaa, zbb, zab):
+            cell = f"{z.real:.4g}{z.imag:+.4g}j"
+            self.assertIn(cell, text, f"{cell} is not on screen any more")
+
+    def test_the_frequency_line_survives_at_every_port_count(self):
+        """
+        It is this block's frequency PROVENANCE -- tests/test_freq_label.py
+        pins that the Calculate banner and this line name one frequency, and
+        folding the matrix must not take the frequency with it.
+
+        Mutation: emit the 'Z matrix @' line only when matrix_block.
+        """
+        for name, blk in (("1-port", _block(1, "x", {"L1": 1.5 + 126.0j})),
+                          ("2-port", _two_port_block()),
+                          ("3-port", _three_port_block())):
+            with self.subTest(name):
+                head = _format_coupling_block(blk, "smart").split("\n")[1]
+                self.assertIn("Z matrix @", head)
+                self.assertIn("5.55 GHz", head)
+
+    def test_the_fold_pays_for_itself_in_lines(self):
+        """Four lines of matrix become one column.  Mutation: none -- this is
+        the measurement the change was made on, kept as a number."""
+        n = len(_format_coupling_block(_two_port_block(), "smart").split("\n"))
+        self.assertLessEqual(n, 8, "the two-port block grew back")
+
+
+class TestTheSelfTableStaysCleanAtThreePorts(unittest.TestCase):
+    """The Z column is added ONLY where the matrix block is not printed, so
+    the G >= 3 rendering has to come out byte-identical to what it was."""
+
+    def test_no_row_gained_trailing_whitespace(self):
+        """
+        'Sign' is the last cell there, and padding a last cell puts trailing
+        spaces on every row of a table that gets copied into a mail.
+
+        Mutation: pad Sign unconditionally.
+        """
+        text = _format_coupling_block(_three_port_block(), "smart")
+        for line in text.split("\n"):
+            self.assertEqual(line, line.rstrip(),
+                             f"trailing whitespace: {line!r}")
+
+
+# ============================================================================
+# The footer, once per run
+# ============================================================================
+
+@unittest.skipUnless(TK_OK, "no Tk display available")
+class TestTheFooterSaysEachThingOnce(unittest.TestCase):
+
+    def setUp(self):
+        self.app = App()
+        self.app.withdraw()
+
+    def tearDown(self):
+        self.app.destroy()
+
+    def _segs(self, run, view=VIEW_DETAIL):
+        self.app.results_view_var.set(view)
+        return self.app._run_report_segments(run)
+
+    def _text(self, run, view=VIEW_DETAIL):
+        return "\n".join(t for t, _c, _s in self._segs(run, view))
+
+    def test_the_legend_is_printed_once_for_a_two_block_run(self):
+        """
+        Mutation: move the legend back inside _format_coupling_block -- it
+        then appears twice and this goes red.
+        """
+        run = _run([_two_port_block(1, "WUR_EM"),
+                    _two_port_block(4, "0812EM")])
+        text = self._text(run)
+        self.assertEqual(text.count(COUPLING_LEGEND_LINES[0]), 1)
+
+    def test_a_run_with_no_coupling_gets_no_coupling_legend(self):
+        """There is no ind/cap column and no M/L on a scalar table, so the
+        legend would be qualifying nothing.  Mutation: drop the `if
+        shown_blocks` gate."""
+        self.assertNotIn("Norton", self._text(_run(rows=[_row()])))
+
+    def test_identical_reference_verdicts_collapse_and_name_every_trace(self):
+        """
+        524 of the reported run's 3538 characters were this sentence, twice.
+
+        Mutation: go back to one segment per record -- the count becomes 2.
+        """
+        strip = "Reference-node check: F1, F2 declares no ground port, so …"
+        run = _run([_two_port_block(1, "WUR_EM", ref_strip=strip),
+                    _two_port_block(4, "0812EM", ref_strip=strip)])
+        text = self._text(run)
+        self.assertEqual(text.count(strip), 1)
+        self.assertIn(f"[1][4] {strip}", text)
+
+    def test_verdicts_that_DIFFER_are_never_collapsed(self):
+        """
+        The id list is what makes the collapsed line a statement about those
+        traces.  Two different checks under one id list would put one trace's
+        ids on another trace's verdict.
+
+        Mutation: key the grouping on ref_strip alone, then give the two
+        records different ref_lines -- they merge and this goes red.
+        """
+        run = _run([_two_port_block(1, "a", ref_strip="check A",
+                                    ref_warn=True, ref_lines=("why A",)),
+                    _two_port_block(4, "b", ref_strip="check A",
+                                    ref_warn=True, ref_lines=("why B",))])
+        text = self._text(run)
+        self.assertIn("why A", text)
+        self.assertIn("why B", text)
+        self.assertNotIn("[1][4]", text)
+
+    def test_a_collapsed_warning_keeps_its_WARN_severity(self):
+        """The Log badge counts warnings, and a deduplicated warning is still
+        a warning.  Mutation: emit LOG_INFO for the grouped line."""
+        import pkg_rlc_gui as gui
+        run = _run([_two_port_block(1, "a", ref_strip="s", ref_warn=True,
+                                    ref_lines=("d",)),
+                    _two_port_block(4, "b", ref_strip="s", ref_warn=True,
+                                    ref_lines=("d",))])
+        sev = {s for t, _c, s in self._segs(run) if "[1][4]" in t}
+        self.assertEqual(sev, {gui.LOG_WARN})
+
+    def test_the_attribution_pointer_names_both_routes_and_fits(self):
+        """
+        Both phrases are pinned elsewhere too; what is pinned HERE is that the
+        shortening kept the route on screen.  Mutation: restore the 147-column
+        wording -- three columns past the pane.
+        """
+        run = _run([_two_port_block()])
+        line = next(ln for ln in self._text(run).split("\n")
+                    if "where each M above comes from" in ln)
+        self.assertIn("right-click menu", line)
+        self.assertLessEqual(len(line), PANE_COLS)
+
+    def test_the_footer_is_the_same_in_every_view(self):
+        """
+        It qualifies the RUN, not the rendering.  Mutation: gate the legend on
+        `view == VIEW_DETAIL` -- the compact views then print ind/cap and M/L
+        with nothing that says what they mean.
+        """
+        run = _run([_two_port_block(1, "a"), _two_port_block(4, "b")],
+                   rows=[_row()])
+        for view in RESULTS_VIEWS:
+            with self.subTest(view):
+                text = self._text(run, view)
+                self.assertEqual(text.count(COUPLING_LEGEND_LINES[0]), 1)
+                self.assertIn("where each M above comes from", text)
+
+
+# ============================================================================
+# The summary view
+# ============================================================================
+
+class TestTheSummaryTables(unittest.TestCase):
+
+    def test_one_row_per_measurement_port_and_one_per_pair(self):
+        blocks = [_two_port_block(1, "WUR_EM"), _two_port_block(4, "0812EM")]
+        self_text, self_colors = _format_summary_self([], blocks, "smart")
+        coup_text, coup_colors = _format_summary_coupling(blocks, "smart")
+        # 1 header + 2 ports x 2 traces
+        self.assertEqual(len([ln for ln in self_text.split("\n")
+                              if ln.lstrip().startswith(RESULTS_SWATCH)]), 4)
+        self.assertEqual(len(self_colors), 4)
+        self.assertEqual(len([ln for ln in coup_text.split("\n")
+                              if ln.lstrip().startswith(RESULTS_SWATCH)]), 2)
+        self.assertEqual(len(coup_colors), 2)
+
+    def test_a_scalar_row_and_a_coupling_port_share_the_table(self):
+        """That is the whole point of the self table: one row per SELF
+        measurement, whatever mode produced it."""
+        text, colors = _format_summary_self([_row(2, "tank")],
+                                            [_two_port_block(1, "coils")],
+                                            "smart")
+        self.assertIn("tank", text)
+        self.assertIn("VCO", text)
+        self.assertEqual(len(colors), 3)
+
+    def test_the_colours_are_in_the_order_the_swatched_lines_appear(self):
+        """
+        _tag_swatch_rows consumes the list in order, so a mismatch silently
+        gives a row another trace's colour.
+
+        Mutation: append rec.id instead of rec.color_idx.
+        """
+        blocks = [_two_port_block(1, "a", color_idx=5),
+                  _two_port_block(4, "b", color_idx=9)]
+        _text, colors = _format_summary_self([], blocks, "smart")
+        self.assertEqual(colors, (5, 5, 9, 9))
+
+    def test_the_ranking_and_the_floor_are_the_detail_views_own(self):
+        """
+        Two views disagreeing about which coupling matters is worse than
+        either being wrong on its own.
+
+        Mutation: sort the pairs here instead of calling rank_coupling_pairs.
+        """
+        Zs = {"L1": 1.5 + 126j, "L2": 1.6 + 130j, "L3": 1.7 + 140j}
+        strong = _pair("L1", "L2", 0.01 + 13.0j, 126 / W, 130 / W)
+        weak = _pair("L1", "L3", 0.01 + 1e-9j, 126 / W, 140 / W)
+        text, _c = _format_summary_coupling(
+            [_block(1, "pkg", Zs, [weak, strong])], "smart")
+        rows = [ln for ln in text.split("\n")
+                if ln.lstrip().startswith(RESULTS_SWATCH)]
+        self.assertEqual(len(rows), 1, text)
+        self.assertIn("L1 x L2", rows[0])
+        self.assertIn("+1 pair below -60 dB", text)
+
+    def test_k_is_not_given_an_SI_prefix(self):
+        """
+        k = -2.412e-4 through format_si is '-241 u' -- a micro-nothing.
+
+        Mutation: format k with the value formatter like M and C_c.
+        """
+        text, _c = _format_summary_coupling([_two_port_block()], "smart")
+        self.assertNotIn(" u ", text)
+        self.assertIn("-0.0002412", text)
+
+    def test_every_summary_line_fits_the_pane(self):
+        blocks = [_two_port_block(1, "WUR_EM"), _two_port_block(4, "0812EM")]
+        for text, _c in (_format_summary_self([], blocks, "smart"),
+                         _format_summary_coupling(blocks, "smart")):
+            for line in text.split("\n"):
+                self.assertLessEqual(len(line), PANE_COLS, line)
+
+    def test_the_file_column_appears_only_for_more_than_one_file(self):
+        one = _format_summary_self([], [_two_port_block(1, "a")], "smart")[0]
+        two = _format_summary_self(
+            [], [_two_port_block(1, "a", file_label="one.s4p"),
+                 _two_port_block(4, "b", file_label="two.s4p")], "smart")[0]
+        self.assertNotIn("File", one)
+        self.assertIn("F1=one.s4p", two)
+        self.assertIn("F2=two.s4p", two)
+
+
+# ============================================================================
+# The compare view
+# ============================================================================
+
+class TestTheDeltaCell(unittest.TestCase):
+    """How a change is expressed.  Pure arithmetic, no widgets."""
+
+    def test_a_readable_change_is_a_percentage(self):
+        self.assertEqual(_delta_cell(1.0, 1.1, "H"), "+10 %")
+        self.assertEqual(_delta_cell(4.831, 10.58, "Ω"), "+119 %")
+
+    def test_a_big_change_becomes_a_FACTOR(self):
+        """
+        M went -516 fH -> -7.19 pH on the reported run.  As a percentage that
+        is -1293%, which is not a sentence anybody says out loud.
+
+        Mutation: drop the crossover and always print a percentage.
+        """
+        self.assertEqual(_delta_cell(-516e-15, -7.19e-12, "H"), "+13.93 ×")
+
+    def test_the_crossover_is_a_factor_of_ten_either_way(self):
+        self.assertIn("%", _delta_cell(1.0, 9.5, "H"))
+        self.assertIn("×", _delta_cell(1.0, 11.0, "H"))
+        self.assertIn("%", _delta_cell(1.0, 0.5, "H"))
+
+    def test_dB_gets_a_dB_DIFFERENCE_and_never_a_percentage(self):
+        """
+        dB is already a ratio; a percentage of decibels means nothing.
+
+        Mutation: treat 'dB' like any other unit -- -68.77 -> -52.36 comes out
+        as '+23.9 %', which is a number with no meaning at all.
+        """
+        self.assertEqual(_delta_cell(-68.77, -52.36, "dB"), "+16.41 dB")
+
+    def test_a_sign_change_falls_out_of_the_same_expression(self):
+        self.assertEqual(_delta_cell(1.0, -1.0, "H"), "-200 %")
+
+    def test_a_missing_or_undefined_value_is_a_dash_not_a_zero(self):
+        self.assertEqual(_delta_cell(float("nan"), 1.0, "H"), "—")
+        self.assertEqual(_delta_cell(1.0, float("inf"), "H"), "—")
+        self.assertEqual(_delta_cell(0.0, 1.0, "H"), "—")
+        self.assertEqual(_delta_cell(0.0, 0.0, "H"), "0")
+
+
+class TestTheCompareTable(unittest.TestCase):
+
+    def _two(self):
+        return [_two_port_block(1, "WUR_EM"),
+                _two_port_block(4, "0812EM", zaa=9.812 + 112.7j,
+                                zbb=10.58 + 104.0j, zab=0.01344 - 0.2506j,
+                                color_idx=3)]
+
+    def test_one_column_per_trace_and_a_delta_at_exactly_two(self):
+        text, colors, refusal = _format_compare([], self._two(), "smart")
+        self.assertEqual(refusal, "")
+        head = text.split("\n")[0]
+        self.assertIn("[1] WUR_EM", head)
+        self.assertIn("[4] 0812EM", head)
+        self.assertTrue(head.rstrip().endswith("Δ"))
+        self.assertEqual(colors, (0, 3))
+
+    def test_three_traces_get_no_delta_column(self):
+        """
+        A Δ against 'whichever trace sorted first' is a reference chosen in
+        silence, which this tool refuses everywhere else.
+
+        Mutation: compute the delta against records[0] whatever the count.
+        """
+        blocks = self._two() + [_two_port_block(7, "third")]
+        text, _c, refusal = _format_compare([], blocks, "smart")
+        self.assertEqual(refusal, "")
+        self.assertNotIn("Δ", text)
+
+    def test_fewer_than_two_traces_is_a_refusal_with_a_reason(self):
+        """Mutation: return an empty table instead -- the pane goes blank and
+        says nothing."""
+        _t, _c, refusal = _format_compare([], [_two_port_block()], "smart")
+        self.assertIn("at least two traces", refusal)
+        self.assertIn("summary", refusal)
+
+    def test_a_group_one_trace_does_not_have_leaves_an_EMPTY_cell(self):
+        """
+        'this trace has no port called L3' and 'L3 measured 0' are different
+        statements, and only one of them is a measurement.
+
+        Mutation: `vals.get(r.id, 0.0)` instead of `vals.get(r.id)` -- the
+        empty cell becomes '0 Ω', which reads as a reading, and the delta
+        column then invents a change against it.
+        """
+        text, _c, _r = _format_compare(
+            [], [_two_port_block(1, "a"), _three_port_block()], "smart")
+        row = next(ln for ln in text.split("\n")
+                   if ln.split()[:2] == ["L3", "R"])
+        # Two trace columns, and only the second trace has an L3 at all.
+        self.assertEqual(row.count("Ω"), 1, f"a value was invented: {row!r}")
+        self.assertIn("1.7 Ω", row)
+
+    def test_the_quantities_are_grouped_by_port_then_by_pair(self):
+        text, _c, _r = _format_compare([], self._two(), "smart")
+        labels = [ln.split()[0] for ln in text.split("\n")[1:] if ln.strip()]
+        self.assertEqual(labels[0], "VCO")
+        self.assertIn("RX", labels)
+        self.assertEqual(labels[-4], "VCO")      # the 'VCO x RX' group
+
+    def test_worst_M_over_L_is_carried_and_stays_in_dB(self):
+        text, _c, _r = _format_compare([], self._two(), "smart")
+        row = next(ln for ln in text.split("\n") if "worst M/L" in ln)
+        self.assertIn("-68.77 dB", row)
+        self.assertIn("-52.36 dB", row)
+        self.assertIn("+16.41 dB", row)
+
+    def test_every_compare_line_fits_the_pane(self):
+        text, _c, _r = _format_compare([], self._two(), "smart")
+        for line in text.split("\n"):
+            self.assertLessEqual(len(line), PANE_COLS, line)
+
+
+class TestTheColumnRenderer(unittest.TestCase):
+
+    def test_a_column_is_as_wide_as_its_widest_cell_OR_its_header(self):
+        """
+        Sizing on the values alone puts a 7-character value under a 5-character
+        heading and throws the heading one place off the numbers it names.
+
+        Mutation: drop `len(h)` from the width expression.
+        """
+        out = _render_columns(["quantity", "x"], ["<", ">"], [["a", "1"]])
+        self.assertEqual(out[0].split(), ["quantity", "x"])
+        self.assertTrue(out[1].startswith("a       "))
+
+    def test_no_line_carries_trailing_whitespace(self):
+        out = _render_columns(["a", "bbbb"], ["<", "<"], [["x", "y"]])
+        for line in out:
+            self.assertEqual(line, line.rstrip())
+
+
+# ============================================================================
+# The wiring: the selector, the session, the re-render
+# ============================================================================
+
+@unittest.skipUnless(TK_OK, "no Tk display available")
+class TestTheViewSelector(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        _ensure_fixtures()
+
+    def setUp(self):
+        self.app = App()
+        self.app.withdraw()
+        self.fe = FileEntry(parse_touchstone(FIXTURE))
+        self.app.files.append(self.fe)
+        self.app._refresh_file_list()
+        self.app._refresh_file_combobox()
+        self.tc = TraceConfig(
+            id=1, file_label=self.fe.label, mode=6, label="coils",
+            mports=[MeasPortRow(name="c1", plus="1"),
+                    MeasPortRow(name="c2", plus="2")])
+        self.app.traces.append(self.tc)
+        self.app._refresh_trace_list()
+        self._settle()
+
+    def tearDown(self):
+        self.app.destroy()
+
+    def _settle(self, rounds=3):
+        for _ in range(rounds):
+            self.app.update_idletasks()
+            self.app.update()
+
+    def _log(self):
+        return self.app.results_text.get("1.0", tk.END)
+
+    def test_the_default_is_the_view_the_tool_always_had(self):
+        """A new control may not change what an existing user sees on
+        startup."""
+        self.assertEqual(self.app.results_view_var.get(), VIEW_DETAIL)
+
+    def test_every_view_renders_the_run_without_raising(self):
+        self.app._on_calculate()
+        self._settle()
+        for view in RESULTS_VIEWS:
+            with self.subTest(view):
+                self.app.results_view_var.set(view)
+                self.app._on_results_view_changed()
+                self._settle()
+                self.assertIn("re-rendered with view=" + view, self._log())
+
+    def test_switching_the_view_creates_no_run_tab(self):
+        """Choosing a view measures nothing, so it is not a run.  Mutation:
+        call _add_run_tab from _on_results_view_changed."""
+        self.app._on_calculate()
+        self._settle()
+        before = len(self.app._run_tabs)
+        n_before = self.app._run_counter
+        self.app.results_view_var.set(VIEW_SUMMARY)
+        self.app._on_results_view_changed()
+        self._settle()
+        self.assertEqual(len(self.app._run_tabs), before)
+        self.assertEqual(self.app._run_counter, n_before)
+
+    def test_EVERY_run_page_is_repainted_not_just_the_newest(self):
+        """
+        Leaving one page in the previous layout is the 'one screen, two
+        formattings, then a silent flip' failure the units switch is written
+        from.
+
+        Mutation: repaint only self._newest_run_tab().
+        """
+        self.app._on_calculate()
+        self._settle()
+        self.app._on_calculate()
+        self._settle()
+        self.assertGreaterEqual(len(self.app._run_tabs), 2)
+        self.app.results_view_var.set(VIEW_SUMMARY)
+        self.app._on_results_view_changed()
+        self._settle()
+        for rt in self.app._run_tabs:
+            page = rt.text.get("1.0", tk.END)
+            self.assertIn("self impedance @", page)
+            self.assertNotIn("self impedance (diagonal)", page)
+
+    def test_a_view_with_no_run_yet_does_not_raise(self):
+        self.app.results_view_var.set(VIEW_COMPARE)
+        self.app._on_results_view_changed()
+        self._settle()
+
+    def test_compare_falls_back_to_the_summary_and_says_why(self):
+        """
+        One trace cannot be compared, and the view stays chosen -- so a run
+        that cannot be compared must still print its numbers.
+
+        Mutation: return the refusal alone.
+        """
+        self.app._on_calculate()
+        self._settle()
+        self.app.results_view_var.set(VIEW_COMPARE)
+        self.app._on_results_view_changed()
+        self._settle()
+        log = self._log()
+        self.assertIn("compare: compare needs at least two traces", log)
+        self.assertIn("self impedance @", log)
+
+    def _reload(self, mangle=None):
+        """Save, WIPE, reload.  The wipe is not tidiness: _load_session_file
+        asks for confirmation when there are traces to replace, and an
+        unanswered modal hangs the test process rather than failing it."""
+        with tempfile.TemporaryDirectory() as d:
+            path = str(Path(d) / "s.json")
+            self.app._write_session(path, d)
+            if mangle is not None:
+                data = json.loads(Path(path).read_text(encoding="utf-8"))
+                mangle(data)
+                Path(path).write_text(json.dumps(data), encoding="utf-8")
+            self.app.files = []
+            self.app.traces = []
+            self.app._trace_list_shown = []
+            self.app._refresh_file_list()
+            self.app._refresh_trace_list()
+            self.app._refresh_file_combobox()
+            self.app.results_view_var.set(VIEW_DETAIL)
+            ok = self.app._load_session_file(path, "test")
+            self._settle()
+            return ok
+
+    def test_the_view_survives_a_session_round_trip(self):
+        """Mutation: drop 'results_view' from _CONTROL_KEYS."""
+        self.app.results_view_var.set(VIEW_COMPARE)
+        self.assertEqual(
+            self.app._session_dict(None)["controls"]["results_view"],
+            VIEW_COMPARE)
+        self.assertTrue(self._reload())
+        self.assertEqual(self.app.results_view_var.get(), VIEW_COMPARE)
+
+    def test_a_view_the_build_does_not_know_is_dropped_with_a_note(self):
+        """
+        Both comboboxes are state='readonly', so a value from outside the list
+        would sit there unselectable with no way back except editing the file.
+
+        Mutation: take 'results_view' out of _CONTROL_CHOICES.
+        """
+        self.app.results_view_var.set(VIEW_SUMMARY)
+
+        def mangle(data):
+            data["controls"]["results_view"] = "kaleidoscope"
+
+        self._reload(mangle)
+        self.assertIn(self.app.results_view_var.get(), RESULTS_VIEWS)
+        self.assertIn("results_view", self._log())
+
+
+@unittest.skipUnless(TK_OK, "no Tk display available")
+class TestTheResultsHeaderLayout(unittest.TestCase):
+    """
+    The header was five packed controls asking 667 px against the 575 it gets
+    at the 1040x600 minsize at 150% font scaling, and `pack` unmaps from the
+    END -- so the Keep button was already the one being squeezed.  A View
+    label plus a readonly combobox is a further 127 px at 100% and 240 px at
+    150%.  It is a ReflowRow now, which wraps instead.
+
+    Same assertion as tests/test_plot_controls.py, for the same reason: a
+    PLACED widget stays mapped while it hangs off the right edge, so
+    winfo_ismapped() cannot see this failure.
+    """
+
+    def _app(self, scaling: float):
+        import tkinter.font as tkfont
+        app = App()
+        if scaling != 1.0:
+            app.tk.call("tk", "scaling", 2.0)
+            for name in tkfont.names(app):
+                f = tkfont.nametofont(name, app)
+                try:
+                    size = f.cget("size")
+                    f.configure(size=int(round(abs(size) * 1.5))
+                                * (1 if size > 0 else -1))
+                except Exception:
+                    pass
+        return app
+
+    def _check(self, scaling, geo):
+        app = self._app(scaling)
+        try:
+            app.geometry(geo)
+            app.deiconify()
+            for _ in range(4):
+                app.update_idletasks()
+                app.update()
+            strip = app._results_header
+            sw, sh = strip.winfo_width(), strip.winfo_height()
+            for w in strip.winfo_children():
+                self.assertLessEqual(
+                    w.winfo_x() + w.winfo_width(), sw,
+                    f"{w.winfo_class()} hangs off the right edge at "
+                    f"{scaling}x {geo}")
+                self.assertLessEqual(
+                    w.winfo_y() + w.winfo_height(), sh,
+                    f"{w.winfo_class()} hangs off the bottom at "
+                    f"{scaling}x {geo}")
+        finally:
+            app.destroy()
+
+    def test_every_control_is_wholly_inside_the_strip(self):
+        for scaling in (1.0, 1.5):
+            for geo in ("1500x900", "1040x600"):
+                with self.subTest(scaling=scaling, geo=geo):
+                    self._check(scaling, geo)
+
+    def test_the_strip_cannot_force_the_pane_wider(self):
+        """
+        ReflowRow lays out by `place`, and place does not propagate.  That is
+        what keeps the strip's 667 px out of the PanedWindow sash.
+
+        Mutation: pack the controls instead.
+        """
+        app = self._app(1.0)
+        try:
+            app.geometry("1040x600")
+            app.deiconify()
+            for _ in range(3):
+                app.update_idletasks()
+                app.update()
+            self.assertLessEqual(app._results_header.winfo_reqwidth(), 2)
+        finally:
+            app.destroy()
+
+    def test_the_default_window_still_pays_nothing_for_the_new_control(self):
+        """One row at 100%, as before.  Mutation: none -- this is the
+        measurement that justified adding the control to this strip."""
+        app = self._app(1.0)
+        try:
+            app.geometry("1500x900")
+            app.deiconify()
+            for _ in range(3):
+                app.update_idletasks()
+                app.update()
+            strip = app._results_header
+            tallest = max(w.winfo_height() for w in strip.winfo_children())
+            self.assertLessEqual(strip.winfo_height(), tallest + 4,
+                                 "the Results header wrapped at 1500x900")
+        finally:
+            app.destroy()
+
+
+if __name__ == "__main__":
+    unittest.main()
