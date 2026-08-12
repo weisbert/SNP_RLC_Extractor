@@ -581,10 +581,15 @@ class TestLinks(unittest.TestCase):
         The echo is the only symptom an off-by-one in one file's numbering has:
         every pair shifts, and the answer stays plausible.
 
-        MUTATION: echo only the count. 'D.1,2,3 short_to P.4,5,6' and
-        'D.1,2,3 short_to P.5,6,7' then print the identical line.
+        MUTATION: echo only the count. 'D.1-3 short_to P.4-6' and
+        'D.1-3 short_to P.5-7' then print the identical line.
+
+        Ranges rather than lists because a file tag scopes ONE token: 'P.4,5,6'
+        is P.4 and then two BARE tokens, which take the default scope (the
+        first positional file, D) -- see
+        test_a_BARE_token_on_a_link_side_is_the_DEFAULT_file.
         """
-        rc, out, err = self.link_run("D.1,2,3 short_to P.4,5,6")
+        rc, out, err = self.link_run("D.1-3 short_to P.4-6")
         self.assertEqual(rc, 0, err)
         f = flat(out)
         self.assertIn("3 wires, elementwise, one per pair", f)
@@ -596,15 +601,36 @@ class TestLinks(unittest.TestCase):
     def test_a_length_mismatch_is_a_HARD_ERROR_showing_both_ends(self):
         """
         MUTATION: zip() the two sides. Python truncates to the shorter one, so
-        'D.1,2,3 short_to P.4,5' silently makes two wires and drops the third.
+        'D.1-3 short_to P.4-5' silently makes two wires and drops the third.
         """
-        rc, _out, err = self.link_run("D.1,2,3 short_to P.4,5")
+        rc, _out, err = self.link_run("D.1-3 short_to P.4-5")
         self.assertEqual(rc, 2)
         f = flat(err)
         self.assertIn("lists 3 ports", f)
         self.assertIn("lists 2", f)
         self.assertIn("first pair would be D.1 - P.4", f)
         self.assertIn("last pair would be D.3 - P.5", f)
+
+    def test_a_BARE_token_on_a_link_side_is_the_DEFAULT_file(self):
+        """
+        The CLI's default scope is the FIRST POSITIONAL file (`--compose-alias`
+        D here), the same "home file" the GUI's bare port numbers mean, and a
+        file tag scopes the ONE token it is written on.  So the second token of
+        'P.4,5' is D.5, not P.5.
+
+        That is a change: the tag used to be sticky over the whole field.  It
+        is not silent -- the pairing echo prints the file of every port it
+        made a wire to, which is what this pins.  Writing 'P.4-5' (one token)
+        or 'P.4,P.5' says P both times.
+
+        MUTATION: make the tag sticky again and the echo says P.5.
+        """
+        rc, out, err = self.link_run("D.1-2 short_to P.4,5")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("-- D.5 (die_named.s5p port 5", flat(out))
+        rc2, out2, err2 = self.link_run("D.1-2 short_to P.4,P.5")
+        self.assertEqual(rc2, 0, err2)
+        self.assertIn("-- P.5 (pkg_named.s7p port 5", flat(out2))
 
     def test_one_port_against_many_fans_out_and_says_so(self):
         # 54 VSS balls onto one die pad is the ordinary flip-chip connection,

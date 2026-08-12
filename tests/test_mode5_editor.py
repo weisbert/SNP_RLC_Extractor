@@ -142,6 +142,107 @@ class TestPortOverviewText(unittest.TestCase):
         self.assertEqual(_port_overview_text(None, 45), "Ports (45): —")
 
 
+class TestTheHintFollowsTheKindsInTheTable(unittest.TestCase):
+    """
+    R1-1's complaint, one layer up from the cells.
+
+    The table already shows only the cells a row's Kind uses; the hint under it
+    was a single paragraph covering all six, so a user filling in a `short` row
+    read about `rlc_between` on the way to the sentence they needed -- and that
+    sentence ("the whole group goes in ONE cell, there is no To") is the one
+    the shipped Help had to spell out again after a user wrote
+    `short 25 to 26` and got a node-name refusal.
+
+    Pure, so it is testable with no display.
+    """
+
+    def _short(self, rows, tagged=False):
+        return pkg_rlc_gui.conn_hint_text(rows, tagged)[0]
+
+    def _long(self, rows, tagged=False):
+        return pkg_rlc_gui.conn_hint_text(rows, tagged)[1]
+
+    def test_a_table_of_ONE_kind_names_that_kind_collapsed(self):
+        """
+        The collapsed line is the whole budget when the hint is not expanded --
+        one line, and it is the state the hint is in by default.  With one Kind
+        in the table it can be about that Kind instead of about the table.
+        """
+        line = self._short([ConnectionRow(kind="short", ports="1,2")])
+        self.assertTrue(line.startswith("short:"), line)
+        self.assertIn("WHOLE group", line)
+
+    def test_the_short_row_hint_says_there_is_NO_To_cell(self):
+        """
+        The exact confusion this came from: the second cell on a `short` row is
+        the node NAME, and a user reading the shared 'To / Net' heading typed a
+        port number into it and got 'node name 26 is a port number or range'.
+
+        MUTATION: drop the Net sentence and nothing on screen says what that
+        cell is for.
+        """
+        text = self._long([ConnectionRow(kind="short", ports="1,2")])
+        self.assertIn("no To cell", text)
+        self.assertIn("NAME", text)
+
+    def test_only_the_kinds_PRESENT_are_explained(self):
+        rows = [ConnectionRow(kind="short", ports="1,2")]
+        text = self._long(rows)
+        self.assertIn("short --", text)
+        for absent in ("rlc_between --", "vdd --", "open --"):
+            self.assertNotIn(absent, text, f"{absent} is not in the table")
+
+    def test_it_is_SHORTER_than_the_everything_hint(self):
+        """
+        The expanded hint is packed into a form measured at 431 px of viewport,
+        so per-Kind has to be a saving and not a cost.  A real table carries
+        one or two Kinds, never six.
+        """
+        one = self._long([ConnectionRow(kind="short", ports="1,2")])
+        self.assertLess(len(one), len(pkg_rlc_gui.CONN_TABLE_HINT) * 0.6,
+                        "a one-Kind table should read far less than all six")
+
+    def test_an_EMPTY_table_gets_every_kind(self):
+        """
+        The one case where the reader is CHOOSING a Kind rather than filling
+        one in, so the full list is what they need.
+        """
+        text = self._long([])
+        for kind in pkg_rlc_gui.CONN_KINDS:
+            if kind in pkg_rlc_gui.CONN_KIND_HINTS:
+                self.assertIn(f"{kind} --", text)
+
+    def test_the_order_is_CONN_KINDS_not_the_row_order(self):
+        """
+        A reference that reorders itself as the user edits is one the eye
+        cannot find its place in again.
+        """
+        rows = [ConnectionRow(kind="rlc_gnd", ports="3", R="50"),
+                ConnectionRow(kind="ground", ports="1")]
+        text = self._long(rows)
+        self.assertLess(text.index("ground --"), text.index("rlc_gnd --"))
+
+    def test_the_general_rules_are_stated_ONCE_not_per_kind(self):
+        rows = [ConnectionRow(kind="rlc_gnd", ports="3", R="50"),
+                ConnectionRow(kind="rlc_between", ports="1", to="2", L="1n")]
+        self.assertEqual(self._long(rows).count("5m is 5 milli"), 1)
+
+    def test_the_TAG_rules_appear_only_on_a_composed_trace(self):
+        """A single-file user must never read about file tags."""
+        rows = [ConnectionRow(kind="short", ports="1,2")]
+        self.assertNotIn("F2.15", self._long(rows, tagged=False))
+        self.assertIn("F2.15", self._long(rows, tagged=True))
+
+    def test_a_half_typed_table_does_not_raise(self):
+        """Same contract as the strips: this runs on every keystroke."""
+        class _Broken:
+            kind = "short"
+
+            def is_blank(self):
+                raise RuntimeError("half-typed")
+        self.assertTrue(self._long([_Broken()]))
+
+
 class TestMode5PortDescriptor(unittest.TestCase):
     """
     The Results table's port-config column is what the user reads to confirm

@@ -117,11 +117,11 @@ printer: a second copy at compute time put the same paragraph on screen twice.
 
 STILL NOT WIRED: the connection table's port cells do not go through
 `render_port_cell` / `cell_scope` / `port_choices`.  What resolves a tagged cell
-today is `pkg_rlc_gui._scope_port_field`, which asks `parse_scoped_ports` one
-comma token at a time with a sticky scope -- the single-cell SHORT group
-(`2,F2.1`) has no other spelling in that table and `parse_scoped_ports` refuses
-a tag on a later token.  If the cells are ever given a scope-aware renderer,
-these two must be made one thing rather than two.
+today is `pkg_rlc_gui._scope_port_field`, which is one `parse_scoped_ports`
+call: the tag is PER-TOKEN there, so the single-cell SHORT group (`2,F2.1`,
+`25,26,F2.15`) -- which has no other spelling in that table -- is an ordinary
+field and needs no rule of its own.  If the cells are ever given a scope-aware
+renderer, these two must be made one thing rather than two.
 """
 
 from __future__ import annotations
@@ -373,14 +373,23 @@ def render_port_cells(by_file: Sequence[tuple], home: str) -> list[str]:
     """
     [(alias, [local ports]), ...] -> ONE CELL TEXT PER FILE.
 
-    A list and not a string, and that is the load-bearing part.  A port field
-    carries ONE scope: `parse_scoped_ports` refuses a tag on any comma token
-    after the first, deliberately, because `F1.1,F2.3` could mean "one field,
-    two scopes" or "F1 scopes the lot" and the two answers differ in silence.
-    So a set of ports spanning two files cannot be written into one cell at
-    all, and a renderer that returned a single string would produce exactly the
-    spelling the parser refuses.  The caller gets one cell per file and puts
-    them on their own rows.
+    A list and not a string, and that is the load-bearing part -- but the
+    reason changed and is now a BUDGET rather than an impossibility.
+
+    It used to be that a port field carried ONE scope: `parse_scoped_ports`
+    refused a tag on any comma token after the first, so a set spanning two
+    files could not be written into one cell AT ALL and a renderer returning a
+    single string emitted exactly the spelling the parser refused.  The tag is
+    per-token now, so `F1.1,F2.3` is legal and this is no longer impossible.
+
+    What is unchanged is that it does not FIT.  A port cell is a
+    `ttk.Combobox(width=7)` -- measured 72 px / 7 characters at 100% and
+    135 px / 7 characters at 150%, the character count being the DPI-stable
+    one -- and the widget has no scrollbar.  `23,24,25` is 48 px against a
+    49 px budget; `F2.23,24,25` is 64 px, i.e. 131%, and simply scrolls out of
+    sight.  So the caller still gets one cell per file and puts them on their
+    own rows; joining them with ',' would produce a legal field the user
+    cannot read.
     """
     out = []
     for alias, locals_ in by_file:

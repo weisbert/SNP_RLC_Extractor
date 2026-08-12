@@ -985,9 +985,14 @@ before) and any number of extra files:
 1. Select the trace, then **Analyze → Files in this trace…** (also on the right-click menu of the
    Traces list and of the Files list). Right-click a row there to **Add a file…**, to **Remove**
    one, or to **Set as home**.
-2. In the connection table, a **bare port number still means the home file** — every spec you
+2. In the connection table, a **bare port number always means the home file** — every spec you
    already have keeps its meaning, and if you only ever use one file you will never see a tag. A
    port of another file is written with its tag: `F2.13`, `F2.40-42`.
+
+   The tag scopes **the one token it is written on**, so a comma list may mix files freely and in
+   any order — `25,26,F2.15` and `F2.15,25,26` are the same three ports, and
+   `25,F2.12,F1.65,21` reads exactly as it looks. A **range is one token**, so `F2.40-42` takes a
+   single tag; a *list* of one file's ports needs the tag on each (`F2.40,F2.42`) or a range.
 3. Calculate. The trace is solved on the stacked network, over the **intersection of the two
    frequency spans resampled onto the finer grid** — never extrapolated. What the composition
    decided (the grid it took, what it dropped, how much phase an interpolation invented) is
@@ -1010,8 +1015,11 @@ the section above for why grounded, open and through-an-inductor can be the same
 
 Two things are worth knowing:
 
-- A **cross-file short** goes in one cell of a `short` row: `2,F2.1`. A cross-file element is an
-  `rlc_between` row with `2` in Port and `F2.1` in To.
+- A **cross-file short** goes in one cell of a `short` row: `2,F2.1`, or `25,26,F2.15` to tie two
+  die ports and a package ball into one node. (A `short` row has no *To*: a group of shorted pins
+  has no from/to, so the whole group lives in the one port cell. The cell next to it is the
+  optional **Net** name for the node it creates.) A cross-file element is an `rlc_between` row
+  with `2` in Port and `F2.1` in To.
 - The composed port list appears in **Ports & Roles** as soon as you type a tag; the network
   itself is only stacked at Calculate, because stacking a 16-port die onto a 153-port package is
   measured at ten seconds and the editor's strips run on every keystroke.

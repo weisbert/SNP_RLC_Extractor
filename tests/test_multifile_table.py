@@ -393,15 +393,17 @@ class TestDefaultScope(unittest.TestCase):
 
     def test_ports_spanning_two_files_render_as_TWO_CELLS_not_one(self):
         """
-        A port field carries ONE scope, and that is the parser's rule, not a
-        convenience: `parse_scoped_ports` refuses a tag on any comma token
-        after the first because `F1.1,F2.3` could mean 'one field, two scopes'
-        or 'F1 scopes the lot' and the two answers differ in silence.  So a
-        renderer returning a single string for a two-file set would emit
-        exactly the spelling the parser refuses.
+        This used to be the PARSER's rule -- a tag scoped the whole field, so
+        `F1.1,F2.3` was refused outright and a renderer joining with ',' emitted
+        a spelling that could not be read back.  The tag is per-token now, so
+        that string is legal and the reason is a MEASURED BUDGET instead: a
+        port cell is a `ttk.Combobox(width=7)`, 7 characters at 100% and at
+        150%, with no scrollbar.  `23,24,25` is 48 px of a 49 px budget;
+        `F2.23,24,25` is 64 px, 131%, and scrolls out of sight.
 
         Mutation: make `render_port_cells` join with ',' and this is the only
-        test that fails -- the string looks perfectly reasonable.
+        test that fails -- the string looks perfectly reasonable, and now it
+        even parses.
         """
         cells = fg.render_port_cells([("F1", [1]), ("F2", [3])], "F1")
         self.assertEqual(cells, ["1", "F2.3"])

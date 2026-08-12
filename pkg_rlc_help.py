@@ -828,12 +828,15 @@ trace...", then write its ports with a tag while the die's stay
 bare:
 
     2,F2.1                     short row: bond wire, die 2 to pkg 1
+    25,26,F2.15                short row: die 25 AND 26 onto pkg 15
     F2.2  rlc_gnd  R=0.5       the package's ground return
     2 / F2.1 + R/L/C           rlc_between row: a modelled wire
 
-A bare number always means the HOME file, so nothing above this
-line changes. The full rules -- what a tag is, why it is short, and
-what renumbers it -- are on the "Input syntax" tab.
+A bare number always means the HOME file and a tag scopes only the
+token it is on, so a short group mixes files in any order and
+nothing above this line changes. The full rules -- what a tag is,
+why it is short, and what renumbers it -- are on the "Input syntax"
+tab.
 """
 
 
@@ -2226,7 +2229,26 @@ of another file carries its tag:
       F2.13          port 13 of the second file
       F2.40-42       a range of it
       2,F2.1         a SHORT group across the two files
+      25,26,F2.15    two home ports and a package ball, one node
       2 / F2.1       Port / To of an rlc_between row, with R/L/C
+
+A TAG SCOPES THE ONE TOKEN IT IS WRITTEN ON. So a comma list mixes
+files freely, in any order, and every token reads exactly as it
+looks:
+
+      25,26,F2.15    = home 25, home 26, package 15
+      F2.15,25,26    = the same three ports
+      25,F2.12,F1.65 = home 25, package 12, home 65
+
+A RANGE IS ONE TOKEN, so `F2.40-42` takes a single tag. A LIST of
+one file's ports needs the tag on each of them, or a range:
+
+      F2.40,F2.42    two package ports
+      F2.40-42       three package ports
+      F2.40,42       package 40 and HOME 42  <- reads as written
+
+Repeated ports are dropped, so a group can be built up without
+worrying about naming one twice.
 
 The tags are F1, F2, ... in the order the files are listed, F1
 being the home file. A tag is a POSITION, so changing the home

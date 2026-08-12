@@ -865,11 +865,18 @@ class TestPortNamespace(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_port_range(f"PKG{pc.COMPOSE_TAG_SEP}12")
 
-    def test_a_tag_scopes_the_whole_field(self):
-        self.assertEqual(parse_scoped_ports("PKG.1,2,3", self.net), [3, 4, 5])
+    def test_a_tag_scopes_the_TOKEN_it_is_written_on(self):
+        """
+        A RANGE is one token, so every range spelling still takes one tag --
+        which is what the Help and the README show ('F2.40-42').  A list is
+        several tokens, and the bare ones take the default scope; see
+        test_a_BARE_token_after_a_tag_takes_the_DEFAULT_not_the_tag.
+        """
         self.assertEqual(parse_scoped_ports("PKG.1-3", self.net), [3, 4, 5])
         self.assertEqual(parse_scoped_ports("PKG.1:1:3", self.net), [3, 4, 5])
         self.assertEqual(parse_scoped_ports("EM.2", self.net), [2])
+        self.assertEqual(parse_scoped_ports("PKG.1,PKG.2,PKG.3", self.net),
+                         [3, 4, 5])
 
     def test_an_untagged_field_takes_the_default_scope(self):
         self.assertEqual(parse_scoped_ports("1,2", self.net, "EM"), [1, 2])
@@ -880,16 +887,45 @@ class TestPortNamespace(unittest.TestCase):
             parse_scoped_ports("1,2", self.net)
         self.assertIn("does not say which file", str(cm.exception))
 
-    def test_a_tag_on_a_later_token_is_refused_not_guessed(self):
+    def test_a_tag_on_a_LATER_token_scopes_THAT_token(self):
         """
-        MUTATION: let the leading tag win silently.  'EM.1,PKG.3' has two
-        readings -- one field with two scopes, or EM scoping everything -- and
-        they differ by which port the second endpoint is.
+        This used to be REFUSED.  With a sticky tag 'EM.1,PKG.3' really does
+        have two readings -- one field with two scopes, or EM scoping the lot
+        -- and they differ by which port the second endpoint is, so refusing
+        was right for a sticky tag.  Per-token has one reading, and the
+        connection table needs it to exist: a short group is stored in ONE
+        cell, so this is how a die-to-package tie is spelled there.
+
+        MUTATION: restore the refusal and the single-cell short group loses
+        its only spelling.
         """
-        with self.assertRaises(ComposeError) as cm:
-            parse_scoped_ports("EM.1,PKG.3", self.net)
-        self.assertIn("more than one port in the same field",
-                      str(cm.exception))
+        self.assertEqual(parse_scoped_ports("EM.1,PKG.3", self.net), [1, 5])
+
+    def test_a_BARE_token_after_a_tag_takes_the_DEFAULT_not_the_tag(self):
+        """
+        The rule the whole change is for, and the one a reader is told
+        everywhere else: a bare number is a port of the HOME file, in every
+        mode, with no ordering condition on it.
+
+        MUTATION: carry the last tag forward as the scope of the tokens after
+        it.  Then 'PKG.1,2' reads as PKG ports 1 and 2 ([3, 4]) instead of PKG
+        1 and EM 2 ([3, 2]) -- and it does not raise, so on a real file it is
+        a plausible wrong answer.  The two orders below must therefore name
+        the same two ports.
+        """
+        self.assertEqual(parse_scoped_ports("PKG.1,2", self.net, "EM"), [3, 2])
+        self.assertEqual(parse_scoped_ports("2,PKG.1", self.net, "EM"), [2, 3])
+
+    def test_ports_are_deduped_across_the_WHOLE_field(self):
+        """
+        parse_port_range dedupes within its own call, which was the whole
+        field before and is now ONE TOKEN, so the dedup has to be redone here
+        or '1,1' stops collapsing.  It is done on the GLOBAL index because two
+        files' local port 1 are two different ports.
+        """
+        self.assertEqual(parse_scoped_ports("1,1,2", self.net, "EM"), [1, 2])
+        self.assertEqual(parse_scoped_ports("EM.1,1", self.net, "EM"), [1])
+        self.assertEqual(parse_scoped_ports("EM.1,PKG.1", self.net), [1, 3])
 
     def test_a_tag_with_no_port_after_it_is_refused(self):
         """
@@ -985,15 +1021,31 @@ class TestLinks(unittest.TestCase):
                             ComposeInput(self.pkg, "PKG")])
 
     def test_elementwise_pairing(self):
-        pairs = link_short(self.net, "EM.1,2", "PKG.1,3")
+        pairs = link_short(self.net, "EM.1,EM.2", "PKG.1,PKG.3")
         self.assertEqual([(p.port_i, p.port_j) for p in pairs],
                          [(0, 2), (1, 4)])
 
     def test_one_port_fans_out(self):
         """54 VSS balls onto one die pad is the ordinary flip-chip connection."""
-        pairs = link_short(self.net, "EM.1", "PKG.1,2,3")
+        pairs = link_short(self.net, "EM.1", "PKG.1-3")
         self.assertEqual([(p.port_i, p.port_j) for p in pairs],
                          [(0, 2), (0, 3), (0, 4)])
+
+    def test_a_BARE_token_on_a_link_side_takes_the_DEFAULT_scope(self):
+        """
+        `default` is the only thing that gives a bare token a file, and the CLI
+        always passes one (`net.blocks[0].alias`, the first positional file),
+        so this is the shape every real --compose-link takes.  The tag is
+        per-token, so a bare token after a tag is the DEFAULT file and not the
+        tagged one -- which is why the tests around this one spell both sides
+        out rather than relying on a tag to carry.
+        """
+        pairs = link_short(self.net, "1,PKG.1", "PKG.2", default="EM")
+        self.assertEqual([(p.port_i, p.port_j) for p in pairs],
+                         [(0, 3), (2, 3)])
+        with self.assertRaises(ComposeError) as cm:
+            link_short(self.net, "PKG.1,2", "EM.1")
+        self.assertIn("does not say which file", str(cm.exception))
 
     def test_a_length_mismatch_is_a_hard_error_that_echoes_the_end_pairs(self):
         """
@@ -1002,7 +1054,7 @@ class TestLinks(unittest.TestCase):
         what makes that visible, because the first pair still looks right.
         """
         with self.assertRaises(ComposeError) as cm:
-            link_short(self.net, "EM.1,2", "PKG.1,2,3")
+            link_short(self.net, "EM.1-2", "PKG.1-3")
         text = str(cm.exception)
         self.assertIn("EM.1 - PKG.1", text)
         self.assertIn("EM.2 - PKG.3", text)

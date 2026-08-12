@@ -471,72 +471,105 @@ def parse_scoped_ports(spec: str, net: ComposedNetwork,
     """
     'F2.40,41,42' -> 1-based GLOBAL port numbers.
 
-    A leading `<alias>.` scopes the WHOLE field; the rest goes to
-    parse_port_range unchanged, so every range spelling that works on a single
-    file works here (`F2.40:1:50`, `F2.6-14`, `F2.1,3,5`).  A field with no tag
-    uses `default`, which is how a single-file spec keeps working verbatim and
-    how a two-file table keeps a default scope with a tag only on the crossing
-    endpoint -- the only option that fits (measured: a per-row file column costs
-    451 px against a 431 px viewport, two columns 497 px).
+    EVERY COMMA TOKEN CARRIES ITS OWN SCOPE, and a BARE TOKEN IS ALWAYS
+    `default`.  A `<alias>.` tag scopes the token it is written on and nothing
+    after it, so the two rules a reader is told everywhere else in this tool
+    hold literally, in every field, with no ordering condition:
 
-    A tag on a LATER comma token is refused rather than guessed: 'F1.1,F2.3'
-    would otherwise have to mean either "one field, two scopes" or "F1 scopes
-    everything", and the two answers differ silently.
+        a bare port number is a port of the home file
+        a tagged port number is a port of that file
+
+        '2,F2.1'    -> die port 2, package port 1
+        'F2.1,2'    -> package port 1, DIE port 2
+        'F1.1,F2.3' -> die port 1, package port 3
+        'F2.6-14'   -> a range of the package (a range is ONE token)
+
+    The tag used to be STICKY -- it scoped the whole field, and every bare
+    token after it inherited it.  That was chosen to keep 'F2.1,2' meaning
+    what it means when a tag can only appear once, and it is why 'F1.1,F2.3'
+    had to be refused: with a sticky tag the field has two readings ("one
+    field, two scopes" / "the first tag scopes the lot") that differ in
+    silence.  What it cost is the same silence one step further on.  The
+    connection table stores a whole short group in ONE cell (a group of
+    shorted pins has no from/to), so a die-to-package tie is written
+    '25,26,F2.15' there and has no other spelling; write the same group in
+    the other order, 'F2.15,25,26', and the sticky rule quietly re-pointed 25
+    and 26 at the PACKAGE.  That contradicts the rule this tool states
+    everywhere -- a bare number is the home file, in every mode -- and it does
+    not raise: it only needs the package to HAVE ports 25 and 26, and then it
+    is a plausible wrong answer.  Per-token has one reading, needs no ordering
+    rule, and makes 'F1.1,F2.3' say exactly what it looks like.
+
+    Ports are deduped over the whole field, order preserved.  The dedup is
+    GLOBAL rather than per token because two files' local port 1 are two
+    different ports and only the global index can tell them apart.
     """
     text = (spec or "").strip()
     if not text:
         return []
-    tokens = [t.strip() for t in text.split(",")]
-    lead, rest = _split_tag(tokens[0])
-    for tok in tokens[1:]:
-        tag, _ = _split_tag(tok)
-        if tag:
-            raise ComposeError(
-                FAULT_PORT,
-                f"'{text}' puts a file tag on more than one port in the same "
-                f"field.",
-                ["a file tag applies to the whole port field"],
-                "put the other file's ports in the other field, or on their "
-                "own row",
-            )
+    out: list[int] = []
+    for tok in text.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        out.extend(_scoped_token_ports(tok, text, net, default))
+    seen: set[int] = set()
+    result: list[int] = []
+    for p in out:
+        if p not in seen:
+            seen.add(p)
+            result.append(p)
+    return result
+
+
+def _scoped_token_ports(tok: str, field: str, net: ComposedNetwork,
+                        default: str | None) -> list[int]:
+    """
+    ONE comma token of a port field -> 1-based global ports.
+
+    `field` is the whole field the token came from, and it is carried purely
+    so a message about a token can show where it was written: '2' on its own
+    is not enough to find in a table cell that reads '1,2,F2.3'.
+    """
+    lead, rest = _split_tag(tok)
     alias = lead or default
+    where = [] if tok == field else [f"in the port field '{field}'"]
     if alias is None:
         known = ", ".join(b.alias for b in net.blocks)
         raise ComposeError(
             FAULT_PORT,
-            f"'{text}' does not say which file its ports belong to.",
-            [f"known files: {known}"],
-            f"write e.g. {net.blocks[0].alias}{COMPOSE_TAG_SEP}{text}"
+            f"'{tok}' does not say which file its ports belong to.",
+            where + [f"known files: {known}"],
+            f"write e.g. {net.blocks[0].alias}{COMPOSE_TAG_SEP}{tok}"
             if net.blocks else "",
         )
-    body = ",".join([rest] + tokens[1:]) if lead else text
+    body = rest if lead else tok
     if lead and not body.strip():
         # 'PKG.' is a typed tag with nothing after it.  An EMPTY field means
         # "nothing here" and returns []; this one means "I meant to name a port
         # and did not", and returning [] for it is a silently empty spec.
         raise ComposeError(
             FAULT_PORT,
-            f"'{text}' names the file {lead} but no port in it.",
+            f"'{tok}' names the file {lead} but no port in it.",
+            where,
             hint=f"write {lead}{COMPOSE_TAG_SEP}<port>, e.g. "
                  f"{lead}{COMPOSE_TAG_SEP}1")
     try:
         locals_ = parse_port_range(body)
     except ValueError as e:
-        detail = [str(e)]
+        detail = list(where) + [str(e)]
         known = {b.alias.lower() for b in net.blocks}
-        if text.lower() in known:
-            detail.append(f"'{text}' is the name of a FILE, not a port in it")
+        if tok.lower() in known:
+            detail.append(f"'{tok}' is the name of a FILE, not a port in it")
         raise ComposeError(
             FAULT_PORT,
-            f"'{text}' is not a port or a range of ports for file {alias}.",
+            f"'{tok}' is not a port or a range of ports for file {alias}.",
             detail,
             f"a port of {alias} is written "
             f"{alias}{COMPOSE_TAG_SEP}<port>; a port field is a number, a list "
             f"(1,3,5), a dash range (6-14) or a start:step:stop range "
             f"(35:1:45)",
         ) from None
-    if not locals_:
-        return []
     return [net.gport(alias, p) for p in locals_]
 
 
@@ -1778,8 +1811,11 @@ def link_short(net: ComposedNetwork, a_spec: str, b_spec: str, *,
     'EM.1' + 'PKG.12' -> the ShortPair chain that ties them into one node.
 
     Elementwise when both sides list several ports and the lengths match --
-    'EM.1,2,3' + 'PKG.10,11,12' is three separate wires, which is what a bond
-    diagram means.  A length mismatch is a HARD ERROR and echoes the END pairs,
+    'EM.1-3' + 'PKG.10-12' is three separate wires, which is what a bond
+    diagram means.  (A tag scopes ONE token, so a list of tagged ports is
+    'PKG.10,PKG.11,PKG.12'; a range is one token and takes one tag.  A bare
+    token takes `default`, which the CLI always passes.)  A length mismatch is
+    a HARD ERROR and echoes the END pairs,
     because an off-by-one in one file's numbering shifts every pair and the
     result is a plausible wrong answer with nothing pointing at it.  A single
     port on one side fans out to all of the other side (54 VSS balls onto one

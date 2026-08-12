@@ -42,6 +42,7 @@ import numpy as np
 from pkg_rlc_core import (
     CONN_KINDS,
     CONN_KINDS_WITH_NET,
+    CONN_KINDS_WITH_PARTNER,
     CONN_KINDS_WITH_RLC,
     DEFAULT_Z0,
     RECIPROCITY_WARN,
@@ -626,30 +627,23 @@ def _scope_port_field(spec: str, net, home: str,
     Everything else goes through `parse_scoped_ports`, tag or no tag, because
     that is where the "this is not a port of the home file" refusal lives.
 
-    A COMMA TOKEN MAY CARRY ITS OWN TAG, and the scope is STICKY.  This is the
-    one rule added on top of `parse_scoped_ports`, and it is added because the
-    connection table forces it: a `short` row stores its whole tied group in
-    ONE cell (`_join_short_group`, the single-cell short of R1), so
-    `2,F2.1` -- tie die port 2 to package port 1 -- has no other spelling in
-    that table.  `parse_scoped_ports` refuses a tag on a later token outright,
-    for a good reason on ITS input: `F1.1,F2.3` would have to mean either "one
-    field, two scopes" or "F1 scopes everything", and the two answers differ
-    silently.
+    THE SCOPE RULE IS THAT FUNCTION'S, NOT THIS ONE'S: every comma token
+    carries its own scope, and a BARE token is always the home file.
 
-    So this does not re-decide that; it removes the ambiguity and then asks the
-    same parser.  Each comma token is resolved ON ITS OWN, with the scope
-    carried forward from the last tag seen (the home file until one is), so:
+    This used to hold a second rule of its own -- it split the field here and
+    made a tag STICKY over the tokens after it -- because `parse_scoped_ports`
+    refused a tag on any but the first token, while the connection table has to
+    be able to spell a die-to-package tie in ONE cell (`_join_short_group`: a
+    group of shorted pins has no from/to, so `25,26,F2.15` has no other
+    spelling there).  The sticky reading made
 
-        '2,F2.1'    -> die port 2, package port 1     (the single-cell short)
-        'F2.1,2'    -> package ports 1 and 2          (identical to
-                                                       parse_scoped_ports)
-        'F1.1,F2.3' -> die port 1, package port 3     (refused there, because
-                                                       there it is ambiguous)
+        'F2.15,25,26'   ->  three PACKAGE ports
 
-    Every token still goes through `parse_scoped_ports`, one at a time, so the
-    "tag on more than one port" branch can never fire and every OTHER rule --
-    unknown alias, port out of range, range syntax, an empty tagged field --
-    stays that function's rule, unchanged and unduplicated.  The agreement is
+    which contradicts the rule this tool states everywhere else -- a bare
+    number is a port of the HOME file, in every mode -- and contradicts it in
+    silence: it only needs the package to have ports 25 and 26.  Per-token now
+    lives in `parse_scoped_ports` itself, so GUI and CLI cannot drift on what a
+    field means and there is no parsing left here.  The agreement is
     pinned in tests/test_multifile_engine.py::TestScopePortField.
 
     `collapse_ports` never emits a space, which is what makes the rewritten
@@ -658,14 +652,8 @@ def _scope_port_field(spec: str, net, home: str,
     text = (spec or "").strip()
     if not text or text.lower() in skip:
         return text
-    ports: list[int] = []
-    scope = home
     try:
-        for token in text.split(","):
-            tag, _rest = comp._split_tag(token.strip())
-            if tag:
-                scope = tag
-            ports.extend(comp.parse_scoped_ports(token, net, default=scope))
+        ports = comp.parse_scoped_ports(text, net, default=home)
     except comp.ComposeError as e:
         raise ComposeSpecError(str(e)) from None
     return collapse_ports(ports) if ports else text
@@ -742,6 +730,87 @@ def _scope_mport_rows(rows: Sequence, net, home: str) -> list:
                     plus=_scope_port_field(r.plus, net, home),
                     minus=_scope_port_field(r.minus, net, home))
             for r in rows]
+
+
+#: A port field is echoed only when it TAGS a file.  A bare field on a
+#: composition is the home file by a rule with no exception left in it, and
+#: echoing `25 = F1.25` on every row would spend the strip's two lines saying
+#: nothing.  A tagged field is where the reading is worth confirming: it is the
+#: only place the scope changes, it is what the per-token rule changed, and
+#: `F2.40,42` -- package 40 and HOME 42 -- is the one spelling that still looks
+#: like something else.
+def _field_has_tag(spec: str) -> bool:
+    return any(comp._split_tag(t.strip())[0]
+               for t in (spec or "").split(",") if t.strip())
+
+
+def scope_echo_messages(mport_rows: Sequence, conn_rows: Sequence,
+                        extra_lines: str, net, home: str) -> list[tuple]:
+    """
+    What every TAGGED port field actually resolved to -> [(text, anchor)].
+
+    Takes the ORIGINAL rows, never the scoped ones: scoping rewrites a field to
+    global indices and the tag is gone by then, so an echo built from the output
+    could only repeat the number it is trying to explain.
+
+    The echo is the answer to "which file is that port of", asked of the one
+    thing that can answer it -- the resolver the solve itself uses.  It is not a
+    second reading of the spec: `_scope_port_field` is called here exactly as
+    Calculate calls it, and `describe_ports` is the compose module's own
+    renderer, so a drift between what is echoed and what is computed is not
+    expressible.
+
+    MUST NOT RAISE -- it runs from the strips, on every keystroke, where a
+    raised exception reaches no handler we control.  A field that does not
+    resolve gets NO echo and the ordinary validation reports it: two messages
+    about one broken cell, one of which is a green tick, is worse than one.
+    """
+    out: list[tuple] = []
+    if net is None:
+        return out
+
+    def _one(spec: str, anchor, what: str) -> None:
+        text = (spec or "").strip()
+        if not text or not _field_has_tag(text):
+            return
+        try:
+            ports = comp.parse_scoped_ports(text, net, default=home)
+        except Exception:
+            return
+        if not ports:
+            return
+        out.append((f"✓ {what} {text} = {net.describe_ports(ports)}", anchor))
+
+    try:
+        live_mp = [r for r in mport_rows if not r.is_blank()]
+        for i, row in enumerate(live_mp):
+            _one(row.plus, ("mport", i), f"measurement port row {i + 1} '+':")
+            _one(row.minus, ("mport", i), f"measurement port row {i + 1} '−':")
+        live_conn = [r for r in conn_rows if not r.is_blank()]
+        names = {n.lower() for n in _collect_nets_safe(conn_rows)}
+        for i, row in enumerate(live_conn):
+            anchor = ("conn", i)
+            if (row.ports or "").strip().lower() not in names:
+                _one(row.ports, anchor, f"connection row {i + 1} Port:")
+            if row.kind in CONN_KINDS_WITH_PARTNER and \
+                    (row.to or "").strip().lower() not in names:
+                _one(row.to, anchor, f"connection row {i + 1} To:")
+        for line in (extra_lines or "").splitlines():
+            parts = line.split()
+            if parts and _field_has_tag(parts[0]):
+                _one(parts[0], None, "kept text:")
+    except Exception:                       # pragma: no cover - MUST NOT RAISE
+        pass
+    return out
+
+
+def _collect_nets_safe(conn_rows: Sequence) -> list[str]:
+    """The node names in these rows, or none if they cannot be read."""
+    try:
+        return [r.net.strip() for r in conn_rows
+                if getattr(r, "net", "") and r.net.strip()]
+    except Exception:                       # pragma: no cover
+        return []
 
 
 def _check_bare_ports(ports: Sequence[int], net, home: str, what: str) -> None:
@@ -1191,7 +1260,8 @@ class _VMsg:
 def _validation_report(mport_rows: Sequence, conn_rows: Sequence,
                        extra_lines: str = "",
                        nports: Optional[int] = None,
-                       port_names: Optional[Sequence[str]] = None) -> list:
+                       port_names: Optional[Sequence[str]] = None,
+                       scope_echoes: Sequence[tuple] = ()) -> list:
     """
     Everything worth saying about the two tables, worst CONSEQUENCE first.
 
@@ -1203,6 +1273,14 @@ def _validation_report(mport_rows: Sequence, conn_rows: Sequence,
     `port_names` (the file's "! Port[n] = ..." names) enables the open-port
     name check -- the one thing here that catches a spec which is internally
     consistent and still wrong.  Omit it and that check simply does not run.
+
+    `scope_echoes` is `scope_echo_messages`' output: what each TAGGED port
+    field resolved to, on a composition.  It is V_OK and it is appended, so a
+    real problem always outranks it in the two-line strip -- but unlike the
+    R/L/C echoes it survives ALONGSIDE a problem rather than being suppressed
+    by one, because the question it answers ("which file is that port of")
+    is at its most useful exactly when something else is wrong.  Calculate
+    prints the whole list, so nothing is lost off the end of the strip.
     """
     msgs: list = []
     # Row indices as the STRIP numbers them: blanks are dropped by
@@ -1302,9 +1380,14 @@ def _validation_report(mport_rows: Sequence, conn_rows: Sequence,
             except Exception:       # pragma: no cover - see MUST NOT RAISE
                 pass
 
+    scoped = [_VMsg(V_OK, text, anchor) for text, anchor in scope_echoes]
+
     if msgs:
-        # STABLE: row order is preserved inside a tier.
-        return sorted(msgs, key=lambda m: m.tier)
+        # STABLE: row order is preserved inside a tier, and the scope echoes
+        # come last because V_OK is the last tier -- so a problem is still what
+        # the two-line strip shows, with the echoes behind it in the Results
+        # pane where Calculate prints the whole list.
+        return sorted(msgs + scoped, key=lambda m: m.tier)
 
     # One message per element row, not one line naming the first and counting
     # the rest: the echo exists to catch '5m' typed as '5M', which is a
@@ -1312,16 +1395,21 @@ def _validation_report(mport_rows: Sequence, conn_rows: Sequence,
     # Calculate prints the full list to the Results pane.
     echoes = [_VMsg(V_OK, "✓ " + e, ("conn", i))
               for i, e in enumerate(_rlc_echo(r) for r in conn_live) if e]
-    return echoes or [_VMsg(V_OK, "✓ no problems found")]
+    # The scope echoes lead: on a composition "which file is this port of" is
+    # the question that has to be settled before an R/L/C value means anything,
+    # and the strip shows two lines.
+    return scoped + echoes or [_VMsg(V_OK, "✓ no problems found")]
 
 
 def _validation_messages(mport_rows: Sequence, conn_rows: Sequence,
                          extra_lines: str = "",
                          nports: Optional[int] = None,
-                         port_names: Optional[Sequence[str]] = None) -> list[str]:
+                         port_names: Optional[Sequence[str]] = None,
+                         scope_echoes: Sequence[tuple] = ()) -> list[str]:
     """The text of _validation_report, which is what the strips render."""
     return [m.text for m in _validation_report(mport_rows, conn_rows,
-                                               extra_lines, nports, port_names)]
+                                               extra_lines, nports, port_names,
+                                               scope_echoes)]
 
 
 def _measured_port_messages(mport_rows: Sequence, term: TerminationSet,
@@ -4757,6 +4845,27 @@ class _CollapsibleHint(ttk.Frame):
         else:
             self._body.pack_forget()
 
+    def set_text(self, short: str, long: str) -> None:
+        """
+        Replace the text, for a hint that follows what is in the table.
+
+        EARLY-OUT ON AN UNCHANGED VALUE, because this is called from
+        `_apply_editor_strips`, i.e. once per keystroke, and the normal case is
+        that nothing moved.  Without it every character would reconfigure two
+        Labels and fire a scrollregion refresh.
+
+        `<<HintToggled>>` is generated for the same reason the toggle does: the
+        form's height has changed and the editor canvas's scrollregion is
+        derived from it.  The event says "this hint is a different size now",
+        which is what the binding acts on -- it is not only about the arrow.
+        """
+        if (short, long) == (self._short, self._long_text):
+            return
+        self._short, self._long_text = short, long
+        self._body.configure(text=long)
+        self._render()
+        self.event_generate("<<HintToggled>>")
+
     def _toggle(self, _event=None) -> None:
         _CollapsibleHint._expanded = not _CollapsibleHint._expanded
         for w in self.master.winfo_children():
@@ -4974,35 +5083,137 @@ def conn_row_from_cells(vals: dict) -> ConnectionRow:
 
 
 CONN_TABLE_HINT_SHORT = "one row per connection; the Kind decides which cells it has"
-CONN_TABLE_HINT = (
-    "One row per connection, and the cells a row has follow its Type. "
-    "ground / vdd (both are V=0 for AC) and open take ONE port field and "
-    "nothing else. short takes one field too -- list the whole tied group in "
-    "it, 5,6,7,8 or 23-25; there is no from/to, because a group of shorted "
-    "pins has neither. The cell the short row frees up is its Net name: give "
-    "the node a name there ('coil_tap') and any port field can say that name "
-    "instead of a port number. rlc_gnd is one port field plus R/L/C (a series "
-    "R-L-C from each port to ground), and rlc_between is the only Type with "
-    "two port fields, because a two-terminal element really has two ends. "
-    "Every port field takes ranges -- 6-14 or 35:1:45 -- so a package's "
-    "ground balls are one row. A range on an rlc_gnd or rlc_between row is "
-    "one element PER PORT, not one shared by them: 21:1:25 with L=80p is five "
-    "separate 80 pH inductors (for one shared element, short the ports "
-    "together first and hang the element off the NODE -- its net name, or any "
-    "one member port; both are at the top of the dropdown. Listing every "
-    "member instead is N elements in parallel, and the strip says so). Two "
-    "rlc_between rows on "
-    "the same pair are two elements in PARALLEL; two rlc_gnd rows on the same "
-    "port are not -- the lower row wins. R/L/C hold the bare value with SI "
-    "suffixes and the unit is in the header: 5m is 5 milli, 5M is 5 Mega, and "
-    "the value must be ONE word -- '5 m' and '1 uF' are rejected. A blank "
-    "R/L/C means OMITTED, which is not zero -- an omitted C is no capacitor, "
-    "C=0 would be an open circuit. The dropdowns list port NUMBERS; for the "
-    "file's port names click 'Show Ports' at the top of this panel. It opens "
-    "'Ports & Roles', which lists every port with its name and its role, "
-    "flags the open ones whose names match a set you grounded, and can write "
-    "a selection back here as a collapsed range."
+
+# --- Per-Kind fill-in hints ------------------------------------------------
+#
+# THE HINT FOLLOWS THE KINDS IN THE TABLE, which is the rule `conn_table_layout`
+# already applies to the cells and to the header.  R1-1's complaint was that
+# every Kind got the same table; the hint under it had the same defect one
+# layer up -- a single paragraph covering all six, so a user filling in a
+# `short` row read two sentences about `rlc_between` to reach the one about
+# theirs, and the sentence they needed ("the whole group goes in ONE cell,
+# there is no To") was in the middle of it.
+#
+# It costs no pixels COLLAPSED (one line, as before) and is normally SHORTER
+# expanded, because a real table carries one or two Kinds and not six.  The
+# general rules below are the ones that apply to every row and are appended
+# once, not repeated per Kind.
+#
+# Each entry is (one-line summary, the full "how do I fill this in").  The
+# summary is what a single-Kind table shows collapsed, so it leads with the
+# Kind and then with the CELLS -- that is the question being asked.
+CONN_KIND_HINTS = {
+    "ground": (
+        "ground: Port only -- a whole ground set is ONE row (6-14)",
+        "ground -- Port only, no other cell. The port is tied to the "
+        "reference node (V=0). A range is one row, so a package's ground "
+        "balls are '6-14' or '35:1:45' rather than nine rows."),
+    "vdd": (
+        "vdd: Port only -- identical to ground for AC",
+        "vdd -- Port only, and evaluated exactly as ground: for AC "
+        "small-signal VDD *is* an AC ground. It exists to record the intent, "
+        "so a reader of the spec can see which rows are supply and which are "
+        "ground."),
+    "open": (
+        "open: Port only -- unlisted ports are ALREADY open",
+        "open -- Port only. Everything you do not list is open already, so "
+        "this row changes no number; it is for SAYING SO, which is worth a "
+        "row when the alternative is a reader wondering whether the port was "
+        "forgotten."),
+    "short": (
+        "short: the WHOLE group in Port (5,6,7,8); the next cell NAMES it",
+        "short -- Port holds the WHOLE tied group: '5,6,7,8' or '23-25'. "
+        "There is no To cell, because a group of shorted pins has no "
+        "from/to. The cell beside Port is the node's NAME (optional): type "
+        "'coil_tap' there and any port field may say that name instead of a "
+        "port number. Shorting is transitive, so one row ties every port in "
+        "it into one node."),
+    "rlc_gnd": (
+        "rlc_gnd: Port + R/L/C -- one element PER port, not one shared",
+        "rlc_gnd -- Port plus R/L/C: a series R-L-C from EACH listed port to "
+        "ground. A range is one element PER PORT: '21:1:25' with L=80p is "
+        "five separate 80 pH inductors, which is the right model for five "
+        "ground balls each with its own lead. For ONE shared element, short "
+        "the ports together first and hang this row off the node (its net "
+        "name, or any one member port). Two rlc_gnd rows on the same port do "
+        "NOT parallel -- the lower row wins."),
+    "rlc_between": (
+        "rlc_between: Port and To, one port each, + R/L/C",
+        "rlc_between -- Port and To, plus R/L/C. The only Type with two port "
+        "fields, because a two-terminal element really has two ends. A range "
+        "is refused on the To side: an N-to-M element is ambiguous (star? "
+        "mesh?) and guessing would be a silent wrong answer. Two "
+        "rlc_between rows on the same pair ARE two elements in parallel."),
+}
+
+#: Appended once, under whichever Kind hints are showing.  These hold for every
+#: row whatever its Kind, so repeating them per Kind would be six copies of the
+#: SI rule to keep in step.
+CONN_TABLE_HINT_GENERAL = (
+    "Every port field takes ranges -- 6-14 or 35:1:45. R/L/C hold the bare "
+    "value with SI suffixes and the unit is in the header: 5m is 5 milli, 5M "
+    "is 5 Mega, and the value must be ONE word -- '5 m' and '1 uF' are "
+    "rejected. A blank R/L/C means OMITTED, which is not zero: an omitted C "
+    "is no capacitor, while C=0 would be an open circuit. The dropdowns list "
+    "port NUMBERS; for the file's port names click 'Show Ports' at the top of "
+    "this panel, which opens 'Ports & Roles' -- every port with its name and "
+    "role, the open ones flagged when their names match a set you grounded, "
+    "and a selection written back here as a collapsed range."
 )
+
+#: With more than one file on the trace, a port of another file carries its
+#: tag.  Only shown when the trace actually has one, so a single-file user
+#: never reads about tags.
+CONN_TABLE_HINT_TAGGED = (
+    "This trace has more than one file: a bare port number is a port of the "
+    "HOME file, and a port of another carries its tag ('F2.15'). The tag "
+    "scopes the ONE token it is on, so '25,26,F2.15' ties two home ports to "
+    "package 15 and reads the same in any order; a range is one token, so "
+    "'F2.40-42' takes one tag while 'F2.40,42' is package 40 and HOME 42. "
+    "The strip below echoes what each tagged field resolved to."
+)
+
+
+def conn_hint_text(rows: Sequence, tagged: bool = False) -> tuple:
+    """
+    (collapsed line, expanded text) for the Kinds actually in the table.
+
+    Pure, and the reason it is: the widget is refreshed on every keystroke, so
+    the early-out in `_CollapsibleHint.set_text` needs a value it can compare,
+    and a hint that is a property of the ROWS is testable without a display.
+
+    Order is `CONN_KINDS`, never the order the rows happen to be in: the hint
+    is a reference, and a reference that reorders itself as the user edits is
+    one the eye cannot find its place in again.
+
+    An empty table gets EVERY Kind, which is the one case where the reader is
+    choosing a Kind rather than filling one in.
+    """
+    try:
+        present = {(getattr(r, "kind", "") or "").strip()
+                   for r in rows if not r.is_blank()}
+    except Exception:                       # pragma: no cover - see the strips
+        present = set()
+    kinds = [k for k in CONN_KINDS if k in present and k in CONN_KIND_HINTS]
+    if not kinds:
+        kinds = [k for k in CONN_KINDS if k in CONN_KIND_HINTS]
+        short = CONN_TABLE_HINT_SHORT
+    elif len(kinds) == 1:
+        short = CONN_KIND_HINTS[kinds[0]][0]
+    else:
+        short = (f"{CONN_TABLE_HINT_SHORT} "
+                 f"({len(kinds)} kinds here -- click for each)")
+    body = [CONN_KIND_HINTS[k][1] for k in kinds]
+    if tagged:
+        body.append(CONN_TABLE_HINT_TAGGED)
+    body.append(CONN_TABLE_HINT_GENERAL)
+    return short, "\n\n".join(body)
+
+
+#: The whole reference, every Kind, no table needed.  Kept as a module
+#: constant because the Help text and the tests both want "all of it" and
+#: neither has rows to hand.
+CONN_TABLE_HINT = conn_hint_text(())[1]
 
 # What the "Edit as text…" dialog promises, verbatim. The round trip is
 # deliberately lossy in known ways and saying so is the difference between a
@@ -7236,7 +7447,8 @@ class App(tk.Tk):
         if not self.ed_overview.winfo_exists():
             return
         try:
-            mports, conn, extra, nports, names = self._editor_spec_inputs()
+            mports, conn, extra, nports, names, echoes = \
+                self._editor_spec_inputs()
             # The merged-node entries at the top of the Port / To dropdowns
             # follow the short rows as they are typed, so they are refreshed
             # here rather than only on a file or trace change.  This writes
@@ -7250,7 +7462,8 @@ class App(tk.Tk):
                                                nports=nports)
             except Exception:
                 term = None
-            msgs = _validation_messages(mports, conn, extra, nports, names)
+            msgs = _validation_messages(mports, conn, extra, nports, names,
+                                        echoes)
             self.ed_style.set_span(self._editor_curve_span(term))
             self.ed_overview.configure(
                 text=_port_overview_text(term, nports))
@@ -7261,6 +7474,13 @@ class App(tk.Tk):
             self.ed_footer_strip.configure(
                 text=_footer_strip_text(term, nports, msgs))
             self.ed_extra_lbl.configure(text=_extra_lines_indicator(extra))
+            # The hint follows the Kinds in the table, the same rule
+            # conn_table_layout applies to the cells and the header.  `conn` is
+            # the SCOPED copy, which is fine here and only here: scoping
+            # rewrites port fields and never touches `kind`.
+            sel = self._selected_trace()
+            self.ed_conn_hint.set_text(*conn_hint_text(
+                conn, tagged=(sel is not None and trace_is_composed(sel))))
         except Exception as e:
             # Belt and braces: _validation_messages already swallows its own
             # errors, but this is the last frame before Tcl and nothing beyond
@@ -7319,24 +7539,31 @@ class App(tk.Tk):
         It NEVER RAISES: this is on the strips' path, and a bad tag is a
         message for the strip, not an exception.  A field that cannot be
         scoped is left exactly as typed and the ordinary validation reports it.
+
+        The sixth item is the SCOPE ECHO, and it is built from the rows BEFORE
+        they are scoped -- scoping rewrites a tagged field to a global index
+        and the tag is gone by then, so it is the only point where both
+        spellings exist at once.
         """
         mports = self.ed_mp_table.get_rows()
         conn = self.ed_conn_table.get_rows()
         extra = self._ed_extra_lines
         nports = self._editor_nports()
         names = self._editor_port_names()
+        echoes: list[tuple] = []
         tc = self._selected_trace()
         if tc is not None and trace_is_composed(tc):
             net, home = self._trace_namespace(tc)
             if net is not None:
                 nports, names = net.nports, net.port_labels()
+                echoes = scope_echo_messages(mports, conn, extra, net, home)
                 try:
                     mports = _scope_mport_rows(mports, net, home)
                     conn = _scope_conn_rows(conn, net, home)
                     extra = _scope_dsl_text(extra, net, home)
                 except Exception:
                     pass
-        return (mports, conn, extra, nports, names)
+        return (mports, conn, extra, nports, names, echoes)
 
     def _selected_trace(self) -> Optional[TraceConfig]:
         """The trace the editor is showing, or None."""
@@ -7361,8 +7588,10 @@ class App(tk.Tk):
         handler we control.  Same contract as _apply_editor_strips.
         """
         try:
-            mports, conn, extra, nports, names = self._editor_spec_inputs()
-            report = _validation_report(mports, conn, extra, nports, names)
+            mports, conn, extra, nports, names, echoes = \
+                self._editor_spec_inputs()
+            report = _validation_report(mports, conn, extra, nports, names,
+                                        echoes)
             target = None
             anchor = report[0].anchor if report else None
             if anchor is not None:
@@ -7883,7 +8112,15 @@ class App(tk.Tk):
                 # the same spec, or the strip says a tagged cell is fine while
                 # the Log says it does not parse.  Never raises here either --
                 # a bad tag is reported by the build below, with its message.
+                v_echo: list[tuple] = []
                 try:
+                    if sn.composed:
+                        # Built from the UNSCOPED rows, exactly as the editor
+                        # does it: the tag is what the echo is about and
+                        # scoping removes it.
+                        v_echo = scope_echo_messages(
+                            tc.mports, tc.conn_rows, tc.extra_lines,
+                            sn.net, sn.home_alias)
                     v_mp, v_conn, v_extra = (
                         (_scope_mport_rows(tc.mports, sn.net, sn.home_alias),
                          _scope_conn_rows(tc.conn_rows, sn.net, sn.home_alias),
@@ -7895,7 +8132,7 @@ class App(tk.Tk):
                     v_mp, v_conn, v_extra = (tc.mports, tc.conn_rows,
                                              tc.extra_lines)
                 notes = _validation_messages(v_mp, v_conn, v_extra, sn.nports,
-                                             sn.port_names)
+                                             sn.port_names, v_echo)
                 if len(notes) > VALIDATION_STRIP_LINES:
                     # Only the ones that are NOT a '✓' echo make this a
                     # warning; a long spec that is entirely fine must not

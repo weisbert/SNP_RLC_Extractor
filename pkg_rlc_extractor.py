@@ -3130,11 +3130,15 @@ def _compose_ports(net: comp.ComposedNetwork, spec: str,
     """
     A scoped port field -> 1-based GLOBAL ports, order preserved, deduped.
 
-    ';' separates FIELDS, and it exists because a file tag scopes a whole
-    field: parse_scoped_ports refuses 'PKG.40,41,EM.5' rather than guess
-    whether the tag covers the list or only the token it sits on. One ground
-    list touching two files is an ordinary spec, so it needs a separator that
-    the port grammar does not already use -- ',' ':' and '-' are all taken.
+    ';' separates FIELDS.  It exists because a file tag USED TO scope a whole
+    field: `parse_scoped_ports` refused 'PKG.40,41,EM.5' rather than guess
+    whether the tag covered the list or only the token it sat on, and one
+    ground list touching two files is an ordinary spec, so it needed a
+    separator the port grammar does not already use (',' ':' and '-' are all
+    taken).  That tag is now per-token, so 'PKG.40,41,EM.5' is an ordinary
+    field and ';' buys nothing new -- it stays because it is in shipped specs
+    and scripts, and because a field per ground group still reads better than
+    one long list.
     """
     out: list[int] = []
     for part in (spec or "").split(";"):

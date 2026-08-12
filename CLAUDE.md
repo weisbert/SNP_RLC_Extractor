@@ -50,7 +50,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `tests/test_attrib_composed.py` | The composed-network gauge inside `pkg_rlc_attrib` (45 tests, 0.06 s, no Tk, in `FAST_MODULES`): a 12-port construction where the package is in series in the SHARED RETURN (a fully differential probe pair injects zero net current, `1ᵀw_b == 0`, so it can only reach a common-mode-only package through asymmetry — an obvious 6-port sketch gives a fixture where every test passes and nothing is measured), the ball-grounded / ball-open engine bracket (704.70176729 pH vs 1.0837047531 nH, **−3.7381 dB**), the exactly-zero-with-a-healthy-residual failure, the bare term against an ENGINE re-solve with the balls removed (2.481e-15 relative), the cold start with and without the gauge, and `_island_elements` fuzzed over 2993 specs on every fixture. Every guard mutation-checked. |
 | `tests/test_multifile_session.py` | The multi-file SCHEMA (R3-1): that a trace can name several files without moving anything about naming one. Byte identity of a single-file trace's JSON pinned against a literal captured from the build BEFORE the change (key order included); the two tag authorities (`pkg_rlc_gui` and `pkg_rlc_files_gui`) pinned against each other; the list-aliasing trap on the THIRD field (`file_labels`, after `mports` and `conn_rows`); `_config_signature` unmoved for every pre-composition trace; and `TestCalculateComposesTheFiles`, which is where the engine half is asserted from the App side. Every guard mutation-checked. |
 | `tests/test_multifile_table.py` | The file WINDOW and the port-cell budget (R3-2 / R3-3 / R3-5): the measured cell (72 px / 7 chars at 100%, 135 px / 7 chars at 150% — the character count is what is DPI-stable), the alias refusal quoting the measured FRACTION rather than a digit count, the default-scope rendering, the footer's pack order at a floor where the tree actually unmaps, and the reference strip in the Attribution window (not packed at all when there is no composition — an unmanaged `ttk.Label` still answers `winfo_reqheight() == 21`). Every guard mutation-checked. |
-| `tests/test_multifile_engine.py` | What Calculate DOES with several files, and the surfaces that have to say so: the namespace and its sticky-scope rule pinned against `parse_scoped_ports` on everything that one accepts, the two namespace builders pinned against each other, the composed frequency axis reaching the plot / the CSV / the marker snap, R3-5 reaching the Log and the run page exactly once, and R2-8 inside the Attribution window (the package element must not come back as exactly 0). Every guard mutation-checked. |
+| `tests/test_multifile_engine.py` | What Calculate DOES with several files, and the surfaces that have to say so: the namespace and its per-token scope rule (a bare token after a tag is still the HOME file) pinned against `parse_scoped_ports` on everything that one accepts, the two namespace builders pinned against each other, the composed frequency axis reaching the plot / the CSV / the marker snap, R3-5 reaching the Log and the run page exactly once, and R2-8 inside the Attribution window (the package element must not come back as exactly 0). Every guard mutation-checked. |
 | `tests/test_conn_rowshape.py` | Per-kind row shape and the footer route (the GUI's half of round 1): `conn_table_layout`'s two rules over all 63 kind subsets (a cell never spreads under someone else's heading, and it spreads whenever it may), the measured table widths, the short-group cell shim's `TerminationSet` equivalence, the R1-5 consequence tiers, and — Tk-driven — that clicking the footer reaches a row past the table's OWN scroll and that it costs zero pixels. Every guard mutation-checked. |
 | `tests/test_mode5_editor.py` | Stage 3: the pure text<->rows import decision and both strip renderers, plus Tk-driven editor wiring, per-mode widget visibility, the text hatch, the CSV gate, wheel routing, and the LAYOUT numbers (`ismapped` / `reqwidth` / `xview` / `scrollregion` / `sashpos`) measured off a mapped window — including that a mode with no table fits the 431 px canvas outright and every mode shows the same editor height at the minsize. |
 | `tests/test_freeze_trace.py` | "Freeze as new trace": the pure copy rules (config copied, lists element-wise, results REFERENCED), the two refusals (Calculate skips it, the editor cannot write it), the two *entry* refusals (`freeze_refusal` — no numbers, and a STALE spec), the `freeze_label` budget that keeps the `<HH:MM>` stamp inside `MAX_LABEL_LEN`, that everything else still works (plot / show-hide / CSV / Remove), that the CSV does not attribute a snapshot's numbers to the newest run, the right-click menu, and the session round trip that comes back without numbers and says so. Every guard mutation-checked. |
@@ -73,6 +73,44 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 - **Canvas focus.** After every `FigureCanvasTkAgg`, call `canvas.get_tk_widget().focus_set()` so M / V / Delete keys are received (also in the fullscreen `Toplevel`).
 - **Port indices: 1-based at the GUI/CLI boundary, 0-based inside core.** Convert in the `build_terminations_*` builders, never deeper.
 - **Schur reduction uses `np.linalg.solve`** (not explicit inverse). On `LinAlgError` or pathological condition, fall back to `np.linalg.lstsq` and emit a warning naming the offending frequency.
+- **`lstsq` IS THE LAST RESORT AND IT CAN FAIL TOO — one bad frequency must NaN
+  that frequency, never the sweep.** LAPACK's SVD does not converge on a
+  non-finite `Y_oo`, and a non-finite `Y_oo` is ORDINARY here rather than
+  exotic: a lumped `L` to ground is `y = 1/(jwL)`, which numpy evaluates to
+  `inf+nanj` at `w == 0`, so any spec carrying a ground-lead inductance, read
+  off a file that carries a DC point (**every composed sweep KEEPS 0 Hz**), puts
+  a NaN in `Y_oo` at exactly the frequency where a DC-isolated port — one
+  reaching the rest of the network only capacitively — also makes it exactly
+  singular. Both conditions are needed and **both are normal**: together they
+  aborted a real 61+37-port composed run at index 0 with an UNCAUGHT
+  `LinAlgError` while all 2000 other frequencies were healthy (`solve` ->
+  `Singular matrix`, batched then per-frequency, then the unguarded `lstsq` ->
+  `SVD did not converge in Linear Least Squares`). Order matters for
+  reproducing it: LAPACK's partial pivoting has to meet the exact zero before
+  the `inf` poisons the column it would pivot on, which is why the fixture puts
+  the DC-isolated port FIRST among the open-like ones. The guard is
+  `complex(nan, nan)` for that frequency plus a warning naming it — a real NaN
+  would leave `imag == 0` and `L = Im(Z)/omega` would read as a plausible 0 H.
+  Same rule and same reason as `_probe_impedance`'s guard on its own SVD, which
+  has had it all along; that asymmetry between two sibling paths in one
+  function is the whole defect. Healthy frequencies are bit-identical with and
+  without the DC point (measured, `array_equal`). The user-side workaround
+  needing no redeploy is a finite series `R` on the lead (`R=1u` beside
+  `L=50p`): `y` is then finite at DC, lstsq converges, and 1 µΩ against 1.74 Ω
+  of reactance at 5.55 GHz costs **6.7e-8** relative.
+  `tests/test_core.py::TestOneBadFrequencyDoesNotAbortTheSweep` is the guard
+  (mutation-checked: 5 of its 6 tests die with the uncaught `LinAlgError` when
+  the try/except is removed; the sixth is the precondition that pins the
+  fixture still reaches the guarded line). The pre-existing
+  `TestSchurSingularityFallback` does **not** cover this — its `Y_oo` is
+  singular but FINITE, so lstsq succeeds and the guarded line is never reached,
+  and it accepts a raise as correct behaviour anyway.
+- **KNOWN, NOT FIXED: `s_to_y` / `y_to_s` have the same shape one level up.**
+  Their per-frequency fallback is `np.linalg.pinv`, whose SVD raises identically
+  on a non-finite `S`, and nothing catches it. Not the composed-run crash above
+  (that file's `S` is finite; the `inf` is stamped later, by the lumped
+  element), so it is recorded rather than patched blind — fix it with a fixture
+  that actually carries a NaN `S` entry, not by pattern-matching this bullet.
 - **Auto-create a default trace on file load.** Don't make users hit "Add Trace" for the basic workflow.
 - **Y-axis log uses `symlog` with `linthresh=1e-6`** to handle data crossing zero.
 - **R / L / C / Q are reported with their physical sign (Cadence convention).** `extract_rlc_at_freq`, the plot's `trace_y_values`, and both CSV exporters must NOT clip negative values to NaN. Q is `Im(Z)/Re(Z)`, not `|Im(Z)|/Re(Z)`; `L = Im(Z)/ω` and `C = -1/(ωIm(Z))` go negative past/below SRF respectively. The GUI results pane appends a brief annotation when a value is negative — keep that in sync if formulas change.
@@ -1360,6 +1398,30 @@ looking at the screen.
   that deletion is the mechanical reason nobody could remember the syntax. Do not
   "restore" per-cell placeholders, and do not wire `ColumnSpec.placeholder` into
   anything. A table-based mode therefore registers **no** `MODE_PLACEHOLDERS` entry.
+- **That hint FOLLOWS THE KINDS IN THE TABLE** (`conn_hint_text` /
+  `CONN_KIND_HINTS` / `_CollapsibleHint.set_text`) — the same rule
+  `conn_table_layout` applies to the cells and the header, one layer up. It was
+  a single paragraph covering all six Kinds, so a user filling in a `short` row
+  read two sentences about `rlc_between` to reach theirs, and the sentence they
+  needed — *the whole group goes in ONE cell, there is no To* — was in the
+  middle of it. That is not hypothetical: a user wrote `short 25 to 26`, typed
+  a port number into the cell that is the node NAME on a short row (grid column
+  2 carries To **or** Net and its heading reads `To / Net` when both are in the
+  table), and got *"node name '26' is a port number or range"* — while the same
+  spelling with a tag, `short 25 to F2.15`, is a **legal node name** and passes
+  in silence with the package never connected at all. Collapsed it costs
+  **nothing** (one line, as before, and it names the Kind when there is only
+  one); expanded it is normally **shorter** than what it replaced, because a
+  real table carries one or two Kinds and not six — measured, 965 chars for a
+  `short`-only table against 2315 for all six. Three rules: the order is
+  `CONN_KINDS`, never row order, because a reference that reorders itself as
+  the user edits is one the eye cannot find its place in again; the general
+  rules (SI suffixes, one word, blank ≠ zero, Show Ports) are appended ONCE
+  rather than per Kind; and the **file-tag** paragraph appears only on a
+  composed trace, so a single-file user never reads about tags.
+  `set_text` early-outs on an unchanged value — it runs once per keystroke —
+  and generates `<<HintToggled>>`, which is what refreshes the editor
+  scrollregion, because the form's height moved.
 - **Port cells take NUMBERS (or a net name); `Show Ports` is the only route to the file's
   port names.**
   A name-bearing dropdown does not fit the editor width (design note §5a — a ttk popdown
@@ -1849,17 +1911,55 @@ mutation-checked.
   nobody named), and `net.gport` raises there by name with the port map
   attached. Every port field therefore goes through `parse_scoped_ports`, tag
   or no tag; nothing is passed through untouched because it "looks bare".
-- **A COMMA TOKEN MAY CARRY ITS OWN TAG, and the scope is STICKY — one rule on
-  top of `parse_scoped_ports`, not a second parser.** The connection table
-  forces it: a `short` row stores its whole tied group in ONE cell
-  (`_join_short_group`, R1's single-cell short), so `2,F2.1` has no other
-  spelling there. `parse_scoped_ports` refuses a tag on a later token, and is
-  right to on ITS input — `F1.1,F2.3` would have to mean either "one field, two
-  scopes" or "F1 scopes everything". `_scope_port_field` removes the ambiguity
-  instead of re-deciding it: each comma token is resolved ON ITS OWN with the
-  scope carried forward from the last tag seen, so `F2.1,2` is identical to what
-  that function answers and `2,F2.1` becomes expressible. Every token still goes
-  through the same parser, so every other rule stays its rule.
+- **THE FILE TAG SCOPES THE TOKEN IT IS WRITTEN ON, AND NOTHING AFTER IT. A
+  BARE TOKEN IS ALWAYS THE HOME FILE, with no ordering condition.** One rule,
+  in `parse_scoped_ports`, which is why `_scope_port_field` is now a single
+  call to it with no parsing of its own — GUI and CLI cannot drift on what a
+  field means. `2,F2.1`, `F2.1,2`, `F1.1,F2.3` and `25,F2.12,F1.65,21` all say
+  exactly what they look like; a RANGE is one token, so `F2.40-42` still takes
+  one tag. Ports are deduped over the whole field, on the GLOBAL index (two
+  files' local port 1 are two different ports).
+  The tag used to be **sticky** — it scoped the whole field and every bare
+  token after it — which is why `parse_scoped_ports` had to REFUSE
+  `F1.1,F2.3`: with a sticky tag that field has two readings ("one field, two
+  scopes" / "the first tag scopes the lot") that differ in silence. The cost
+  was the same silence one step further on. A `short` row stores its whole tied
+  group in ONE cell (`_join_short_group`, R1's single-cell short — a group of
+  shorted pins has no from/to), so a die-to-package tie is written
+  `25,26,F2.15` there and has no other spelling; write the same group in the
+  other order, `F2.15,25,26`, and the sticky rule re-pointed 25 and 26 at the
+  PACKAGE. Nothing raised — it only needs the package to HAVE ports 25 and 26 —
+  and it contradicted the rule stated in the Help, the README and
+  `pkg_rlc_gui`'s own header: *a bare number is a port of the home file, in
+  every mode*. **The user reported it as unreasonable and was right.** Two
+  consequences that are NOT regressions and are pinned as such: a list of one
+  file's ports needs the tag on each token or a range (`PKG.10,PKG.11` or
+  `PKG.10-11`, not `PKG.10,11`) — which changes what an existing
+  `--compose-link "PKG.4,5 …"` means, visibly, because the CLI echoes the file
+  of every port it paired; and a bare token with NO default scope (a direct
+  `parse_scoped_ports` call passing `default=None`) is refused rather than
+  inheriting a tag, where the CLI itself always passes
+  `net.blocks[0].alias` and the GUI always passes the home file.
+- **THE STRIP ECHOES WHAT EVERY TAGGED PORT FIELD RESOLVED TO**
+  (`scope_echo_messages`, `✓ connection row 1 Port: 25,26,F2.15 = F1.25-26,
+  F2.15`). The reading of a mixed field is the one thing in this namespace the
+  user cannot check from the screen: the port cell is **7 characters** wide,
+  and the validation echo under it prints GLOBAL indices (`✓ port 42,110 →
+  GND`, the display-only defect recorded below), so neither answers *which
+  file*. It is built from `parse_scoped_ports` — the resolver the solve itself
+  uses — and rendered by `describe_ports`, so an echo that disagrees with the
+  computed network is not expressible. Four rules: it takes the **UNSCOPED**
+  rows (scoping rewrites the field to a global index and the tag is gone by
+  then, so this is the only point where both spellings exist); only a field
+  that **TAGS** a file is echoed, because a bare field is the home file by a
+  rule with no exception left in it and `25 = F1.25` on every row would spend
+  the strip's two lines saying nothing; it **survives alongside a problem**
+  rather than being suppressed by one like the R/L/C echoes, since "which file
+  is that port of" is at its most useful when something else is wrong, and it
+  is V_OK so a real problem still outranks it in the two-line strip; and it
+  **never raises** — a field that does not resolve gets NO echo, because a
+  green tick beside a refusal about the same cell is worse than one message.
+  The one spelling it exists for is `F2.40,42` = package 40 and **HOME 42**.
 - **`_scope_dsl_text` rewrites FIELD POSITIONS, never every token that contains
   a dot.** `parts[0]` is always a port field and `parts[2]` is one after
   `short_to` / `lumped_between`; nothing else in the grammar is. A blanket scan

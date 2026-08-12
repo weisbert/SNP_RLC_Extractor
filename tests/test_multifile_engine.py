@@ -141,7 +141,7 @@ class TestScopePortField(unittest.TestCase):
 
     def test_a_tagged_field_reaches_the_second_file(self):
         self.assertEqual(_scope_port_field("F2.1", self.net, "F1"), "5")
-        self.assertEqual(_scope_port_field("F2.1,2", self.net, "F1"), "5-6")
+        self.assertEqual(_scope_port_field("F2.1-2", self.net, "F1"), "5-6")
 
     def test_a_bare_number_past_the_home_file_is_REFUSED(self):
         """
@@ -158,32 +158,50 @@ class TestScopePortField(unittest.TestCase):
         The single-cell SHORT group forces this: a short row stores its whole
         tied group in one cell (`_join_short_group`), so '2,F2.1' -- tie die
         port 2 to package port 1 -- has no other spelling in the connection
-        table.  `parse_scoped_ports` refuses a tag on a later token, because on
-        ITS input that is ambiguous; resolving one token at a time with a
-        sticky scope removes the ambiguity instead of re-deciding it.
+        table.  The tag is PER-TOKEN in `parse_scoped_ports` itself, so this
+        needs no rule of its own.
         """
         self.assertEqual(_scope_port_field("2,F2.1", self.net, "F1"), "2,5")
         self.assertEqual(_scope_port_field("F1.1,F2.2", self.net, "F1"), "1,6")
 
-    def test_a_leading_tag_is_STICKY_over_the_rest_of_the_field(self):
+    def test_a_BARE_token_after_a_tag_is_still_the_HOME_file(self):
         """
-        Which is exactly what `parse_scoped_ports` does with the same input --
-        that agreement is what makes this an added rule and not a second
-        parser.  Reading 'F2.1,2' as "package 1, DIE 2" would silently
-        re-point half the field.
+        The tag is NOT sticky, and this is the case it was changed for.
+
+        MUTATION: carry the last tag forward as the scope of the tokens after
+        it -- the rule this function used to hold -- and 'F2.1,2' becomes
+        package ports 1 and 2, i.e. '5-6'.
+
+        A short group is stored in ONE cell, so the user's own spelling of "tie
+        die 25 and 26 to package 15" is a three-token field; write it in the
+        other order and a sticky tag silently re-points the two bare tokens at
+        the PACKAGE.  It does not raise -- it only needs the package to HAVE
+        those ports -- and it contradicts the rule stated in the Help, the
+        README and this module's own header: a bare number is a port of the
+        HOME file, in every mode.  Both orders must name one network.
         """
-        self.assertEqual(_scope_port_field("F2.1,2", self.net, "F1"),
-                         G.collapse_ports(comp.parse_scoped_ports(
-                             "F2.1,2", self.net, default="F1")))
+        self.assertEqual(_scope_port_field("F2.1,2", self.net, "F1"), "2,5")
+        self.assertEqual(_scope_port_field("2,F2.1", self.net, "F1"), "2,5")
+        # ... and the two spellings are the SAME set, not merely both legal.
+        self.assertEqual(
+            comp.parse_scoped_ports("F2.1,2", self.net, default="F1"),
+            list(reversed(
+                comp.parse_scoped_ports("2,F2.1", self.net, default="F1"))))
 
     def test_it_agrees_with_parse_scoped_ports_on_all_that_one_accepts(self):
+        """
+        It is now ONE call to that function, so this pins that it stayed one:
+        a second copy of the scope rule here is exactly the drift that put
+        'F2.1,2' and the CLI's reading of it at odds.
+        """
         for spec in ("1", "2-4", "1,3", "F2.1", "F2.1,2", "F2.1-2",
-                     "F1.2:1:4"):
+                     "F1.2:1:4", "2,F2.1", "F1.1,F2.2", "F2.2,1,F1.3"):
             with self.subTest(spec=spec):
                 self.assertEqual(
                     G.parse_port_range(
                         _scope_port_field(spec, self.net, "F1")),
-                    comp.parse_scoped_ports(spec, self.net, default="F1"))
+                    sorted(comp.parse_scoped_ports(spec, self.net,
+                                                   default="F1")))
 
     def test_a_node_NAME_passes_through_untouched(self):
         """A port field may name a merged node, and a name is not a port."""
@@ -296,6 +314,126 @@ class TestScopeRows(unittest.TestCase):
                               L="10f")]
         out = _scope_conn_rows(rows, self.net, "F1")
         self.assertEqual((out[1].ports, out[1].to), ("tap", "5"))
+
+
+class TestTheScopeEchoSaysWhatAFieldRESOLVEDTo(unittest.TestCase):
+    """
+    The other half of the per-token change: what a field means is now always
+    literal, and the strip SAYS what it worked out.
+
+    The echo exists because the reading of a mixed field is the one thing in
+    this namespace that a user cannot verify from the screen: the port cell is
+    seven characters wide, the validation echo under it prints GLOBAL indices
+    ("port 42,110"), and neither answers "which file is that".  It is built
+    from the resolver the solve itself uses and rendered by the compose
+    module's own `describe_ports`, so an echo that disagrees with the computed
+    network is not expressible.
+    """
+
+    def setUp(self):
+        self.net = _net(70, 100)
+
+    def echo(self, mp, conn, extra=""):
+        return G.scope_echo_messages(mp, conn, extra, self.net, "F1")
+
+    def test_a_TAGGED_field_is_echoed_with_the_file_of_every_port(self):
+        got = self.echo([], [ConnectionRow(kind="short",
+                                           ports="25,26,F2.15")])
+        self.assertEqual(len(got), 1)
+        text, anchor = got[0]
+        self.assertEqual(anchor, ("conn", 0))
+        self.assertIn("25,26,F2.15 = F1.25-26, F2.15", text)
+        self.assertTrue(text.startswith("✓"),
+                        "an echo is not a problem, and _footer_strip_text "
+                        "counts the messages that do NOT start with a tick")
+
+    def test_the_ONE_spelling_that_still_looks_like_something_else(self):
+        """
+        `F2.40,42` is package 40 and HOME 42 -- the tag scopes its own token.
+        That is the reading the sticky rule got wrong in the other direction,
+        and it is the reason this echo is worth two lines of strip: it is the
+        only field here whose correct reading is not obvious from looking at
+        it.
+
+        MUTATION: drop the echo and nothing on screen distinguishes this from
+        two package ports.
+        """
+        got = self.echo([], [ConnectionRow(kind="rlc_gnd", ports="F2.40,42",
+                                           R="0.5")])
+        self.assertIn("F2.40,42 = F2.40, F1.42", got[0][0])
+
+    def test_a_BARE_field_is_NOT_echoed(self):
+        """
+        A bare field is the home file by a rule with no exception left in it,
+        so echoing `25 = F1.25` on every row would spend the strip's two lines
+        saying nothing.  Only a field that TAGS a file is echoed.
+        """
+        self.assertEqual(self.echo([MeasPortRow("vic", "1", "2")],
+                                   [ConnectionRow(kind="ground",
+                                                  ports="30,31")]), [])
+
+    def test_both_probe_sides_and_a_To_cell_are_echoed(self):
+        got = dict(self.echo(
+            [MeasPortRow("vic", "F2.1", "2"), MeasPortRow("agg", "3", "F2.2")],
+            [ConnectionRow(kind="rlc_between", ports="3", to="F2.7", L="1n")]))
+        joined = " | ".join(got)
+        self.assertIn("measurement port row 1 '+': F2.1 = F2.1", joined)
+        self.assertIn("measurement port row 2 '−': F2.2 = F2.2", joined)
+        self.assertIn("connection row 1 To: F2.7 = F2.7", joined)
+
+    def test_a_node_NAME_is_not_echoed_as_a_port(self):
+        rows = [ConnectionRow(kind="short", ports="1,2", net="F2.tap")]
+        self.assertEqual(self.echo([], rows), [])
+
+    def test_it_NEVER_RAISES_and_a_broken_field_gets_NO_echo(self):
+        """
+        It runs from a Tk variable trace on every keystroke, where a raised
+        exception reaches no handler we control.  A half-typed or impossible
+        field gets no echo at all rather than a second message about it: the
+        ordinary validation already reports it, and a green tick beside a
+        refusal is worse than one message.
+        """
+        for spec in ("F2.", "F2.9999", "NOPE.1", "F2.5:", "F2.-"):
+            with self.subTest(spec=spec):
+                rows = [ConnectionRow(kind="ground", ports=spec)]
+                self.assertEqual(self.echo([], rows), [],
+                                 f"{spec!r} produced an echo")
+
+    def test_an_EMPTY_comma_token_is_skipped_and_the_echo_shows_that(self):
+        """
+        `parse_port_range` skips an empty token, so a trailing comma is legal
+        and always was.  The echo is the only thing on screen that says the
+        half-typed `F2.1,` currently means one port -- which is exactly what an
+        echo is for, so this is not the no-echo case above.
+        """
+        got = self.echo([], [ConnectionRow(kind="ground", ports="F2.1,")])
+        self.assertIn("F2.1, = F2.1", got[0][0])
+
+    def test_the_echo_SURVIVES_a_problem_instead_of_being_suppressed(self):
+        """
+        Unlike the R/L/C echoes, which a problem replaces.  "Which file is that
+        port of" is at its MOST useful when something else is wrong -- a bare
+        token past the home file's port count is refused by naming F1, and the
+        echo beside it is what shows the reader why it was read as F1.
+
+        It is still LAST, because V_OK is the last tier, so the two-line strip
+        shows the problem.
+        """
+        rows = [ConnectionRow(kind="short", ports="25,26,F2.15"),
+                # values but no Port -> V_ROW_INERT
+                ConnectionRow(kind="rlc_gnd", ports="", R="50")]
+        echoes = self.echo([], rows)
+        msgs = G._validation_messages(
+            [], _scope_conn_rows(rows, self.net, "F1"), "",
+            self.net.nports, None, echoes)
+        self.assertTrue(any("has values but no Port" in m for m in msgs))
+        self.assertTrue(any("F1.25-26, F2.15" in m for m in msgs),
+                        "the scope echo was suppressed by the problem")
+        self.assertGreater([i for i, m in enumerate(msgs)
+                            if "F1.25-26" in m][0],
+                           [i for i, m in enumerate(msgs)
+                            if "no Port" in m][0],
+                           "the echo must sort BELOW the problem")
 
 
 class TestTheTwoNamespaceBuildersAgree(unittest.TestCase):
@@ -581,9 +719,19 @@ class TestTheEditorUnderstandsATagBeforeAnyCalculate(_AppCase):
     """
 
     def test_the_strips_do_not_report_a_tagged_cell_as_unparseable(self):
+        """
+        Asserted in the POSITIVE form: the strip names the tagged field and
+        says what it resolved to.  It used to be `assertNotIn("F2.2", ...)`,
+        on the reasoning that a refusal would quote the cell it could not
+        read -- a proxy that a strip saying nothing at all also passes, and
+        that the scope echo (which quotes the cell precisely BECAUSE it
+        resolved) turned red while the behaviour got better.
+        """
         self._select(0)
-        self.assertNotIn("F2.2", self.app.ed_validation.cget("text"))
+        text = self.app.ed_validation.cget("text")
+        self.assertNotIn("⚠", text)
         self.assertNotIn("⚠", self.app.ed_footer_strip.cget("text"))
+        self.assertIn("F2.2 = F2.2", text)
 
     def test_they_DO_report_a_bare_port_past_the_home_file(self):
         self.tc.conn_rows[1] = ConnectionRow(kind="ground", ports="9")
