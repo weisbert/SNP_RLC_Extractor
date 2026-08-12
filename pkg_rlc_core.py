@@ -2649,6 +2649,17 @@ class ConnectionRow:
     there rather than dropping it in silence).  A row loaded from a session
     saved before nets existed simply has net="" -- the field defaults, so the
     session format needs no migration.
+
+    `enabled` is the debug switch: a disabled row keeps every cell it has and
+    contributes NOTHING to the spec -- `rows_to_dsl_text` does not emit it, so
+    it is exactly as if the row were deleted.  It exists because the two ways
+    of asking "what is this connection worth?" without it are both destructive:
+    deleting the row loses its R/L/C (and the ports, which on a package ground
+    row is a range someone worked out), and switching the Kind to `open` is a
+    DIFFERENT SPEC rather than an absent one -- `open` is a declaration, so it
+    survives into `port_roles`, and on a row that was `rlc_gnd` it silently
+    discards the element as well.  Defaults True, so a row from any older
+    session is enabled and nothing about a saved spec moves.
     """
     kind: str = "ground"
     ports: str = ""
@@ -2657,8 +2668,13 @@ class ConnectionRow:
     L: str = ""
     C: str = ""
     net: str = ""
+    enabled: bool = True
 
     def is_blank(self) -> bool:
+        # `enabled` is deliberately NOT part of this: a blank row is one with
+        # nothing typed in it, and switching an empty row off must not make it
+        # count as a row.  It is also what keeps a disabled row out of the
+        # tables' "blanks are dropped" path with its values intact.
         return not (self.ports.strip() or self.to.strip() or self.net.strip()
                     or self.R.strip() or self.L.strip() or self.C.strip())
 
@@ -2726,8 +2742,15 @@ def rows_to_dsl_text(mport_rows: Sequence[MeasPortRow] = (),
     round would make a table seeded from a named mode answer a different
     question.  tests/test_core.py::TestTerminationPrecedence pins this.
 
-    Blank rows are skipped.  `extra_lines` is appended verbatim and is how
-    comments and hand-written lines survive a round trip through the table.
+    Blank rows are skipped, and so are DISABLED connection rows -- a row with
+    `enabled=False` contributes nothing at all, which is what makes the switch
+    mean "as if this row were deleted" rather than "some other spec".  It is
+    dropped HERE, in the one place rows become a spec, so every caller (the
+    solve, the validation strip, the text hatch, the port roles, the run
+    report) sees the same thing without any of them knowing about the flag.
+
+    `extra_lines` is appended verbatim and is how comments and hand-written
+    lines survive a round trip through the table.
     """
     lines: list[str] = []
 
@@ -2750,7 +2773,7 @@ def rows_to_dsl_text(mport_rows: Sequence[MeasPortRow] = (),
             lines.append(f"{row.minus.strip()} signal {name} -")
 
     for row in conn_rows:
-        if row.is_blank():
+        if row.is_blank() or not getattr(row, "enabled", True):
             continue
         ports = row.ports.strip()
         if not ports:
@@ -3959,16 +3982,52 @@ def compute_z_matrix(Y_full: np.ndarray, freqs: np.ndarray,
                     B_ok = np.ascontiguousarray(Y_ok[i])
                     try:
                         X[i] = np.linalg.solve(A_oo, B_ok)
+                        continue
                     except np.linalg.LinAlgError:
+                        pass
+                    try:
                         X[i], *_ = np.linalg.lstsq(A_oo, B_ok,
                                                    rcond=SCHUR_LSTSQ_RCOND)
+                    except np.linalg.LinAlgError:
+                        # lstsq is the LAST resort and it can fail too: LAPACK's
+                        # SVD does not converge on a non-finite A_oo, and a
+                        # non-finite A_oo is ORDINARY here rather than exotic.
+                        # A lumped L to ground is y = 1/(jwL), which numpy
+                        # evaluates to inf+nanj at w == 0 -- so any spec with a
+                        # ground-lead inductance, read off a file that carries a
+                        # DC point (every composed sweep keeps 0 Hz), puts a NaN
+                        # in Y_oo at exactly the frequency where a DC-isolated
+                        # port also makes it exactly singular.  Both conditions
+                        # are needed and both are normal, which is why this
+                        # aborted a 98-port package run at index 0 while every
+                        # other frequency in the sweep was healthy.
+                        #
+                        # Same rule and same reason as _probe_impedance's guard
+                        # on its own SVD: one bad frequency must NaN that
+                        # frequency, never the sweep.  complex(nan, nan), not
+                        # np.nan -- a real NaN in a complex array leaves
+                        # imag == 0 and L = Im(Z)/omega would read as a
+                        # perfectly plausible 0 H instead of "undefined".
+                        X[i] = complex(float("nan"), float("nan"))
                         if fallback_warnings < 3:
                             k = start + i
                             warnings_out.append(
-                                f"Schur fallback to lstsq at freq[{k}]="
-                                f"{freqs[k]:.4g} Hz (Y_oo singular)"
+                                f"Schur reduction is undefined at freq[{k}]="
+                                f"{freqs[k]:.4g} Hz (Y_oo is singular AND "
+                                f"non-finite -- at 0 Hz an ideal series L to "
+                                f"ground is 1/(jwL) = inf). Z is NaN at that "
+                                f"frequency only; the rest of the sweep is "
+                                f"unaffected."
                             )
                             fallback_warnings += 1
+                        continue
+                    if fallback_warnings < 3:
+                        k = start + i
+                        warnings_out.append(
+                            f"Schur fallback to lstsq at freq[{k}]="
+                            f"{freqs[k]:.4g} Hz (Y_oo singular)"
+                        )
+                        fallback_warnings += 1
         else:
             Y_kk = Y_ko = X = None
 

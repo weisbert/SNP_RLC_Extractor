@@ -29,7 +29,8 @@ from pkg_rlc_core import (  # noqa: E402
     parse_custom_termination_text,
     parse_short_pairs,
     TerminationSet, Signal, Ground, Open, Vdd, LumpedToGnd,
-    y_capacitor,
+    y_capacitor, y_series_rlc,
+    compute_z_matrix,
     format_si,
     DEFAULT_Z0,
 )
@@ -452,6 +453,172 @@ class TestSchurSingularityFallback(unittest.TestCase):
         except (ValueError, np.linalg.LinAlgError):
             # Clear error is also acceptable.
             pass
+
+
+# Values shared between the fixture and the preconditions below.
+_DC_FREQS = np.array([0.0, 1e9, 5.55e9, 10e9])
+_DC_GND_LEAD_L = 50e-12
+_DC_OPEN_LIKE = [4, 5, 6]   # 0-based, in the order compute_z_matrix eliminates
+
+
+def _dc_degenerate_network(freqs: np.ndarray) -> np.ndarray:
+    """
+    A network that is BOTH exactly singular and non-finite in its Schur block
+    at 0 Hz -- the two conditions the user's 61+37-port composed run met.
+
+    Ports 0..3 are two probe pairs on a DC-connected R+L chain.  Port 4 reaches
+    the rest of the network through a capacitor and NOTHING else, so its row
+    and column of Y are exactly zero at DC; it is deliberately the FIRST
+    open-like port, because LAPACK's partial pivoting has to meet the exact
+    zero before the inductor's inf poisons the column it would pivot on.
+    Port 6 carries the ground-lead inductance (stamped by compute_z_matrix).
+    """
+    n = 7
+    w = 2.0 * np.pi * np.asarray(freqs, dtype=float)
+    Y = np.zeros((len(w), n, n), dtype=complex)
+
+    for k in range(len(w)):
+        for i, j in [(0, 1), (1, 2), (2, 3), (3, 5), (5, 6)]:
+            y = 1.0 / (0.5 + 1j * w[k] * 1e-9)
+            Y[k, i, i] += y
+            Y[k, j, j] += y
+            Y[k, i, j] -= y
+            Y[k, j, i] -= y
+        for i in range(n):
+            Y[k, i, i] += 1j * w[k] * 50e-15
+        yc = 1j * w[k] * 100e-15
+        Y[k, 4, 4] += yc
+        Y[k, 2, 2] += yc
+        Y[k, 4, 2] -= yc
+        Y[k, 2, 4] -= yc
+    return Y
+
+
+def _dc_degenerate_term() -> TerminationSet:
+    return TerminationSet(per_port={
+        0: Signal("AGG", +1), 1: Signal("AGG", -1),
+        2: Signal("VIC", +1), 3: Signal("VIC", -1),
+        4: Open(),                      # DC-isolated -> exact zero row at DC
+        5: Open(),
+        6: LumpedToGnd(y_series_rlc(0.0, _DC_GND_LEAD_L, math.inf)),
+    })
+
+
+class TestOneBadFrequencyDoesNotAbortTheSweep(unittest.TestCase):
+    """
+    A lumped L to ground is y = 1/(jwL), which is inf+nanj at w == 0, and a
+    file that carries a DC point (every composed sweep keeps 0 Hz) also has
+    ports that reach the network only capacitively, whose Y row is exactly
+    zero there.  Both are ORDINARY.  Together they make Y_oo singular AND
+    non-finite at index 0, so np.linalg.solve raises "Singular matrix" and the
+    lstsq fallback then raises "SVD did not converge in Linear Least Squares".
+
+    The defeating mutation is deleting the try/except around
+    `np.linalg.lstsq` in compute_z_matrix's per-frequency Schur fallback:
+    every test in this class then dies with an uncaught LinAlgError, which is
+    what a 98-port package run did at index 0 while all 2000 other frequencies
+    were healthy.  Same rule and same reason as _probe_impedance's guard on
+    its own SVD -- one bad frequency must NaN that frequency, never the sweep.
+
+    TestSchurSingularityFallback above does NOT cover this: its Y_oo is
+    singular but FINITE, so lstsq succeeds and the guarded line is never
+    reached -- and it accepts a raise as correct behaviour anyway.
+    """
+
+    def _dc_schur_block(self) -> np.ndarray:
+        """The Y_oo LAPACK is actually handed at 0 Hz, inductor stamp included."""
+        Y = _dc_degenerate_network(_DC_FREQS)
+        ix = np.array(_DC_OPEN_LIKE)
+        Y_oo = Y[0][np.ix_(ix, ix)].copy()
+        with np.errstate(divide="ignore", invalid="ignore"):
+            Y_oo[2, 2] += y_series_rlc(0.0, _DC_GND_LEAD_L, math.inf)(
+                np.array([0.0]))[0]
+        return Y_oo
+
+    def test_the_fixture_really_reaches_the_guarded_line(self):
+        # Precondition, not a result: without it every assertion below would
+        # pass vacuously on a network that never enters the fallback at all.
+        Y_oo = self._dc_schur_block()
+        rhs = np.ones((3, 2), dtype=complex)
+
+        self.assertTrue(np.all(Y_oo[0, :] == 0) and np.all(Y_oo[:, 0] == 0),
+                        "port 4 must be exactly DC-isolated")
+        self.assertFalse(np.all(np.isfinite(Y_oo)),
+                         "the ground-lead inductor must be non-finite at DC")
+        with self.assertRaises(np.linalg.LinAlgError):
+            np.linalg.solve(Y_oo, rhs)
+        with self.assertRaises(np.linalg.LinAlgError):
+            np.linalg.lstsq(Y_oo, rhs, rcond=None)
+
+    def test_the_sweep_survives_and_only_the_bad_frequency_is_undefined(self):
+        with np.errstate(divide="ignore", invalid="ignore"):
+            Zmat, names, _ws = compute_z_matrix(
+                _dc_degenerate_network(_DC_FREQS), _DC_FREQS,
+                _dc_degenerate_term())
+
+        self.assertEqual(names, ["AGG", "VIC"])
+        self.assertTrue(np.all(np.isnan(Zmat[0])), "0 Hz must be undefined")
+        self.assertTrue(np.all(np.isfinite(Zmat[1:])),
+                        "every other frequency must be a real measurement")
+
+    def test_the_undefined_frequency_is_NAMED(self):
+        with np.errstate(divide="ignore", invalid="ignore"):
+            _Z, _names, ws = compute_z_matrix(
+                _dc_degenerate_network(_DC_FREQS), _DC_FREQS,
+                _dc_degenerate_term())
+
+        hit = [w for w in ws if "freq[0]" in w and "Schur" in w]
+        self.assertTrue(hit, f"no warning names the frequency: {ws}")
+        # The index alone is unactionable -- the reader needs the frequency and
+        # the reason, because 0 Hz is kept silently by every composed sweep.
+        self.assertIn("0 Hz", hit[0])
+        self.assertIn("singular", hit[0].lower())
+
+    def test_the_undefined_entry_is_COMPLEX_NaN(self):
+        # A real NaN assigned into a complex array leaves imag == 0, and
+        # L = Im(Z)/omega would then read as a perfectly plausible 0 H.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            Zmat, _names, _ws = compute_z_matrix(
+                _dc_degenerate_network(_DC_FREQS), _DC_FREQS,
+                _dc_degenerate_term())
+
+        self.assertTrue(np.isnan(Zmat[0, 0, 1].real))
+        self.assertTrue(np.isnan(Zmat[0, 0, 1].imag))
+
+    def test_the_healthy_frequencies_are_BIT_IDENTICAL_without_the_DC_point(self):
+        # The guard must divert the one bad frequency and touch nothing else:
+        # recovering from index 0 may not perturb the answer the user came for.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            with_dc, _n, _w = compute_z_matrix(
+                _dc_degenerate_network(_DC_FREQS), _DC_FREQS,
+                _dc_degenerate_term())
+        clean = _DC_FREQS[1:]
+        without_dc, _n, _w = compute_z_matrix(
+            _dc_degenerate_network(clean), clean, _dc_degenerate_term())
+
+        self.assertTrue(np.array_equal(with_dc[1:], without_dc))
+
+    def test_a_finite_series_R_on_the_ground_lead_recovers_a_real_number(self):
+        # The workaround available with no code change: 1 uOhm beside the
+        # 50 pH makes y finite at DC, lstsq converges, and the cost at the
+        # marker frequency is roundoff.
+        term = TerminationSet(per_port={
+            0: Signal("AGG", +1), 1: Signal("AGG", -1),
+            2: Signal("VIC", +1), 3: Signal("VIC", -1),
+            4: Open(), 5: Open(),
+            6: LumpedToGnd(y_series_rlc(1e-6, _DC_GND_LEAD_L, math.inf)),
+        })
+        Y = _dc_degenerate_network(_DC_FREQS)
+        Zr, _n, ws = compute_z_matrix(Y, _DC_FREQS, term)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            Zi, _n, _w = compute_z_matrix(Y, _DC_FREQS, _dc_degenerate_term())
+
+        self.assertTrue(np.all(np.isfinite(Zr)))
+        self.assertTrue(any("lstsq" in w for w in ws),
+                        f"expected the ordinary lstsq fallback: {ws}")
+        # 1 uOhm against 1.74 Ohm of reactance at 5.55 GHz is free.
+        rel = abs(Zi[2, 0, 1] - Zr[2, 0, 1]) / abs(Zr[2, 0, 1])
+        self.assertLess(rel, 1e-6)
 
 
 class TestFormatSI(unittest.TestCase):

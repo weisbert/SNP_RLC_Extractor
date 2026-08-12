@@ -111,6 +111,44 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
   (that file's `S` is finite; the `inf` is stamped later, by the lumped
   element), so it is recorded rather than patched blind — fix it with a fixture
   that actually carries a NaN `S` entry, not by pattern-matching this bullet.
+- **`lstsq` IS THE LAST RESORT AND IT CAN FAIL TOO — one bad frequency must NaN
+  that frequency, never the sweep.** LAPACK's SVD does not converge on a
+  non-finite `Y_oo`, and a non-finite `Y_oo` is ORDINARY here rather than
+  exotic: a lumped `L` to ground is `y = 1/(jwL)`, which numpy evaluates to
+  `inf+nanj` at `w == 0`, so any spec carrying a ground-lead inductance, read
+  off a file that carries a DC point (**every composed sweep KEEPS 0 Hz**), puts
+  a NaN in `Y_oo` at exactly the frequency where a DC-isolated port — one
+  reaching the rest of the network only capacitively — also makes it exactly
+  singular. Both conditions are needed and **both are normal**: together they
+  aborted a real 61+37-port composed run at index 0 with an UNCAUGHT
+  `LinAlgError` while all 2000 other frequencies were healthy (`solve` ->
+  `Singular matrix`, batched then per-frequency, then the unguarded `lstsq` ->
+  `SVD did not converge in Linear Least Squares`). Order matters for
+  reproducing it: LAPACK's partial pivoting has to meet the exact zero before
+  the `inf` poisons the column it would pivot on, which is why the fixture puts
+  the DC-isolated port FIRST among the open-like ones. The guard is
+  `complex(nan, nan)` for that frequency plus a warning naming it — a real NaN
+  would leave `imag == 0` and `L = Im(Z)/omega` would read as a plausible 0 H.
+  Same rule and same reason as `_probe_impedance`'s guard on its own SVD, which
+  has had it all along; that asymmetry between two sibling paths in one
+  function is the whole defect. Healthy frequencies are bit-identical with and
+  without the DC point (measured, `array_equal`). The user-side workaround
+  needing no redeploy is a finite series `R` on the lead (`R=1u` beside
+  `L=50p`): `y` is then finite at DC, lstsq converges, and 1 µΩ against 1.74 Ω
+  of reactance at 5.55 GHz costs **6.7e-8** relative.
+  `tests/test_core.py::TestOneBadFrequencyDoesNotAbortTheSweep` is the guard
+  (mutation-checked: 5 of its 6 tests die with the uncaught `LinAlgError` when
+  the try/except is removed; the sixth is the precondition that pins the
+  fixture still reaches the guarded line). The pre-existing
+  `TestSchurSingularityFallback` does **not** cover this — its `Y_oo` is
+  singular but FINITE, so lstsq succeeds and the guarded line is never reached,
+  and it accepts a raise as correct behaviour anyway.
+- **KNOWN, NOT FIXED: `s_to_y` / `y_to_s` have the same shape one level up.**
+  Their per-frequency fallback is `np.linalg.pinv`, whose SVD raises identically
+  on a non-finite `S`, and nothing catches it. Not the composed-run crash above
+  (that file's `S` is finite; the `inf` is stamped later, by the lumped
+  element), so it is recorded rather than patched blind — fix it with a fixture
+  that actually carries a NaN `S` entry, not by pattern-matching this bullet.
 - **Auto-create a default trace on file load.** Don't make users hit "Add Trace" for the basic workflow.
 - **Y-axis log uses `symlog` with `linthresh=1e-6`** to handle data crossing zero.
 - **R / L / C / Q are reported with their physical sign (Cadence convention).** `extract_rlc_at_freq`, the plot's `trace_y_values`, and both CSV exporters must NOT clip negative values to NaN. Q is `Im(Z)/Re(Z)`, not `|Im(Z)|/Re(Z)`; `L = Im(Z)/ω` and `C = -1/(ωIm(Z))` go negative past/below SRF respectively. The GUI results pane appends a brief annotation when a value is negative — keep that in sync if formulas change.
