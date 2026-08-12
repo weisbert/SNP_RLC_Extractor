@@ -12,6 +12,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from collections import OrderedDict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -80,10 +81,22 @@ class TestPortConfig(unittest.TestCase):
         self.assertEqual(list(keep_groups), ["SIG"])
 
     def test_gnd_aliases_are_case_insensitive(self):
-        for alias in ("gnd", "Ground", "SHORT", "shorted"):
+        for alias in ("gnd", "Ground", "AGND", "dgnd"):
             groups = self._cfg(f"# {alias}\n3\n# SIG\n1\n")
             _, keep, gnd = rs.resolve_port_config(groups, 4, [""] * 4)
             self.assertEqual((keep, gnd), ([1], [3]), msg=alias)
+
+    def test_short_is_no_longer_a_silent_alias_for_ground(self):
+        # `# SHORT` grounded its ports. It is the word for "tie these pins to
+        # each other", and reading it as "tie them to the reference node" is a
+        # plausible wrong answer that raises nothing -- so it names both routes.
+        for alias in ("SHORT", "shorted", "Shorts"):
+            with self.assertRaises(SystemExit) as cm:
+                rs.resolve_port_config(self._cfg(f"# {alias}\n3\n# SIG\n1\n"),
+                                       4, [""] * 4)
+            msg = str(cm.exception)
+            self.assertIn("# GND", msg, msg=alias)
+            self.assertIn("TIE:", msg, msg=alias)
 
     def test_order_sorted_vs_config(self):
         groups = self._cfg("# B\n5 3\n# A\n1\n")
@@ -336,6 +349,263 @@ class TestConfigFileIsReadAsWritten(unittest.TestCase):
 
     def test_the_plain_message_survives_for_a_plain_typo(self):
         self.assertIn("neither an integer", rs.describe_bad_token("VDD_RXX"))
+
+
+def stamp(Y, p, q, y):
+    """Series admittance between nodes p,q on a stacked Y (q=None -> reference)."""
+    if q is None:
+        Y[:, p, p] += y
+    else:
+        Y[:, p, p] += y
+        Y[:, q, q] += y
+        Y[:, p, q] -= y
+        Y[:, q, p] -= y
+
+
+def tie_demo_network(n_freq=5):
+    """
+    Port1 --C-- port3   port4 --C-- port2,  every port lightly shunted.
+
+    The ONLY path from port 1 to port 2 runs through pins 3 and 4, so opening
+    them one by one and tying them together are visibly different answers --
+    which is the whole point of the feature and is what makes the fixture worth
+    constructing rather than reusing a random network.
+    """
+    w = 2 * np.pi * np.linspace(1e9, 2e9, n_freq)
+    Y = np.zeros((n_freq, 4, 4), dtype=complex)
+    stamp(Y, 0, 2, 1j * w * 1e-12)
+    stamp(Y, 3, 1, 1j * w * 1e-12)
+    for p in range(4):
+        stamp(Y, p, None, 1j * w * 0.01e-12)
+    return rs.y_to_s(Y, Z0), w
+
+
+class TestTiedPorts(unittest.TestCase):
+    """
+    `# TIE:<name>` -- pins shorted TO EACH OTHER, the node then floating.
+
+    Open means I = 0 at each pin separately; a floating wire means the pins
+    share one voltage and their currents sum to zero. Both are ordinary
+    reductions that raise nothing, so the only thing that can tell them apart
+    is a number.
+    """
+
+    def test_the_merge_agrees_with_a_network_rebuilt_with_one_node(self):
+        # The honest reference: build the SAME circuit with pins 3 and 4 as one
+        # node from the start, and eliminate that node as an ordinary open.
+        # Checking the merge against itself would pass with T transposed wrong.
+        S, w = tie_demo_network()
+        got = rs.reduce_block(S, Z0, [0, 1], [], "open", tie_0idx=[[2, 3]])
+
+        Yh = np.zeros((len(w), 3, 3), dtype=complex)
+        stamp(Yh, 0, 2, 1j * w * 1e-12)
+        stamp(Yh, 2, 1, 1j * w * 1e-12)
+        for p in (0, 1):
+            stamp(Yh, p, None, 1j * w * 0.01e-12)
+        stamp(Yh, 2, None, 2 * 1j * w * 0.01e-12)      # two pins' worth of shunt
+        want = rs.reduce_block(rs.y_to_s(Yh, Z0), Z0, [0, 1], [], "open")
+
+        np.testing.assert_allclose(got, want, rtol=1e-10, atol=1e-14)
+
+    def test_tying_is_not_the_same_as_opening_each(self):
+        S, _ = tie_demo_network()
+        opened = rs.reduce_block(S, Z0, [0, 1], [], "open")
+        tied = rs.reduce_block(S, Z0, [0, 1], [], "open", tie_0idx=[[2, 3]])
+        self.assertLess(abs(opened[0, 1, 0]), 1e-15)          # no path at all
+        self.assertGreater(abs(tied[0, 1, 0]), 0.1)           # -10.6 dB of path
+
+    def test_tying_is_not_the_same_as_grounding_each(self):
+        S, _ = tie_demo_network()
+        grounded = rs.reduce_block(S, Z0, [0, 1], [2, 3], "open")
+        tied = rs.reduce_block(S, Z0, [0, 1], [], "open", tie_0idx=[[2, 3]])
+        self.assertGreater(abs(tied[0, 1, 0] - grounded[0, 1, 0]), 0.1)
+
+    def test_a_tie_group_of_one_changes_nothing(self):
+        S, _ = tie_demo_network()
+        plain = rs.reduce_block(S, Z0, [0, 1], [], "open")
+        got = rs.reduce_block(S, Z0, [0, 1], [], "open", tie_0idx=[[2]])
+        np.testing.assert_array_equal(got, plain)
+
+    def test_no_tie_is_bit_identical_to_the_old_path(self):
+        # The merge is an identity when nothing is tied, and `matched` moved its
+        # Y0 stamp from Y_uu to the original diagonal -- neither may move a bit.
+        S = make_network(6, seed=3)
+        for method in ("open", "matched"):
+            a = rs.reduce_block(S, Z0, [0, 1], [4], method)
+            b = rs.reduce_block(S, Z0, [0, 1], [4], method, tie_0idx=[])
+            np.testing.assert_array_equal(a, b, err_msg=method)
+
+    def test_a_tie_is_transitive_across_groups(self):
+        # Two wires sharing a pin are one node -- 1-2 and 2-3 means 1-2-3.
+        S = make_network(6, seed=5)
+        chained = rs.reduce_block(S, Z0, [0, 1], [], "open", tie_0idx=[[2, 3], [3, 4]])
+        one = rs.reduce_block(S, Z0, [0, 1], [], "open", tie_0idx=[[2, 3, 4]])
+        np.testing.assert_allclose(chained, one, rtol=1e-12)
+
+    def test_a_tied_node_can_be_kept_as_one_output_port(self):
+        # Keeping any one member keeps the whole node, as ONE port.
+        S = make_network(6, seed=7)
+        got = rs.reduce_block(S, Z0, [0, 1, 2], [], "open", tie_0idx=[[2, 3, 4]])
+        self.assertEqual(got.shape[-1], 3)
+
+        Y = rs.s_to_y(S, Z0)
+        node_of, n_nodes = rs.merge_node_index(6, [[2, 3, 4]])
+        Ym = rs.merge_tied_nodes(Y, node_of, n_nodes)
+        keep = [node_of[p] for p in (0, 1, 2)]
+        unused = [i for i in range(n_nodes) if i not in keep]
+        want = rs.y_to_s(np.stack([schur_open(Ym[f], keep, unused)
+                                   for f in range(Ym.shape[0])]), Z0)
+        np.testing.assert_allclose(got, want, rtol=1e-10)
+
+    def test_a_tied_node_touching_gnd_is_grounded_whole(self):
+        # Grounding one pin of a wire grounds every pin on it.
+        S = make_network(6, seed=9)
+        got = rs.reduce_block(S, Z0, [0, 1], [2], "open", tie_0idx=[[2, 3, 4]])
+        want = rs.reduce_block(S, Z0, [0, 1], [2, 3, 4], "open")
+        np.testing.assert_allclose(got, want, rtol=1e-10)
+
+    def test_matched_terminates_each_PIN_not_the_node(self):
+        # Four tied pins each with their own 50 ohm load is 12.5 ohm on the
+        # node. Stamping after the merge would put 50 ohm there instead.
+        S = make_network(6, seed=11)
+        got = rs.reduce_block(S, Z0, [0, 1], [], "matched", tie_0idx=[[2, 3, 4, 5]])
+        Y = rs.s_to_y(S, Z0)
+        Y[:, [2, 3, 4, 5], [2, 3, 4, 5]] += 1.0 / Z0        # per pin, then wire
+        node_of, n_nodes = rs.merge_node_index(6, [[2, 3, 4, 5]])
+        Ym = rs.merge_tied_nodes(Y, node_of, n_nodes)
+        keep, unused = [0, 1], [2]
+        want = rs.y_to_s(np.stack([schur_open(Ym[f], keep, unused)
+                                   for f in range(Ym.shape[0])]), Z0)
+        np.testing.assert_allclose(got, want, rtol=1e-10)
+
+    def test_matched_with_a_tie_does_not_take_the_submatrix_fast_path(self):
+        # `matched` with no GND is the plain S sub-matrix -- but a wire changes
+        # the network, so that shortcut is wrong the moment a tie exists.
+        S = make_network(6, seed=13)
+        sub = S[:, [0, 1]][:, :, [0, 1]]
+        got = rs.reduce_block(S, Z0, [0, 1], [], "matched", tie_0idx=[[2, 3]])
+        self.assertGreater(np.abs(got - sub).max(), 1e-6)
+
+    def test_merge_is_a_congruence_so_passivity_survives(self):
+        S, _ = tie_demo_network(n_freq=9)
+        tied = rs.reduce_block(S, Z0, [0, 1], [], "open", tie_0idx=[[2, 3]])
+        self.assertLessEqual(np.linalg.svd(tied, compute_uv=False).max(), 1.0 + 1e-9)
+
+    def test_merge_node_index_is_the_identity_with_no_ties(self):
+        node_of, n = rs.merge_node_index(5, [])
+        self.assertEqual((node_of, n), ([0, 1, 2, 3, 4], 5))
+
+    def test_merge_node_index_renumbers_the_survivors_in_order(self):
+        node_of, n = rs.merge_node_index(5, [[1, 3]])
+        self.assertEqual((node_of, n), ([0, 1, 2, 1, 3], 4))
+
+
+class TestTieConfig(unittest.TestCase):
+    """The `# TIE:<name>` group, and what it refuses."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _both(self, text, n_ports=60, names=None):
+        p = self.tmp / "ports.txt"
+        p.write_bytes(text.encode("utf-8"))
+        groups = rs.parse_port_config(p)
+        names = names or [""] * n_ports
+        ties = rs.resolve_tie_config(groups, n_ports, names)
+        keep_groups, keep, gnd = rs.resolve_port_config(
+            groups, n_ports, names, tie_groups=ties)
+        return ties, keep_groups, keep, gnd
+
+    def test_a_tie_group_is_not_a_keep_group(self):
+        ties, keep_groups, keep, gnd = self._both(
+            "# RX\n1,2\n# TIE:shield\n23,24,25\n")
+        self.assertEqual(dict(ties), {"shield": [23, 24, 25]})
+        self.assertEqual(list(keep_groups), ["RX"])      # not "TIE:shield"
+        self.assertEqual((keep, gnd), ([1, 2], []))
+
+    def test_the_label_carries_through_from_the_header(self):
+        ties, *_ = self._both("# RX\n1\n# TIE:vss_island\n40:1:52\n")
+        self.assertEqual(list(ties), ["vss_island"])
+        self.assertEqual(ties["vss_island"], list(range(40, 53)))
+
+    def test_a_tie_group_takes_names_and_ranges_like_every_other_group(self):
+        names = [""] * 60
+        names[22], names[23] = "SHIELD_A", "SHIELD_B"
+        ties, *_ = self._both("# RX\n1\n# TIE:s\nSHIELD_A, SHIELD_B\n", names=names)
+        self.assertEqual(ties["s"], [23, 24])
+
+    def test_an_unnamed_tie_group_is_refused(self):
+        # Two `# TIE` headers merge into one OrderedDict entry, i.e. two wires
+        # drawn separately would silently become one node.
+        with self.assertRaises(SystemExit) as cm:
+            self._both("# RX\n1\n# TIE\n23,24\n")
+        self.assertIn("must be named", str(cm.exception))
+
+    def test_two_output_ports_tied_together_are_refused(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._both("# RX\n1,2\n# TIE:w\n1,2\n")
+        msg = str(cm.exception)
+        self.assertIn("one node can only be one port", msg)
+        self.assertIn("1", msg)
+
+    def test_a_kept_port_tied_to_ground_is_refused(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._both("# RX\n1\n# GND\n31\n# TIE:w\n1,31\n")
+        self.assertIn("grounds it", str(cm.exception))
+
+    def test_a_tie_label_defined_twice_is_refused(self):
+        p = self.tmp / "ports.txt"
+        p.write_bytes(b"# RX\n1\n# TIE:w\n23,24\n")
+        groups = rs.parse_port_config(p)
+        groups["TIE: w"] = ["25", "26"]          # same label, different spelling
+        with self.assertRaises(SystemExit) as cm:
+            rs.resolve_tie_config(groups, 60, [""] * 60)
+        self.assertIn("defined twice", str(cm.exception))
+
+    def test_tying_two_grounded_ports_is_fine(self):
+        ties, _, keep, gnd = self._both("# RX\n1\n# GND\n31,32\n# TIE:w\n31,32\n")
+        self.assertEqual((keep, gnd), ([1], [31, 32]))
+
+    # --- the fate of a node, which the report and the console both read ------
+    def test_fate_open(self):
+        fates = rs.tie_node_fates(OrderedDict([("s", [23, 24])]), [1, 2], [], 60)
+        self.assertEqual(fates, [("s", [23, 24], "open", None)])
+
+    def test_fate_keep_names_the_port_that_keeps_it(self):
+        fates = rs.tie_node_fates(OrderedDict([("s", [23, 24])]), [1, 24], [], 60)
+        self.assertEqual(fates, [("s", [23, 24], "keep", 24)])
+
+    def test_fate_gnd_wins_over_keep(self):
+        # Ground beats a probe everywhere else in this repo; a wire is no
+        # exception -- and `_validate_ties` refuses that spec before it runs.
+        fates = rs.tie_node_fates(OrderedDict([("s", [23, 24])]), [24], [23], 60)
+        self.assertEqual(fates[0][2], "gnd")
+
+    def test_a_fate_follows_transitivity_not_the_group_it_was_typed_in(self):
+        ties = OrderedDict([("a", [23, 24]), ("b", [24, 25])])
+        fates = rs.tie_node_fates(ties, [25], [], 60)
+        self.assertEqual([f[2] for f in fates], ["keep", "keep"])
+
+    # --- the inline flag -----------------------------------------------------
+    def test_tie_flag_builds_a_tie_group(self):
+        groups = rs.groups_from_cli(["1,2"], None, ["shield=23,24,25"])
+        self.assertEqual(groups["TIE:shield"], ["23", "24", "25"])
+
+    def test_two_bare_tie_flags_stay_two_wires(self):
+        groups = rs.groups_from_cli(["1,2"], None, ["23,24", "40,41"])
+        self.assertEqual(list(groups), ["Keep1", "TIE:Tie1", "TIE:Tie2"])
+
+    def test_tie_flag_with_no_ports_is_refused(self):
+        with self.assertRaises(SystemExit):
+            rs.groups_from_cli(["1,2"], None, ["  "])
+
+    def test_a_keep_group_may_not_be_called_TIE(self):
+        with self.assertRaises(SystemExit) as cm:
+            rs.groups_from_cli(["TIE:x=1,2"], None, None)
+        self.assertIn("--tie", str(cm.exception))
 
 
 class TestInlinePortSpecs(unittest.TestCase):

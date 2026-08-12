@@ -4,13 +4,15 @@ Touchstone S-parameter Port Reduction Tool
 ===========================================
 Reduces a large .sNp Touchstone file to keep only the ports you care about.
 
-Every port in the original file falls into exactly one of three buckets:
+A `# TIE:<name>` group is a WIRE: it ties its ports into one node, exactly as
+drawing a wire between those pins in the schematic does. Every other port falls
+into one of three buckets -- and so does the tied node, once it exists:
 
   KEEP    -- listed in a normal group in the port config; becomes a port of the
              output file.
-  GND     -- listed under a group named `GND` / `GROUND` / `SHORT`; shorted to
-             the Touchstone reference node. In Y-domain this is simply deleting
-             that row and column (V = 0).
+  GND     -- listed under a group named `GND` / `GROUND` / `AGND` / `DGND`;
+             shorted to the Touchstone reference node. In Y-domain this is
+             simply deleting that row and column (V = 0).
   UNUSED  -- everything else; eliminated by a Schur complement. What "eliminated"
              means depends on --method:
                open    (default) floating pin, I = 0. This is what Cadence
@@ -19,11 +21,17 @@ Every port in the original file falls into exactly one of three buckets:
                        before elimination). With no GND ports this is exactly
                        the S-parameter sub-matrix.
 
+Tying pins together is NOT the same as leaving them open one by one: open means
+I = 0 at every pin separately, a floating wire means the pins share one voltage
+and their currents sum to zero. On a network whose only path from port 1 to
+port 2 runs through the tied pins, the two readings are S21 = 0 and -10.6 dB.
+
 Usage:
     python3 reduce_snp.py input.s153p --ports ports.txt -o reduced.s46p
     python3 reduce_snp.py input.s153p --ports ports.txt --method matched
     python3 reduce_snp.py input.s153p --ports ports.txt --order config --check-passivity
     python3 reduce_snp.py input.s153p --keep RX=1,2,3 --keep 4:1:17,80 --gnd 100:1:153
+    python3 reduce_snp.py input.s153p --keep RX=1,2 --tie shield=23,24,25
 
 Port config file format (`#` lines = group headers, entries = 1-indexed port
 numbers OR port names taken from the `! Port[n] = name` comments):
@@ -34,6 +42,13 @@ numbers OR port names taken from the `! Port[n] = name` comments):
     11, 141, 70, 71
     # RX
     VDD_RX_1   VDD_RX_2
+    # TIE:shield
+    23, 24, 25             # one wire, node left floating
+
+A tied node follows the ordinary rules afterwards: name any one of its ports in
+a KEEP group and the whole node becomes ONE output port; name one in the GND
+group and the whole node is grounded; name none and it is eliminated as one
+node instead of as separate open pins.
 
 A port entry may also be a numeric RANGE, so a package's ground balls fit on one
 line:
@@ -66,7 +81,11 @@ from pathlib import Path
 import numpy as np
 
 MAX_SNIFF_NPORTS = 512
-GND_GROUP_NAMES = {"GND", "GROUND", "SHORT", "SHORTED", "AGND", "DGND"}
+GND_GROUP_NAMES = {"GND", "GROUND", "AGND", "DGND"}
+# `SHORT` used to mean GND here. It is the word a user reaches for to say "tie
+# these pins to each other", and reading it as "tie them to the reference node"
+# is a silent, plausible wrong answer -- so it now names both routes instead.
+AMBIGUOUS_GROUP_NAMES = {"SHORT", "SHORTED", "SHORTS"}
 FREQ_UNITS = ("HZ", "KHZ", "MHZ", "GHZ", "THZ")
 
 # `! Port[3] = name`, `! Port 3 = name`, `! Port3: name` -- HFSS / Q3D / SIwave all differ.
@@ -226,6 +245,46 @@ def read_config_text(filepath):
             continue
 
 
+# A tie group MUST be named. Two `# TIE` headers in one file would merge into
+# one OrderedDict entry -- i.e. two wires the user drew separately would become
+# one node -- and nothing on screen would say so.
+_TIE_NAMED_RE = re.compile(r"^TIE\s*:\s*(\S.*)$", re.I)
+_TIE_BARE_RE = re.compile(r"^TIE\s*:?\s*$", re.I)
+
+
+def tie_group_label(group):
+    """`# TIE:shield` -> 'shield'. Not a tie group -> None."""
+    m = _TIE_NAMED_RE.match(group.strip())
+    return m.group(1).strip() if m else None
+
+
+def merge_node_index(n_ports, tie_groups_0idx):
+    """
+    Union-Find over the tied groups -> (node_of, n_nodes), all 0-indexed.
+
+    `node_of[p]` is the row/column port `p` occupies once the wires are drawn.
+    With no ties it is the identity, which is what keeps every pre-existing
+    call site bit-identical.
+    """
+    parent = list(range(n_ports))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for grp in tie_groups_0idx:
+        for p in grp[1:]:
+            ra, rb = find(grp[0]), find(p)
+            if ra != rb:
+                parent[max(ra, rb)] = min(ra, rb)   # lowest index wins: stable
+
+    reps = sorted({find(i) for i in range(n_ports)})
+    slot = {r: k for k, r in enumerate(reps)}
+    return [slot[find(i)] for i in range(n_ports)], len(reps)
+
+
 def parse_port_config(filepath):
     """
     Parse a port configuration file into ordered groups of raw tokens.
@@ -263,13 +322,13 @@ def parse_port_config(filepath):
     return groups
 
 
-def groups_from_cli(keep_specs, gnd_specs):
+def groups_from_cli(keep_specs, gnd_specs, tie_specs=None):
     """
-    Build the same `{group: [token, ...]}` mapping from `--keep` / `--gnd`.
+    Build the same `{group: [token, ...]}` mapping from `--keep` / `--gnd` / `--tie`.
 
-    A `--keep` spec may carry a group name (`RX=1,2,3`); without one it is named
-    after its position, so repeating the flag gives you several KEEP groups the
-    same way several `#` headers do in a config file.
+    A `--keep` or `--tie` spec may carry a group name (`RX=1,2,3`); without one
+    it is named after its position, so repeating the flag gives you several
+    groups the same way several `#` headers do in a config file.
     """
     groups = OrderedDict()
     for i, spec in enumerate(keep_specs or [], 1):
@@ -280,6 +339,9 @@ def groups_from_cli(keep_specs, gnd_specs):
         if name.upper() in GND_GROUP_NAMES:
             sys.exit(f"[ERROR] --keep group '{name}' uses a reserved ground name; "
                      f"use --gnd for ports shorted to the reference node.")
+        if name.upper() in AMBIGUOUS_GROUP_NAMES or tie_group_label(name) is not None:
+            sys.exit(f"[ERROR] --keep group '{name}' uses a reserved name; "
+                     f"use --tie for ports shorted to each other.")
         tokens = split_config_tokens(body)
         if not tokens:
             sys.exit(f"[ERROR] --keep {spec!r} lists no ports.")
@@ -291,17 +353,26 @@ def groups_from_cli(keep_specs, gnd_specs):
             sys.exit(f"[ERROR] --gnd {spec!r} lists no ports.")
         groups.setdefault("GND", []).extend(tokens)
 
+    # Positional default names, so two bare `--tie` flags stay two wires.
+    for i, spec in enumerate(tie_specs or [], 1):
+        name, sep, body = spec.partition("=")
+        if not sep:
+            name, body = f"Tie{i}", spec
+        name = name.strip() or f"Tie{i}"
+        tokens = split_config_tokens(body)
+        if not tokens:
+            sys.exit(f"[ERROR] --tie {spec!r} lists no ports.")
+        groups.setdefault(f"TIE:{name}", []).extend(tokens)
+
     return groups
 
 
-def resolve_port_config(groups, n_ports, port_names, order="sorted"):
+def make_token_resolver(n_ports, port_names):
     """
-    Resolve config tokens to 1-indexed port numbers and split KEEP from GND.
+    Build the one token -> [port_1idx] resolver, shared by every group kind.
 
-    Returns:
-        keep_groups (OrderedDict): {group_name: [port_1idx, ...]} -- KEEP only
-        keep_1idx (list): output port order (see `order`)
-        gnd_1idx (list): sorted, unique, ports to short to reference
+    KEEP, GND and TIE groups all take the same entries, so they must take them
+    through the same code and produce the same messages.
     """
     # name -> 1-indexed port, for name lookups. Later duplicates mark ambiguity.
     by_name = {}
@@ -347,10 +418,99 @@ def resolve_port_config(groups, n_ports, port_names, order="sorted"):
                      f"matches ports {hits}.")
         return [hits[0]]
 
+    return resolve
+
+
+def _check_group_name(group):
+    """Refuse a header whose meaning cannot be read off the word itself."""
+    key = group.strip().upper()
+    if key in AMBIGUOUS_GROUP_NAMES:
+        sys.exit(f"[ERROR] Group '{group}' is ambiguous: '# {key}' used to mean "
+                 f"shorted to the REFERENCE NODE. Say which you mean -- "
+                 f"'# GND' ties these ports to the reference node, "
+                 f"'# TIE:<name>' ties them to EACH OTHER.")
+    if _TIE_BARE_RE.match(key):
+        sys.exit(f"[ERROR] Group '{group}' must be named: write '# TIE:shield'. "
+                 f"Two unnamed tie groups would merge into one node, i.e. two "
+                 f"wires you drew separately would silently become one.")
+
+
+def resolve_tie_config(groups, n_ports, port_names):
+    """
+    Resolve the `# TIE:<name>` groups -> OrderedDict {label: [port_1idx, ...]}.
+
+    A tie group is a WIRE, not a bucket: it says these pins are one node. What
+    then happens to that node is decided by the ordinary KEEP / GND rules in
+    `resolve_port_config`, which is why this is resolved separately and first.
+    """
+    resolve = make_token_resolver(n_ports, port_names)
+    ties = OrderedDict()
+    for group, tokens in groups.items():
+        _check_group_name(group)
+        label = tie_group_label(group)
+        if label is None:
+            continue
+        ports = _dedup([p for t in tokens for p in resolve(t, group)])
+        if label in ties:
+            sys.exit(f"[ERROR] Tie group '{label}' is defined twice. Give the "
+                     f"second one its own name, or merge the two lines.")
+        ties[label] = ports
+    return ties
+
+
+def tie_node_fates(tie_groups, keep_1idx, gnd_1idx, n_ports):
+    """
+    What happens to each tied node -- the ONE authority the console line, the
+    mapping report and the validation all read.
+
+    Returns [(label, ports, fate, kept_port)], fate in 'gnd' / 'keep' / 'open'.
+    """
+    node_of, _ = merge_node_index(n_ports, _tie_0idx(tie_groups))
+    gnd_nodes = {node_of[p - 1] for p in gnd_1idx}
+    keep_at_node = {}
+    for p in keep_1idx:
+        keep_at_node.setdefault(node_of[p - 1], p)
+
+    out = []
+    for label, ports in tie_groups.items():
+        node = node_of[ports[0] - 1]
+        if node in gnd_nodes:
+            out.append((label, ports, "gnd", None))
+        elif node in keep_at_node:
+            out.append((label, ports, "keep", keep_at_node[node]))
+        else:
+            out.append((label, ports, "open", None))
+    return out
+
+
+def _tie_0idx(tie_groups):
+    """{label: [1-indexed]} -> [[0-indexed]], the form the arithmetic takes."""
+    return [[p - 1 for p in ports] for ports in tie_groups.values()]
+
+
+def resolve_port_config(groups, n_ports, port_names, order="sorted", tie_groups=None):
+    """
+    Resolve config tokens to 1-indexed port numbers and split KEEP from GND.
+
+    `tie_groups` (from `resolve_tie_config`) is not another bucket -- it is
+    validated against the two buckets here, because a wire is the one thing
+    that can change what the OUTPUT FILE contains without appearing in it.
+
+    Returns:
+        keep_groups (OrderedDict): {group_name: [port_1idx, ...]} -- KEEP only
+        keep_1idx (list): output port order (see `order`)
+        gnd_1idx (list): sorted, unique, ports to short to reference
+    """
+    resolve = make_token_resolver(n_ports, port_names)
+    tie_groups = tie_groups if tie_groups is not None else OrderedDict()
+
     keep_groups = OrderedDict()
     keep_order = []          # config order, de-duplicated
     gnd = []
     for group, tokens in groups.items():
+        _check_group_name(group)
+        if tie_group_label(group) is not None:
+            continue                      # a wire, resolved by resolve_tie_config
         resolved = _dedup([p for t in tokens for p in resolve(t, group)])
         if group.strip().upper() in GND_GROUP_NAMES:
             gnd.extend(resolved)
@@ -366,16 +526,80 @@ def resolve_port_config(groups, n_ports, port_names, order="sorted"):
         sys.exit(f"[ERROR] Ports {clash} appear in both a KEEP group and the GND group.")
 
     keep_1idx = keep_order if order == "config" else sorted(keep_order)
+    _validate_ties(tie_groups, keep_1idx, gnd_1idx, n_ports)
 
-    n_unused = n_ports - len(keep_1idx) - len(gnd_1idx)
-    print(f"[INFO] Port config: {len(keep_groups)} keep-groups, {len(keep_1idx)} kept, "
-          f"{len(gnd_1idx)} grounded, {n_unused} unused")
+    tied = sorted({p for ports in tie_groups.values() for p in ports}
+                  - set(keep_1idx) - set(gnd_1idx))
+    fates = tie_node_fates(tie_groups, keep_1idx, gnd_1idx, n_ports)
+    n_tie_nodes = len({tuple(sorted(g)) for g in _tie_nodes(tie_groups, n_ports)})
+    n_unused = n_ports - len(keep_1idx) - len(gnd_1idx) - len(tied)
+
+    head = (f"[INFO] Port config: {len(keep_groups)} keep-groups, "
+            f"{len(keep_1idx)} kept, {len(gnd_1idx)} grounded, ")
+    if tie_groups:
+        head += f"{len(tied)} tied ({n_tie_nodes} node(s)), "
+    print(head + f"{n_unused} unused")
     for group, ports in keep_groups.items():
         print(f"       KEEP  {group}: {_fmt_ports(ports)}")
     if gnd_1idx:
         print(f"       GND   : {_fmt_ports(gnd_1idx)}")
+    for label, ports, fate, kept in fates:
+        print(f"       TIE   {label}: {_fmt_ports(ports)}   -> {_fate_text(fate, kept)}")
+        if len(ports) < 2:
+            print(f"       WARN  tie group '{label}' has one port -- a wire needs "
+                  f"two ends, so this changes nothing.")
 
     return keep_groups, keep_1idx, gnd_1idx
+
+
+def _fate_text(fate, kept_port):
+    return {"gnd": "one node, shorted to reference ground",
+            "keep": f"one node, kept as an output port (old port {kept_port})",
+            "open": "one node, left floating (eliminated)"}[fate]
+
+
+def _tie_nodes(tie_groups, n_ports):
+    """The tied ports grouped by the node they end up on (transitivity applied)."""
+    node_of, _ = merge_node_index(n_ports, _tie_0idx(tie_groups))
+    by_node = OrderedDict()
+    for ports in tie_groups.values():
+        for p in ports:
+            by_node.setdefault(node_of[p - 1], []).append(p)
+    return [_dedup(v) for v in by_node.values()]
+
+
+def _validate_ties(tie_groups, keep_1idx, gnd_1idx, n_ports):
+    """
+    Refuse the two ways a wire silently rewrites the output file.
+
+    Both are legal circuits and neither raises anywhere downstream: the port
+    count simply comes out different from the one the KEEP groups describe.
+    """
+    if not tie_groups:
+        return
+    node_of, _ = merge_node_index(n_ports, _tie_0idx(tie_groups))
+    label_of = {}
+    for label, ports in tie_groups.items():
+        for p in ports:
+            label_of.setdefault(node_of[p - 1], label)
+
+    seen = {}
+    for p in keep_1idx:
+        node = node_of[p - 1]
+        if node in label_of and node in seen:
+            sys.exit(f"[ERROR] Ports {seen[node]} and {p} are both kept as output "
+                     f"ports, but '# TIE:{label_of[node]}' ties them into one "
+                     f"node -- one node can only be one port. Keep one of them.")
+        seen[node] = p
+
+    gnd_nodes = {node_of[p - 1] for p in gnd_1idx}
+    for p in keep_1idx:
+        node = node_of[p - 1]
+        if node in gnd_nodes and node in label_of:
+            sys.exit(f"[ERROR] Port {p} is kept as an output port, but "
+                     f"'# TIE:{label_of[node]}' ties it to a GND port, which "
+                     f"grounds it -- it cannot be both. Take it out of the tie "
+                     f"group, or out of the GND group.")
 
 
 # ============================================================
@@ -637,23 +861,63 @@ def y_to_s(Y, z0=50.0):
 # ============================================================
 # Port Reduction
 # ============================================================
-def reduce_block(S, z0, keep_0idx, gnd_0idx, method):
+def merge_tied_nodes(Y, node_of, n_nodes):
+    """
+    Apply the wires: `Y' = T^T Y T`, i.e. sum the rows and columns of tied ports.
+
+    Tied pins share one voltage and their currents add, which is a congruence
+    transform by the 0/1 matrix T -- and being a congruence by a REAL matrix it
+    cannot break passivity, so `check_passivity` needs nothing new.
+
+    Done as two matmuls rather than `np.add.at`: `np.add.at` is the rule in
+    `pkg_rlc_core` only because a golden reference pins that summation order
+    bit-for-bit. Nothing pins this path -- it is new -- and the matmul is what
+    keeps a 300-port stack usable.
+    """
+    T = np.zeros((Y.shape[-1], n_nodes))
+    T[np.arange(Y.shape[-1]), node_of] = 1.0
+    return T.T @ Y @ T
+
+
+def reduce_block(S, z0, keep_0idx, gnd_0idx, method, tie_0idx=None):
     """
     Reduce a stack of S-matrices, shape (F, N, N) -> (F, K, K).
 
+    TIE groups are merged into one node first (a wire in the schematic).
     GND ports are shorted to the reference node (delete row+column in Y).
     Remaining unused ports are Schur-eliminated, either floating (`open`) or
     with a Y0 = 1/z0 shunt to ground first (`matched`).
+
+    `keep_0idx` / `gnd_0idx` / `tie_0idx` are all ORIGINAL 0-based port indices;
+    the caller never has to think in merged-node numbering.
     """
     N = S.shape[-1]
-    keep = list(keep_0idx)
-    gnd = set(gnd_0idx)
+    ties = [g for g in (tie_0idx or []) if len(g) > 1]
 
     # Fast path: plain sub-matrix extraction is exactly `matched` with no GND.
-    if method == "matched" and not gnd:
-        return S[:, keep][:, :, keep]
+    # A wire changes the network, so it cannot survive here.
+    if method == "matched" and not gnd_0idx and not ties:
+        return S[:, list(keep_0idx)][:, :, list(keep_0idx)]
 
     Y = s_to_y(S, z0)
+    node_of, n_nodes = merge_node_index(N, ties)
+
+    if method == "matched":
+        # `matched` terminates each PIN in Z0, so the shunt is stamped on the
+        # original diagonal -- before the wires join them. Four tied pins each
+        # with their own 50 ohm load is 12.5 ohm on the node, not 50.
+        keep_nodes = {node_of[p] for p in keep_0idx}
+        gnd_nodes = {node_of[p] for p in gnd_0idx}
+        term = [p for p in range(N) if node_of[p] not in keep_nodes | gnd_nodes]
+        if term:
+            Y[:, term, term] += 1.0 / z0
+
+    if ties:
+        Y = merge_tied_nodes(Y, node_of, n_nodes)
+        N = n_nodes
+
+    keep = [node_of[p] for p in keep_0idx]
+    gnd = {node_of[p] for p in gnd_0idx}
 
     if gnd:
         alive = [i for i in range(N) if i not in gnd]
@@ -667,10 +931,8 @@ def reduce_block(S, z0, keep_0idx, gnd_0idx, method):
 
     Y_kk = Y[:, keep][:, :, keep]
     if unused:
-        Y_uu = Y[:, unused][:, :, unused]
-        if method == "matched":
-            Y_uu = Y_uu + np.eye(len(unused), dtype=complex) / z0
-        Y_ku = Y[:, keep][:, :, unused]
+        Y_uu = Y[:, unused][:, :, unused]      # the `matched` shunt is already
+        Y_ku = Y[:, keep][:, :, unused]        # on the diagonal, stamped above
         Y_uk = Y[:, unused][:, :, keep]
         Y_red = Y_kk - Y_ku @ _solve_batch(Y_uu, Y_uk, "Schur complement")
     else:
@@ -679,7 +941,7 @@ def reduce_block(S, z0, keep_0idx, gnd_0idx, method):
     return y_to_s(Y_red, z0)
 
 
-def reduce_all(S, z0, keep_0idx, gnd_0idx, method, batch=256):
+def reduce_all(S, z0, keep_0idx, gnd_0idx, method, batch=256, tie_0idx=None):
     """Run `reduce_block` over all frequencies in slices, to bound peak memory."""
     n_freq = S.shape[0]
     n_keep = len(keep_0idx)
@@ -687,7 +949,8 @@ def reduce_all(S, z0, keep_0idx, gnd_0idx, method, batch=256):
     t0 = time.time()
     for start in range(0, n_freq, batch):
         stop = min(start + batch, n_freq)
-        out[start:stop] = reduce_block(S[start:stop], z0, keep_0idx, gnd_0idx, method)
+        out[start:stop] = reduce_block(S[start:stop], z0, keep_0idx, gnd_0idx,
+                                       method, tie_0idx=tie_0idx)
         print(f"  ... reduced {stop}/{n_freq} frequencies ({time.time() - t0:.1f}s)")
     return out
 
@@ -770,23 +1033,37 @@ def write_touchstone(filepath, freq_unit, z0, port_names, freqs, S,
 # Port Mapping Report
 # ============================================================
 def build_mapping_report(keep_1idx, keep_groups, gnd_1idx, port_names_orig,
-                         n_ports_orig, method, order):
+                         n_ports_orig, method, order, tie_groups=None):
     n_keep = len(keep_1idx)
+    tie_groups = tie_groups or OrderedDict()
+    fates = tie_node_fates(tie_groups, keep_1idx, gnd_1idx, n_ports_orig)
+    tied = sorted({p for ports in tie_groups.values() for p in ports}
+                  - set(keep_1idx) - set(gnd_1idx))
+    # A kept port that is the head of a wire is NOT just that old port, and the
+    # New Port table is where a reader looks for what to re-connect.
+    tied_note = {kept: (label, len(ports))
+                 for label, ports, fate, kept in fates if fate == "keep"}
+
     port_to_group = {}
     for group, ports in keep_groups.items():
         for p in ports:
             port_to_group.setdefault(p, group)
 
+    counts = f"grounded={len(gnd_1idx)}   "
+    if tie_groups:
+        counts += f"tied={len(tied)} ({len(_tie_nodes(tie_groups, n_ports_orig))} node(s))   "
     lines = ["=" * 78,
              f"PORT MAPPING: original .s{n_ports_orig}p  ->  reduced .s{n_keep}p",
-             f"method={method}   output order={order}   "
-             f"grounded={len(gnd_1idx)}   "
-             f"open/unused={n_ports_orig - n_keep - len(gnd_1idx)}",
+             f"method={method}   output order={order}   " + counts +
+             f"open/unused={n_ports_orig - n_keep - len(gnd_1idx) - len(tied)}",
              "=" * 78,
              f"{'New Port':<10}{'Old Port':<10}{'Group':<18}Name",
              "-" * 78]
     for new_idx, old in enumerate(keep_1idx, start=1):
         name = port_names_orig[old - 1] if old - 1 < len(port_names_orig) else ""
+        if old in tied_note:
+            label, n = tied_note[old]
+            name = f"{name}  [+ TIE:{label}, {n} pins on this node]".strip()
         lines.append(f"{new_idx:<10}{old:<10}{port_to_group.get(old, '?'):<18}{name}")
     if gnd_1idx:
         lines.append("-" * 78)
@@ -794,6 +1071,15 @@ def build_mapping_report(keep_1idx, keep_groups, gnd_1idx, port_names_orig,
         for old in gnd_1idx:
             name = port_names_orig[old - 1] if old - 1 < len(port_names_orig) else ""
             lines.append(f"{'--':<10}{old:<10}{'GND':<18}{name}")
+    if tie_groups:
+        lines.append("-" * 78)
+        lines.append("TIED TOGETHER (a wire in the schematic, one node in the model):")
+        for label, ports, fate, kept in fates:
+            lines.append(f"  TIE:{label}  -> {_fate_text(fate, kept)}")
+            for old in ports:
+                name = port_names_orig[old - 1] if old - 1 < len(port_names_orig) else ""
+                new = str(keep_1idx.index(old) + 1) if old in keep_1idx else "--"
+                lines.append(f"{new:<10}{old:<10}{('TIE:' + label):<18}{name}")
     lines.append("=" * 78)
     return "\n".join(lines)
 
@@ -842,6 +1128,11 @@ def main():
                         "each occurrence is one group, optionally named 'RX=1,2'")
     p.add_argument("--gnd", action="append", metavar="SPEC",
                    help="Ports shorted to the reference node, inline. Repeatable")
+    p.add_argument("--tie", action="append", metavar="[NAME=]SPEC",
+                   help="Ports shorted TO EACH OTHER (a wire in the schematic), "
+                        "inline: 'shield=23,24,25'. Repeatable; each occurrence "
+                        "is one wire. The node is then kept, grounded or "
+                        "eliminated by the ordinary --keep / --gnd rules")
     p.add_argument("-o", "--output", default=None,
                    help="Output Touchstone file (default: auto-named)")
     p.add_argument("--method", choices=["open", "matched"], default="open",
@@ -869,7 +1160,7 @@ def main():
     if not args.ports and not args.keep and not args.gnd:
         p.error("one of --ports (config file) or --keep / --gnd (inline) is required")
     groups = parse_port_config(args.ports) if args.ports else OrderedDict()
-    for name, tokens in groups_from_cli(args.keep, args.gnd).items():
+    for name, tokens in groups_from_cli(args.keep, args.gnd, args.tie).items():
         groups.setdefault(name, []).extend(tokens)
     if not groups:
         sys.exit("[ERROR] No ports given.")
@@ -879,8 +1170,9 @@ def main():
     except ValueError as exc:
         sys.exit(f"[ERROR] {exc}")
 
+    tie_groups = resolve_tie_config(groups, ts.n_ports, ts.port_names)
     keep_groups, keep_1idx, gnd_1idx = resolve_port_config(
-        groups, ts.n_ports, ts.port_names, order=args.order)
+        groups, ts.n_ports, ts.port_names, order=args.order, tie_groups=tie_groups)
 
     n_keep = len(keep_1idx)
     if n_keep == 0:
@@ -896,12 +1188,15 @@ def main():
     if args.check_passivity:
         check_passivity(ts.s, label="[Original]", batch=args.batch)
 
+    tie_note = (f", {len(_tie_nodes(tie_groups, ts.n_ports))} tied node(s)"
+                if tie_groups else "")
     print(f"\n[INFO] Reducing {ts.n_ports} -> {n_keep} ports "
-          f"(method={args.method}, {len(gnd_1idx)} grounded)")
+          f"(method={args.method}, {len(gnd_1idx)} grounded{tie_note})")
     keep_0idx = [p - 1 for p in keep_1idx]
     gnd_0idx = [p - 1 for p in gnd_1idx]
     t0 = time.time()
-    S_red = reduce_all(ts.s, ts.z0, keep_0idx, gnd_0idx, args.method, batch=args.batch)
+    S_red = reduce_all(ts.s, ts.z0, keep_0idx, gnd_0idx, args.method,
+                       batch=args.batch, tie_0idx=_tie_0idx(tie_groups))
     print(f"[INFO] Reduction complete in {time.time() - t0:.1f}s")
 
     if args.check_passivity:
@@ -912,7 +1207,8 @@ def main():
                      data_format=out_format, precision=args.precision)
 
     report = build_mapping_report(keep_1idx, keep_groups, gnd_1idx, ts.port_names,
-                                  ts.n_ports, args.method, args.order)
+                                  ts.n_ports, args.method, args.order,
+                                  tie_groups=tie_groups)
     print()
     print(report)
     with open(mapping, "w") as f:

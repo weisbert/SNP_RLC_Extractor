@@ -2859,7 +2859,45 @@ recorded here rather than in a commit message nobody will find.
 ### `reduce_snp.py` specifics
 
 - **Standalone, no repo imports.** It runs from a scratch directory on a sim server. numpy + stdlib only. Duplicating the Touchstone parser here is intentional, not an oversight — keep the n=2 column-order quirk mirrored on both sides.
-- **Three port buckets, not two.** KEEP becomes an output port; a group named `GND`/`GROUND`/`SHORT` is shorted to the reference node (**delete that row and column in Y**, because V=0); everything unlisted is Schur-eliminated. Grounding is *not* the same as opening — PKG ground balls need the GND group or the result is wrong.
+- **Three port buckets, not two.** KEEP becomes an output port; a group named `GND`/`GROUND`/`AGND`/`DGND` is shorted to the reference node (**delete that row and column in Y**, because V=0); everything unlisted is Schur-eliminated. Grounding is *not* the same as opening — PKG ground balls need the GND group or the result is wrong.
+- **`# TIE:<name>` is a WIRE, not a fourth bucket, and that is the whole design.**
+  It ties its ports into one node (`merge_node_index` Union-Find, then
+  `merge_tied_nodes` does `Y' = TᵀYT`); the node then goes through the ordinary
+  KEEP / GND / eliminate rules, so "name one member in a KEEP group and the whole
+  node becomes ONE output port" and "name one in GND and the whole node is
+  grounded" cost no new code. Tying is **not** opening each pin: open is I=0 per
+  pin, a floating wire is one voltage with the currents summing to zero.
+  Measured on the fixture `tie_demo_network` builds (the only path from port 1 to
+  port 2 runs through the tied pins): `S21` is **exactly 0** opened, **−10.56 dB**
+  tied, and the tied answer agrees with a network rebuilt with those pins as one
+  node from the start to **1.4e-16**. `T` is real, so the merge is a congruence
+  and cannot break passivity — `check_passivity` needed nothing. Two matmuls, not
+  `np.add.at`: that rule is `pkg_rlc_core`'s because `golden_legacy.npz` pins the
+  summation order bit-for-bit, and nothing pins this path — it is new.
+- **`SHORT` / `SHORTED` are REFUSED, naming both routes.** They used to be GND
+  aliases, and `SHORT` is the word a user reaches for to say "tie these pins to
+  each other" — reading it as "tie them to the reference node" raises nothing and
+  produces a plausible wrong answer. The refusal says `# GND` ties to the
+  reference node and `# TIE:<name>` ties to each other.
+- **A tie group MUST be named, and the two ways a wire silently rewrites the
+  output file are refused by name.** Two `# TIE` headers merge into one
+  OrderedDict entry, so two wires drawn separately would become one node with
+  nothing on screen saying so. `_validate_ties` then refuses two KEEP ports on one
+  node ("one node can only be one port") and a KEEP port tied to a GND port
+  ("that grounds it"); both are legal circuits that raise nowhere downstream —
+  the port count just comes out different from what the KEEP groups describe.
+- **`matched` stamps its Y0 on the ORIGINAL diagonal, before the merge.** The
+  method terminates each *pin* in Z0, so four tied pins are 12.5 Ω on the node,
+  not 50. Moving the stamp out of `Y_uu` is bit-identical when nothing is tied
+  (same addition, same operands), which `test_no_tie_is_bit_identical_to_the_old_path`
+  pins. The `matched`-with-no-GND sub-matrix fast path is disabled the moment a
+  tie exists — a wire changes the network, so the shortcut is simply wrong there.
+- **`tie_node_fates` is the ONE authority on what happens to a tied node**, read
+  by the console summary, the mapping report and nothing else. Two printers would
+  be two things that can come to disagree — the R3-5 rule, in this file's own
+  terms. It follows transitivity, so a fate is a property of the NODE, not of the
+  group the ports were typed in. `tests/test_reduce_snp.py::TestTiedPorts` and
+  `::TestTieConfig` are the guards; every claim above was mutation-checked.
 - **A range token must be numeric END TO END.** `4:1:17` (`start:step:stop`, mirroring
   the GUI's `parse_port_range`) and `6-14` are ranges; anything else goes to the name
   resolver, because `-` and `:` are ordinary characters in a net name (`VDD-1`,
