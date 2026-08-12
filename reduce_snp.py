@@ -45,12 +45,18 @@ Ranges are recognised only when the whole token is numeric, so a port *named*
 `VDD-1` or `I0:VDD` is still resolved as a name. A token that is both a valid
 range and an exact port name is refused rather than guessed.
 
+The file is read the way a hand-written file has to be read: the encoding is
+sniffed (a BOM, or Notepad's UTF-16 "Unicode", or GBK), full-width punctuation
+from a CJK input method is accepted (`31：1：52` is `31:1:52`), and a `#` after
+the ports on a line starts a comment.
+
 Standalone by design: numpy + stdlib only, no imports from this repo, so it can
 be dropped onto a simulation server on its own.
 """
 
 import argparse
 import array
+import codecs
 import re
 import sys
 import time
@@ -82,11 +88,39 @@ _RANGE_DASH_RE = re.compile(r"^(\d+)-(\d+)$")
 # a name-bearing colon (`Port1: foo`) out of it.
 _RANGE_SPACE_RE = re.compile(r"(?<=\d)\s*:\s*(?=[+-]?\d)")
 _TOKEN_SPLIT_RE = re.compile(r"[,;\s]+")
+# `#` starts a comment only at the start of a token, so a port *named* `NET#3`
+# survives. At the start of a LINE it is a group header and never reaches here.
+_HASH_COMMENT_RE = re.compile(r"(?:^|(?<=\s))#.*$", re.M)
+
+# A CJK input method produces the full-width form of every character this syntax
+# is built from, and the two are INDISTINGUISHABLE on screen: `31：1：52` renders
+# exactly like `31:1:52` and was refused as "not a port range, nor a known port
+# name". Normalise instead of refusing -- none of these is legal in a port name.
+#
+# Full-width DIGITS and the ideographic space are deliberately absent: `\d`,
+# `\s` and `int()` are Unicode-aware in Python 3 and already accept them, so an
+# entry here would be dead code -- and would also stop the tests noticing if
+# this file's regexes were ever narrowed to `[0-9]`.
+_FULLWIDTH_MAP = {
+    ord("："): ":", ord("，"): ",", ord("、"): ",",
+    ord("；"): ";", ord("－"): "-", ord("–"): "-",
+    ord("—"): "-", ord("＃"): "#",
+    ord("！"): "!", ord("＝"): "=",
+    0xFEFF: "",                     # a BOM left mid-stream; written as a code
+    0x00A0: " ",                    # point because both are invisible in source
+}
+
+
+def normalise_config_line(text):
+    """Fold full-width punctuation and a stray BOM into their ASCII spellings."""
+    return text.translate(_FULLWIDTH_MAP)
 
 
 def split_config_tokens(text):
     """Split one config line (or one `--keep` / `--gnd` spec) into raw tokens."""
+    text = normalise_config_line(text)
     text = text.split("!", 1)[0]
+    text = _HASH_COMMENT_RE.sub("", text)
     text = _RANGE_SPACE_RE.sub(":", text)
     return [tok for tok in _TOKEN_SPLIT_RE.split(text.strip()) if tok]
 
@@ -138,6 +172,60 @@ def expand_port_range(token):
     return out
 
 
+def describe_bad_token(tok):
+    """
+    Say WHY a token is not a port, when it was plainly meant to be one.
+
+    "neither an integer, a port range, nor a known port name" is unactionable
+    for exactly the failures that reach it: the character that broke a range is
+    normally one the editor renders identically to the right one.
+    """
+    exotic = _dedup([ch for ch in tok if ord(ch) > 127])
+    if exotic:
+        shown = ", ".join(f"'{ch}' (U+{ord(ch):04X})" for ch in exotic)
+        # A token with no digits was never a port number, so the likely mistake
+        # is an unmarked comment; with digits in it, it is punctuation.
+        fix = ("Start a comment with '#' or '!'." if not any(c.isdigit() for c in tok)
+               else "Retype the punctuation on an ASCII keyboard.")
+        return (f"token '{tok}' contains the non-ASCII character(s) {shown}. {fix}")
+
+    parts = tok.split(":")
+    if len(parts) > 1 and all(p.strip().lstrip("+-").isdigit() for p in parts):
+        a, b = parts[0].strip(), parts[-1].strip()
+        step = 1 if int(a) <= int(b) else -1
+        return (f"token '{tok}' is not a range: a colon range is "
+                f"start:step:stop. For ports {a} through {b} write "
+                f"'{a}:{step}:{b}' or '{a}-{b}'.")
+
+    return (f"token '{tok}' is neither an integer, a port range, nor a known "
+            f"port name.")
+
+
+def read_config_text(filepath):
+    """
+    Read a hand-written config file as text, sniffing the encoding.
+
+    Notepad's "Unicode" is UTF-16 and its "UTF-8" writes a BOM. The old
+    `encoding="utf-8", errors="ignore"` read the first as `' 3 1 : 1 : 5 2 '`
+    and glued the second's BOM onto the leading `#`, so the group header was
+    parsed as data -- and both files look perfect in an editor.
+    """
+    raw = Path(filepath).read_bytes()
+    # UTF-32's BOM starts with UTF-16's, so it has to be tested first.
+    for bom, enc in ((codecs.BOM_UTF32_LE, "utf-32"), (codecs.BOM_UTF32_BE, "utf-32"),
+                     (codecs.BOM_UTF8, "utf-8-sig"),
+                     (codecs.BOM_UTF16_LE, "utf-16"), (codecs.BOM_UTF16_BE, "utf-16")):
+        if raw.startswith(bom):
+            return raw.decode(enc)
+    if b"\x00" in raw[:512]:                 # UTF-16 written without a BOM
+        return raw.decode("utf-16-le" if raw[1:2] == b"\x00" else "utf-16-be")
+    for enc in ("utf-8", "gbk", "latin-1"):  # latin-1 cannot fail
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+
+
 def parse_port_config(filepath):
     """
     Parse a port configuration file into ordered groups of raw tokens.
@@ -157,18 +245,17 @@ def parse_port_config(filepath):
     current_group = "Ungrouped"
     groups[current_group] = []
 
-    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            stripped = line.strip()
-            if not stripped:
-                continue
+    for line in read_config_text(filepath).splitlines():
+        stripped = normalise_config_line(line).strip()
+        if not stripped:
+            continue
 
-            if stripped.startswith("#"):
-                current_group = stripped.lstrip("#").strip() or "Ungrouped"
-                groups.setdefault(current_group, [])
-                continue
+        if stripped.startswith("#"):
+            current_group = stripped.lstrip("#").split("!", 1)[0].strip() or "Ungrouped"
+            groups.setdefault(current_group, [])
+            continue
 
-            groups[current_group].extend(split_config_tokens(stripped))
+        groups[current_group].extend(split_config_tokens(stripped))
 
     groups = OrderedDict((k, v) for k, v in groups.items() if v)
     if not groups:
@@ -254,8 +341,7 @@ def resolve_port_config(groups, n_ports, port_names, order="sorted"):
             key = tok.strip().upper()
             hits = sorted({p for nm, ps in by_name.items() if key in nm for p in ps})
         if not hits:
-            sys.exit(f"[ERROR] Group '{group}': token '{tok}' is neither an "
-                     f"integer, a port range, nor a known port name.")
+            sys.exit(f"[ERROR] Group '{group}': {describe_bad_token(tok)}")
         if len(hits) > 1:
             sys.exit(f"[ERROR] Group '{group}': port name '{tok}' is ambiguous, "
                      f"matches ports {hits}.")

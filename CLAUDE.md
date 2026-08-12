@@ -2870,6 +2870,28 @@ recorded here rather than in a commit message nobody will find.
   no symptom, and `_fmt_ports` collapses the echo back into runs so a 54-ball GND group
   stays one readable line. `tests/test_reduce_snp.py::TestPortRanges` is the guard and
   all five behaviours above were mutation-checked.
+- **The port config is a HAND-WRITTEN file and is read as one.** Every failure below
+  rendered as `31:1:52` in an editor and was refused as *"neither an integer, a port
+  range, nor a known port name"* — the user is looking at a line that is already
+  correct, which is what made the message unactionable. `read_config_text` sniffs the
+  encoding (Notepad's "Unicode" is UTF-16 and read as `' 3 1 : 1 : 5 2 '`; its "UTF-8"
+  writes a BOM that glued itself to the leading `#`, so the first group HEADER parsed
+  as data and every ground ball landed in the keep group; a GBK comment raised nothing
+  and ate its line). `normalise_config_line` folds the full-width punctuation a CJK
+  input method produces (`：，、；－–—＃！＝`, NBSP, a stray BOM) — none of which is legal
+  in a port name. Full-width DIGITS and U+3000 are deliberately **not** in that map:
+  `\d`, `\s` and `int()` are Unicode-aware already, so an entry would be dead code and
+  would stop the tests noticing if a regex were ever narrowed to `[0-9]`. A `#` after
+  the ports starts a comment (`(?:^|(?<=\s))#`, so a port *named* `NET#3` survives) —
+  before this the module's OWN docstring example, `1, 2, 3, 4:1:17, 80  # start:step:stop`,
+  was a spec this parser refused. `describe_bad_token` is what a leftover says: the
+  offending character **by code point** (it is invisible on screen), or for `31:52` the
+  exact spelling to type (`'31:1:52'` or `'31-52'`) rather than the rule. `31:52` stays
+  unsupported on purpose — `parse_port_range` refuses it too, and a config that works
+  in one and not the other is worse than a clear refusal.
+  `tests/test_reduce_snp.py::TestConfigFileIsReadAsWritten` is the guard; every case is
+  mutation-checked, and the utf-8-BOM one goes red only when BOTH halves (the sniff and
+  the U+FEFF map entry) are reverted, which is deliberate redundancy.
 - **`--keep` / `--gnd` reach the SAME code path as a config file.** They build the
   `{group: [token]}` mapping `parse_port_config` returns (`groups_from_cli`) and go
   through `resolve_port_config` — one resolver, one set of error messages. `--keep` is

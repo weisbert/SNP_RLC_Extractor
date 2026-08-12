@@ -214,6 +214,130 @@ class TestPortRanges(unittest.TestCase):
         self.assertEqual(rs._fmt_ports([]), "(none)")
 
 
+class TestConfigFileIsReadAsWritten(unittest.TestCase):
+    """
+    A hand-written config file whose ports LOOK right must BE right.
+
+    Every case here rendered as `31:1:52` in an editor and was refused as
+    "neither an integer, a port range, nor a known port name": the encoding
+    Notepad picked, the BOM it wrote, and the full-width punctuation a CJK input
+    method produces are all invisible on screen. That is what made the report
+    unactionable -- the user is looking at a line that is already correct.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _resolve(self, text, encoding="utf-8", n_ports=60, names=None):
+        p = self.tmp / "ports.txt"
+        p.write_bytes(text.encode(encoding))         # never write_text: it uses
+        groups = rs.parse_port_config(p)             # the platform's codepage
+        return rs.resolve_port_config(groups, n_ports, names or [""] * n_ports)
+
+    CFG = "# GND\n31:1:52\n# RX\n1,2\n"
+
+    def _assert_read(self, text, encoding="utf-8"):
+        _, keep, gnd = self._resolve(text, encoding)
+        self.assertEqual(keep, [1, 2])
+        self.assertEqual(gnd, list(range(31, 53)))
+
+    # --- the encoding a text editor chose -----------------------------------
+    def test_plain_utf8(self):
+        self._assert_read(self.CFG)
+
+    def test_utf8_with_a_bom_does_not_swallow_the_first_group_header(self):
+        # The BOM glued itself to the leading '#', so `# GND` parsed as data and
+        # every ground ball landed in the keep group.
+        self._assert_read(self.CFG, "utf-8-sig")
+
+    def test_utf16_le_with_a_bom(self):
+        self._assert_read(self.CFG, "utf-16")
+
+    def test_utf16_be_with_a_bom(self):
+        self._assert_read(self.CFG, "utf-16-be")
+
+    def test_utf16_without_a_bom(self):
+        self._assert_read(self.CFG, "utf-16-le")
+
+    def test_a_gbk_comment_does_not_take_the_ports_with_it(self):
+        self._assert_read("# GND\n31:1:52  # 接地球\n# RX\n1,2\n", "gbk")
+
+    # --- the punctuation a CJK input method produced -------------------------
+    def test_fullwidth_colon_is_a_colon(self):
+        self._assert_read("# GND\n31：1：52\n# RX\n1,2\n")
+
+    def test_fullwidth_comma_separates_tokens(self):
+        _, keep, gnd = self._resolve("# GND\n31:1:52，55\n# RX\n1，2\n")
+        self.assertEqual(keep, [1, 2])
+        self.assertEqual(gnd, list(range(31, 53)) + [55])
+
+    def test_fullwidth_dash_range(self):
+        _, _, gnd = self._resolve("# GND\n31－52\n# RX\n1,2\n")
+        self.assertEqual(gnd, list(range(31, 53)))
+
+    # These two need no entry in `_FULLWIDTH_MAP` -- `\d`, `\s` and `int()` are
+    # Unicode-aware. They are here so that narrowing a regex to `[0-9]` or to
+    # `[ \t]` shows up as a failure rather than as a refused config file.
+    def test_fullwidth_digits_are_digits(self):
+        self._assert_read("# GND\n３１:1:５２\n# RX\n1,2\n")
+
+    def test_an_ideographic_space_separates_tokens(self):
+        _, keep, _ = self._resolve("# RX\n1　2\n")
+        self.assertEqual(keep, [1, 2])
+
+    # --- comments ------------------------------------------------------------
+    def test_a_hash_after_the_ports_is_a_comment(self):
+        self._assert_read("# GND\n31:1:52  # ground balls\n# RX\n1,2\n")
+
+    def test_a_hash_inside_a_port_name_is_not_a_comment(self):
+        # Two names sharing the head, or truncating `NET#3` to `NET` still
+        # resolves through the substring fallback and the test proves nothing.
+        names = [""] * 60
+        names[6], names[7] = "NET#3", "NET#4"
+        _, keep, _ = self._resolve("# RX\nNET#3\n", names=names)
+        self.assertEqual(keep, [7])
+
+    def test_a_bang_comment_still_works(self):
+        self._assert_read("# GND\n31:1:52  ! ground balls\n# RX\n1,2\n")
+
+    def test_a_comment_on_the_group_header_line(self):
+        groups = rs.parse_port_config(self._write("# GND  ! the balls\n31:1:52\n"))
+        self.assertEqual(list(groups), ["GND"])
+
+    def _write(self, text, encoding="utf-8"):
+        p = self.tmp / "hdr.txt"
+        p.write_bytes(text.encode(encoding))
+        return p
+
+    # --- what it still refuses, and what it now says -------------------------
+    def test_a_two_part_colon_range_is_refused_with_the_spelling_to_use(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._resolve("# GND\n31:52\n")
+        msg = str(cm.exception)
+        self.assertIn("start:step:stop", msg)
+        self.assertIn("'31:1:52'", msg)              # the exact fix, not a rule
+        self.assertIn("'31-52'", msg)
+
+    def test_a_descending_two_part_range_suggests_a_negative_step(self):
+        self.assertIn("'52:-1:31'", rs.describe_bad_token("52:31"))
+
+    def test_an_unmarked_comment_is_named_by_code_point(self):
+        msg = rs.describe_bad_token("接地")
+        self.assertIn("U+63A5", msg)                 # invisible on screen; the
+        self.assertIn("'#' or '!'", msg)             # code point is not
+
+    def test_a_leftover_exotic_character_says_which_one(self):
+        msg = rs.describe_bad_token("31–1–52")   # en dashes
+        self.assertIn("U+2013", msg)
+        self.assertIn("ASCII", msg)
+
+    def test_the_plain_message_survives_for_a_plain_typo(self):
+        self.assertIn("neither an integer", rs.describe_bad_token("VDD_RXX"))
+
+
 class TestInlinePortSpecs(unittest.TestCase):
     """`--keep` / `--gnd` build the same group mapping a config file does."""
 
