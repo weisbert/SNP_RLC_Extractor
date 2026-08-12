@@ -52,6 +52,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `tests/test_multifile_table.py` | The file WINDOW and the port-cell budget (R3-2 / R3-3 / R3-5): the measured cell (72 px / 7 chars at 100%, 135 px / 7 chars at 150% — the character count is what is DPI-stable), the alias refusal quoting the measured FRACTION rather than a digit count, the default-scope rendering, the footer's pack order at a floor where the tree actually unmaps, and the reference strip in the Attribution window (not packed at all when there is no composition — an unmanaged `ttk.Label` still answers `winfo_reqheight() == 21`). Every guard mutation-checked. |
 | `tests/test_multifile_engine.py` | What Calculate DOES with several files, and the surfaces that have to say so: the namespace and its per-token scope rule (a bare token after a tag is still the HOME file) pinned against `parse_scoped_ports` on everything that one accepts, the two namespace builders pinned against each other, the composed frequency axis reaching the plot / the CSV / the marker snap, R3-5 reaching the Log and the run page exactly once, and R2-8 inside the Attribution window (the package element must not come back as exactly 0). Every guard mutation-checked. |
 | `tests/test_conn_rowshape.py` | Per-kind row shape and the footer route (the GUI's half of round 1): `conn_table_layout`'s two rules over all 63 kind subsets (a cell never spreads under someone else's heading, and it spreads whenever it may), the measured table widths, the short-group cell shim's `TerminationSet` equivalence, the R1-5 consequence tiers, and — Tk-driven — that clicking the footer reaches a row past the table's OWN scroll and that it costs zero pixels. Every guard mutation-checked. |
+| `tests/test_editor_scroll.py` | **The editor keeps the reader's place when the TRACE changes, and only then** (7 tests, Tk-driven off a MAPPED window — every number is pixel geometry and a withdrawn root reports a 1x1 canvas). The mode-5 form is 728 px against a 345 px viewport at 1500x900, so the connections table is below the fold and reaching it is a deliberate scroll; `_update_mode_visibility` reset that scroll on every trace selection, which read as the table vanishing. Pins the offset, that the table is still ON SCREEN (the property, not the number), the shorter form clamping instead of parking past its end, and — the half a careless fix removes — that a real MODE change still resets. The precondition that the table is below the fold at all is asserted, or the class would pass vacuously on a form that happens to fit. Every guard mutation-checked. |
 | `tests/test_mode5_editor.py` | Stage 3: the pure text<->rows import decision and both strip renderers, plus Tk-driven editor wiring, per-mode widget visibility, the text hatch, the CSV gate, wheel routing, and the LAYOUT numbers (`ismapped` / `reqwidth` / `xview` / `scrollregion` / `sashpos`) measured off a mapped window — including that a mode with no table fits the 431 px canvas outright and every mode shows the same editor height at the minsize. |
 | `tests/test_freeze_trace.py` | "Freeze as new trace": the pure copy rules (config copied, lists element-wise, results REFERENCED), the two refusals (Calculate skips it, the editor cannot write it), the two *entry* refusals (`freeze_refusal` — no numbers, and a STALE spec), the `freeze_label` budget that keeps the `<HH:MM>` stamp inside `MAX_LABEL_LEN`, that everything else still works (plot / show-hide / CSV / Remove), that the CSV does not attribute a snapshot's numbers to the newest run, the right-click menu, and the session round trip that comes back without numbers and says so. Every guard mutation-checked. |
 | `tests/test_port_roles.py` | Port names put to work: the pure classifier (`port_roles`), the provenance map (`row_sources`), the run-collapser, the open-port name check with its false-alarm cases run against every real fixture, `_trace_role_rows` (any mode → rows), and the Tk-driven Ports & Roles window — filter, sort-on-the-raw-value, both Treeview hazards, the flagged rows (with the probe-and-ground message following the MODE), and the collapsed-range write-back. Every guard mutation-checked. |
@@ -1540,6 +1541,32 @@ looking at the screen.
   a sticky `False` swallowed every later row add. Both the canvas's **and the form's**
   `<Configure>` must re-measure: a table grows the form one idle pass *after* the row was
   added, so a scrollregion measured from the row-add callback alone is one row short.
+- **THE RESET BELONGS TO A MODE CHANGE, AND `_update_mode_visibility` ALSO RUNS ON EVERY
+  TRACE SELECTION.** It used to end with an unconditional `preserve=False`, so every click
+  in the Traces list threw the reader back to the top of the form — and the form does not
+  fit: measured at **1500x900** on a mode-5 trace, it is **728 px against a 345 px
+  viewport**, so the connections table is BELOW THE FOLD at `yview 0`. The reader scrolls
+  to 0.35 to reach it (**220 px** of table on screen), clicks the other trace to compare
+  the two specs — the whole reason for having two traces — and lands back at **0.0 with
+  ZERO px** of it visible, on every switch, in both directions. It was reported as the
+  Connections table *"disappearing from the GUI"* while *"the calculation is still fine"*,
+  which is exactly what it was: nothing hidden, nothing lost, the spec still computed, only
+  the viewport moved. `_ed_shown_mode` gates it, so `preserve=False` fires only when the
+  mode really moved — the case the reset was written for, where the fields the view is
+  scrolled past have been replaced. **Preserving is safe here in a way it was not when the
+  reset was written**: `_apply_editor_scrollregion` re-measures the scrollregion BEFORE
+  re-applying the offset, so a shorter form clamps to its own bottom instead of parking
+  past the end, and the stale-scrollregion failure above cannot come back through this
+  call. What is preserved is the **fraction**, not the pixel: measured, 0.3007 of a 728 px
+  form (top pixel 219) returns as 0.3014 of a 574 px one (top pixel 173), a **46 px** shift
+  of the content — harmless at every size tested, and the reason the guard asserts the
+  table is still ON SCREEN rather than only that the number came back.
+  `tests/test_editor_scroll.py` is that guard and
+  `tests/test_mode5_editor.py::TestModeVisibility::test_switching_from_mode5_to_mode1_resets_the_scroll`
+  is the guard on the half a careless fix removes. **Known and NOT fixed:** a fresh select
+  still puts the connections table below the fold at 1500x900 — that is the editor-height
+  problem `docs/design_connection_table.md` stage 4 owns, and it is what made the reset
+  cost so much rather than being a cosmetic annoyance.
 - **The strips run inside Tk variable traces.** `_apply_editor_strips` is
   `after_idle`-coalesced, must never raise (a raised error there reaches no handler you
   control — Tk prints it and the GUI carries on showing a stale "spec is fine"), and must
