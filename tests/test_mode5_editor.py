@@ -233,6 +233,45 @@ class TestTheHintFollowsTheKindsInTheTable(unittest.TestCase):
         self.assertNotIn("F2.15", self._long(rows, tagged=False))
         self.assertIn("F2.15", self._long(rows, tagged=True))
 
+    def test_every_collapsed_line_is_inside_the_WIDTH_BUDGET(self):
+        """
+        The collapsed line is an unwrapped Label directly in the editor form's
+        grid, so its requested width is a lower bound on the FORM's -- there is
+        nothing between it and the 431 px canvas.
+
+        Measured: the generic line is 59 chars / 354 px, the widest per-Kind
+        line 64 / 380, the connections table 410, so anything inside the budget
+        cannot be what decides the form's width.  The first spelling of the
+        multi-Kind line was the generic sentence plus a suffix -- 92 chars /
+        533 px -- and it took mode 5's form from 418 to 540 px against a 431 px
+        canvas, i.e. one sentence turned the horizontal scrollbar on for good.
+
+        MUTATION: restore that spelling and this goes red without a display.
+        """
+        budget = pkg_rlc_gui.HINT_SHORT_CHARS
+        for kind, (line, _full) in pkg_rlc_gui.CONN_KIND_HINTS.items():
+            with self.subTest(kind=kind):
+                self.assertLessEqual(len(line), budget, line)
+        for rows, what in (([], "empty table"),
+                           ([ConnectionRow(kind="short", ports="1")], "one"),
+                           ([ConnectionRow(kind=k, ports="1")
+                             for k in pkg_rlc_gui.CONN_KINDS], "every kind")):
+            with self.subTest(table=what):
+                self.assertLessEqual(len(self._short(rows)), budget)
+        self.assertLessEqual(len(pkg_rlc_gui.CONN_TABLE_HINT_SHORT), budget)
+        self.assertLessEqual(len(pkg_rlc_gui.MP_TABLE_HINT_SHORT), budget)
+
+    def test_the_general_rules_explain_the_ON_OFF_box(self):
+        """
+        It is a 12 px cell with no title, so the hint is the only place it is
+        described -- and the thing worth saying is not "it turns the row off"
+        but that it is NOT the same as Type `open`, which is the gesture a user
+        reaches for instead.
+        """
+        text = self._long([ConnectionRow(kind="rlc_gnd", ports="3", R="50")])
+        self.assertIn("switches it OFF", text)
+        self.assertIn("'open'", text)
+
     def test_a_half_typed_table_does_not_raise(self):
         """Same contract as the strips: this runs on every keystroke."""
         class _Broken:

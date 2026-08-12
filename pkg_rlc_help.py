@@ -2182,6 +2182,24 @@ The window stays open while you edit and follows what you type. The
 same open-port check also appears on the validation strip under the
 tables, so you see it without opening anything.
 
+Switching a row OFF
+-------------------
+The box at the start of each connection row turns it off. The row
+keeps its ports and its R/L/C and contributes NOTHING -- exactly as
+if it were deleted -- so "what is this ground row worth?" is one
+click and one Calculate, and one click back.
+
+It is deliberately not the same as setting the Type to "open".
+"open" is a DECLARATION: it reaches the port list, it is what makes
+Ports & Roles show the port as deliberately open rather than
+forgotten, and on an rlc_gnd row it silently discards the element
+as well. Off is an ABSENCE.
+
+The validation strip says how many rows are off and names them, so
+a switch left down for a week is not a spec you have forgotten
+about. It is saved with the trace, so a session comes back the way
+you left it.
+
 What a connection row costs you, in decibels
 --------------------------------------------
 Every row above is an assumption, and the assumptions are not

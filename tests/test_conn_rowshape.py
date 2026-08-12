@@ -15,21 +15,23 @@ Three kinds of test, the split this repo already uses:
   * TK WIRING -- what the table actually grids, what the header says, what a
     Kind change does to the values in the cells it hides.
   * LAYOUT -- measured off a MAPPED window, never eyeballed.  The number that
-    matters is that the WORST case did not move: 405 px at 100% and 413 px at
-    150%, identical to the six-column table this replaces, so nothing overflows
-    that was not overflowing before.
+    matters is that the worst case still FITS the 431 px editor canvas.
 
 Measured on this machine (Microsoft YaHei UI 9, the repo's reference font),
-inner frame reqwidth of a standalone connections table:
+inner frame reqwidth of a standalone connections table.  "R1" is the
+six-column table; "now" adds the per-row on/off cell:
 
-    kinds present        old    new     delta
-    ground only          405    202     -203   (To+R+L+C recovered)
-    short only           405    273     -132
-    rlc_gnd only         405    331      -74   (the To column recovered)
-    ground + rlc_gnd     405    331      -74
-    rlc_between only     405    405       +0
-    every kind at once   405    405       +0   <- the guard
-    (at 150%: 413 -> 210 / 281 / 339 / 339 / 413 / 413)
+    kinds present        old     R1    now     delta vs old
+    ground only          405    202    207     -198   (To+R+L+C recovered)
+    short only           405    273    271     -134
+    rlc_gnd only         405    331    336      -69   (the To column recovered)
+    rlc_between only     405    405    410       +5
+    every kind at once   405    405    410       +5   <- the guard
+
+The on/off column costs 5 px, not the 14 the cell itself takes: the delete
+button went from width=2 (24 px) to width=1 (17 px), which still shows the
+whole 12 px glyph.  The mode-5 FORM is 417 px against the 431 px canvas,
+i.e. one pixel narrower than before this column existed.
 """
 
 from __future__ import annotations
@@ -55,6 +57,8 @@ from pkg_rlc_core import (  # noqa: E402
 from pkg_rlc_gui import (  # noqa: E402
     CONN_NET_KEY,
     CONN_NET_SUPPORTED,
+    CONN_OFF_GLYPH,
+    CONN_ON_GLYPH,
     CONN_TABLE_COLUMNS,
     App,
     ColumnSpec,
@@ -65,6 +69,14 @@ from pkg_rlc_gui import (  # noqa: E402
     V_OK,
     V_ROW_INERT,
     V_WRONG_NUMBER,
+    _CONN_COL_C as COL_C,
+    _CONN_COL_L as COL_L,
+    _CONN_COL_ON as COL_ON,
+    _CONN_COL_PORT as COL_PORT,
+    _CONN_COL_R as COL_R,
+    _CONN_COL_SECOND as COL_SECOND,
+    _CONN_COL_TYPE as COL_TYPE,
+    _CONN_NCOLS as NCOLS,
     _validation_report,
     _validation_strip_text,
     conn_cells_from_row,
@@ -77,10 +89,20 @@ from pkg_rlc_gui import (  # noqa: E402
 FIX = Path(__file__).resolve().parent / "fixtures"
 FIXTURE = FIX / "diff_pair_4port.s4p"
 
-# The connections table's grid columns.  Six, and the ✕ at 6 -- exactly what
-# the six-column table had, which is what makes "nothing got wider" checkable.
-NCOLS = 6
-COL_TYPE, COL_PORT, COL_SECOND, COL_R, COL_L, COL_C = range(6)
+# The connections table's grid columns are IMPORTED, not re-declared.
+#
+# They used to be `range(6)` written out here, which is a second copy of a
+# layout decision -- and when the on/off column was added it became a second
+# copy that DISAGREED: the tests went on checking that 'ports' is grid column
+# 1 while the implementation had moved it to 2, so what they pinned was the
+# old table rather than the current one.  Importing means a column added later
+# moves both at once, and the tests that care about the COUNT (the grid is
+# NCOLS wide, the ✕ is at NCOLS) keep working unchanged.
+
+#: Every cell key a row can carry, for the "which cells does this Kind show"
+#: assertions.  The on/off cell is on every row whatever the Kind, so it is
+#: factored out here rather than repeated in each expected set.
+ALWAYS = {"enabled", "kind"}
 
 
 def _ensure_fixtures() -> None:
@@ -125,24 +147,24 @@ class TestPerKindShape(unittest.TestCase):
         for kind in ("ground", "vdd", "open"):
             with self.subTest(kind=kind):
                 cells = _cells(conn_table_layout(_vals(kind)), 0)
-                self.assertEqual(set(cells), {"kind", "ports"})
+                self.assertEqual(set(cells), ALWAYS | {"ports"})
 
     def test_rlc_gnd_shows_one_port_field_plus_rlc(self):
         cells = _cells(conn_table_layout(_vals("rlc_gnd")), 0)
-        self.assertEqual(set(cells), {"kind", "ports", "R", "L", "C"})
+        self.assertEqual(set(cells), ALWAYS | {"ports", "R", "L", "C"})
         self.assertNotIn("to", cells)
 
     def test_rlc_between_is_the_only_kind_with_two_port_fields(self):
         """A two-terminal element really has two ends; nothing else does."""
         cells = _cells(conn_table_layout(_vals("rlc_between")), 0)
-        self.assertEqual(set(cells), {"kind", "ports", "to", "R", "L", "C"})
+        self.assertEqual(set(cells), ALWAYS | {"ports", "to", "R", "L", "C"})
         two_port = [k for k in CONN_KINDS
                     if "to" in _cells(conn_table_layout(_vals(k)), 0)]
         self.assertEqual(two_port, ["rlc_between"])
 
     def test_short_is_one_port_field_plus_the_net_name(self):
         cells = _cells(conn_table_layout(_vals("short"), net=True), 0)
-        self.assertEqual(set(cells), {"kind", "ports", CONN_NET_KEY})
+        self.assertEqual(set(cells), ALWAYS | {"ports", CONN_NET_KEY})
         self.assertNotIn("to", cells)
         self.assertNotIn("R", cells)
 
@@ -150,7 +172,7 @@ class TestPerKindShape(unittest.TestCase):
         """The Net cell is feature-detected off ConnectionRow (CONN_NET_
         SUPPORTED); with no field to store it, no cell is drawn."""
         cells = _cells(conn_table_layout(_vals("short"), net=False), 0)
-        self.assertEqual(set(cells), {"kind", "ports"})
+        self.assertEqual(set(cells), ALWAYS | {"ports"})
 
     def test_an_unknown_kind_keeps_every_cell(self):
         """Retired-but-loading: a session hand-edited to a Kind this build does
@@ -158,7 +180,7 @@ class TestPerKindShape(unittest.TestCase):
         with no symptom."""
         cells = _cells(conn_table_layout(_vals("connect")), 0)
         self.assertEqual(set(cells),
-                         {"kind", "ports", "to", "R", "L", "C"})
+                         ALWAYS | {"ports", "to", "R", "L", "C"})
 
     def test_every_key_a_row_shows_is_a_real_column(self):
         keys = {c.key for c in CONN_TABLE_COLUMNS}
@@ -212,15 +234,46 @@ class TestHeaderFollowsTheRows(unittest.TestCase):
 
     def test_a_used_column_always_has_a_title(self):
         """The converse, and what stops the rule being satisfied by blanking
-        every header: a column a row starts a cell in is always titled."""
+        every header: a column a row starts a cell in is always titled.
+
+        The on/off column is the ONE exemption, and it is exempt because of
+        what the rule is FOR.  A title exists so a cell cannot sit under a
+        heading that describes something else; that can only happen to a cell
+        that SPREADS, and the on/off cell never does -- which is asserted
+        below rather than asserted here in prose.  It has no title because the
+        two glyphs are their own legend and the cell is 12 px, which fits no
+        word.
+        """
         for n in range(1, len(CONN_KINDS) + 1):
             for kinds in combinations(CONN_KINDS, n):
                 layout = conn_table_layout(_vals(*kinds))
                 for r in range(len(kinds)):
                     for key, col, _span in layout.rows[r]:
+                        if col == COL_ON:
+                            continue
                         self.assertNotEqual(
                             layout.headers[col], "",
                             f"{kinds}: {key} starts in untitled column {col}")
+
+    def test_the_untitled_on_off_column_NEVER_spreads(self):
+        """
+        The precondition of the exemption above.  A one-column cell cannot
+        reach another column's heading; the moment it spans two it can, and
+        then an untitled column is exactly the "blank every header" cheat the
+        test above exists to refuse.
+
+        MUTATION: give the on/off cell a span of 2 and this goes red while
+        every other layout test stays green.
+        """
+        for n in range(1, len(CONN_KINDS) + 1):
+            for kinds in combinations(CONN_KINDS, n):
+                layout = conn_table_layout(_vals(*kinds))
+                for r in range(len(kinds)):
+                    cells = _cells(layout, r)
+                    self.assertIn("enabled", cells,
+                                  f"{kinds}: row {r} has no on/off cell")
+                    self.assertEqual(cells["enabled"], (COL_ON, 1),
+                                     f"{kinds}: the on/off cell moved or spread")
 
 
 class TestLayoutGeometryIsSane(unittest.TestCase):
@@ -340,6 +393,90 @@ class TestShortGroupCell(unittest.TestCase):
         row = ConnectionRow(kind="short", ports="1,2,3", net="coil_tap")
         back = conn_row_from_cells(conn_cells_from_row(row))
         self.assertEqual(getattr(back, CONN_NET_KEY), "coil_tap")
+
+
+# ============================================================================
+# PURE: the per-row on/off switch
+# ============================================================================
+
+class TestARowCanBeSwitchedOff(unittest.TestCase):
+    """
+    The debug switch, and what makes it different from the two gestures it
+    replaces.
+
+    Deleting the row loses its R/L/C and its ports (on a package ground row
+    that is a range someone worked out).  Setting its Kind to `open` is a
+    DIFFERENT SPEC rather than an absent one -- `open` is a declaration, it
+    survives into port_roles, and on an rlc_gnd row it silently drops the
+    element too.  Off means the row is not in the spec at all.
+    """
+
+    def _dsl(self, rows):
+        return rows_to_dsl_text([MeasPortRow("vic", "1", "2")], rows, "")
+
+    def test_a_disabled_row_is_not_in_the_spec_AT_ALL(self):
+        on = [ConnectionRow(kind="ground", ports="3,4"),
+              ConnectionRow(kind="rlc_gnd", ports="5", R="50")]
+        off = [ConnectionRow(kind="ground", ports="3,4"),
+               ConnectionRow(kind="rlc_gnd", ports="5", R="50",
+                             enabled=False)]
+        # ... and byte-identical to the row simply not being there, which is
+        # the whole claim: "as if deleted", not "some other termination".
+        self.assertEqual(self._dsl(off), self._dsl(on[:1]))
+        self.assertNotIn("lumped_to_gnd", self._dsl(off))
+        self.assertIn("lumped_to_gnd", self._dsl(on))
+
+    def test_OFF_is_not_the_same_as_kind_open(self):
+        """
+        The gesture this replaces, and why it is not equivalent.  `open` is a
+        DECLARATION -- it reaches the TerminationSet and port_roles -- while
+        off is an absence.  On an rlc_gnd row it also throws the element away.
+        """
+        as_open = self._dsl([ConnectionRow(kind="open", ports="5")])
+        as_off = self._dsl([ConnectionRow(kind="rlc_gnd", ports="5", R="50",
+                                          enabled=False)])
+        self.assertIn("open", as_open)
+        self.assertNotIn("open", as_off)
+        self.assertEqual(as_off.strip().splitlines()[-1], "2 signal vic -")
+
+    def test_switching_a_row_off_KEEPS_every_value_in_it(self):
+        row = ConnectionRow(kind="rlc_gnd", ports="21:1:25", R="0.5", L="80p",
+                            enabled=False)
+        self.assertEqual((row.ports, row.R, row.L), ("21:1:25", "0.5", "80p"))
+        # and it is still a row: `is_blank` is about what is TYPED in it, so a
+        # disabled row does not fall into the "blank rows are dropped" path
+        # and lose its values on the next set_rows().
+        self.assertFalse(row.is_blank())
+
+    def test_an_EMPTY_row_switched_off_is_still_blank(self):
+        """Otherwise clicking the toggle on the spare row at the bottom of the
+        table would turn it into a row, and the table always has one."""
+        self.assertTrue(ConnectionRow(enabled=False).is_blank())
+
+    def test_the_default_is_ON_so_no_saved_spec_moves(self):
+        self.assertTrue(ConnectionRow().enabled)
+
+    def test_the_cell_round_trips_through_the_glyph(self):
+        for enabled, glyph in ((True, CONN_ON_GLYPH), (False, CONN_OFF_GLYPH)):
+            with self.subTest(enabled=enabled):
+                cells = conn_cells_from_row(
+                    ConnectionRow(kind="ground", ports="3", enabled=enabled))
+                self.assertEqual(cells["enabled"], glyph)
+                self.assertIs(conn_row_from_cells(cells).enabled, enabled)
+
+    def test_an_UNEXPECTED_cell_value_reads_as_ENABLED(self):
+        """
+        Tested against the OFF glyph, not the ON one, so anything else -- an
+        empty string from a row built in code, a value from a build that
+        spelled the pair differently -- means the row is IN the spec.  A row
+        that silently vanishes from the spec is the failure to avoid; a row
+        that is unexpectedly present is visible in the answer.
+        """
+        for text in ("", "?", "x", CONN_ON_GLYPH):
+            with self.subTest(text=text):
+                self.assertTrue(
+                    conn_row_from_cells({"kind": "ground", "ports": "3",
+                                         "enabled": text}).enabled)
 
 
 # ============================================================================
@@ -527,6 +664,74 @@ class _TableCase(unittest.TestCase):
 
 
 @unittest.skipUnless(TK_OK, "no Tk display available")
+class TestClickingTheToggleReachesTheSpec(_TableCase):
+    """
+    The switch through a REAL click, which is the half the pure tests cannot
+    see: the cell is a bare `tk.Label`, so nothing about it is a Tk control --
+    what makes it work is that the click writes the row's StringVar, which is
+    the same path every other cell takes to `_on_cell_write` -> the layout ->
+    the owner's `on_change`.
+    """
+
+    def _click(self, row: int):
+        self._widget(row, "enabled").event_generate("<Button-1>")
+        self._settle()
+
+    def test_a_click_takes_the_row_out_of_the_spec_and_a_second_puts_it_back(self):
+        self.table.set_rows([ConnectionRow(kind="ground", ports="3,4"),
+                             ConnectionRow(kind="rlc_gnd", ports="5", R="50")])
+        self._settle()
+        self.assertIn("lumped_to_gnd", rows_to_dsl_text([], self.table.get_rows(), ""))
+        self._click(1)
+        rows = self.table.get_rows()
+        self.assertFalse(rows[1].enabled)
+        self.assertNotIn("lumped_to_gnd", rows_to_dsl_text([], rows, ""))
+        # ... and the values are still there, which is the point of the switch
+        self.assertEqual((rows[1].ports, rows[1].R), ("5", "50"))
+        self._click(1)
+        self.assertTrue(self.table.get_rows()[1].enabled)
+
+    def test_the_click_NOTIFIES_the_owner(self):
+        """
+        Auto-apply, the strips and the stale marker all hang off `on_change`.
+        Without it the row would go quiet in the table and the trace would keep
+        the old spec until some other keystroke happened to sync it.
+        """
+        seen = []
+        self.table._on_change = lambda: seen.append(1)
+        self.table.set_rows([ConnectionRow(kind="ground", ports="3")])
+        self._settle()
+        seen.clear()
+        self._click(0)
+        self.assertTrue(seen, "clicking the toggle notified nobody")
+
+    def test_the_cell_is_on_every_row_whatever_the_kind(self):
+        self.table.set_rows([ConnectionRow(kind=k, ports="1", to="2", R="1",
+                                           L="1", C="1") for k in CONN_KINDS])
+        self._settle()
+        for r, kind in enumerate(CONN_KINDS):
+            with self.subTest(kind=kind):
+                self.assertTrue(self._gridded(r, "enabled"),
+                                f"a {kind} row cannot be switched off")
+
+    def test_a_FROZEN_table_refuses_the_click(self):
+        """
+        A frozen trace's spec may not move.  Unlike the ttk cells there is no
+        state flag to grey a tk.Label out (ttk state does not cascade -- the
+        StylePicker precedent), so the HANDLER is what refuses; without that
+        the one cell in the table that still worked would be this one.
+        """
+        self.table.set_rows([ConnectionRow(kind="ground", ports="3")])
+        self.table.set_editable(False)
+        self._settle()
+        self._click(0)
+        self.assertTrue(self.table.get_rows()[0].enabled)
+        self.table.set_editable(True)
+        self._click(0)
+        self.assertFalse(self.table.get_rows()[0].enabled)
+
+
+@unittest.skipUnless(TK_OK, "no Tk display available")
 class TestTableGridsThePerKindShape(_TableCase):
     def test_a_ground_row_grids_only_its_port_cell(self):
         self.table.set_rows([ConnectionRow(kind="ground", ports="3")])
@@ -653,45 +858,77 @@ class TestTableGridsThePerKindShape(_TableCase):
 class TestTableWidth(_TableCase):
     """
     Measured, not eyeballed.  The point of R1-1 is to give width back; the
-    guard is that the WORST case did not take any.
+    guard is that the WORST case still FITS.
+
+    The bound used to be "no wider than the six-column table this replaced"
+    (405 px), which was the right invariant while the table was doing the same
+    job in fewer pixels.  It stopped being the right one when the on/off column
+    was added: that is a new CAPABILITY, so "not wider than before" would
+    refuse it on principle, and the constraint it actually has to satisfy is
+    the one that was behind 405 all along -- the form has to fit the 431 px
+    editor canvas.  So the bound is now the VIEWPORT, with the form's overhead
+    over the table measured rather than assumed.
+
+    What the column cost, measured on this machine: worst case 405 -> 410 px,
+    i.e. 5 px, because the 12 px glyph cell (padx=0) was paid for partly by
+    the delete button going from width=2 (24 px) to width=1 (17 px), which
+    still shows the whole 12 px glyph.
     """
 
-    # The six-column table this replaces, measured on the same machine.
+    # The six-column table this replaced, measured on the same machine.  Kept
+    # as the reference for what the SHAPE rules give back, not as a cap.
     BASELINE = 405
+    #: The editor canvas once its vertical scrollbar shows, which in mode 5 it
+    #: always is.  This is the number that actually binds.
+    VIEWPORT = 431
+    #: The mode-5 form's requested width minus the table's, measured: the label
+    #: column and the cell padding around the table.
+    FORM_OVERHEAD = 13
 
     def _width(self, rows) -> int:
         self.table.set_rows(rows)
         self._settle()
         return self.table._inner.winfo_reqwidth()
 
-    def test_the_worst_case_is_exactly_the_old_table(self):
+    def test_the_worst_case_still_fits_the_editor_canvas(self):
         """Every Kind at once, so every column is in use and the second one is
-        titled 'To / Net'.  405 px, unchanged -- nothing overflows that was not
-        overflowing before."""
+        titled 'To / Net'.  410 px + 13 px of form overhead = 423 against a
+        431 px viewport, i.e. 8 px spare."""
         w = self._width([ConnectionRow(kind=k, ports="1,2", to="3", R="1",
                                        L="1", C="1") for k in CONN_KINDS])
-        self.assertEqual(w, self.BASELINE)
+        self.assertEqual(w, 410)
+        self.assertLessEqual(w + self.FORM_OVERHEAD, self.VIEWPORT)
+
+    def test_the_on_off_column_cost_five_pixels(self):
+        """
+        MUTATION: give the toggle cell padx=1 like every other cell (+2 px), or
+        leave the delete button at width=2 (+7 px).  Either takes the worst
+        case past the viewport, which is the whole reason both are measured.
+        """
+        w = self._width([ConnectionRow(kind=k, ports="1,2", to="3", R="1",
+                                       L="1", C="1") for k in CONN_KINDS])
+        self.assertEqual(w - self.BASELINE, 5)
 
     def test_a_ground_only_table_gives_back_half_its_width(self):
-        """Measured: 405 -> 202 px.  A ground row's To + R + L + C were 203 px
+        """Measured: 405 -> 207 px.  A ground row's To + R + L + C were 203 px
         of dead cells, 50% of the table."""
         self.assertEqual(self._width([ConnectionRow(kind="ground", ports="3")]),
-                         202)
+                         207)
 
     def test_an_rlc_gnd_only_table_gives_back_the_To_column(self):
-        """Measured: 405 -> 331 px, the 74 px of a 7-character combobox."""
+        """Measured: 405 -> 336 px, the 74 px of a 7-character combobox."""
         self.assertEqual(
             self._width([ConnectionRow(kind="rlc_gnd", ports="3", R="1")]),
-            331)
+            336)
 
-    def test_no_kind_mix_is_ever_wider_than_the_old_table(self):
+    def test_no_kind_mix_ever_overflows_the_editor_canvas(self):
         for n in range(1, len(CONN_KINDS) + 1):
             for kinds in combinations(CONN_KINDS, n):
                 with self.subTest(kinds=kinds):
                     w = self._width([ConnectionRow(kind=k, ports="1,2",
                                                    to="3", R="1", L="1", C="1")
                                      for k in kinds])
-                    self.assertLessEqual(w, self.BASELINE)
+                    self.assertLessEqual(w + self.FORM_OVERHEAD, self.VIEWPORT)
 
 
 class _EditorCase(unittest.TestCase):

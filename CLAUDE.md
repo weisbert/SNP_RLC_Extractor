@@ -1635,6 +1635,63 @@ the same table. `tests/test_conn_nets.py` (core) and `tests/test_conn_rowshape.p
   the same fixed-point property `_apply_editor_scrollbars` needs and for the same reason.
   Measured per variable write on a six-row table: **31 µs** when the layout does not move
   (15.6 µs of it deriving the layout to find that out) against **263 µs** on a Kind change.
+- **A CONNECTION ROW HAS AN ON/OFF BOX, and "off" means the row is not in the
+  spec at all.** `ConnectionRow.enabled`, dropped by `rows_to_dsl_text` — in
+  that one place, so the solve, the strips, the text hatch, Ports & Roles and
+  the run report all agree without any of them knowing about the flag. It
+  exists because both ways of asking *"what is this connection worth?"*
+  without it are destructive: **deleting** the row loses its R/L/C and its
+  ports (on a package ground row that is a range someone worked out), and
+  setting the Kind to **`open` is a DIFFERENT SPEC rather than an absent
+  one** — `open` is a declaration, it survives into `port_roles`, and on an
+  `rlc_gnd` row it silently discards the element too. `is_blank()` deliberately
+  ignores it, or clicking the toggle on the table's spare bottom row would turn
+  that row into a row.
+  **The control is `tk.Label(padx=0, pady=0, bd=0)` showing `☑`/`☐`, and every
+  part of that is a measurement.** At 100% (Microsoft YaHei UI 9, tk scaling
+  1.333) a `ttk.Checkbutton` is **23 px** and a `ttk.Label` with its default
+  padding **16 px**, against **13 px** of headroom; the bare `tk.Label` is
+  **12 px**, exactly the glyph, and both glyphs measure 12 px so the pair is
+  **width-stable** (the run-tab marker rule — a toggling cell must not reflow
+  the table). It is 17 px tall against the combobox's 25, so the row height is
+  unmoved. It is gridded with **`padx=0`** where every other cell gets 1, and
+  the **`✕` button went from `width=2` (24 px) to `width=1` (17 px)**, which
+  still shows the whole 12 px glyph: those two are what pay for it. Net result
+  measured — worst-case table **405 → 410 px**, and the mode-5 **form 418 →
+  417 px**, i.e. one pixel *narrower* than before the column existed.
+  `ttk` state does not cascade to a `tk.Label`, so **`_toggle_cell` guards on
+  `self._editable` itself** (the StylePicker precedent) — otherwise the one
+  cell still live on a frozen trace would be this one.
+  Two silent-failure guards, both pinned: **`_rows_from_list` coerces boolean
+  fields instead of `str()`-ing them** — `str(False)` is `"False"`, which is
+  truthy, so a switched-off row came back from a session switched **on** and
+  the spec quietly grew a connection (the `_coerce_bool` rule, one level down,
+  and there is no checkbox to notice it on); and `conn_row_from_cells` tests
+  against the **OFF** glyph, so anything unexpected in that cell reads as
+  ENABLED — a row that silently vanishes from the spec is the failure to
+  avoid, a row unexpectedly present is visible in the answer.
+  **A switched-off row is said out loud**, once for the whole table, leading
+  the `V_OK` block and naming the rows: the switch is for debugging, so the row
+  is *meant* to be off, but a spec quietly missing a connection is exactly the
+  wrong answer this strip exists to prevent, and the difference between "I
+  turned that off" and "I forgot I turned that off" is a fortnight. Its own
+  per-row checks and both its echoes (`_rlc_echo` and the scope echo) are
+  **skipped** — `✓ port 5 → GND: 50 Ω` about a row that is not in the spec is a
+  green tick for an element that is not there — while the row is still
+  enumerated so the footer route's row numbers keep matching the screen.
+- **`HINT_SHORT_CHARS = 64`, and it is a real budget, not tidiness.** A
+  `_CollapsibleHint`'s collapsed line is an unwrapped `ttk.Label` sitting
+  directly in the editor form's grid, so **its requested width is a lower bound
+  on the form's** — there is nothing between it and the 431 px canvas. Measured
+  with the `▸ ` prefix: the generic connections line is 59 chars / **354 px**,
+  the widest per-Kind line 64 / **380**, and the connections table itself 410,
+  so a line inside the budget can never be what decides the form's width. Past
+  it, it silently is: the first spelling of the multi-Kind line was the generic
+  sentence plus a suffix, 92 chars / **533 px**, and it took mode 5's form from
+  418 to **540 px** against a 431 px canvas — one sentence turning the
+  horizontal scrollbar on permanently, in a viewport already down to 45 px.
+  `_CollapsibleHint._render` clips as a backstop; the budget is what the
+  callers are pinned against.
 - **The HEADER follows the rows, and that is half of R1-1.** A shared grid header states
   a column's meaning once, so `To` was a lie on a short row even with the cell hidden.
   Grid column 2's title is derived — `""` / `"To"` / `"Net"` / `"To / Net"` — and the

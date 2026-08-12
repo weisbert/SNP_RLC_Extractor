@@ -790,6 +790,12 @@ def scope_echo_messages(mport_rows: Sequence, conn_rows: Sequence,
         names = {n.lower() for n in _collect_nets_safe(conn_rows)}
         for i, row in enumerate(live_conn):
             anchor = ("conn", i)
+            # A switched-off row is not in the spec, so what its ports WOULD
+            # have resolved to is not a fact about the network -- and the
+            # switched-off line above already names the row.  Enumerated
+            # anyway so the anchors keep matching the screen.
+            if not getattr(row, "enabled", True):
+                continue
             if (row.ports or "").strip().lower() not in names:
                 _one(row.ports, anchor, f"connection row {i + 1} Port:")
             if row.kind in CONN_KINDS_WITH_PARTNER and \
@@ -1293,6 +1299,14 @@ def _validation_report(mport_rows: Sequence, conn_rows: Sequence,
     # that the R=50 sitting next to it was thrown away.
     for i, row in enumerate(conn_live, start=1):
         anchor = ("conn", i - 1)
+        # A row that is switched OFF is not in the spec at all, so none of the
+        # checks below are about it: "row 3 has values but no Port" is a
+        # complaint about a row that is already contributing nothing on
+        # purpose.  It is still enumerated, so the row NUMBERS keep matching
+        # the screen -- the footer route indexes by them.  That it is off is
+        # said once, below, rather than once per row.
+        if not getattr(row, "enabled", True):
+            continue
         if not row.ports.strip():
             msgs.append(_VMsg(V_ROW_INERT,
                               f"⚠ connection row {i} has values but no Port "
@@ -1380,7 +1394,28 @@ def _validation_report(mport_rows: Sequence, conn_rows: Sequence,
             except Exception:       # pragma: no cover - see MUST NOT RAISE
                 pass
 
-    scoped = [_VMsg(V_OK, text, anchor) for text, anchor in scope_echoes]
+    # A SWITCHED-OFF ROW IS SAID OUT LOUD, and it leads the V_OK block.
+    #
+    # The switch is for debugging, so the row that is off is meant to be off --
+    # but a spec that is quietly missing a connection is precisely the shape of
+    # wrong answer this strip exists to prevent, and the difference between "I
+    # turned that off" and "I forgot I turned that off" is a fortnight.  One
+    # line for the whole table rather than one per row (the strip renders two),
+    # naming the rows so they can be found, and opening with a tick because it
+    # is not a PROBLEM -- `_footer_strip_text` counts the ones that do not.
+    off = [i for i, r in enumerate(conn_live, start=1)
+           if not getattr(r, "enabled", True)]
+    switched: list = []
+    if off:
+        which = ", ".join(str(i) for i in off[:6])
+        more = f" +{len(off) - 6} more" if len(off) > 6 else ""
+        switched.append(_VMsg(
+            V_OK,
+            f"✓ {len(off)} connection row{'s' if len(off) > 1 else ''} "
+            f"switched OFF and not in the spec: {which}{more}",
+            ("conn", off[0] - 1)))
+    scoped = switched + [_VMsg(V_OK, text, anchor)
+                         for text, anchor in scope_echoes]
 
     if msgs:
         # STABLE: row order is preserved inside a tier, and the scope echoes
@@ -1393,8 +1428,17 @@ def _validation_report(mport_rows: Sequence, conn_rows: Sequence,
     # the rest: the echo exists to catch '5m' typed as '5M', which is a
     # property of the row it is on. _validation_strip_text caps the strip;
     # Calculate prints the full list to the Results pane.
-    echoes = [_VMsg(V_OK, "✓ " + e, ("conn", i))
-              for i, e in enumerate(_rlc_echo(r) for r in conn_live) if e]
+    # A switched-off row gets NO echo: '✓ port 5 → GND: 50 Ω' about a row that
+    # is not in the spec is a green tick for an element that is not there.  The
+    # index is still conn_live's, so the anchor keeps pointing at the row the
+    # reader can see.
+    echoes = []
+    for i, r in enumerate(conn_live):
+        if not getattr(r, "enabled", True):
+            continue
+        e = _rlc_echo(r)
+        if e:
+            echoes.append(_VMsg(V_OK, "✓ " + e, ("conn", i)))
     # The scope echoes lead: on a composition "which file is this port of" is
     # the question that has to be settled before an R/L/C value means anything,
     # and the strip shows two lines.
@@ -1952,20 +1996,45 @@ def _coerce_bool(value) -> bool:
 
 
 def _rows_from_list(cls, value, key: str, warn) -> list:
+    """
+    A JSON array of row objects -> rows of `cls`.
+
+    Every field is `str()`-ed EXCEPT the boolean ones, and that exception is
+    load-bearing rather than tidy: `str(False)` is `"False"`, a non-empty
+    string and therefore TRUTHY, so a `ConnectionRow` saved with
+    `enabled=False` would come back switched ON and the spec would silently
+    grow a connection the user had switched off.  Exactly the `_coerce_bool`
+    rule one layer down, and the same reason -- see its docstring.  There is no
+    checkbox to notice it on here, either: the cell's glyph is derived from the
+    value, so it would look right and only the number would move.
+
+    Boolean fields are found from the DEFAULT's type, not from `f.type`:
+    `pkg_rlc_core` has `from __future__ import annotations`, so `f.type` is the
+    STRING "bool" there and an `is bool` test silently matches nothing.
+    """
     if not isinstance(value, list):
         warn(f"'{key}' is not a list; ignored")
         return []
     names = {f.name for f in fields(cls)}
+    bool_names = {f.name for f in fields(cls) if isinstance(f.default, bool)}
     rows = []
     for item in value:
         if not isinstance(item, dict):
             warn(f"a '{key}' row is not an object; dropped")
             continue
-        kw = {k: ("" if v is None else str(v))
-              for k, v in item.items() if k in names}
-        for k in item:
+        kw = {}
+        for k, v in item.items():
             if k not in names:
                 warn(f"'{key}' field '{k}' is not known to this build; ignored")
+                continue
+            if k in bool_names:
+                try:
+                    kw[k] = _coerce_bool(v)
+                except ValueError:
+                    warn(f"'{key}' field '{k}' is not a true/false value "
+                         f"({v!r}); the default was kept")
+                continue
+            kw[k] = "" if v is None else str(v)
         rows.append(cls(**kw))
     return rows
 
@@ -4466,13 +4535,27 @@ class RowTable(ttk.Frame):
             elif col.kind == "static":
                 w = ttk.Label(self._inner, textvariable=var, width=col.width,
                               anchor="w")
+            elif col.kind == "toggle":
+                # tk.Label, not ttk: ttk.Label's default padding is 4 px and
+                # cannot be removed without a derived style, which would then
+                # reach every Label using it.  padx/pady/bd all 0 makes the
+                # cell exactly the glyph -- 12 px, measured, against the 13 px
+                # of table headroom this column had to fit into.
+                w = tk.Label(self._inner, textvariable=var, padx=0, pady=0,
+                             bd=0, cursor="hand2")
+                w.bind("<Button-1>", lambda _e, v=var: self._toggle_cell(v))
             else:
                 w = ttk.Entry(self._inner, textvariable=var, width=col.width)
             # NOT gridded here: _apply_layout owns every cell's grid column,
             # its columnspan and whether it is shown at all.
             entry["_widgets"].append(w)
             var.trace_add("write", self._on_cell_write)
-        btn = ttk.Button(self._inner, text="✕", width=2,
+        # width=1, not 2.  Measured: the button asks 24 px at width=2 and 17 px
+        # at width=1, while '✕' itself is 12 px -- so width=1 still shows the
+        # whole glyph and gives 7 px back to a table budget with single digits
+        # left in it (the connections table is 431 px of viewport, and the
+        # mode-6 measurement-port table already overhangs it).
+        btn = ttk.Button(self._inner, text="✕", width=1,
                          command=lambda: self._delete_row(entry))
         entry["_widgets"].append(btn)
         self._rows.append(entry)
@@ -4486,6 +4569,23 @@ class RowTable(ttk.Frame):
             self._schedule_resize()
         if notify and self._on_change is not None:
             self._on_change()
+
+    def _toggle_cell(self, var: tk.StringVar) -> None:
+        """
+        Flip a kind='toggle' cell.
+
+        Writing the variable is the whole mechanism: `_on_cell_write` already
+        re-derives the layout and calls the owner's `on_change`, so a click
+        here reaches auto-apply, the strips and the stale marker by exactly the
+        route a keystroke in any other cell does.  Refuses while the table is
+        not editable -- a frozen trace's rows must not move, and unlike the ttk
+        widgets a tk.Label has no state flag to grey out (the StylePicker
+        precedent: guard the handler, because ttk state does not cascade).
+        """
+        if not self._editable:
+            return
+        var.set(CONN_OFF_GLYPH if var.get() == CONN_ON_GLYPH
+                else CONN_ON_GLYPH)
 
     def _on_cell_write(self, *_a) -> None:
         """
@@ -4576,9 +4676,15 @@ class RowTable(ttk.Frame):
                 idx = key_index.get(key)
                 if idx is None:
                     continue
+                # A toggle cell is sized to its glyph and gets NO horizontal
+                # padding: it is a 12 px cell fitted into a table measured to
+                # the pixel, and 1 px each side is 2 px of a budget that has
+                # single digits left in it.  Nothing sits flush against it --
+                # its neighbour still carries its own padx.
+                pad = 0 if self._columns[idx].kind == "toggle" else 1
                 entry["_widgets"][idx].grid(
                     row=r, column=col, columnspan=max(1, span),
-                    sticky="we", padx=1, pady=1)
+                    sticky="we", padx=pad, pady=1)
             for col_spec in self._columns:
                 if col_spec.key not in shown:
                     entry["_widgets"][key_index[col_spec.key]].grid_remove()
@@ -4813,6 +4919,23 @@ MP_TABLE_HINT = (
 )
 
 
+#: Character budget for a hint's COLLAPSED line.
+#:
+#: The collapsed line is a `ttk.Label` with no wraplength sitting directly in
+#: the editor form's grid, so its requested width IS a lower bound on the
+#: form's -- there is nothing between it and the 431 px canvas.  Measured on
+#: the real widget (Microsoft YaHei UI 9, tk scaling 1.333), with the arrow
+#: prefix: the generic connections line is 59 chars / 354 px, the widest
+#: per-Kind line is 64 / 380, and the connections TABLE is 410, so a line
+#: inside this budget can never be the thing that decides the form's width.
+#: Past it, it silently is: a 92-character line measured 533 px and took mode
+#: 5's form from 418 to 540 px, turning the horizontal scrollbar on for good.
+#:
+#: 64 rather than a pixel count because the text is set from pure functions the
+#: tests check with no display; the pixel guard is in the layout tests.
+HINT_SHORT_CHARS = 64
+
+
 class _CollapsibleHint(ttk.Frame):
     """
     A one-line grey summary plus a disclosure triangle for the full text.
@@ -4839,7 +4962,15 @@ class _CollapsibleHint(ttk.Frame):
 
     def _render(self) -> None:
         arrow = "▾" if _CollapsibleHint._expanded else "▸"
-        self._btn.configure(text=f"{arrow} {self._short}")
+        # CLIPPED as a backstop.  Every caller is expected to be inside the
+        # budget and the tests pin that they are -- but this widget now takes
+        # text that follows the table's contents, so "the hint got longer"
+        # became something that can happen at runtime, and unclipped it
+        # silently widens the whole editor.
+        text = self._short
+        if len(text) > HINT_SHORT_CHARS:
+            text = text[:HINT_SHORT_CHARS - 1].rstrip() + "…"
+        self._btn.configure(text=f"{arrow} {text}")
         if _CollapsibleHint._expanded:
             self._body.pack(side=tk.TOP, anchor="w", pady=(1, 0))
         else:
@@ -4913,16 +5044,36 @@ MUTUAL_CURVE_HINT = (
 CONN_NET_KEY = "net"
 CONN_NET_SUPPORTED = CONN_NET_KEY in {f.name for f in fields(ConnectionRow)}
 
-# Grid columns of the connections table.  SIX, exactly as before -- the Net
-# cell shares grid column 2 with To rather than adding a seventh, because the
-# measured headroom under the 431 px editor canvas is 13 px and a seventh
-# column is 41 px at its narrowest.  The ✕ button is always at _CONN_NCOLS,
-# so it does not move when a row changes shape.
-_CONN_COL_TYPE, _CONN_COL_PORT, _CONN_COL_SECOND = 0, 1, 2
-_CONN_COL_R, _CONN_COL_L, _CONN_COL_C = 3, 4, 5
-_CONN_NCOLS = 6
+# Grid columns of the connections table.  The Net cell still shares grid
+# column 3 with To rather than taking one of its own, because the measured
+# headroom under the 431 px editor canvas is 13 px and an ordinary seventh
+# column is 41 px at its narrowest.  The ✕ button is always at _CONN_NCOLS, so
+# it does not move when a row changes shape.
+#
+# THE ON/OFF COLUMN IS THE ONE EXCEPTION, and it fits only because of what it
+# is made of.  Measured at 100% (Microsoft YaHei UI 9, tk scaling 1.333):
+# ttk.Checkbutton 23 px, ttk.Label with default padding 16 px,
+# tk.Label(padx=0, pady=0, bd=0) 12 px -- and U+2611 / U+2610 both measure
+# exactly 12 px in that font, so the pair is WIDTH-STABLE and toggling one row
+# cannot reflow the table (the run-tab marker rule).  It is 17 px tall against
+# the combobox's 25, so it does not touch the row height either.  Worst-case
+# table width goes 405 -> 410 px and the mode-5 FORM 418 -> 417, i.e. one pixel
+# NARROWER than before this column existed: the 14 px the cell takes are paid
+# for by its own padx=0 (2 px) and by the ✕ button going from width=2 to
+# width=1 (7 px), which still shows the whole 12 px glyph.
+_CONN_COL_ON = 0
+_CONN_COL_TYPE, _CONN_COL_PORT, _CONN_COL_SECOND = 1, 2, 3
+_CONN_COL_R, _CONN_COL_L, _CONN_COL_C = 4, 5, 6
+_CONN_NCOLS = 7
+
+#: The width-stable pair the toggle cell shows.  Both 12 px; do not replace
+#: either with a glyph that is not, or a table of mixed states reflows as the
+#: user clicks through it.
+CONN_ON_GLYPH = "☑"
+CONN_OFF_GLYPH = "☐"
 
 CONN_TABLE_COLUMNS = (
+    ColumnSpec("enabled", "", 1, kind="toggle", default=CONN_ON_GLYPH),
     ColumnSpec("kind", "Type", 11, kind="combo", values=CONN_KINDS,
                readonly_combo=True, default="ground"),
     ColumnSpec("ports", "Port", 7, kind="combo"),
@@ -4930,7 +5081,7 @@ CONN_TABLE_COLUMNS = (
     ColumnSpec("R", "R Ω", 5),
     ColumnSpec("L", "L H", 5),
     ColumnSpec("C", "C F", 5),
-) + ((ColumnSpec(CONN_NET_KEY, "Net", 9),) if CONN_NET_SUPPORTED else ())
+) + ((ColumnSpec(CONN_NET_KEY, "Net", 8),) if CONN_NET_SUPPORTED else ())
 # width=9 is a MEASURED number, not a taste: grid column 2 is 74 px wide
 # because a 7-character ttk.Combobox asks 72, and a ttk.Entry asks 55 / 62 /
 # 69 / 76 px at 7 / 8 / 9 / 10 characters.  At 9 the Net cell costs the column
@@ -4993,9 +5144,13 @@ def conn_table_layout(values_per_row: Sequence[dict],
     if wants_all:
         second = second or "To"
         wants_rlc = True
-    headers = ("Type", "Port", second,
+    # The on/off column has NO title and weight 0.  No title because the two
+    # glyphs are their own legend and 12 px fits no word; weight 0 because it
+    # is a fixed-width cell and giving it a share of the slack would take that
+    # slack from the port fields, which are the cells that run out of room.
+    headers = ("", "Type", "Port", second,
                *(("R Ω", "L H", "C F") if wants_rlc else ("", "", "")))
-    weights = (1, 1, 1 if second else 0,
+    weights = (0, 1, 1, 1 if second else 0,
                *((1, 1, 1) if wants_rlc else (0, 0, 0)))
 
     rows = tuple(_conn_row_cells(k, bool(second), wants_rlc, net, wants_all)
@@ -5012,7 +5167,10 @@ def _conn_row_cells(kind: str, second_used: bool, rlc_used: bool,
     jump one: a Port field with grid column 2 in use stops at 1 even when
     3-5 are free, because grid has no way to skip a column mid-span.
     """
-    head = (("kind", _CONN_COL_TYPE, 1),)
+    # The on/off cell is on EVERY row whatever the Kind: a row the user cannot
+    # switch back on is a row they have to delete, which is the gesture the
+    # switch exists to replace.
+    head = (("enabled", _CONN_COL_ON, 1), ("kind", _CONN_COL_TYPE, 1))
     rlc = (("R", _CONN_COL_R, 1), ("L", _CONN_COL_L, 1), ("C", _CONN_COL_C, 1))
     both_ports = (("ports", _CONN_COL_PORT, 1), ("to", _CONN_COL_SECOND, 1))
     if wants_all or kind not in CONN_KINDS or kind == "rlc_between":
@@ -5063,6 +5221,13 @@ def conn_cells_from_row(row) -> dict:
     """ConnectionRow -> the cell texts the table shows."""
     vals = {col.key: str(getattr(row, col.key, "") or "")
             for col in CONN_TABLE_COLUMNS}
+    # `enabled` is a BOOL on the row and a GLYPH in the cell, and the glyph is
+    # the storage as well as the display: the cell variable IS what the
+    # tk.Label renders, so there is no second copy to keep in step.  str(True)
+    # would put the word "True" in the cell, which is why this is not left to
+    # the generic conversion above.
+    vals["enabled"] = (CONN_ON_GLYPH if getattr(row, "enabled", True)
+                       else CONN_OFF_GLYPH)
     if (vals.get("kind") or "").strip() == "short":
         vals["ports"] = _join_short_group(vals.get("ports", ""),
                                           vals.get("to", ""))
@@ -5074,7 +5239,16 @@ def conn_row_from_cells(vals: dict) -> ConnectionRow:
     """The cell texts -> the ConnectionRow they store."""
     row = ConnectionRow()
     for col in CONN_TABLE_COLUMNS:
+        if col.kind == "toggle":
+            continue
         setattr(row, col.key, (vals.get(col.key) or "").strip())
+    # The glyph back to a bool.  Tested against the OFF glyph rather than the
+    # ON one so that anything unexpected in that cell -- an empty string from a
+    # row built in code, a value from a build that spelled the pair
+    # differently -- reads as ENABLED.  A row that silently disappears from the
+    # spec is the failure to avoid; a row that is unexpectedly present is
+    # visible in the answer.
+    row.enabled = (vals.get("enabled") or "").strip() != CONN_OFF_GLYPH
     if (row.kind or "").strip() == "short":
         # The cell IS the group; `to` is emptied rather than back-filled, or
         # the row would carry the same ports twice.
@@ -5150,6 +5324,13 @@ CONN_KIND_HINTS = {
 #: row whatever its Kind, so repeating them per Kind would be six copies of the
 #: SI rule to keep in step.
 CONN_TABLE_HINT_GENERAL = (
+    "The box at the START of a row switches it OFF: the row keeps everything "
+    "in it and contributes nothing, exactly as if it were deleted, which is "
+    "the quick way to ask what a connection is worth. It is not the same as "
+    "setting the Type to 'open' -- that is a different declaration, and on an "
+    "rlc_gnd row it throws the element away as well. The strip below says how "
+    "many rows are off, so a switch left down is not a spec you have "
+    "forgotten about. "
     "Every port field takes ranges -- 6-14 or 35:1:45. R/L/C hold the bare "
     "value with SI suffixes and the unit is in the header: 5m is 5 milli, 5M "
     "is 5 Mega, and the value must be ONE word -- '5 m' and '1 uF' are "
@@ -5201,8 +5382,14 @@ def conn_hint_text(rows: Sequence, tagged: bool = False) -> tuple:
     elif len(kinds) == 1:
         short = CONN_KIND_HINTS[kinds[0]][0]
     else:
-        short = (f"{CONN_TABLE_HINT_SHORT} "
-                 f"({len(kinds)} kinds here -- click for each)")
+        # NOT the generic line plus a suffix.  Measured: that spelling is 92
+        # characters / 533 px, and the collapsed line is an unwrapped Label
+        # inside the editor FORM, so it sets the form's requested width -- it
+        # took mode 5 from 418 px to 540 against a 431 px canvas, i.e. one
+        # sentence turned the horizontal scrollbar on permanently.  See
+        # HINT_SHORT_CHARS.
+        short = (f"{len(kinds)} kinds in this table -- "
+                 f"click for how each is filled in")
     body = [CONN_KIND_HINTS[k][1] for k in kinds]
     if tagged:
         body.append(CONN_TABLE_HINT_TAGGED)
@@ -7333,8 +7520,31 @@ class App(tk.Tk):
 
         # Which rows exist just changed, so the scroll region is stale. The
         # inner frame's <Configure> does NOT cover this -- see the docstring.
-        # preserve=False: a now-short form must not stay scrolled out of sight.
-        self._refresh_editor_scrollregion(preserve=False)
+        #
+        # preserve=False ONLY when the MODE actually moved.  That is the case
+        # the reset exists for: a now-short form must not stay parked out of
+        # sight, and every field the view is scrolled past has been replaced
+        # anyway.  But this function also runs on every TRACE SELECTION, where
+        # the mode is usually the SAME and the form is the same shape -- and
+        # resetting there threw the reader back to the top of the form on every
+        # click.  Measured at 1500x900 on a mode-5 trace: the form is 728 px
+        # against a 345 px viewport, so the connections table is BELOW THE FOLD
+        # at yview 0.  The reader scrolls to 0.35 to reach it (220 px of table
+        # on screen), clicks the other trace to compare the two specs -- the
+        # whole point of having two traces -- and lands back at yview 0.0 with
+        # ZERO px of it visible.  Nothing was hidden and the spec still
+        # computed, which is exactly how it was reported: the Connections table
+        # "disappeared from the GUI" while "the calculation is still fine".
+        #
+        # Preserving is safe here in a way it was not when this was written:
+        # _apply_editor_scrollregion re-measures the scrollregion BEFORE
+        # re-applying the offset, so a shorter form clamps to its own bottom
+        # instead of parking past the end.  The stale-scrollregion failure the
+        # unconditional reset was guarding against cannot come back through
+        # this call.
+        moved = getattr(self, "_ed_shown_mode", None) != mode
+        self._ed_shown_mode = mode
+        self._refresh_editor_scrollregion(preserve=not moved)
         if self._strips_wanted():
             # The tables' on_change does not fire on set_rows, so the strips
             # would otherwise still show the previous mode's spec.

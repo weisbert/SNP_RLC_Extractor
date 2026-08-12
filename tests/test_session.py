@@ -253,6 +253,48 @@ class TestSurvivingAHandEdit(unittest.TestCase):
         tc, _ = self._load({"enabled": "true"})
         self.assertTrue(tc.enabled)
 
+    def test_a_switched_off_connection_row_comes_back_switched_off(self):
+        """
+        The same `bool("false")` trap as the test above, one level down and
+        with no checkbox to notice it on.
+
+        `_rows_from_list` `str()`-es every field, and `str(False)` is the
+        NON-EMPTY string "False" -- so a row saved with enabled=False came back
+        truthy and the spec silently grew a connection the user had switched
+        off.  Silently: nothing raises, the row looks right in the table
+        because the glyph is derived from the value, and only the number moves.
+
+        MUTATION: drop the bool branch in `_rows_from_list` and this is the
+        only test that goes red.
+        """
+        tc, warns = self._load({"conn_rows": [
+            {"kind": "ground", "ports": "1", "enabled": False},
+            {"kind": "ground", "ports": "2", "enabled": True},
+            {"kind": "ground", "ports": "3"},
+        ]})
+        self.assertEqual([r.enabled for r in tc.conn_rows],
+                         [False, True, True])
+        self.assertEqual(warns, [], "a well-formed row warned")
+        # ... and the row really is out of the spec, not merely flagged.
+        text = pkg_rlc_gui.rows_to_dsl_text([], tc.conn_rows, "")
+        self.assertNotIn("1 ground", text)
+        self.assertIn("2 ground", text)
+
+    def test_a_hand_edited_enabled_that_is_not_a_bool_keeps_the_default(self):
+        """A bad value costs its own field and a note, never the file."""
+        tc, warns = self._load({"conn_rows": [
+            {"kind": "ground", "ports": "1", "enabled": "perhaps"},
+        ]})
+        self.assertTrue(tc.conn_rows[0].enabled)
+        self.assertTrue(any("enabled" in w for w in warns), warns)
+        # the spellings a hand-edit really produces still work
+        for text, want in (("false", False), ("no", False), ("0", False),
+                           ("true", True), ("yes", True), ("1", True)):
+            with self.subTest(text=text):
+                tc, _ = self._load({"conn_rows": [
+                    {"kind": "ground", "ports": "1", "enabled": text}]})
+                self.assertIs(tc.conn_rows[0].enabled, want)
+
     def test_a_malformed_row_is_dropped_and_the_good_ones_stay(self):
         tc, warns = self._load({"conn_rows": [
             {"kind": "ground", "ports": "1"},
