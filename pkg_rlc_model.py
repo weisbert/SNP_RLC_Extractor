@@ -30,6 +30,7 @@ from __future__ import annotations
 import math
 
 from dataclasses import astuple, dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -45,8 +46,10 @@ from pkg_rlc_validate import (
     _mport_more_lines,
     _port_descriptor,
     _union_port_specs,
+    trace_file_aliases,
     trace_file_labels,
     trace_file_scope,
+    trace_is_composed,
 )
 
 
@@ -664,3 +667,236 @@ def combine_freq_snaps(snaps) -> Optional[FreqSnap]:
     if len({s.actual_hz for s in resolved}) > 1:
         return replace(resolved[0], agreed=False)
     return resolved[0]
+
+
+# ============================================================================
+# Run snapshots -- what one finished Calculate leaves behind
+# ============================================================================
+#
+# THE BUG THESE EXIST TO PREVENT.  _on_calculate writes its results onto the
+# LIVE TraceConfig objects, and the render collections used to hold that live
+# object: (tc, file_label, res).  Re-rendering such a collection after the next
+# run -- or after any edit at all -- printed the NEW id / label / port
+# descriptor beside the OLD numbers.  Nothing raises, nothing looks wrong, and
+# the reader has no way to tell.
+#
+# The blast radius is exactly four fields, established by reading every
+# renderer below: id, label, port_descriptor() and (for the shown/hidden
+# filter) enabled -- plus color_idx, which App._append_swatched reads to tag
+# the row.  Everything else was already immutable: `res` and `cres` are FRESH
+# objects on every run, `file_label` is a str, and the fit summaries are
+# already strings.  _format_coupling_block takes its matrix from
+# cres.Z_matrix, never from tc.Zmat.
+#
+# port_desc is RESOLVED TO A STRING HERE.  port_descriptor() recomputes from
+# the live spec fields, so storing the method (or the trace it is bound to)
+# would reopen the hazard in a form that is harder to see.
+#
+# WHAT IS DELIBERATELY *NOT* IN A SNAPSHOT: Z, Zmat, fit_freqs, fit_Z and the
+# per-curve aux arrays.  Measured envelope at 10 runs x 6 traces: the text and
+# the rows are ~0.43 MB, while the arrays are 173 MB for a mode-6 run at 5000
+# frequencies and 6 measurement ports, and 691 MB at 20000.  A snapshot's size
+# must not depend on the sweep length; tests/test_run_snapshot.py pins that by
+# measuring it at two sweep lengths and demanding the same answer.  (The one
+# array a snapshot does reach is cres.Z_matrix, a G x G matrix at the single
+# marker frequency, which is what the block prints.)
+
+# A COMPOSED row's provenance, resolved at snapshot time like everything else
+# here: ((alias, file_label), ...), home first.  It is EMPTY for a single-file
+# trace, and that is what keeps every renderer below byte-identical for the
+# case that is almost always the case -- including tests/fixtures/
+# render_reference.json, which is the proof the page did not move.
+#
+# `file_label` stays the HOME file and keeps its meaning: it is what
+# run_file_freq keys on and what the CSV heads a block with.  A composed row
+# has BOTH, because "which sweep was this read against" and "which files is
+# this built from" are different questions with different answers.
+def _snapshot_files(tc: "TraceConfig") -> tuple:
+    """((tag, file_label), ...) for a COMPOSED trace, else ()."""
+    if not trace_is_composed(tc):
+        return ()
+    return tuple(trace_file_aliases(tc))
+
+
+@dataclass(frozen=True)
+class RowSnapshot:
+    """One results-table row, resolved away from its TraceConfig."""
+    id: int
+    label: str
+    port_desc: str
+    enabled: bool
+    color_idx: int
+    file_label: str
+    res: object                 # RLCResult -- a fresh object per run
+    # ((alias, file_label), ...) when this row came from several files, () when
+    # it came from one.  Declared LAST with a default, like `freqs` on
+    # RunSnapshot and for the same reason: every construction in the repo is by
+    # keyword, and a new field in the middle would silently reorder anything
+    # that is not.
+    files: tuple = ()
+    # R3-5, FROZEN at snapshot time and rendered here rather than read live.
+    # `ReferenceCheck` objects hang off the live trace and are replaced by the
+    # next Calculate, so a run page holding them would print this run's numbers
+    # under the next composition's verdict -- the hazard the whole snapshot
+    # type exists for.  `ref_strip` is one line, `ref_lines` the full report,
+    # both straight out of `reference_provenance` so the strip and the report
+    # cannot disagree.  Empty on every single-file trace, which is what keeps
+    # tests/fixtures/render_reference.json byte-identical.
+    ref_strip: str = ""
+    ref_warn: bool = False
+    ref_lines: tuple = ()
+
+
+@dataclass(frozen=True)
+class CouplingSnapshot:
+    """One mode-6 results block, resolved away from its TraceConfig."""
+    id: int
+    label: str
+    port_desc: str
+    enabled: bool
+    color_idx: int
+    file_label: str
+    cres: object                # CouplingResult -- a fresh object per run
+    # Where this block's marker frequency came from, against this file's own
+    # sweep.  None for a block whose numbers Calculate did not produce this run
+    # (a frozen trace, or one "Calculate This Trace" skipped): their cres was
+    # resolved against some earlier request, and this run's request says
+    # nothing true about them.  A None here renders exactly as before.
+    freq: Optional[FreqSnap] = None
+    # See RowSnapshot.files.
+    files: tuple = ()
+    # See RowSnapshot.ref_strip.
+    ref_strip: str = ""
+    ref_warn: bool = False
+    ref_lines: tuple = ()
+
+
+@dataclass(frozen=True)
+class FitSnapshot:
+    """One post-table fit summary line.
+
+    `enabled` travels with it because _render_results drops the hidden rows,
+    and a fit summary under a table with no such row is an orphan.
+    """
+    id: int
+    enabled: bool
+    text: str
+
+
+@dataclass(frozen=True)
+class RunSnapshot:
+    """Everything one Calculate produced, as a record that cannot move.
+
+    `number` is a MONOTONIC counter, not a value: two runs can be equal in
+    every field and still be different runs, so nothing may key a run by
+    equality (no sets, no value-keyed dicts).
+    """
+    number: int
+    when: datetime
+    # The frequency that was REQUESTED.  This is the run's identity and the
+    # number the entry box was showing; where the values were actually read is
+    # `freqs`, because that is a property of each FILE's sweep, not of the run.
+    marker_freq_hz: float
+    rows: tuple = ()
+    blocks: tuple = ()
+    fits: tuple = ()
+    # The named _config_signature of every trace as this run found it, and the
+    # diff against the run before it.  `signatures` is what the NEXT run diffs
+    # against; `changed` is the rendered answer, frozen at the moment it was
+    # true.  Both are tuples of strings, so a run record stays a record.
+    signatures: tuple = ()
+    prev_number: int = 0
+    changed: tuple = ()
+    # ((file_label, FreqSnap), ...): where `marker_freq_hz` actually landed, one
+    # entry per file this run touched, resolved at Calculate time while the
+    # frequency axes were in hand.  Declared LAST because every construction in
+    # the repo is by keyword and a new field in the middle would silently
+    # reorder anything that is not.  Floats only, so a run record still does not
+    # grow with the sweep (tests/test_run_snapshot.py walks it to prove that).
+    freqs: tuple = ()
+
+    def with_visibility(self, traces) -> "RunSnapshot":
+        """
+        This run with each record's `enabled` re-read from the live traces.
+
+        THE DEFAULT IS FROZEN: a run record is a record of what was measured,
+        so hiding a trace tomorrow must not retroactively rewrite it, and
+        _replot_from_cache stays the owner of "what is on the plot now".  This
+        is the one deliberate exception, and it is only ever applied to the
+        CURRENT run: re-rendering it (the units-mode switch) has always
+        followed the visibility as it stands then, and it has to, because
+        `enabled` gates the results table as well as the plot -- a row for a
+        curve that is not drawn reads as a duplicate of the one that is.
+
+        Matching is by trace id, which is unique and monotonic; a record whose
+        trace is gone keeps the flag it was snapshotted with.
+        """
+        live = {tc.id: bool(tc.enabled) for tc in traces}
+
+        def fix(recs):
+            return tuple(
+                replace(r, enabled=live[r.id]) if r.id in live else r
+                for r in recs)
+
+        return replace(self, rows=fix(self.rows), blocks=fix(self.blocks),
+                       fits=fix(self.fits))
+
+
+def _snapshot_reference(tc: "TraceConfig", *, provenance=None) -> dict:
+    """The reference-node verdict as three frozen fields, or three empty ones.
+
+    Rendered AT SNAPSHOT TIME, for the same reason `port_desc` is a resolved
+    string: `tc.reference_checks` is replaced wholesale by the next Calculate,
+    so a record holding the list would answer about a composition that has
+    since been rebuilt.  R3-5 also requires that it be rendered exactly ONCE,
+    because two copies of one verdict are two things that can come to disagree.
+
+    `provenance` IS THAT RENDERER, INJECTED.  It is `reference_provenance`,
+    which lives in `pkg_rlc_files_gui` at L5 -- three layers above this file --
+    because rendering a composition's verdict for a reader is presentation and
+    belongs beside the window that shows it.  So the render stays up there, the
+    model stores the text it was handed, and `pkg_rlc_gui` supplies the
+    argument.  This one signature is the whole of the exception; it takes a
+    CALLABLE rather than an import so nothing at L1 names an L5 module.
+
+    With no renderer supplied there is no verdict, and the three fields are
+    empty -- the same answer a single-file trace gets, which is what keeps
+    tests/fixtures/render_reference.json byte-identical.
+    """
+    if provenance is None:
+        return {"ref_strip": "", "ref_warn": False, "ref_lines": ()}
+    strip, lines = provenance(getattr(tc, "reference_checks", None) or [])
+    if not strip:
+        return {"ref_strip": "", "ref_warn": False, "ref_lines": ()}
+    return {"ref_strip": strip[0], "ref_warn": bool(strip[1]),
+            "ref_lines": tuple(lines)}
+
+
+# `provenance` is threaded through both builders rather than reaching for a
+# module-level default, so that the injection point is visible at every call
+# and there is no global anyone can forget to set.  `pkg_rlc_gui` wraps all
+# three of these and supplies `reference_provenance`; nothing else calls them.
+def _snapshot_row(tc: "TraceConfig", file_label: str, res,
+                  *, provenance=None) -> RowSnapshot:
+    return RowSnapshot(id=tc.id, label=tc.label,
+                       port_desc=tc.port_descriptor(),
+                       enabled=bool(tc.enabled), color_idx=int(tc.color_idx),
+                       file_label=file_label, res=res,
+                       files=_snapshot_files(tc),
+                       **_snapshot_reference(tc, provenance=provenance))
+
+
+def _snapshot_block(tc: "TraceConfig", file_label: str,
+                    cres, freq: Optional[FreqSnap] = None,
+                    *, provenance=None) -> CouplingSnapshot:
+    return CouplingSnapshot(id=tc.id, label=tc.label,
+                            port_desc=tc.port_descriptor(),
+                            enabled=bool(tc.enabled),
+                            color_idx=int(tc.color_idx),
+                            file_label=file_label, cres=cres, freq=freq,
+                            files=_snapshot_files(tc),
+                            **_snapshot_reference(tc, provenance=provenance))
+
+
+def _snapshot_fit(tc: "TraceConfig", text: str) -> FitSnapshot:
+    return FitSnapshot(id=tc.id, enabled=bool(tc.enabled), text=text)
