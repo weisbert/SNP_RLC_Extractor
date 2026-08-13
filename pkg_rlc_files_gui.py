@@ -117,7 +117,7 @@ printer: a second copy at compute time put the same paragraph on screen twice.
 
 STILL NOT WIRED: the connection table's port cells do not go through
 `render_port_cell` / `cell_scope` / `port_choices`.  What resolves a tagged cell
-today is `pkg_rlc_validate._scope_port_field`, which is one `parse_scoped_ports`
+today is `pkg_rlc_gui._scope_port_field`, which is one `parse_scoped_ports`
 call: the tag is PER-TOKEN there, so the single-cell SHORT group (`2,F2.1`,
 `25,26,F2.15`) -- which has no other spelling in that table -- is an ordinary
 field and needs no rule of its own.  If the cells are ever given a scope-aware
@@ -135,26 +135,6 @@ from typing import Optional, Sequence
 import pkg_rlc_compose as comp
 from pkg_rlc_compose import COMPOSE_TAG_SEP, ComposeError, default_alias
 from pkg_rlc_core import ROLE_PROBE_PLUS, collapse_ports
-# Eight `import pkg_rlc_gui` statements written inside function bodies used to
-# stand where these three lines do.  They were not a design; they were a dodge
-# around a cycle, and the cycle is gone: the shared data model is
-# `pkg_rlc_model`, the spec logic `pkg_rlc_validate`, the palette
-# `pkg_rlc_widgets` and the log severities `pkg_rlc_report`, and all five sit
-# BELOW this file in tests/test_layering.py.  Nothing here reaches up any more,
-# so the imports are at the top where they can be read -- and a reader can now
-# see what this window depends on without opening eight function bodies.
-from pkg_rlc_model import TraceConfig
-from pkg_rlc_report import LOG_WARN
-from pkg_rlc_validate import compose_spec_problems
-# Aliased because this module exports a `trace_file_labels` of its OWN, which
-# delegates to this one and falls back to a local walk -- see it below.
-from pkg_rlc_validate import trace_file_labels as _live_trace_file_labels
-from pkg_rlc_widgets import (
-    PLACEHOLDER_FG,
-    PORT_ROLE_FG,
-    WARN_FG,
-    _fixed_map_filter,
-)
 
 # `comp._split_tag` and `comp._ALIAS_RE` are reached by name on purpose.  They
 # are the ONE definition of "does this token carry a file tag, and is that tag
@@ -278,7 +258,7 @@ def alias_budget_refusal(alias: str) -> str:
 
     DELIBERATELY ONLY THE BUDGET RULE.  Whether a tag is spellable at all, and
     whether two files claim the same one, belong to
-    `pkg_rlc_validate.compose_spec_problems`
+    `pkg_rlc_gui.compose_spec_problems`
     -- it owns the file set and reports every structural fault in it, and a
     second copy of those two checks here is exactly the drift this repo
     documents (RECIPROCITY_WARN disagreeing between the GUI and the CLI, one
@@ -305,16 +285,17 @@ def spec_problems(app, trace) -> list[str]:
     """
     Everything wrong with this trace's file set, structural THEN measured.
 
-    `compose_spec_problems` is the owner of the first half and is imported from
-    `pkg_rlc_validate` rather than reimplemented; this adds the one check it
+    `compose_spec_problems` is the owner of the first half and is reached
+    through `pkg_rlc_gui` rather than reimplemented; this adds the one check it
     cannot make, which is whether each tag fits the cell it has to appear in.
     Never raises -- it is on the strips' path.
     """
     out: list[str] = []
     try:
+        import pkg_rlc_gui                                   # noqa: PLC0415
         loaded = [f.label for f in getattr(app, "files", [])] \
             if app is not None else None
-        out.extend(compose_spec_problems(trace, loaded))
+        out.extend(pkg_rlc_gui.compose_spec_problems(trace, loaded))
     except Exception:
         pass
     try:
@@ -559,8 +540,8 @@ def cross_file_summary(rows: Sequence, home: str,
 # The trace's file list -- the ONE place that knows where it is stored
 # ===========================================================================
 
-#: The `TraceConfig` fields that carry the file set.  `pkg_rlc_model` owns the
-#: schema and `pkg_rlc_validate.trace_file_labels` is the LIVE definition; these
+#: The `TraceConfig` fields that carry the file set.  `pkg_rlc_gui` owns the
+#: schema and `pkg_rlc_gui.trace_file_labels` is the LIVE definition; these two
 #: names exist so this module can answer without it -- see `trace_file_labels`
 #: below -- and so a refusal can say which field it is waiting for.
 TRACE_FILES_FIELD = "file_labels"
@@ -571,22 +552,24 @@ def trace_file_labels(trace) -> list[str]:
     """
     Every file this trace is built from, HOME FIRST, deduplicated.
 
-    DELEGATES to `pkg_rlc_validate.trace_file_labels`, which is the point: it
-    is the live definition, `_config_signature`, the port descriptor, the CSV
-    header and the plot legend all read it, and a second ANSWER here is how one
-    surface comes to call a file F2 while another calls it F3.  It used to be
-    reached through `pkg_rlc_gui` inside this function body, for no reason but
-    the cycle that no longer exists; the delegation itself is unchanged.
+    DELEGATES to `pkg_rlc_gui.trace_file_labels` whenever that exists, which is
+    the point: it is the live definition, `_config_signature`, the port
+    descriptor, the CSV header and the plot legend all read it, and a second
+    ANSWER here is how one surface comes to call a file F2 while another calls
+    it F3.
 
-    The walk below is the FALLBACK for a trace that has not got the schema, not
-    a parallel implementation.  `TestFileListsAgree` runs both over the same
-    battery and fails if they ever answer differently, so the fallback cannot
-    drift silently.  Anything that changes the answer (stripping, sorting,
-    keeping a repeat) changes on both sides or on neither; the normalising is
-    done ON THE WAY IN, by `_TRACE_STRLIST_FIELDS`, and never here.
+    The walk below is the FALLBACK for a build that has not got the schema, not
+    a parallel implementation -- this module is imported by
+    `pkg_rlc_attrib_gui` and has to keep working while the two land
+    independently.  `TestFileListsAgree` runs both over the same battery and
+    fails if they ever answer differently, so the fallback cannot drift
+    silently.  Anything that changes the answer (stripping, sorting, keeping a
+    repeat) changes on both sides or on neither; the normalising is done ON THE
+    WAY IN, by `_TRACE_STRLIST_FIELDS`, and never here.
     """
     try:
-        return list(_live_trace_file_labels(trace))
+        import pkg_rlc_gui                                   # noqa: PLC0415
+        return list(pkg_rlc_gui.trace_file_labels(trace))
     except Exception:
         return _trace_file_labels_fallback(trace)
 
@@ -604,7 +587,9 @@ def _trace_file_labels_fallback(trace) -> list[str]:
 def trace_files_supported() -> bool:
     """True when `TraceConfig` really stores more than one file."""
     try:
-        return TRACE_FILES_FIELD in {f.name for f in fields(TraceConfig)}
+        import pkg_rlc_gui                                   # noqa: PLC0415
+        return TRACE_FILES_FIELD in {f.name
+                                     for f in fields(pkg_rlc_gui.TraceConfig)}
     except Exception:
         return False
 
@@ -649,7 +634,7 @@ def slots_of(app, trace) -> list[FileSlot]:
     """
     The trace's files as `FileSlot`s, tagged by POSITION -- F1, F2, ...
 
-    The tag is the position, which is `pkg_rlc_validate.trace_file_aliases`'s rule
+    The tag is the position, which is `pkg_rlc_gui.trace_file_aliases`'s rule
     and is what makes it stable: the home file is first, so it is F1 and stays
     F1 when a second file is added or removed.  A tag that moved would silently
     re-point every tagged port cell in the connection table at a different
@@ -1000,27 +985,32 @@ class FilePairWindow(tk.Toplevel):
         """
         return tkfont.nametofont("TkDefaultFont", root=self).measure(text)
 
-    # THE PALETTE, straight out of pkg_rlc_widgets.  All three used to import
-    # pkg_rlc_gui inside the method and fall back to a hard-coded hex string if
-    # that raised -- a fallback whose only trigger was the import cycle, which
-    # no longer exists.  A duplicated colour that appears silently when a
-    # lookup fails is the shape of drift this repo has been bitten by, so the
-    # fallbacks went with the imports: there is one spelling of each colour.
-
     @staticmethod
     def _hint_fg() -> str:
-        return PLACEHOLDER_FG
+        try:
+            import pkg_rlc_gui                              # noqa: PLC0415
+            return pkg_rlc_gui.PLACEHOLDER_FG
+        except Exception:                                    # pragma: no cover
+            return "#808080"
 
     @staticmethod
     def _warn_colour() -> str:
-        return WARN_FG
+        try:
+            import pkg_rlc_gui                              # noqa: PLC0415
+            return pkg_rlc_gui.WARN_FG
+        except Exception:                                    # pragma: no cover
+            return "#c05000"
 
     @staticmethod
     def _home_fg() -> str:
         # The probe colour, from the palette the user already learned in Ports
         # & Roles: the home file is the one a bare port number reaches, which
         # is the same "this is the thing being addressed" the probe rows mean.
-        return PORT_ROLE_FG[ROLE_PROBE_PLUS]
+        try:
+            import pkg_rlc_gui                              # noqa: PLC0415
+            return pkg_rlc_gui.PORT_ROLE_FG[ROLE_PROBE_PLUS]
+        except Exception:                                    # pragma: no cover
+            return "#1f5fb4"
 
     @staticmethod
     def _install_style(master=None) -> None:
@@ -1045,12 +1035,11 @@ class FilePairWindow(tk.Toplevel):
         style = ttk.Style(master)
         font = tkfont.nametofont("TkDefaultFont", root=master)
         style.configure(_FILES_STYLE, rowheight=font.metrics("linespace") + 4)
-        # `_fixed_map_filter` is pkg_rlc_widgets', imported at the top of this
-        # file.  It used to be fetched from pkg_rlc_gui inside this method, in
-        # a try/except that RETURNED on failure -- so an import error left the
-        # tag colours silently not applied, which is the very symptom the
-        # workaround exists to prevent.  There is no import to fail now.
-        fix = _fixed_map_filter
+        try:
+            import pkg_rlc_gui                              # noqa: PLC0415
+            fix = pkg_rlc_gui._fixed_map_filter
+        except Exception:                                    # pragma: no cover
+            return
         style.map(_FILES_STYLE,
                   foreground=fix(style.map("Treeview",
                                            query_opt="foreground")),
@@ -1374,14 +1363,11 @@ class FilePairWindow(tk.Toplevel):
         # cell may now name a different file" is exactly the kind of silent
         # re-pointing this feature exists to prevent.  `set_trace_home_file`
         # reports its own swap the same way and at the same severity.
-        # The try/except stays, and it is NOT about the import any more: it
-        # guards the reach into the App, which may be absent or may not carry
-        # `_append_result` at all (this window is constructed directly in
-        # several tests).  LOG_WARN is pkg_rlc_report's, imported at the top.
         try:
+            import pkg_rlc_gui                               # noqa: PLC0415
             self.app._append_result(
                 f"  [{getattr(tc, 'id', '?')}] {getattr(tc, 'label', '')}: "
-                f"{note}", LOG_WARN)
+                f"{note}", pkg_rlc_gui.LOG_WARN)
         except Exception:                                    # pragma: no cover
             pass
 

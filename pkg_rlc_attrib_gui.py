@@ -29,31 +29,21 @@ raised there reaches no handler anyone controls, Tk prints it to a console a
 double-clicked GUI does not have, and the window carries on showing a stale
 verdict.
 
-NOTHING HERE IS IMPORTED LAZILY ANY MORE
-----------------------------------------
-This module used to reach UP into `pkg_rlc_gui` from inside a function body,
-through a `_gui()` shim, and the docstring here used to explain that as a
-design.  It was not one; it was a dodge.  `pkg_rlc_gui` imports THIS module for
-the hooks, so a module-level `import pkg_rlc_gui` really would have been a
-cycle -- but only because everything this window needed happened to live in the
-same file as the Tk `App`.
+WHY THE IMPORTS OF pkg_rlc_gui ARE DEFERRED
+-------------------------------------------
+pkg_rlc_gui imports THIS module (for the hooks), so a module-level
+`import pkg_rlc_gui` here would be a cycle.  Every use of it below is inside a
+function, by which time pkg_rlc_gui is complete in sys.modules whichever of the
+two was imported first.  What is imported that way is deliberately small and is
+listed in `_gui()`'s docstring; the alternative -- a second copy of
+`_value_formatter`, of `_trace_role_rows`, of `_build_termination` -- is how two
+renderings of the same spec come to disagree, which this repo has already been
+bitten by more than once.
 
-None of it does now.  `_config_signature` is `pkg_rlc_model`'s, the port-field
-scopers and `_trace_role_rows` are `pkg_rlc_validate`'s, `_value_formatter` and
-`LOG_WARN` are `pkg_rlc_report`'s, and the palette is `pkg_rlc_widgets`'.  All
-four sit BELOW this file in `tests/test_layering.py`, so every one of them is
-imported at the top where a reader can see it, and there is no cycle left to
-dodge.
-
-What has NOT changed is why each of them is imported rather than copied: a
-second copy of `_value_formatter`, of `_trace_role_rows`, of the signature
-tuple, is how two renderings of one spec come to disagree, which this repo has
-already been bitten by more than once.  `spec_signature` below is the
-one-line pass-through that keeps that promise visible.
-
-`pkg_rlc_extractor` was a second deferred import, for the ground-model parser
-alone, and went the same way earlier: that parser is now in
-`pkg_rlc_attrib_report`, imported at the top with the rest.
+`pkg_rlc_extractor` was a SECOND deferred import, for the ground-model parser
+alone, and it is gone: that parser is now in `pkg_rlc_attrib_report`, which
+this module imports at the top.  Only `pkg_rlc_gui` is deferred, and only
+because the cycle is real.
 
 THE FIFTEEN DECISIONS, and the measurement behind each
 ------------------------------------------------------
@@ -237,28 +227,6 @@ from pkg_rlc_core import (
     rows_to_dsl_text,
 )
 from pkg_rlc_plot import ReflowRow
-# The five things this window used to reach UP into `pkg_rlc_gui` for, now
-# imported at the top like anything else -- see the module docstring.  Each is
-# here for the same reason it was reached for lazily: there must be ONE
-# definition, not a second copy in this file.
-#   `_config_signature`  -- "did this edit change the answer", so the
-#       staleness banner cannot drift from the trailing `*` in the Traces list
-#   `_trace_role_rows` and the three port-field scopers -- what `F2.13` means,
-#       so the ports this window decomposes are the ports Calculate solved
-#   `_value_formatter`   -- the aligned units mode, so a column here carries
-#       the same SI prefix the results pane would
-#   the palette          -- one set of colours for the application
-#   LOG_WARN             -- one severity vocabulary for the Results pane
-from pkg_rlc_model import _config_signature
-from pkg_rlc_report import LOG_WARN, _value_formatter
-from pkg_rlc_validate import (
-    _scope_conn_rows,
-    _scope_dsl_text,
-    _scope_mport_rows,
-    _trace_role_rows,
-    trace_is_composed,
-)
-from pkg_rlc_widgets import PLACEHOLDER_FG, PORT_ROLE_FG, WARN_FG
 
 __all__ = [
     "ATTRIB_MENU_LABEL",
@@ -623,21 +591,42 @@ CANDIDATE_HINT = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Deferred access to pkg_rlc_gui
+# ---------------------------------------------------------------------------
+
+def _gui():
+    """
+    `pkg_rlc_gui`, imported LAZILY -- see the module docstring.
+
+    Four things are taken from it and nothing else:
+      * `_config_signature`  -- ONE definition of "did this edit change the
+        answer", so the staleness banner cannot drift from the trailing `*` in
+        the Traces list;
+      * `_trace_role_rows`   -- ONE definition of "which row declared this
+        port", so the From column matches the Ports & Roles window;
+      * `_value_formatter`   -- ONE definition of the aligned units mode, so a
+        column here carries the same SI prefix the results pane would;
+      * `PORT_ROLE_FG` / `WARN_FG` / `PLACEHOLDER_FG` -- ONE palette;
+      * `trace_is_composed` and the three port-field scopers
+        (`_scope_mport_rows` / `_scope_conn_rows` / `_scope_dsl_text`) -- ONE
+        definition of what `F2.13` means, so the ports this window decomposes
+        and the ports Calculate solved are the same ports.
+    """
+    import pkg_rlc_gui                                   # noqa: PLC0415
+    return pkg_rlc_gui
+
+
 def spec_signature(trace) -> tuple:
     """
-    `pkg_rlc_model._config_signature`, under this module's own name.
+    `pkg_rlc_gui._config_signature`, reached without a module-level import.
 
     Deliberately NOT a second copy of that tuple.  It decides both the trailing
     `*` in the Traces list and this window's staleness banner, and two
     definitions is exactly how one of them comes to say the spec is unchanged
     when the other says it is not.
-
-    It used to be `_gui()._config_signature(trace)` -- a lazy import of
-    `pkg_rlc_gui` from inside this function, because the signature lived beside
-    the Tk App.  It lives in `pkg_rlc_model` now, below this file, so the
-    import is at the top and there is no cycle to dodge.
     """
-    return _config_signature(trace)
+    return _gui()._config_signature(trace)
 
 
 def parse_ground_model(text: str, omega: float) -> tuple:
@@ -679,8 +668,9 @@ def ground_model_zt(ctx, kind: str, z):
 
 def _role_colour(kind: str) -> str:
     """The foreground an element of `kind` takes, from the Ports & Roles palette."""
-    return PORT_ROLE_FG.get(ELEMENT_KIND_ROLE.get(kind, ROLE_ELEMENT),
-                            PORT_ROLE_FG[ROLE_ELEMENT])
+    g = _gui()
+    return g.PORT_ROLE_FG.get(ELEMENT_KIND_ROLE.get(kind, ROLE_ELEMENT),
+                              g.PORT_ROLE_FG[ROLE_ELEMENT])
 
 
 def element_role(kind: str) -> str:
@@ -825,12 +815,13 @@ def _value_fmt(values: Sequence[float], unit: str, units_mode: str):
     """
     (header suffix, cell function) for one column, honouring the units mode.
 
-    Straight through `pkg_rlc_report._value_formatter`, so 'aligned' picks the
+    Straight through `pkg_rlc_gui._value_formatter`, so 'aligned' picks the
     same one-prefix-per-column it picks in the results pane.  The sign is
     forced on afterwards, which is this window's rule and not that one's.
     """
     finite = [v for v in values if isinstance(v, float) and math.isfinite(v)]
-    suffix, fn = _value_formatter(finite, _display_unit(unit), units_mode)
+    suffix, fn = _gui()._value_formatter(finite, _display_unit(unit),
+                                         units_mode)
 
     def cell(v: float) -> str:
         # NaN and infinity are different readings and are rendered
@@ -2388,7 +2379,7 @@ def _attrib_network(app, trace, file_entry) -> "_AttribNetwork":
     """`_AttribNetwork` for this trace.  Raises what `_build_termination` does."""
     sn = None
     try:
-        if trace_is_composed(trace):
+        if _gui().trace_is_composed(trace):
             sn = app._trace_network(trace)
     except AttributeError:                               # pragma: no cover
         sn = None
@@ -2416,17 +2407,18 @@ def _attrib_role_rows(app, trace, net: "_AttribNetwork") -> tuple:
     built from -- otherwise the From column names a row for port 3 of the die
     while the element it labels is port 3 of the package.
     """
+    g = _gui()
     try:
-        mports, conn, extra, sources = _trace_role_rows(trace)
+        mports, conn, extra, sources = g._trace_role_rows(trace)
     except Exception:                                    # pragma: no cover
         return [], [], "", None
     if not net.composed:
         return mports, conn, extra, sources
     try:
         sn = app._trace_network(trace)
-        mports = _scope_mport_rows(mports, sn.net, sn.home_alias)
-        conn = _scope_conn_rows(conn, sn.net, sn.home_alias)
-        extra = _scope_dsl_text(extra, sn.net, sn.home_alias)
+        mports = g._scope_mport_rows(mports, sn.net, sn.home_alias)
+        conn = g._scope_conn_rows(conn, sn.net, sn.home_alias)
+        extra = g._scope_dsl_text(extra, sn.net, sn.home_alias)
         sources = row_sources(mports, conn, extra)
     except Exception:                                    # pragma: no cover
         pass
@@ -2732,7 +2724,8 @@ class AttributionWindow(tk.Toplevel):
     # ------------------------------------------------------------------ UI
 
     def _build_ui(self) -> None:
-        warn_fg, hint_fg = WARN_FG, PLACEHOLDER_FG
+        g = _gui()
+        warn_fg, hint_fg = g.WARN_FG, g.PLACEHOLDER_FG
 
         # PACK ORDER (rule 10).  pack allocates in call order and UNMAPS from
         # the END, so every fixed-height section claims its space before the
@@ -4279,7 +4272,7 @@ def open_attribution_window(app, trace) -> Optional[AttributionWindow]:
                 app._append_result(
                     f"WARN: attribution window: ground model '{gmodel}' from "
                     f"the session file could not be used ({e}); opened with "
-                    f"'{GROUND_MODEL_DEFAULT}' instead.", LOG_WARN)
+                    f"'{GROUND_MODEL_DEFAULT}' instead.", _gui().LOG_WARN)
             except Exception:                            # pragma: no cover
                 pass
         else:
