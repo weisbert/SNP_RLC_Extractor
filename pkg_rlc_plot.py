@@ -43,6 +43,15 @@ from matplotlib.backends.backend_tkagg import (  # noqa: E402
 # number.  pkg_rlc_core imports nothing from this module, so this is acyclic.
 from pkg_rlc_core import format_si                 # noqa: E402
 
+# `ReflowRow` / `reflow_rows` used to be defined here.  They are a GENERIC
+# layout widget that happened to live in the plot module: the control strip
+# below is one user, and the Attribution window's header is another.  They now
+# live in pkg_rlc_widgets and are RE-EXPORTED here, so `from pkg_rlc_plot
+# import ReflowRow` keeps resolving for every existing caller and test.  No
+# cycle: pkg_rlc_widgets imports pkg_rlc_conntable and nothing else from this
+# repo, and neither of those imports this module.
+from pkg_rlc_widgets import ReflowRow, reflow_rows  # noqa: E402,F401
+
 
 # ============================================================================
 # Constants
@@ -805,181 +814,6 @@ class _PlotView:
         if self._dragging:
             self._dragging = False
             self.on_marker_changed(self.marker_freq_hz)
-
-
-# ============================================================================
-# A control strip that wraps instead of losing its tail
-# ============================================================================
-
-def reflow_rows(widths: Sequence[int], width: int) -> list[list[int]]:
-    """
-    Greedy left-to-right wrap: indices into `widths`, grouped into lines.
-
-    Pure, so the packing decision can be tested without a display.  A single
-    item that is wider than the whole strip still gets a line of its own rather
-    than an empty one -- there is nothing better to do with it, and returning
-    an empty line would place the next item on top of it.
-    """
-    rows: list[list[int]] = []
-    cur: list[int] = []
-    cur_w = 0
-    for i, w in enumerate(widths):
-        if cur and cur_w + w > width:
-            rows.append(cur)
-            cur, cur_w = [], 0
-        cur.append(i)
-        cur_w += w
-    if cur:
-        rows.append(cur)
-    return rows
-
-
-class ReflowRow(ttk.Frame):
-    """
-    A horizontal control strip that WRAPS onto a second line when it does not
-    fit, instead of letting pack silently unmap its tail.
-
-    This exists because the plot's control row is the one panel in the
-    application nothing guarded.  Measured at the declared 1040x600 minsize the
-    row asked for 918 px and got 575, and pack -- which unmaps from the END --
-    took 'Im(Z)', 'Q', 'k', the fullscreen-quantity combobox and the Fullscreen
-    button off screen with no scrollbar and no other route to them.  'k' is the
-    quantity Mode 6 exists to produce and Fullscreen is the documented escape
-    hatch for a readout box too wide for a 4-subplot grid, so neither has an
-    alternative.  It was not only the minsize: _clamp_to_screen opens the
-    window at min(1500, screen-80), which on a 1280-logical-px laptop is 1200
-    px, and Fullscreen was off screen out of the box.
-
-    Layout is by `place`, and that is load-bearing twice over.  Place does not
-    propagate, so the strip's REQUESTED width no longer carries the 918 px into
-    PlotPanel and out to the PanedWindow sash; and the wrap decision reads the
-    strip's IMPOSED width (fill=X from the parent) and writes only its height,
-    which cannot change that width.  That makes it a fixed point rather than
-    the limit cycle _apply_editor_scrollbars documents -- a layout rule that
-    reads a size it can itself change flips forever and update() never returns.
-    """
-
-    def __init__(self, master, pady: int = 1, **kw):
-        super().__init__(master, height=1, **kw)
-        self._items: list[tuple[tk.Widget, int, bool]] = []
-        self._applied: tuple = ()
-        self._pady = pady
-        #: The one pending `after_idle` `refresh()` may own.  Held so it can be
-        #: coalesced and, more importantly, CANCELLED on destroy: an
-        #: un-cancelled `after` fires against a Tcl command the widget's
-        #: teardown has already deleted, and Tk prints `invalid command name
-        #: "..._reflow"` to a console a double-clicked GUI does not have --
-        #: noise in a test run, invisible in production.
-        self._pending = None
-        self.bind("<Configure>", lambda _e: self._reflow())
-        self.bind("<Destroy>", self._cancel_refresh)
-
-    def add(self, widget, padx: int = 2, fill_y: bool = False):
-        """Append a control.  `fill_y` is for vertical separators."""
-        self._items.append((widget, padx, fill_y))
-        self._reflow()
-        return widget
-
-    def item_widths(self) -> list[int]:
-        return [w.winfo_reqwidth() + 2 * padx for w, padx, _f in self._items]
-
-    def refresh(self) -> None:
-        """
-        Re-lay the strip after a CHILD's requested size changed.
-
-        `_reflow` runs from `add()` and from this strip's own `<Configure>`,
-        and a child whose TEXT grew fires neither -- `place` then goes on
-        forcing the stale width and the child is CLIPPED, with no ellipsis and
-        no overflow marker.  Measured in the Attribution window, whose header
-        is a ReflowRow carrying a label built from the trace name: relabelling
-        the trace to the documented 18-character cap took that item's request
-        from 220 px to 307 while place kept it at 220, i.e. 87 px / 14
-        characters cut in silence, and the strip went on reporting one row
-        (29 px) while its items asked 1048 px of 964.  A 1 px window resize
-        fixed both, which is what makes it a missing notification rather than
-        a layout bug.
-
-        Deferred to `after_idle` because the child's own geometry request has
-        not been recomputed at the moment its text is set.  It reads the
-        strip's IMPOSED width and writes only its height, so it is the same
-        fixed point `_reflow` is and cannot become the limit cycle
-        `_apply_editor_scrollbars` documents.  Coalesced, because a repaint
-        that sets three labels must still cost one relayout.
-        """
-        if self._pending is not None:
-            return
-        try:
-            self._pending = self.after_idle(self._refresh_now)
-        except Exception:                       # pragma: no cover
-            self._pending = None                # a dead widget cannot reflow
-
-    def _refresh_now(self) -> None:
-        self._pending = None
-        if self.winfo_exists():
-            self._reflow()
-
-    def _cancel_refresh(self, event=None) -> None:
-        # <Destroy> reaches every descendant too, so only the strip's own event
-        # may cancel -- the same guard `AttributionWindow._on_destroy` carries.
-        if event is not None and event.widget is not self:
-            return
-        if self._pending is not None:
-            try:
-                self.after_cancel(self._pending)
-            except Exception:                   # pragma: no cover
-                pass
-            self._pending = None
-
-    def _reflow(self) -> None:
-        if not self._items:
-            return
-        width = self.winfo_width()
-        if width <= 1:
-            # Not laid out yet.  The <Configure> that gives it a real width
-            # will call back; doing nothing here is what keeps the first pass
-            # from wrapping every item onto its own line.
-            return
-        widths = self.item_widths()
-        rows = reflow_rows(widths, width)
-        row_h = max(w.winfo_reqheight()
-                    for w, _p, _f in self._items) + 2 * self._pady
-        # THE ITEM WIDTHS ARE PART OF THE KEY, and leaving them out made
-        # refresh() a no-op in exactly the case it exists for.  A child whose
-        # text grows without pushing the strip onto another row leaves the row
-        # ASSIGNMENT unchanged, so `key` was unchanged, so `_reflow` returned
-        # early and never re-placed it -- refresh() called _reflow() and
-        # _reflow() declined to do anything.  It only ever looked fixed because
-        # the case it was first measured on (220 px -> 307 px in the
-        # Attribution header) happened to wrap as well.
-        key = (tuple(tuple(r) for r in rows), row_h, tuple(widths))
-        if key == self._applied:
-            return
-        self._applied = key
-        y = 0
-        for row in rows:
-            x = 0
-            for i in row:
-                w, padx, fill_y = self._items[i]
-                ww = w.winfo_reqwidth()
-                x += padx
-                if fill_y:
-                    w.place(x=x, y=y + self._pady, width=ww,
-                            height=row_h - 2 * self._pady)
-                else:
-                    # NO EXPLICIT width/height for an ordinary control.  place
-                    # then sizes the slave from its own request AND TRACKS IT,
-                    # so a child whose label grows is re-sized by Tk on the
-                    # spot instead of staying clipped until something thinks to
-                    # call refresh().  The wrap decision above still needs the
-                    # notification -- it is the strip's own arithmetic, not the
-                    # child's -- but a CLIPPED control, the failure mode with
-                    # no ellipsis and no overflow marker, can no longer happen
-                    # between the change and the relayout.
-                    wh = w.winfo_reqheight()
-                    w.place(x=x, y=y + max(0, (row_h - wh) // 2))
-                x += ww + padx
-            y += row_h
-        self.configure(height=row_h * len(rows))
 
 
 # ============================================================================
