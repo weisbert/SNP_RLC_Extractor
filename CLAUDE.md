@@ -25,7 +25,8 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `reduce_snp.py`         | **Standalone** CLI: shrinks a big `.sNp` to a few ports (KEEP / GND-short / open-or-matched elimination). Deliberately imports nothing from this repo — it gets copied to simulation servers on its own. |
 | `deploy.sh`             | **Top level on purpose.** Red-zone update entry point: `cd <install> && bash deploy.sh` auto-detects the uploaded tarball. The operator's cross-project convention is `<install>/deploy.sh` — do not move it back under `deploy/`. |
 | `deploy/`               | Rest of the air-gapped ("red zone") pipeline: `pack.ps1` (Windows, `git archive`), `doctor.sh` + `_env_check.py` (what can this box run?). No network, no pip, no venv on the far side. |
-| `tests/test_run_parallel.py` | The RUNNER's own suite (57 tests, 0.25 s, no subprocesses, in `FAST_MODULES`): the contention rule (`max(1, min(budget, cores // live))` — sharing the *cores*, not the worker budget, because sharing the budget measured **slower** at two concurrent runs), the atomic registry write, the heartbeat and the stale-entry expiry. |
+| `tests/test_run_parallel.py` | The RUNNER's own suite (65 tests, 0.21 s, no subprocesses, in `FAST_MODULES`): the contention rule (`max(1, min(budget, cores // live))` — sharing the *cores*, not the worker budget, because sharing the budget measured **slower** at two concurrent runs), the atomic registry write, the heartbeat, the stale-entry expiry, and `TestShardPriority` — that a shard is spawned **BelowNormal on Windows** and that the POSIX spawn is byte-for-byte unchanged, both driven through a patched `subprocess.run` and a patched `sys.platform` so the file's no-subprocess contract holds. |
+| `tests/test_layering.py` | **The import-layering gate** (21 tests, 0.31 s, pure `ast`, no display, imports nothing from the repo — importing `pkg_rlc_gui` alone costs ~548 ms and pulls in tkinter, and a fence has to be cheap enough for the inner loop). Three properties: the **layer map** (`LAYERS`, declared as data — L0 numerics / L1 model / L2 services / L3 presentation / L4 widgets / L5 panels / L6 frontend, plus `pkg_rlc_panels_*` by prefix), the **acyclicity** of the module-level graph with the cycle printed as a path, and that the **function-level back-imports are EXACTLY `KNOWN_BACK_IMPORTS`**. `TestTheGateHasTeeth` mutation-checks the gate itself against synthetic sources in a temp dir, so the proof is in the suite rather than in a commit message. Qualifies for `FAST_MODULES` and is not yet in it. |
 | `tests/test_parse_diagnostics.py` | The robust-reading work: what a file says about itself (span, sweep description, DC / \|S\|>1 notes) and what happens when it cannot be read. Every refusal test pins the **verdict** and the **line number**, not just "raises ValueError" — that would have passed before any of it existed. Plus the recovery cases (UTF-16, BOM, commas, `D` exponents, extension tiebreak) and the two GUI affordances. |
 | `tests/test_session.py` | Save Config / Load Config / Restore Last Session. Pure round trip (no Tk) for the trace fields, the refusal verdicts, the hand-edit tolerance and the path precedence; Tk-driven for the App-level save→wipe→load, the missing-file path, the autosave, and that the File menu and its accelerators are reachable. Also the guard on the Help window's tab strip, which the tenth tab pushed past the old 950 px. |
 | `tests/test_results_notebook.py` | The Results pane's `ttk.Notebook`: that the Log is tab 0, selected and MAPPED at startup (both are mechanical preconditions of tests elsewhere), the width-stable badge measured in the tab strip's own font, the unseen-warning count, the ERROR claim on the pane and the severity routing of the real call sites, plus the measured proof that a 30-tab strip does not move the left panel. Every guard mutation-checked. |
@@ -40,7 +41,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `tests/run_parallel.py` | **The test runner to use.** Class-sharded, longest-first. Measured when it was written: `python -m unittest discover -s tests` 293 s against `python tests/run_parallel.py` 108 s over the same 906 tests (2.7x). Re-measured after the composition work: **2045 tests / 364 shards in 333.7 s**, and `--fast` **976 tests in 5.5 s** over the eighteen no-Tk modules (the four composition ones were added — none imports tkinter, which is the one property that list has); `-m <substr>` picks modules by name. Sharded by CLASS not module because `test_run_history` alone is 86 s of the serial 293. Exit code 0 means every shard passed. NOT auto-discovered (no `test_` prefix). |
 | `tests/test_freq_label.py` | Frequency-label honesty: the marker frequency a report prints says where the numbers came from. Both extractors snap to the nearest grid point via `argmin`, and the default 0.1 GHz marker on `diff_pair_4port.s4p` lands on 0.10099 GHz — every default session in the repo snapped and said nothing. |
 | `tests/test_large_files.py` | How big a file the tool will read and what it says when it will not: the escalating port-count sniff past `MAX_SNIFF_NPORTS` to `SNIFF_HARD_CAP`, the refusal as a `TouchstoneParseError`, and the memory envelope. |
-| `tests/`                | `unittest`-based suite (2045 tests run by `tests/run_parallel.py` at the time of writing, covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, named merged nodes, the `RowTable` widget and its per-kind layout, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, port attribution and its cross-check against the engine, the Attribution window, the cold-start screen, several files composed into one network and the composed-network attribution baseline, the bit-exact golden regression, and `reduce_snp`). |
+| `tests/`                | `unittest`-based suite (2522 tests run by `tests/run_parallel.py` at the time of writing, covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, named merged nodes, the `RowTable` widget and its per-kind layout, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, port attribution and its cross-check against the engine, the Attribution window, the cold-start screen, several files composed into one network and the composed-network attribution baseline, the bit-exact golden regression, the CLI's printed output and the Attribution window's text pinned byte for byte, the import-layering gate, and `reduce_snp`). |
 | `tests/test_editor_autoapply.py` | The commit-step removal: WHEN the editor writes into a `TraceConfig` and WHICH one it lands on (the deferral, the object capture, the flush-before-selection-change), the style picker's storage / reachability / honesty about multi-curve traces, and that hiding a curve neither recomputes it nor destroys the cursors. Every guard here was mutation-checked. |
 | `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see, and the reordering hazard that forces `_import_dsl_text`'s verbatim fallback. |
 | `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
@@ -64,6 +65,11 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `tests/generate_test_snp.py` | Builds synthetic fixtures with analytically known R/L/C/M; run as a script to (re)generate `tests/fixtures/`. The `COUPLED_*` module constants are the single source of truth for the coupled-coil fixtures. |
 | `tests/test_golden_regression.py` | Replays `tests/fixtures/golden_legacy.npz` through the current API and asserts `assert_array_equal`. This is the guard on every "stays bit-identical" claim below. |
 | `tests/_golden_capture.py` | Script + case registry that (re)generates `golden_legacy.npz`. NOT auto-discovered (leading underscore). Regenerate ONLY in the same commit that justifies moving the reference. |
+| `tests/_cli_capture.py` | **Script + case registry for the CLI's own output**, the `_golden_capture.py` shape (leading underscore, NOT auto-discovered). Drives the real `pkg_rlc_extractor.main(argv)` in-process over 143 invocations and records stdout, stderr, the exit code and the full text of every file the case writes, into `tests/fixtures/cli_reference/` (one JSON per case + `index.json`, 144 files, 780 KiB, 11 084 output lines). Regenerate ONLY in the same commit that justifies moving the reference. |
+| `tests/test_cli_golden.py` | Replays it (37 tests, 1.8 s, no Tk). Byte compare per case with a unified diff naming the case and its argv; the exit codes asserted separately so a changed one is not one line of a 300-line diff; the refusal-shape rules; the normaliser's own unit tests; and `TestTheMatrixCoversTheFlags`, which walks `_make_arg_parser()._actions` and fails if any flag the parser defines has no case. |
+| `tests/_attrib_capture.py` | Script + case registry that (re)generates `tests/fixtures/attrib_reference/`, and the ONE place that knows the Attribution window's pure-formatter signatures. NOT auto-discovered (leading underscore). Regenerate ONLY in the same commit that justifies moving the reference. |
+| `tests/test_attrib_golden.py` | The Attribution window's TEXT, pinned byte for byte (12 tests, 0.33 s). Written for the report-unification phase, whose whole acceptance criterion is "the window's text did not move" and which is unverifiable without a BEFORE. 56 cases chosen for breadth of output SHAPE: every decomposable quantity (including `Z`, the only two-value-column one) and every one refused BY NAME; the reconciliation's three verdicts plus the WITHHELD clause; the declared / diagonal / shared-return ground models on the spec measured at **1.0120 nH independent against 2.0259 nH shared**; a composed network with and without the `BaselineLinks` gauge (the far file's ground ball is **exactly 0** without it and **+254 pH** with it); a sweep with the documented **505 nH** pole and `decap`'s exactly-constant one with none; the singular baseline naming what it folded; a NaN, a signed infinity and an exact zero in one table; and both units modes. |
+| `tests/_isolated_desktop.py` | **Runs a child process on its own Win32 desktop OBJECT** (`CreateDesktopW` + `STARTUPINFO.lpDesktop`, stdlib `ctypes` only), so a Tk-driven shard throws its windows nowhere the user can see and cannot steal their focus. `run()` returns a `subprocess.CompletedProcess`, i.e. a drop-in for the `subprocess.run` in `run_shard` — but it is NOT wired in yet. NOT auto-discovered (leading underscore). The finding and the reproduction commands are `docs/test_isolation.md`; see "Hiding the GUI tests" below. |
 | `tests/_smoke.py`       | Manual sanity-check script (NOT auto-discovered by `unittest`). |
 
 ## Critical invariants (do not regress these)
@@ -159,6 +165,50 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 - **The parser must split comment / option lines on the exotic line breaks too.** `str.splitlines()` — what the parser used before it streamed the file — breaks on `  -     `; iterating a text-mode file object breaks only on `
 `. A header page-broken with a form feed would otherwise swallow the data record that follows it, silently dropping frequency points. Only `#`/`!` lines (and the tail of a mid-line `!` comment) need the check — every one of those characters is whitespace to `str.split()`, so data lines tokenise correctly either way. That is also why the hot path stays free of a per-line `splitlines()`.
 - **The RI fill normalises signed zeros.** `np.add(body[...,0], 0.0, out=s.real)` rather than a plain assignment: real EDA exports write `-0.000000e+00`, and the historical `body[...,0] + 1j*body[...,1]` turned those into `+0.0`. `assert_array_equal` cannot see the difference (`-0.0 == 0.0`), so the golden reference does not guard it — `tests/test_core.py:TestParserSignedZero` does. Measured cost of the fused add: +2%.
+### The import layering gate (`tests/test_layering.py`)
+
+- **A module may import from its own layer or a LOWER one; UPWARD is the
+  failure.** Not "strictly lower" — that rule is red on arrival, because
+  `pkg_rlc_attrib` -> `pkg_rlc_core` are both L0 and `pkg_rlc_attrib_gui` ->
+  `pkg_rlc_files_gui` are both L5, and both are correct today. Same-layer is
+  legal on purpose and what pins the order INSIDE a layer is the ACYCLICITY
+  assertion, not a sub-layer number: `pkg_rlc_core` importing nothing back is
+  the real guarantee. Making it strictly-lower means splitting L0 into at
+  least `core < {compose, attrib}` and L5 into two, which buys nothing the
+  cycle check does not already give.
+- **Modules named in `LAYERS` that do not exist yet are SKIPPED, and a
+  `pkg_rlc_*.py` that exists and is NOT in the map FAILS.** The first is what
+  makes the map the TARGET architecture rather than a description of today, so
+  the test is valid before and after a split lands. The second is what stops a
+  new module slipping in unlayered and therefore unchecked by every rule in
+  the file.
+- **`pkg_rlc_help` may reach no further than L1, and `reduce_snp` may import
+  NOTHING from this repo.** The second is asserted rather than assumed — it is
+  copied to simulation servers on its own, and duplicating the Touchstone
+  parser there is the intended cost.
+- **`KNOWN_BACK_IMPORTS` is asserted in BOTH directions, and the second
+  direction is the point.** Adding a lazy `import pkg_rlc_gui` fails;
+  REMOVING one also fails until the same commit updates the declaration. That
+  is what makes the phase which claims to have removed a dodge prove it.
+  Pairs alone are not sufficient — `pkg_rlc_files_gui` could go from eight
+  lazy imports to one and the pair set would not move — so
+  `KNOWN_BACK_IMPORT_COUNTS` is declared beside it and asserted separately.
+  Measured, both halves mutation-checked against copies of the real tree.
+- **Today's set is 12 statements over 4 pairs, and TWO of them are not
+  `pkg_rlc_gui`.** `pkg_rlc_files_gui -> pkg_rlc_gui` x8,
+  `pkg_rlc_attrib_gui -> pkg_rlc_extractor` x2 (`parse_ground_model`,
+  `ground_model_zt`), `pkg_rlc_attrib_gui -> pkg_rlc_gui` x1 (`_gui`),
+  `pkg_rlc_extractor -> pkg_rlc_gui` x1 (`main`). The `pkg_rlc_extractor` pair
+  is a DIFFERENT defect from the `TraceConfig`/colour-constant cycle: it is a
+  panel importing two pure functions out of the CLI entry point, and those two
+  look like L0/L3 material.
+- **A CLASS-BODY import counts as module-level; only a `def` body defers.**
+  An import written in a class body runs at import time, so it is part of the
+  real graph and cannot be a dodge. Both cases are pinned.
+- **The fix is always to MOVE THE SYMBOL, not the import**, and every failure
+  message in the file says so by name. A lazy import hides the cycle from the
+  interpreter and leaves it in the design.
+
 ### Reading files (robustness, diagnosis, refusal)
 
 - **A non-numeric token in a data line is a HARD ERROR, not a skipped token.**
@@ -1229,6 +1279,50 @@ failure this repo has already had more than once.
   rest of the session file — a bad value costs its own entry, never the file,
   and `apply_attribution_session_state` never raises.
 
+#### The text golden reference (`tests/fixtures/attrib_reference/`)
+
+- **ONE `.txt` PER CASE, NOT ONE JSON BLOB.** What is pinned here is PROSE, and
+  a per-case file is what makes its git diff readable; `render_reference.json`
+  is a blob because its five renderers are pinned as a set. `manifest.json`
+  carries the case order, a describe line, a **sha256** and the capture
+  environment, so a case renamed, a case deleted, a case never captured, a
+  stray leftover file and a `.txt` edited BY HAND are five different loud
+  failures instead of one silent pass. Both directions open with
+  `newline=""` and `.gitattributes` pins `eol=lf`, so the text lives in the
+  file as itself; a CRLF that crept in would fail every case with a diff
+  showing no visible difference, and `test_no_reference_file_carries_a_carriage_return`
+  is the guard.
+- **`sweep()` PASSES `samples=160` BECAUSE `_draw_sweep` DOES.** The poles are
+  closed form whatever the grid does, but `sweep_picture` measures the WIDTH of
+  a pole's excursion off the SAMPLES — so with `sweep_mobius`'s default
+  `samples=0` there is no curve, `pic.drawn` is empty, and the caption takes
+  its NO-POLE branch on a sweep that has one. Measured: the reference read
+  `poles: 0` and lost the whole `POLE at 505 nH:` line until the count matched
+  the window's.
+- **DETERMINISM WAS MEASURED, NOT ASSUMED.** Four captures in fresh processes,
+  two of them under different `PYTHONHASHSEED`, all byte-identical. Every
+  input is a shipped fixture through the shipped entry points or a literal in
+  the registry; nothing is read off a clock or off a live `TraceConfig`.
+- **DISPLAY-FREE BUT NOT TKINTER-FREE, and that is why it is not in
+  `FAST_MODULES`.** Measured: `import pkg_rlc_attrib_gui` succeeds with no
+  display and `tkinter._default_root` is **None** after the whole registry has
+  rendered (`test_rendering_creates_no_Tk_root` asserts it, and a formatter
+  that started needing a font measurement would break it). But the module pulls
+  in `tkinter`, `_tkinter`, `matplotlib` and the TkAgg backend at import time —
+  it subclasses `tk.Toplevel` — and `contributions_table` reaches
+  `pkg_rlc_gui._value_formatter` through `_gui()`. `FAST_MODULES`' one stated
+  property is "it imports no tkinter", so this module does not qualify;
+  relaxing that to "creates no Tk root" is a decision for whoever owns the
+  list. Every import is deferred into `setUpClass`, so collecting the file
+  costs nothing either way.
+- **KNOWN, NOT FIXED (both are now pinned as-is):** the folded-tail line reads
+  `… 1 more terms below …` — "1 more terms" — and an element whose
+  contribution is EXACTLY ZERO folds into that tail rather than showing as a
+  signed `+0.00 H` row, so the composed-no-gauge case's headline defect (the
+  far file's ball at exactly 0) is visible as a fold count rather than as a
+  zero. Both are `contributions_table` / `_fold_terms` behaviour, not this
+  reference's, and changing either moves the reference.
+
 ### The cold-start screen (`--cold-start`, CLI only)
 
 Which ports matter BEFORE a spec exists. `tests/test_attrib_coldstart.py` and
@@ -1354,6 +1448,58 @@ Which ports matter BEFORE a spec exists. `tests/test_attrib_coldstart.py` and
   `guard_rin~` stumps, because `_trunc` keeps the HEAD — the same failure
   `freeze_label` was fixed for. Putting the names in full underneath took the
   table from 110 to 89 columns as well.
+
+### The CLI's printed report (`tests/fixtures/cli_reference/`)
+
+`pkg_rlc_extractor.py` is ~4400 lines of which most is print statements —
+`_print_coupling_report`, nine `_attr_print_*` sections, five `_cold_print_*`
+sections, six `_compose_print_*` and four CSV writers — and until this
+reference existed **nothing pinned a character of any of it**.
+`golden_legacy.npz` pins the numbers and `render_reference.json` pins the GUI's
+results pane; this is the third large rendered surface.
+
+- **143 cases, and the matrix is SELF-GUARDING.** Every mode, every `--fit`,
+  both `--csv` shapes, all eight `--diagnose` cases, every flag in the
+  attribution / cold-start / composition groups (including both
+  `--attribute-ground-model` spellings and the "model was ignored" case), and
+  **43 refusals pinned on the message TOKEN and the exit code** — 86 exit 0,
+  14 exit 1, 43 exit 2. `TestTheMatrixCoversTheFlags` walks
+  `_make_arg_parser()._actions`, so a new flag added with no case is a test
+  failure rather than a silent hole.
+- **DETERMINISM IS NORMALISED IN THE CAPTURE, NEVER TOLERATED IN THE COMPARE.**
+  Repo root → `<ROOT>`, scratch dir → `<OUT>`, in both OS spellings **and in
+  the repr-doubled form `str(OSError)` embeds** (a Windows path arrives inside
+  an errno message with every separator doubled, and the plain spelling does
+  not match it); CRLF → LF; `COLUMNS` pinned to 80, because argparse wraps
+  `--help` and every usage message to whatever terminal captured it; the
+  localised `[WinError 2] <sentence>` → `[OS-ERROR]` with the path inside it
+  kept — that sentence is the operating system's and this box answers in
+  Chinese. Nothing pins `PYTHONHASHSEED`: the script captures everything TWICE
+  in-process and refuses to write unless the two agree, so a set-of-strings
+  iteration order reaching the output would surface here. Two cases really were
+  unstable on the first attempt and were fixed in the capture.
+- **stdout and stderr are NEVER elided; a written FILE is, past 140 lines**
+  (head 120 + a counted marker + tail 20). It bites on three artifacts only —
+  the two `--compose-export`s and the 401-row `--csv` — and saved ~200 KiB. The
+  marker carries the dropped count, so a change in how many rows are written is
+  still a failure.
+- **A failure here means the CLI's output changed.** Regenerate with
+  `python tests/_cli_capture.py`, and ONLY in the same commit that justifies
+  it. Mutation-checked: `.4g` → `.5g` on one `R` line fails 23 cases, and one
+  character of a `--csv` header fails the artifact compare.
+- **KNOWN, NOT FIXED: the composition refusal headline can contradict its
+  body.** `CANNOT COMPOSE -- a port reference names nothing` is printed for an
+  elementwise LENGTH MISMATCH and for a `--compose-propose` tag naming no file;
+  both bodies say something else entirely. Pinned as-is, so fixing it is a
+  one-case regeneration.
+- **KNOWN AND DELIBERATE: `--diagnose` exits 1 with an EMPTY stderr**, the whole
+  report on stdout — the report is the product and the exit code is the verdict
+  (`FAULT_NONE`). `test_a_non_zero_exit_always_wrote_to_stderr` exempts it by
+  name rather than loosening the rule for everyone; do not "fix" it onto stderr.
+- `tests/test_cli_golden.py` imports no tkinter and **qualifies for
+  `FAST_MODULES`** on that one property (there is a test asserting neither
+  `pkg_rlc_gui` nor `tkinter` ever enters `sys.modules`); it is not in the list
+  yet.
 
 ### Connection table (the Mode 5 / Mode 6 row editor)
 
@@ -3437,16 +3583,85 @@ recorded here rather than in a commit message nobody will find.
   interpreter reports itself as unusable instead of throwing a `SyntaxError` that
   looks like a corrupt package. No f-strings, no annotations in that file.
 
+### Hiding the GUI tests (`tests/_isolated_desktop.py`)
+
+87% of this suite drives real Tk, so a full run throws hundreds of windows on
+the screen and takes the keyboard off the user for the length of the run.
+`docs/test_isolation.md` is the finding and carries the reproduction commands;
+every claim below was measured on this box.
+
+- **Windows 11 "virtual desktops" (Win+Ctrl+D) DO NOT isolate** — a new window
+  lands on the ACTIVE virtual desktop and focus stealing crosses. Do not
+  re-propose them. What works is a Win32 **desktop OBJECT** (`CreateDesktopW`
+  plus `STARTUPINFO.lpDesktop` on `CreateProcessW`, stdlib `ctypes` only — the
+  red zone is numpy-only, so no new dependency is available). It is the
+  mechanism UAC's secure desktop uses.
+- **It is a full YES, not a partial one.** All 23 Tk-driven modules pass there,
+  **1401 tests**, run both ways at `-j6`: *"modules where isolation changed the
+  outcome: NONE"*. That includes `test_attrib_window`, which builds a second
+  `App` at `tk scaling 2.0` with every named font x1.5 and is the one module
+  that reads the clipboard.
+- **The measured numbers do not move: 40 of 40 identical, DIFFS = 0** (20 values
+  per scaling, at 100% and at 150%), including every figure this file pins —
+  `_ed_canvas` 431, `_ed_form` reqwidth 417, left panel and `sashpos(0)` 460,
+  `results_nb.winfo_reqheight()` 172, connections table 400, and the glyph
+  widths the tables are built on (TkDefaultFont `' '` 4 / `-` 5 / `+` 9 / `.` 3
+  / digit 7 / `M` 12; Consolas 9 all 7). `winfo_screenwidth/height` are
+  unchanged at 2048x1152.
+- **It cannot steal focus, and that was measured WITH A CONTROL.** A rude window
+  (`deiconify` + `lift` + `-topmost` + `focus_force`, 30 times) against a victim
+  on the interactive desktop, 40 foreground samples: same desktop
+  `{'STEALER': 30, 'VICTIM': 10}`, desktop object `{'VICTIM': 40}`. Without the
+  control, "no steal" is indistinguishable from a broken test.
+- **A GREEN "OK" IS NOT EVIDENCE THAT Tk RAN, AND NEITHER IS THE TEST COUNT.**
+  Every Tk module guards itself with `@skipUnless(TK_OK, …)`, and `unittest`
+  counts a SKIPPED test in its `Ran N tests` line and still prints `OK` — so a
+  total failure to reach Tk looks exactly like a clean pass with a matching
+  count. Check the skip count itself (measured: zero). This bit the first draft
+  of the isolation doc, which claimed the count was the guard.
+- **TIMING HERE MUST BE MEASURED INTERLEAVED OR NOT AT ALL.** A sequential
+  "arm A then arm B" on this box reported the desktop object **2.6x to 9.7x
+  SLOWER** (4.72→12.34, 8.89→86.42, 27.26→167.53, 157.07→416.18 s) — every one
+  an artifact of sibling agents' load ramping between the arms, with 18 python
+  processes on 20 cores. Alternating the arms and taking the MINIMUM reverses
+  the sign: the desktop object is **0.73x**, i.e. slightly FASTER, having no
+  compositor to paint through. Same discipline as the `run_parallel.py`
+  docstring's "read the exit code, not the clock".
+- **The launcher must carry `creationflags` through, or it silently undoes the
+  priority work.** `run_shard` spawns every shard `BELOW_NORMAL_PRIORITY_CLASS`
+  so the suite gives way to the user at the CPU; `CreateProcessW` has its own
+  `dwCreationFlags`, so a launcher hardcoding 0 puts every shard back to NORMAL
+  with nothing on screen saying so. Verified on the child's own
+  `PriorityClass`: `0 -> Normal`, `BELOW_NORMAL -> BelowNormal`. The two
+  mechanisms are complementary — priority is CPU contention, the desktop object
+  is windows and focus — and neither replaces the other.
+- **It is NOT wired into `tests/run_parallel.py`.** The change is one call site
+  (`run()` returns a `subprocess.CompletedProcess`, so it is a drop-in for the
+  `subprocess.run` in `run_shard`), and it must be guarded on `available()`
+  with the plain spawn as the fallback and a flag for a developer who WANTS to
+  watch the windows. See "Wiring it in" in `docs/test_isolation.md`.
+- Not auto-discovered: the leading underscore, the `_golden_capture.py` /
+  `_render_capture.py` / `_smoke.py` precedent — `discover_shards` globs
+  `test_*.py`. Output capture uses inheritable temp FILES, not pipes (a pipe
+  needs a reader thread per stream or a shard's stderr fills it and the child
+  blocks), and quoting goes through `subprocess.list2cmdline` — a hand-rolled
+  "quote it if it has a space" sends `-c print("hi")` through unquoted and the
+  child receives `print(hi)` (measured: rc 1, empty stdout).
+- **A hung child on a desktop object is INVISIBLE** — no window to notice,
+  nothing to click. Use `run(..., timeout=)`, which terminates it and raises
+  `subprocess.TimeoutExpired`.
+
 ## How to run tests
 
 ```bash
 python tests/run_parallel.py            # the whole suite -- use this
-python tests/run_parallel.py --fast     # 5.5 s, 976 tests, the eighteen no-Tk modules
+python tests/run_parallel.py --fast     # 5.0 s, 1044 tests, the eighteen no-Tk modules
 python tests/run_parallel.py -m attrib coupling core    # substring on module name
 ```
 
-**Re-measured on this box after the composition work: 2045 tests / 364 shards in 333.7 s,
-and 976 tests in 5.5 s for `--fast`.** (The historical figures the runner's docstring
+**Re-measured on this box after the layering-gate wave: 2522 tests / 452 shards in 400.1 s
+at `-j 4` (the agreed budget while the user is on the box), and 1044 tests in 5.0 s for
+`--fast`.** (The historical figures the runner's docstring
 opens with — 293 s serial against 108 s parallel over 906 tests — are what justified the
 runner and are kept as such.) The full number tracks CONTENTION as much as anything: 120 s
 on an idle box and 339 s with another agent competing for the same cores have both been
@@ -3469,7 +3684,31 @@ the runner's own suite then took it to 699 / 4.4 s. Round 2 added the four compo
 modules on the same qualification (`test_compose`, `test_compose_cli`, `test_attrib_composed`,
 `test_conn_nets` — `test_compose_cli` has its own test asserting `pkg_rlc_gui` never entered
 `sys.modules`), for **976 tests / 5.5 s**. `test_conn_rowshape` is deliberately excluded:
-it drives real widgets and its slowest shard alone is 19 s.
+it drives real widgets and its slowest shard alone is 19 s. The list has not moved since,
+so `--fast` at **1044 tests / 5.0 s** is the same eighteen modules with their own growth in
+them. Three modules now QUALIFY on that one property and are not in the list yet:
+`test_layering` (21 tests / 0.31 s, pure `ast`), `test_cli_golden` (37 / 1.8 s) and
+`test_run_parallel` (already in). `test_attrib_golden` does **not** qualify — it creates no
+Tk root but it does import tkinter (see "The text golden reference").
+
+- **Shards run at BELOW NORMAL priority on Windows, and that is free.** The user works on
+  this box while the suite runs; a full run is 4-8 test processes for six to ten minutes,
+  and at NORMAL priority that is head-on competition with whatever they are doing.
+  `run_parallel._priority_kwargs()` returns
+  `{"creationflags": subprocess.BELOW_NORMAL_PRIORITY_CLASS}` on Windows and `{}` everywhere
+  else — the guard tests **both** `sys.platform` and `hasattr`, because the constant does not
+  exist in `subprocess` off Windows (`sys.platform` alone is an AttributeError on POSIX;
+  `hasattr` alone is a silent no-op). **BelowNormal, not Idle**: Idle is starved by anything
+  that compiles, so a suite at Idle stops making progress exactly when the user is busiest,
+  which is when it was left running. Measured, two adjacent runs at ONE worker count on one
+  tree (2522 tests / 452 shards, 20 cores, sibling test processes live throughout): `-j 4`
+  NORMAL **461.7 s** against `-j 4` BelowNormal **464.6 s**, i.e. **+0.6%**, noise.
+  `--fast -j 4` is 10.2 s BelowNormal against 10.6 s NORMAL. Verified on a real process
+  rather than inferred — `(Get-Process -Id N).PriorityClass` reads BelowNormal through
+  `run_shard`'s spawn and Normal through the same spawn without the flag. The `-j 8` NORMAL
+  (414.2 s) vs `-j 4` BelowNormal (464.6 s) gap quoted in the docstring is the WORKER COUNT,
+  not the priority: the same `-j 8` NORMAL run repeated during a contention spike read
+  **648.1 s**. Read the exit code, not the clock.
 
 ## How to add a new measurement mode
 
