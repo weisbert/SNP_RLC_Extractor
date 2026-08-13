@@ -1,0 +1,29 @@
+{
+ "name": "diagnose_truncated",
+ "describe": "--diagnose names the line it ends on",
+ "argv": [
+  "--diagnose",
+  "{OUT}/truncated.s2p"
+ ],
+ "returncode": 1,
+ "stdout": [
+  "File check: <OUT>/truncated.s2p",
+  "  size       : 159 bytes",
+  "  encoding   : utf-8",
+  "  lines      : 4 total, 2 comment/option, 2 data",
+  "  option line: line 2: # HZ S RI R 50",
+  "  data lines : 1 line(s) carry 6 numbers",
+  "               1 line(s) carry 9 (first at line 3)",
+  "  numbers    : 15",
+  "  port count : nothing from N=1 to N=2 fits 15 numbers with an increasing frequency column",
+  "  N=2 (the file name '.s2p'): 9 numbers per record",
+  "      15 numbers = 1 whole records + 6 left over",
+  "      the leftover starts at line 4 -- the file ends mid-record there",
+  "  VERDICT    : THE FILE does not divide into whole records for any plausible port count -- see above. It is usually truncated.",
+  ""
+ ],
+ "stderr": [
+  ""
+ ],
+ "artifacts": {}
+}

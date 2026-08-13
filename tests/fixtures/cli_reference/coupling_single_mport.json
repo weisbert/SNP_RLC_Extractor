@@ -1,0 +1,40 @@
+{
+ "name": "coupling_single_mport",
+ "describe": "one measurement port: self impedance only",
+ "argv": [
+  "--cli",
+  "tests/fixtures/coupled_2port_gndref.s2p",
+  "--mode",
+  "coupling",
+  "--mport",
+  "c1 = 1",
+  "--freq",
+  "5.0"
+ ],
+ "returncode": 0,
+ "stdout": [
+  "Loaded tests/fixtures/coupled_2port_gndref.s2p",
+  "  2 ports, 100 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 100 MHz - 10 GHz  (linear, step 100 MHz)",
+  "  max |S| = 0.9761",
+  "",
+  "Measurement ports: c1 [0]",
+  "",
+  "@ 5 GHz  --  Z matrix (Ω), open-circuit: every other measurement port carries no current",
+  "                c1",
+  "  c1  0.6 + j62.83",
+  "",
+  "Self impedance (diagonal). Signs are physical (Cadence convention):",
+  "  Port       R     L        C      Q  Sign",
+  "  ----  ------  ----  -------  -----  ----",
+  "  c1    600 mΩ  2 nH  -507 fF  104.7  ind",
+  "  legend: ind = Im(Z)>0 (inductive) | cap = Im(Z)<0 (capacitive; past SRF for an inductor) | R<0 = non-passive",
+  "",
+  "Only one measurement port defined; no mutual terms. Add a second --mport to get M / k.",
+  ""
+ ],
+ "stderr": [
+  ""
+ ],
+ "artifacts": {}
+}

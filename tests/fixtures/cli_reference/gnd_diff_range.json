@@ -1,0 +1,35 @@
+{
+ "name": "gnd_diff_range",
+ "describe": "mode gnd with a start:step:stop ground range",
+ "argv": [
+  "--cli",
+  "tests/fixtures/diff_pair_4port.s4p",
+  "--mode",
+  "gnd",
+  "--porta",
+  "1",
+  "--gnd",
+  "2:1:4",
+  "--freq",
+  "5.0"
+ ],
+ "returncode": 0,
+ "stdout": [
+  "Loaded tests/fixtures/diff_pair_4port.s4p",
+  "  4 ports, 401 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 1 MHz - 10 GHz  (linear, step 25 MHz)",
+  "  max |S| = 1",
+  "",
+  "@ 5 GHz:",
+  "  Z      = -6.768e-09 + j151.5 Ω",
+  "  R      = -6.768e-06 mΩ",
+  "  L      = 4.823 nH",
+  "  C      = -0.21 pF",
+  "  Q      = -2.239e+10",
+  ""
+ ],
+ "stderr": [
+  ""
+ ],
+ "artifacts": {}
+}

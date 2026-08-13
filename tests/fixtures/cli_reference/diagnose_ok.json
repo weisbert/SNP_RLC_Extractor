@@ -1,0 +1,25 @@
+{
+ "name": "diagnose_ok",
+ "describe": "--diagnose on a healthy file, exit 0",
+ "argv": [
+  "--diagnose",
+  "tests/fixtures/pi_2port.s2p"
+ ],
+ "returncode": 0,
+ "stdout": [
+  "File check: tests/fixtures/pi_2port.s2p",
+  "  size       : 60,706 bytes",
+  "  encoding   : utf-8",
+  "  lines      : 408 total, 7 comment/option, 401 data",
+  "  option line: line 7: # HZ S RI R 50",
+  "  data lines : 401 line(s) carry 9 numbers",
+  "  numbers    : 3609",
+  "  N=2 (the file name '.s2p'): 9 numbers per record -> 401 whole records, frequencies strictly increasing: CONSISTENT",
+  "  VERDICT    : no inconsistency found -- the data reads cleanly as N=2. If this tool still refuses the file, or the numbers look wrong, that is a PARSER problem, not a file problem: please report it with this block.",
+  ""
+ ],
+ "stderr": [
+  ""
+ ],
+ "artifacts": {}
+}

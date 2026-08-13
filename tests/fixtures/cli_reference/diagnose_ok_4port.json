@@ -1,0 +1,26 @@
+{
+ "name": "diagnose_ok_4port",
+ "describe": "--diagnose on a 4-port file",
+ "argv": [
+  "--diagnose",
+  "tests/fixtures/diff_pair_4port.s4p"
+ ],
+ "returncode": 0,
+ "stdout": [
+  "File check: tests/fixtures/diff_pair_4port.s4p",
+  "  size       : 236,843 bytes",
+  "  encoding   : utf-8",
+  "  lines      : 1614 total, 10 comment/option, 1604 data",
+  "  option line: line 10: # HZ S RI R 50",
+  "  data lines : 1203 line(s) carry 8 numbers",
+  "               401 line(s) carry 9 (first at line 11)",
+  "  numbers    : 13233",
+  "  N=4 (the file name '.s4p'): 33 numbers per record -> 401 whole records, frequencies strictly increasing: CONSISTENT",
+  "  VERDICT    : no inconsistency found -- the data reads cleanly as N=4. If this tool still refuses the file, or the numbers look wrong, that is a PARSER problem, not a file problem: please report it with this block.",
+  ""
+ ],
+ "stderr": [
+  ""
+ ],
+ "artifacts": {}
+}

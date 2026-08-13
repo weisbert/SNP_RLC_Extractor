@@ -1,0 +1,18 @@
+{
+ "name": "diagnose_missing",
+ "describe": "--diagnose on a file that is not there",
+ "argv": [
+  "--diagnose",
+  "{OUT}/nope.s2p"
+ ],
+ "returncode": 1,
+ "stdout": [
+  "File check: <OUT>/nope.s2p",
+  "  cannot stat the file: [OS-ERROR] '<OUT>/nope.s2p'",
+  ""
+ ],
+ "stderr": [
+  ""
+ ],
+ "artifacts": {}
+}

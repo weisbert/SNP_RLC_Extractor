@@ -1,0 +1,37 @@
+{
+ "name": "p2p_short_group",
+ "describe": "a three-port short group ('1-2-3'), chained pairs",
+ "argv": [
+  "--cli",
+  "tests/fixtures/diff_pair_4port.s4p",
+  "--mode",
+  "p2p",
+  "--porta",
+  "1",
+  "--portb",
+  "4",
+  "--short",
+  "1-2-3",
+  "--freq",
+  "5.0"
+ ],
+ "returncode": 0,
+ "stdout": [
+  "Loaded tests/fixtures/diff_pair_4port.s4p",
+  "  4 ports, 401 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 1 MHz - 10 GHz  (linear, step 25 MHz)",
+  "  max |S| = 1",
+  "",
+  "@ 5 GHz:",
+  "  Z      = -2.333e-09 + j151.3 Ω",
+  "  R      = -2.333e-06 mΩ",
+  "  L      = 4.817 nH",
+  "  C      = -0.2103 pF",
+  "  Q      = -6.486e+10",
+  ""
+ ],
+ "stderr": [
+  ""
+ ],
+ "artifacts": {}
+}

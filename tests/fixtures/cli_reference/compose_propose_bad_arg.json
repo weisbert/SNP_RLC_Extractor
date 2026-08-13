@@ -1,0 +1,52 @@
+{
+ "name": "compose_propose_bad_arg",
+ "describe": "--compose-propose wants exactly two tags",
+ "argv": [
+  "--cli",
+  "tests/fixtures/coupled_2port_gndref.s2p",
+  "--compose",
+  "PKG=tests/fixtures/coupled_2port_negM.s2p",
+  "--compose-propose",
+  "F1"
+ ],
+ "returncode": 2,
+ "stdout": [
+  "Loaded tests/fixtures/coupled_2port_gndref.s2p   [F1]",
+  "  2 ports, 100 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 100 MHz - 10 GHz  (linear, step 100 MHz)",
+  "  max |S| = 0.9761",
+  "Loaded tests/fixtures/coupled_2port_negM.s2p   [PKG]",
+  "  2 ports, 100 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 100 MHz - 10 GHz  (linear, step 100 MHz)",
+  "  max |S| = 0.9761",
+  "",
+  "==========================================================================",
+  "COMPOSED NETWORK:  2 files, 4 ports, 100 frequency points",
+  "==========================================================================",
+  "  F1 = coupled_2port_gndref.s2p: global ports 1-2 (2 ports), Z0 = 50",
+  "  PKG = coupled_2port_negM.s2p: global ports 3-4 (2 ports), Z0 = 50",
+  "",
+  "  common span      : 100 MHz - 10 GHz",
+  "  effective step   : 100 MHz   <- the COARSEST file's largest step; resampling onto a finer grid recovers nothing",
+  "",
+  "  file  grid        dropped  max step  sweep   phase/step (deg)  invented loss (dB)",
+  "  ----  ----------  -------  --------  ------  ----------------  ------------------",
+  "  F1    grid              0   100 MHz  linear                --                  --",
+  "  PKG   as sampled        0   100 MHz  linear                --                  --",
+  "  note: stacking these files identifies their reference nodes at ZERO",
+  "        impedance (F1 (coupled_2port_gndref.s2p), PKG",
+  "        (coupled_2port_negM.s2p)). An n-port Y already has its own reference",
+  "        eliminated, so a block-diagonal stack is not 'two networks side by",
+  "        side' -- it is one network whose ground is shared. Any ground path",
+  "        that exists only inside one file is then not in the circuit at all.",
+  "        reference_check measures whether that happened here.",
+  "  note: every file is already on the same 100-point grid (within 1e-09",
+  "        relative); no interpolation was done",
+  ""
+ ],
+ "stderr": [
+  "ERROR: --compose-propose: expected exactly two file tags separated by ONE comma, got 1 field(s) in 'F1'. The tags are the ones in the port map above",
+  ""
+ ],
+ "artifacts": {}
+}

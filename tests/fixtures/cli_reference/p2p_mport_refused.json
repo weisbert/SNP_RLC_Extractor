@@ -1,0 +1,29 @@
+{
+ "name": "p2p_mport_refused",
+ "describe": "--mport is coupling-only",
+ "argv": [
+  "--cli",
+  "tests/fixtures/pi_2port.s2p",
+  "--mode",
+  "p2p",
+  "--porta",
+  "1",
+  "--portb",
+  "2",
+  "--mport",
+  "x = 1"
+ ],
+ "returncode": 2,
+ "stdout": [
+  "Loaded tests/fixtures/pi_2port.s2p",
+  "  2 ports, 401 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 1 MHz - 10 GHz  (linear, step 25 MHz)",
+  "  max |S| = 0.9901",
+  ""
+ ],
+ "stderr": [
+  "ERROR: --mport is only valid with --mode coupling",
+  ""
+ ],
+ "artifacts": {}
+}

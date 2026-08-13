@@ -1,0 +1,38 @@
+{
+ "name": "gnd_vdd_deprecated",
+ "describe": "--vdd prints its deprecation note and unions",
+ "argv": [
+  "--cli",
+  "tests/fixtures/diff_pair_4port.s4p",
+  "--mode",
+  "gnd",
+  "--porta",
+  "1",
+  "--gnd",
+  "3",
+  "--vdd",
+  "4",
+  "--freq",
+  "5.0"
+ ],
+ "returncode": 0,
+ "stdout": [
+  "Loaded tests/fixtures/diff_pair_4port.s4p",
+  "  4 ports, 401 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 1 MHz - 10 GHz  (linear, step 25 MHz)",
+  "  max |S| = 1",
+  "NOTE: --vdd is deprecated. For AC small-signal analysis VDD is identical to ground, so these ports are merged into --gnd.",
+  "",
+  "@ 5 GHz:",
+  "  Z      = -7.469e-09 + j157.9 Ω",
+  "  R      = -7.469e-06 mΩ",
+  "  L      = 5.026 nH",
+  "  C      = -0.2016 pF",
+  "  Q      = -2.114e+10",
+  ""
+ ],
+ "stderr": [
+  ""
+ ],
+ "artifacts": {}
+}

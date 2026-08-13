@@ -1,0 +1,42 @@
+{
+ "name": "truncated_refused",
+ "describe": "a file that ends mid-record",
+ "argv": [
+  "--cli",
+  "{OUT}/truncated.s2p",
+  "--mode",
+  "gnd",
+  "--porta",
+  "1"
+ ],
+ "returncode": 1,
+ "stdout": [
+  ""
+ ],
+ "stderr": [
+  "Cannot read truncated.s2p",
+  "  Path    : <OUT>/truncated.s2p",
+  "  Problem : the data does not divide into whole records for any plausible port count --",
+  "            at N=2 (the file name '.s2p') it is 1 records of 9 plus 6 left over",
+  "  Verdict : THE FILE is inconsistent. Everything before the point named above was read",
+  "            correctly.",
+  "  Try     : the file is usually truncated -- re-export it; if the port count above is",
+  "            wrong, force the right one instead",
+  "",
+  "File check: <OUT>/truncated.s2p",
+  "  size       : 159 bytes",
+  "  encoding   : utf-8",
+  "  lines      : 4 total, 2 comment/option, 2 data",
+  "  option line: line 2: # HZ S RI R 50",
+  "  data lines : 1 line(s) carry 6 numbers",
+  "               1 line(s) carry 9 (first at line 3)",
+  "  numbers    : 15",
+  "  port count : nothing from N=1 to N=2 fits 15 numbers with an increasing frequency column",
+  "  N=2 (the file name '.s2p'): 9 numbers per record",
+  "      15 numbers = 1 whole records + 6 left over",
+  "      the leftover starts at line 4 -- the file ends mid-record there",
+  "  VERDICT    : THE FILE does not divide into whole records for any plausible port count -- see above. It is usually truncated.",
+  ""
+ ],
+ "artifacts": {}
+}

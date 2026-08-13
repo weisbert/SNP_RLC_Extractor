@@ -1,0 +1,31 @@
+{
+ "name": "gnd_1port_c",
+ "describe": "mode gnd on a 1-port shunt C (negative L, sign kept)",
+ "argv": [
+  "--cli",
+  "tests/fixtures/shunt_c_1port.s1p",
+  "--mode",
+  "gnd",
+  "--porta",
+  "1"
+ ],
+ "returncode": 0,
+ "stdout": [
+  "Loaded tests/fixtures/shunt_c_1port.s1p",
+  "  1 port, 401 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 1 MHz - 10 GHz  (linear, step 25 MHz)",
+  "  max |S| = 1",
+  "",
+  "@ 0.101 GHz:",
+  "  Z      = -8.087e-07 + j-1576 Ω",
+  "  R      = -0.0008087 mΩ",
+  "  L      = -2484 nH",
+  "  C      = 1 pF",
+  "  Q      = 1.949e+09",
+  ""
+ ],
+ "stderr": [
+  ""
+ ],
+ "artifacts": {}
+}

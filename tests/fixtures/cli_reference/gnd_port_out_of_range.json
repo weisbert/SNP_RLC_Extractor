@@ -1,0 +1,25 @@
+{
+ "name": "gnd_port_out_of_range",
+ "describe": "a port past the file's port count",
+ "argv": [
+  "--cli",
+  "tests/fixtures/pi_2port.s2p",
+  "--mode",
+  "gnd",
+  "--porta",
+  "5"
+ ],
+ "returncode": 2,
+ "stdout": [
+  "Loaded tests/fixtures/pi_2port.s2p",
+  "  2 ports, 401 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 1 MHz - 10 GHz  (linear, step 25 MHz)",
+  "  max |S| = 0.9901",
+  ""
+ ],
+ "stderr": [
+  "ERROR: Port number(s) 5 are outside this file's 2 ports (port numbers are 1-based).",
+  ""
+ ],
+ "artifacts": {}
+}

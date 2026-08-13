@@ -1,0 +1,31 @@
+{
+ "name": "gnd_1port_rl",
+ "describe": "mode gnd on a 1-port shunt R+L, default 0.1 GHz",
+ "argv": [
+  "--cli",
+  "tests/fixtures/shunt_rl_1port.s1p",
+  "--mode",
+  "gnd",
+  "--porta",
+  "1"
+ ],
+ "returncode": 0,
+ "stdout": [
+  "Loaded tests/fixtures/shunt_rl_1port.s1p",
+  "  1 port, 401 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 1 MHz - 10 GHz  (linear, step 25 MHz)",
+  "  max |S| = 0.9923",
+  "",
+  "@ 0.101 GHz:",
+  "  Z      = 0.5 + j0.6345 Ω",
+  "  R      = 500 mΩ",
+  "  L      = 1 nH",
+  "  C      = -2484 pF",
+  "  Q      = 1.269",
+  ""
+ ],
+ "stderr": [
+  ""
+ ],
+ "artifacts": {}
+}

@@ -1,0 +1,41 @@
+{
+ "name": "attr_one_mport",
+ "describe": "--attribute needs two measurement ports to exist",
+ "argv": [
+  "--cli",
+  "tests/fixtures/coupled_2port_gndref.s2p",
+  "--mode",
+  "coupling",
+  "--mport",
+  "vic = 1",
+  "--attribute",
+  "vic,agg"
+ ],
+ "returncode": 2,
+ "stdout": [
+  "Loaded tests/fixtures/coupled_2port_gndref.s2p",
+  "  2 ports, 100 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 100 MHz - 10 GHz  (linear, step 100 MHz)",
+  "  max |S| = 0.9761",
+  "",
+  "Measurement ports: vic [0]",
+  "",
+  "@ 0.1 GHz  --  Z matrix (Ω), open-circuit: every other measurement port carries no current",
+  "                vic",
+  "  vic  0.6 + j1.257",
+  "",
+  "Self impedance (diagonal). Signs are physical (Cadence convention):",
+  "  Port       R     L         C      Q  Sign",
+  "  ----  ------  ----  --------  -----  ----",
+  "  vic   600 mΩ  2 nH  -1.27 nF  2.094  ind",
+  "  legend: ind = Im(Z)>0 (inductive) | cap = Im(Z)<0 (capacitive; past SRF for an inductor) | R<0 = non-passive",
+  "",
+  "Only one measurement port defined; no mutual terms. Add a second --mport to get M / k.",
+  ""
+ ],
+ "stderr": [
+  "ERROR: --attribute: no measurement port is named 'agg', and it is not an integer position either. This spec has: 1 'vic'",
+  ""
+ ],
+ "artifacts": {}
+}

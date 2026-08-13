@@ -1,0 +1,23 @@
+{
+ "name": "gnd_missing_porta",
+ "describe": "mode gnd with no --porta",
+ "argv": [
+  "--cli",
+  "tests/fixtures/pi_2port.s2p",
+  "--mode",
+  "gnd"
+ ],
+ "returncode": 2,
+ "stdout": [
+  "Loaded tests/fixtures/pi_2port.s2p",
+  "  2 ports, 401 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 1 MHz - 10 GHz  (linear, step 25 MHz)",
+  "  max |S| = 0.9901",
+  ""
+ ],
+ "stderr": [
+  "ERROR: --porta required",
+  ""
+ ],
+ "artifacts": {}
+}

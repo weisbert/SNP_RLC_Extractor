@@ -1,0 +1,30 @@
+{
+ "name": "diagnose_junk_token",
+ "describe": "--diagnose on the non-numeric token",
+ "argv": [
+  "--diagnose",
+  "{OUT}/junk_token.s2p"
+ ],
+ "returncode": 1,
+ "stdout": [
+  "File check: <OUT>/junk_token.s2p",
+  "  size       : 251 bytes",
+  "  encoding   : utf-8",
+  "  lines      : 5 total, 2 comment/option, 3 data",
+  "  option line: line 2: # HZ S RI R 50",
+  "  data lines : 2 line(s) carry 9 numbers",
+  "               1 line(s) carry 8 (first at line 4)",
+  "  not a number: line 4: 'XXXX' in 2.000000000e+06 0.10 0.00 0.20 XXXX 0.20 0.00 0.10 0.00",
+  "  numbers    : 26",
+  "  port count : nothing from N=1 to N=3 fits 26 numbers with an increasing frequency column",
+  "  N=2 (the file name '.s2p'): 9 numbers per record",
+  "      26 numbers = 2 whole records + 8 left over",
+  "      the leftover starts at line 5 -- the file ends mid-record there",
+  "  VERDICT    : THE FILE contains non-numeric text in its data section, at the lines named above.",
+  ""
+ ],
+ "stderr": [
+  ""
+ ],
+ "artifacts": {}
+}

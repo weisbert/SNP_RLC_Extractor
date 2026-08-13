@@ -1,0 +1,35 @@
+{
+ "name": "gnd_pi_grounded",
+ "describe": "mode gnd with --gnd, i.e. the row/col dropped",
+ "argv": [
+  "--cli",
+  "tests/fixtures/pi_2port.s2p",
+  "--mode",
+  "gnd",
+  "--porta",
+  "1",
+  "--gnd",
+  "2",
+  "--freq",
+  "1.0"
+ ],
+ "returncode": 0,
+ "stdout": [
+  "Loaded tests/fixtures/pi_2port.s2p",
+  "  2 ports, 401 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 1 MHz - 10 GHz  (linear, step 25 MHz)",
+  "  max |S| = 0.9901",
+  "",
+  "@ 1.001 GHz:",
+  "  Z      = 1 + j6.289 Ω",
+  "  R      = 1000 mΩ",
+  "  L      = 1 nH",
+  "  C      = -25.28 pF",
+  "  Q      = 6.289",
+  ""
+ ],
+ "stderr": [
+  ""
+ ],
+ "artifacts": {}
+}

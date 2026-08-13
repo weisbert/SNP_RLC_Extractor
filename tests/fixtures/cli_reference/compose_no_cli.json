@@ -1,0 +1,18 @@
+{
+ "name": "compose_no_cli",
+ "describe": "--compose without --cli would drop every extra file",
+ "argv": [
+  "--compose",
+  "PKG=tests/fixtures/coupled_4port_diff.s4p",
+  "tests/fixtures/coupled_2port_gndref.s2p"
+ ],
+ "returncode": 2,
+ "stdout": [
+  ""
+ ],
+ "stderr": [
+  "ERROR: --compose needs --cli. The GUI cannot compose several files yet, so launching it here would silently drop every file but the first, and every connection with them.",
+  ""
+ ],
+ "artifacts": {}
+}

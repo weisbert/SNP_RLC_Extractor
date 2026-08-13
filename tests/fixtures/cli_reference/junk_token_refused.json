@@ -1,0 +1,29 @@
+{
+ "name": "junk_token_refused",
+ "describe": "a non-numeric token is a hard error by default",
+ "argv": [
+  "--cli",
+  "{OUT}/junk_token.s2p",
+  "--mode",
+  "gnd",
+  "--porta",
+  "1"
+ ],
+ "returncode": 1,
+ "stdout": [
+  ""
+ ],
+ "stderr": [
+  "Cannot read junk_token.s2p",
+  "  Path    : <OUT>/junk_token.s2p",
+  "  Problem : 'XXXX' is not a number, and a Touchstone data line is nothing but numbers",
+  "  Where   : line 4:  2.000000000e+06 0.10 0.00 0.20 XXXX 0.20 0.00 0.10 0.00",
+  "  Verdict : THE FILE is inconsistent. Everything before the point named above was read",
+  "            correctly.",
+  "  Try     : if the rest of the file is known good, load it again with 'skip bad values'",
+  "            (--lenient) -- but check the result: dropping one number shifts every number",
+  "            after it by one slot",
+  ""
+ ],
+ "artifacts": {}
+}

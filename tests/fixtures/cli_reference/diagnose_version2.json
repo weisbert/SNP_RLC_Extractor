@@ -1,0 +1,28 @@
+{
+ "name": "diagnose_version2",
+ "describe": "--diagnose on a v2 file",
+ "argv": [
+  "--diagnose",
+  "{OUT}/version2.s2p"
+ ],
+ "returncode": 1,
+ "stdout": [
+  "File check: <OUT>/version2.s2p",
+  "  size       : 139 bytes",
+  "  encoding   : utf-8",
+  "  lines      : 6 total, 2 comment/option, 1 data",
+  "  option line: line 3: # GHZ S MA R 50",
+  "  data lines : 1 line(s) carry 9 numbers",
+  "  v2 keyword : line 2: [Version] 2.0",
+  "  v2 keyword : line 4: [Number of Ports] 2",
+  "  v2 keyword : line 5: [Network Data]",
+  "  numbers    : 9",
+  "  N=2 (the file name '.s2p'): 9 numbers per record -> 1 whole records, frequencies strictly increasing: CONSISTENT",
+  "  VERDICT    : this is a Touchstone 2.0 file (keyword lines in [brackets]). This tool reads Touchstone 1.x -- re-export as .sNp.",
+  ""
+ ],
+ "stderr": [
+  ""
+ ],
+ "artifacts": {}
+}

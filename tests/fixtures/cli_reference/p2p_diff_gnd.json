@@ -1,0 +1,37 @@
+{
+ "name": "p2p_diff_gnd",
+ "describe": "mode p2p with the far end grounded",
+ "argv": [
+  "--cli",
+  "tests/fixtures/diff_pair_4port.s4p",
+  "--mode",
+  "p2p",
+  "--porta",
+  "1",
+  "--portb",
+  "2",
+  "--gnd",
+  "3,4",
+  "--freq",
+  "5.0"
+ ],
+ "returncode": 0,
+ "stdout": [
+  "Loaded tests/fixtures/diff_pair_4port.s4p",
+  "  4 ports, 401 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 1 MHz - 10 GHz  (linear, step 25 MHz)",
+  "  max |S| = 1",
+  "",
+  "@ 5 GHz:",
+  "  Z      = -9.949e-09 + j252.3 Ω",
+  "  R      = -9.949e-06 mΩ",
+  "  L      = 8.032 nH",
+  "  C      = -0.1261 pF",
+  "  Q      = -2.537e+10",
+  ""
+ ],
+ "stderr": [
+  ""
+ ],
+ "artifacts": {}
+}

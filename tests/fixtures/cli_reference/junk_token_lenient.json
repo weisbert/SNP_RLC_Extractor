@@ -1,0 +1,45 @@
+{
+ "name": "junk_token_lenient",
+ "describe": "--lenient drops it and says so",
+ "argv": [
+  "--cli",
+  "{OUT}/junk_token.s2p",
+  "--mode",
+  "gnd",
+  "--porta",
+  "1",
+  "--lenient",
+  "--freq",
+  "0.002"
+ ],
+ "returncode": 1,
+ "stdout": [
+  ""
+ ],
+ "stderr": [
+  "Cannot read junk_token.s2p",
+  "  Path    : <OUT>/junk_token.s2p",
+  "  Problem : the data section contains non-numeric text ('XXXX' at line 4, 1 token(s) in",
+  "            total)",
+  "  Verdict : THE FILE is inconsistent. Everything before the point named above was read",
+  "            correctly.",
+  "  Try     : if you know the port count, force it (--force-nports N on the CLI)",
+  "",
+  "File check: <OUT>/junk_token.s2p",
+  "  size       : 251 bytes",
+  "  encoding   : utf-8",
+  "  lines      : 5 total, 2 comment/option, 3 data",
+  "  option line: line 2: # HZ S RI R 50",
+  "  data lines : 2 line(s) carry 9 numbers",
+  "               1 line(s) carry 8 (first at line 4)",
+  "  not a number: line 4: 'XXXX' in 2.000000000e+06 0.10 0.00 0.20 XXXX 0.20 0.00 0.10 0.00",
+  "  numbers    : 26",
+  "  port count : nothing from N=1 to N=3 fits 26 numbers with an increasing frequency column",
+  "  N=2 (the file name '.s2p'): 9 numbers per record",
+  "      26 numbers = 2 whole records + 8 left over",
+  "      the leftover starts at line 5 -- the file ends mid-record there",
+  "  VERDICT    : THE FILE contains non-numeric text in its data section, at the lines named above.",
+  ""
+ ],
+ "artifacts": {}
+}

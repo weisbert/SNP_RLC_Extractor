@@ -1,0 +1,27 @@
+{
+ "name": "coupling_reserved_name_A",
+ "describe": "'A' is a reserved measurement-port name",
+ "argv": [
+  "--cli",
+  "tests/fixtures/coupled_2port_gndref.s2p",
+  "--mode",
+  "coupling",
+  "--mport",
+  "A = 1",
+  "--mport",
+  "c2 = 2"
+ ],
+ "returncode": 2,
+ "stdout": [
+  "Loaded tests/fixtures/coupled_2port_gndref.s2p",
+  "  2 ports, 100 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 100 MHz - 10 GHz  (linear, step 100 MHz)",
+  "  max |S| = 0.9761",
+  ""
+ ],
+ "stderr": [
+  "ERROR: Measurement-port name 'A' is reserved for the legacy A/B modes; pick another name.",
+  ""
+ ],
+ "artifacts": {}
+}

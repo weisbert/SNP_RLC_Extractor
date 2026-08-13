@@ -1,0 +1,44 @@
+{
+ "name": "diagnose_composition",
+ "describe": "--diagnose covers every composed file",
+ "argv": [
+  "--diagnose",
+  "tests/fixtures/coupled_2port_gndref.s2p",
+  "--compose",
+  "PKG=tests/fixtures/coupled_4port_diff.s4p"
+ ],
+ "returncode": 0,
+ "stdout": [
+  "==========================================================================",
+  "[1/2] tests/fixtures/coupled_2port_gndref.s2p",
+  "==========================================================================",
+  "File check: tests/fixtures/coupled_2port_gndref.s2p",
+  "  size       : 22,694 bytes",
+  "  encoding   : utf-8",
+  "  lines      : 114 total, 14 comment/option, 100 data",
+  "  option line: line 14: # HZ S RI R 50",
+  "  data lines : 100 line(s) carry 9 numbers",
+  "  numbers    : 900",
+  "  N=2 (the file name '.s2p'): 9 numbers per record -> 100 whole records, frequencies strictly increasing: CONSISTENT",
+  "  VERDICT    : no inconsistency found -- the data reads cleanly as N=2. If this tool still refuses the file, or the numbers look wrong, that is a PARSER problem, not a file problem: please report it with this block.",
+  "",
+  "==========================================================================",
+  "[2/2] tests/fixtures/coupled_4port_diff.s4p",
+  "==========================================================================",
+  "File check: tests/fixtures/coupled_4port_diff.s4p",
+  "  size       : 85,527 bytes",
+  "  encoding   : utf-8",
+  "  lines      : 416 total, 16 comment/option, 400 data",
+  "  option line: line 16: # HZ S RI R 50",
+  "  data lines : 300 line(s) carry 8 numbers",
+  "               100 line(s) carry 9 (first at line 17)",
+  "  numbers    : 3300",
+  "  N=4 (the file name '.s4p'): 33 numbers per record -> 100 whole records, frequencies strictly increasing: CONSISTENT",
+  "  VERDICT    : no inconsistency found -- the data reads cleanly as N=4. If this tool still refuses the file, or the numbers look wrong, that is a PARSER problem, not a file problem: please report it with this block.",
+  ""
+ ],
+ "stderr": [
+  ""
+ ],
+ "artifacts": {}
+}

@@ -1,0 +1,25 @@
+{
+ "name": "attr_dependents_without_parent",
+ "describe": "--attribute-* without --attribute",
+ "argv": [
+  "--cli",
+  "tests/fixtures/diff_pair_4port.s4p",
+  "--mode",
+  "coupling",
+  "--mport",
+  "vic = 1",
+  "--attribute-alt",
+  "L=1n",
+  "--attribute-csv",
+  "{OUT}/x.csv"
+ ],
+ "returncode": 2,
+ "stdout": [
+  ""
+ ],
+ "stderr": [
+  "ERROR: --attribute-alt, --attribute-csv only mean something with --attribute VICTIM,AGGRESSOR (e.g. --attribute vic,agg)",
+  ""
+ ],
+ "artifacts": {}
+}

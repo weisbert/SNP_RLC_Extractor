@@ -1,0 +1,25 @@
+{
+ "name": "compose_short_refused",
+ "describe": "--short cannot say which file a side is in",
+ "argv": [
+  "--cli",
+  "tests/fixtures/coupled_2port_gndref.s2p",
+  "--compose",
+  "PKG=tests/fixtures/coupled_4port_diff.s4p",
+  "--short",
+  "1-2",
+  "--mode",
+  "gnd",
+  "--porta",
+  "F1.1"
+ ],
+ "returncode": 2,
+ "stdout": [
+  ""
+ ],
+ "stderr": [
+  "ERROR: --short does not work on a composed network -- 'a-b' cannot say which file each side belongs to, and '-' is already a port range. Write --compose-link \"EM.3 short_to EM.4\" instead; it takes a tag on each side and ranges on both.",
+  ""
+ ],
+ "artifacts": {}
+}

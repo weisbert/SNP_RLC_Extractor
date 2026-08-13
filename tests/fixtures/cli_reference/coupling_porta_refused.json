@@ -1,0 +1,27 @@
+{
+ "name": "coupling_porta_refused",
+ "describe": "coupling mode uses --mport, not --porta",
+ "argv": [
+  "--cli",
+  "tests/fixtures/coupled_2port_gndref.s2p",
+  "--mode",
+  "coupling",
+  "--porta",
+  "1",
+  "--mport",
+  "c1 = 1"
+ ],
+ "returncode": 2,
+ "stdout": [
+  "Loaded tests/fixtures/coupled_2port_gndref.s2p",
+  "  2 ports, 100 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 100 MHz - 10 GHz  (linear, step 100 MHz)",
+  "  max |S| = 0.9761",
+  ""
+ ],
+ "stderr": [
+  "ERROR: coupling mode uses --mport, not --porta/--portb (e.g. --mport \"tank = 1 / 2\")",
+  ""
+ ],
+ "artifacts": {}
+}

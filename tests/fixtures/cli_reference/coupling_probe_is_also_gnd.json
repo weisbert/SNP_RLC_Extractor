@@ -1,0 +1,29 @@
+{
+ "name": "coupling_probe_is_also_gnd",
+ "describe": "a probe port may not also be --gnd",
+ "argv": [
+  "--cli",
+  "tests/fixtures/diff_pair_4port.s4p",
+  "--mode",
+  "coupling",
+  "--mport",
+  "p1 = 1",
+  "--mport",
+  "p2 = 2",
+  "--gnd",
+  "1,3"
+ ],
+ "returncode": 2,
+ "stdout": [
+  "Loaded tests/fixtures/diff_pair_4port.s4p",
+  "  4 ports, 401 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 1 MHz - 10 GHz  (linear, step 25 MHz)",
+  "  max |S| = 1",
+  ""
+ ],
+ "stderr": [
+  "ERROR: Port(s) 1 are listed both as a probe (measurement port 'p1') and as ground. A probe side is tied together, so grounding one of its ports grounds the whole side -- drop it from one list or the other.",
+  ""
+ ],
+ "artifacts": {}
+}

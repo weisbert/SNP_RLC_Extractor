@@ -1,0 +1,40 @@
+{
+ "name": "bad_mode",
+ "describe": "--mode takes three values and says which",
+ "argv": [
+  "--cli",
+  "tests/fixtures/pi_2port.s2p",
+  "--mode",
+  "differential"
+ ],
+ "returncode": 2,
+ "stdout": [
+  ""
+ ],
+ "stderr": [
+  "usage: pkg_rlc_extractor [-h] [--cli] [--mode {gnd,p2p,coupling}]",
+  "                         [--porta PORTA] [--portb PORTB] [--mport SPEC]",
+  "                         [--gnd GND] [--vdd VDD] [--short SHORT] [--freq FREQ]",
+  "                         [--fit {none,auto,inductor,capacitor}] [--fmin FMIN]",
+  "                         [--fmax FMAX] [--csv CSV]",
+  "                         [--force-nports FORCE_NPORTS] [--diagnose]",
+  "                         [--lenient] [--attribute VICTIM,AGGRESSOR]",
+  "                         [--attribute-alt SPEC]",
+  "                         [--attribute-ground-model MODEL]",
+  "                         [--attribute-freqs LIST]",
+  "                         [--attribute-group {row,flat,name}]",
+  "                         [--attribute-csv PATH]",
+  "                         [--cold-start VICTIM,AGGRESSOR] [--cold-start-top K]",
+  "                         [--cold-start-cumulative K] [--cold-start-csv PATH]",
+  "                         [--compose [ALIAS=]FILE] [--compose-alias ALIAS]",
+  "                         [--compose-keep ALIAS.PORTS]",
+  "                         [--compose-gnd ALIAS.PORTS] [--compose-link SPEC]",
+  "                         [--compose-map PATH] [--compose-propose A,B]",
+  "                         [--compose-propose-csv PATH] [--compose-export PATH]",
+  "                         [--compose-export-ports SPEC]",
+  "                         [file]",
+  "pkg_rlc_extractor: error: argument --mode: invalid choice: 'differential' (choose from 'gnd', 'p2p', 'coupling')",
+  ""
+ ],
+ "artifacts": {}
+}

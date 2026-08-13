@@ -1,0 +1,29 @@
+{
+ "name": "version2_refused",
+ "describe": "Touchstone 2.0 is refused",
+ "argv": [
+  "--cli",
+  "{OUT}/version2.s2p",
+  "--mode",
+  "gnd",
+  "--porta",
+  "1"
+ ],
+ "returncode": 1,
+ "stdout": [
+  ""
+ ],
+ "stderr": [
+  "Cannot read version2.s2p",
+  "  Path    : <OUT>/version2.s2p",
+  "  Problem : this is a Touchstone 2.0 file (keyword lines in [brackets]); this tool reads",
+  "            Touchstone 1.x",
+  "  Where   : line 2:  [Version] 2.0",
+  "  Verdict : THE FILE looks valid, but it is in a format this tool does not read.",
+  "  Try     : re-export as Touchstone 1.x (.sNp). Reading a v2 file as v1 would inject the",
+  "            keywords' own numbers into the data, so skipping the bad tokens is not an",
+  "            option here",
+  ""
+ ],
+ "artifacts": {}
+}

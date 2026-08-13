@@ -1,0 +1,46 @@
+{
+ "name": "fit_inductor",
+ "describe": "--fit inductor over a band",
+ "argv": [
+  "--cli",
+  "tests/fixtures/shunt_rl_1port.s1p",
+  "--mode",
+  "gnd",
+  "--porta",
+  "1",
+  "--freq",
+  "1.0",
+  "--fit",
+  "inductor",
+  "--fmin",
+  "0.1",
+  "--fmax",
+  "2.0"
+ ],
+ "returncode": 0,
+ "stdout": [
+  "Loaded tests/fixtures/shunt_rl_1port.s1p",
+  "  1 port, 401 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 1 MHz - 10 GHz  (linear, step 25 MHz)",
+  "  max |S| = 0.9923",
+  "",
+  "@ 1.001 GHz:",
+  "  Z      = 0.5 + j6.289 Ω",
+  "  R      = 500 mΩ",
+  "  L      = 1 nH",
+  "  C      = -25.28 pF",
+  "  Q      = 12.58",
+  "",
+  "Broadband fit (inductor) over [0.1, 2] GHz:",
+  "  L          = 1 nH",
+  "  R_dc       = 0.5 Ω",
+  "  R_ac       = -1.48e-14 Ω/√Hz",
+  "  Q@center   = 5.62",
+  "  RMSE       = 1.01e-09 Ω",
+  ""
+ ],
+ "stderr": [
+  ""
+ ],
+ "artifacts": {}
+}

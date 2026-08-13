@@ -1,0 +1,25 @@
+{
+ "name": "compose_keep_no_tag",
+ "describe": "--compose-keep without a file tag",
+ "argv": [
+  "--cli",
+  "tests/fixtures/coupled_2port_gndref.s2p",
+  "--compose",
+  "PKG=tests/fixtures/coupled_4port_diff.s4p",
+  "--compose-keep",
+  "1-2",
+  "--mode",
+  "gnd",
+  "--porta",
+  "F1.1"
+ ],
+ "returncode": 2,
+ "stdout": [
+  ""
+ ],
+ "stderr": [
+  "ERROR: --compose-keep '1-2' does not say which file it belongs to. Write <file>.<ports>, e.g. PKG.10-12. Known files: F1, PKG",
+  ""
+ ],
+ "artifacts": {}
+}

@@ -1,0 +1,33 @@
+{
+ "name": "gnd_renamed_extension",
+ "describe": "content sniffing beats the .txt extension",
+ "argv": [
+  "--cli",
+  "tests/fixtures/pi_2port_renamed.txt",
+  "--mode",
+  "gnd",
+  "--porta",
+  "1",
+  "--freq",
+  "1.0"
+ ],
+ "returncode": 0,
+ "stdout": [
+  "Loaded tests/fixtures/pi_2port_renamed.txt",
+  "  2 ports, 401 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 1 MHz - 10 GHz  (linear, step 25 MHz)",
+  "  max |S| = 0.9901",
+  "",
+  "@ 1.001 GHz:",
+  "  Z      = 0.2516 + j-7.95e+04 Ω",
+  "  R      = 251.6 mΩ",
+  "  L      = -1.264e+04 nH",
+  "  C      = 0.002 pF",
+  "  Q      = -3.16e+05",
+  ""
+ ],
+ "stderr": [
+  ""
+ ],
+ "artifacts": {}
+}

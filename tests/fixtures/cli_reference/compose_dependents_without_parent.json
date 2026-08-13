@@ -1,0 +1,19 @@
+{
+ "name": "compose_dependents_without_parent",
+ "describe": "--compose-* without --compose",
+ "argv": [
+  "--cli",
+  "tests/fixtures/coupled_2port_gndref.s2p",
+  "--compose-link",
+  "F1.1 short_to PKG.1"
+ ],
+ "returncode": 2,
+ "stdout": [
+  ""
+ ],
+ "stderr": [
+  "ERROR: --compose-link only means something with --compose [ALIAS=]FILE, which is what puts a second file in the network (e.g. --compose PKG=package.s60p)",
+  ""
+ ],
+ "artifacts": {}
+}

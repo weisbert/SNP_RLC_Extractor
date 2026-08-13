@@ -1,0 +1,16 @@
+{
+ "name": "no_args_needs_cli",
+ "describe": "--cli with no file at all",
+ "argv": [
+  "--cli"
+ ],
+ "returncode": 2,
+ "stdout": [
+  ""
+ ],
+ "stderr": [
+  "ERROR: --cli requires a file argument",
+  ""
+ ],
+ "artifacts": {}
+}

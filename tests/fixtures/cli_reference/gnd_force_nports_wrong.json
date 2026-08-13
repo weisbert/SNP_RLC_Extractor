@@ -1,0 +1,43 @@
+{
+ "name": "gnd_force_nports_wrong",
+ "describe": "--force-nports with the wrong count",
+ "argv": [
+  "--cli",
+  "tests/fixtures/pi_2port.s2p",
+  "--mode",
+  "gnd",
+  "--porta",
+  "1",
+  "--force-nports",
+  "3"
+ ],
+ "returncode": 1,
+ "stdout": [
+  ""
+ ],
+ "stderr": [
+  "Cannot read pi_2port.s2p",
+  "  Path    : tests/fixtures/pi_2port.s2p",
+  "  Problem : the data does not divide into whole records: 3609 numbers is 189 complete",
+  "            records of 19 plus 18 left over (N=3, forced)",
+  "  Verdict : THE FILE is inconsistent. Everything before the point named above was read",
+  "            correctly.",
+  "  Try     : the file is usually truncated -- re-export it; if the port count above is",
+  "            wrong, force the right one instead",
+  "",
+  "File check: tests/fixtures/pi_2port.s2p",
+  "  size       : 60,706 bytes",
+  "  encoding   : utf-8",
+  "  lines      : 408 total, 7 comment/option, 401 data",
+  "  option line: line 7: # HZ S RI R 50",
+  "  data lines : 401 line(s) carry 9 numbers",
+  "  numbers    : 3609",
+  "  N=3 (forced): 19 numbers per record",
+  "      3609 numbers = 189 whole records + 18 left over",
+  "      the leftover starts at line 407 -- the file ends mid-record there",
+  "  N=2 (the file name '.s2p'): 9 numbers per record -> 401 whole records, frequencies strictly increasing: CONSISTENT",
+  "  VERDICT    : no inconsistency found -- the data reads cleanly as N=2. If this tool still refuses the file, or the numbers look wrong, that is a PARSER problem, not a file problem: please report it with this block.",
+  ""
+ ],
+ "artifacts": {}
+}

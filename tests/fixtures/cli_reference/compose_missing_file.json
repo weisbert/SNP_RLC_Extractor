@@ -1,0 +1,31 @@
+{
+ "name": "compose_missing_file",
+ "describe": "a --compose file that is not there",
+ "argv": [
+  "--cli",
+  "tests/fixtures/coupled_2port_gndref.s2p",
+  "--compose",
+  "PKG={OUT}/nope.s4p",
+  "--mode",
+  "gnd",
+  "--porta",
+  "F1.1"
+ ],
+ "returncode": 1,
+ "stdout": [
+  "Loaded tests/fixtures/coupled_2port_gndref.s2p   [F1]",
+  "  2 ports, 100 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 100 MHz - 10 GHz  (linear, step 100 MHz)",
+  "  max |S| = 0.9761",
+  ""
+ ],
+ "stderr": [
+  "Cannot read nope.s4p",
+  "  Path    : <OUT>/nope.s4p",
+  "  Problem : cannot open the file (No such file or directory)",
+  "  Verdict : THE FILE could not be read at all; nothing was parsed.",
+  "  Try     : check the path, and that the file is not open in another tool that locks it",
+  ""
+ ],
+ "artifacts": {}
+}

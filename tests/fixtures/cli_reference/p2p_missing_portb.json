@@ -1,0 +1,25 @@
+{
+ "name": "p2p_missing_portb",
+ "describe": "mode p2p with only --porta",
+ "argv": [
+  "--cli",
+  "tests/fixtures/pi_2port.s2p",
+  "--mode",
+  "p2p",
+  "--porta",
+  "1"
+ ],
+ "returncode": 2,
+ "stdout": [
+  "Loaded tests/fixtures/pi_2port.s2p",
+  "  2 ports, 401 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 1 MHz - 10 GHz  (linear, step 25 MHz)",
+  "  max |S| = 0.9901",
+  ""
+ ],
+ "stderr": [
+  "ERROR: p2p mode needs both --porta and --portb",
+  ""
+ ],
+ "artifacts": {}
+}

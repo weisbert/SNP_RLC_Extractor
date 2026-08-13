@@ -1,0 +1,25 @@
+{
+ "name": "missing_file",
+ "describe": "a path that is not there at all",
+ "argv": [
+  "--cli",
+  "{OUT}/nope.s2p",
+  "--mode",
+  "gnd",
+  "--porta",
+  "1"
+ ],
+ "returncode": 1,
+ "stdout": [
+  ""
+ ],
+ "stderr": [
+  "Cannot read nope.s2p",
+  "  Path    : <OUT>/nope.s2p",
+  "  Problem : cannot open the file (No such file or directory)",
+  "  Verdict : THE FILE could not be read at all; nothing was parsed.",
+  "  Try     : check the path, and that the file is not open in another tool that locks it",
+  ""
+ ],
+ "artifacts": {}
+}

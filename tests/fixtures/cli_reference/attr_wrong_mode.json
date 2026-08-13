@@ -1,0 +1,27 @@
+{
+ "name": "attr_wrong_mode",
+ "describe": "--attribute outside coupling mode",
+ "argv": [
+  "--cli",
+  "tests/fixtures/diff_pair_4port.s4p",
+  "--mode",
+  "gnd",
+  "--porta",
+  "1",
+  "--attribute",
+  "vic,agg"
+ ],
+ "returncode": 2,
+ "stdout": [
+  "Loaded tests/fixtures/diff_pair_4port.s4p",
+  "  4 ports, 401 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 1 MHz - 10 GHz  (linear, step 25 MHz)",
+  "  max |S| = 1",
+  ""
+ ],
+ "stderr": [
+  "ERROR: --attribute is only valid with --mode coupling: it names a VICTIM and an AGGRESSOR measurement port, and those exist only where --mport defines them (e.g. --mode coupling --mport \"vic = 1\" --mport \"agg = 2\" --attribute vic,agg)",
+  ""
+ ],
+ "artifacts": {}
+}

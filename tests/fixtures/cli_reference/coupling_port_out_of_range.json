@@ -1,0 +1,27 @@
+{
+ "name": "coupling_port_out_of_range",
+ "describe": "a measurement port past the port count",
+ "argv": [
+  "--cli",
+  "tests/fixtures/coupled_2port_gndref.s2p",
+  "--mode",
+  "coupling",
+  "--mport",
+  "c1 = 1",
+  "--mport",
+  "c2 = 9"
+ ],
+ "returncode": 2,
+ "stdout": [
+  "Loaded tests/fixtures/coupled_2port_gndref.s2p",
+  "  2 ports, 100 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
+  "  Frequency: 100 MHz - 10 GHz  (linear, step 100 MHz)",
+  "  max |S| = 0.9761",
+  ""
+ ],
+ "stderr": [
+  "ERROR: Port number(s) 9 are outside this file's 2 ports (port numbers are 1-based).",
+  ""
+ ],
+ "artifacts": {}
+}

@@ -1,0 +1,16 @@
+{
+ "name": "diagnose_no_file",
+ "describe": "--diagnose with no file argument",
+ "argv": [
+  "--diagnose"
+ ],
+ "returncode": 2,
+ "stdout": [
+  ""
+ ],
+ "stderr": [
+  "ERROR: --diagnose needs a file argument",
+  ""
+ ],
+ "artifacts": {}
+}

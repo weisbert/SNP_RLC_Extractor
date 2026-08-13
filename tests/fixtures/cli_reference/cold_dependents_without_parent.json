@@ -1,0 +1,25 @@
+{
+ "name": "cold_dependents_without_parent",
+ "describe": "--cold-start-* without --cold-start",
+ "argv": [
+  "--cli",
+  "tests/fixtures/diff_pair_4port.s4p",
+  "--mode",
+  "coupling",
+  "--mport",
+  "vic = 1",
+  "--cold-start-top",
+  "4",
+  "--cold-start-csv",
+  "{OUT}/x.csv"
+ ],
+ "returncode": 2,
+ "stdout": [
+  ""
+ ],
+ "stderr": [
+  "ERROR: --cold-start-top, --cold-start-csv only mean something with --cold-start VICTIM,AGGRESSOR (e.g. --cold-start vic,agg)",
+  ""
+ ],
+ "artifacts": {}
+}
