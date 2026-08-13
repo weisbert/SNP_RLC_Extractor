@@ -40,6 +40,11 @@ listed in `_gui()`'s docstring; the alternative -- a second copy of
 renderings of the same spec come to disagree, which this repo has already been
 bitten by more than once.
 
+`pkg_rlc_extractor` was a SECOND deferred import, for the ground-model parser
+alone, and it is gone: that parser is now in `pkg_rlc_attrib_report`, which
+this module imports at the top.  Only `pkg_rlc_gui` is deferred, and only
+because the cycle is real.
+
 THE FIFTEEN DECISIONS, and the measurement behind each
 ------------------------------------------------------
 1.  MODELESS, and deliberately NOT `transient(app)`.  No `grab_set` anywhere:
@@ -194,6 +199,10 @@ from matplotlib.figure import Figure
 
 import pkg_rlc_attrib as attrib
 import pkg_rlc_files_gui as files_gui
+# The CLI's ground-model parser.  One grammar, one set of error messages, one
+# label format for `--attribute-ground-model` and for the Grounds field on this
+# window -- see `parse_ground_model`, which is two lines for that reason.
+from pkg_rlc_attrib_report import _attr_ground_model, _attr_zt
 from pkg_rlc_core import (
     ROLE_ELEMENT,
     ROLE_GROUND,
@@ -615,20 +624,23 @@ def parse_ground_model(text: str, omega: float) -> tuple:
     """
     'diag' | 'diag:SPEC' | 'shared:SPEC'  ->  (kind, impedance, label).
 
-    STRAIGHT THROUGH THE CLI'S OWN PARSER, lazily imported, and that is the
-    whole point of this three-line function.  `--attribute-ground-model` has
-    shipped this grammar, these error messages and this label format since
-    stage 3; a second copy here is precisely how the window and the CLI come to
-    disagree about what `shared:L=1n` means, and this repo has been bitten by
-    two renderings of one spec more than once.  `pkg_rlc_extractor` imports
-    numpy, `pkg_rlc_attrib` and `pkg_rlc_core` at module level and nothing
-    else -- `pkg_rlc_gui` is imported inside `main()` -- so this is not a
-    cycle, and it is the same deferred-private-import shape as `_gui()`.
+    STRAIGHT THROUGH THE CLI'S OWN PARSER, and that is the whole point of this
+    two-line function.  `--attribute-ground-model` has shipped this grammar,
+    these error messages and this label format since stage 3; a second copy
+    here is precisely how the window and the CLI come to disagree about what
+    `shared:L=1n` means, and this repo has been bitten by two renderings of one
+    spec more than once.
+
+    It used to reach the parser by importing `pkg_rlc_extractor` INSIDE this
+    function -- a lazy import that dodged the cycle through `main()`, which
+    imports `pkg_rlc_gui`.  The parser now lives in `pkg_rlc_attrib_report`,
+    which imports `pkg_rlc_attrib`, `pkg_rlc_core` and `pkg_rlc_report` and
+    nothing else, so there is no cycle to dodge and the import is at the top
+    where it can be read.
 
     Raises `ValueError` with the CLI's own wording on anything it cannot read.
     """
-    import pkg_rlc_extractor                              # noqa: PLC0415
-    return pkg_rlc_extractor._attr_ground_model(text, omega)
+    return _attr_ground_model(text, omega)
 
 
 def ground_model_zt(ctx, kind: str, z):
@@ -636,14 +648,13 @@ def ground_model_zt(ctx, kind: str, z):
     (the (m, m) element-impedance matrix this model asks for, notes), or
     (None, notes) to keep the one the spec itself declares.
 
-    The CLI's `_attr_zt`, lazily imported for the reason above.  It is the one
-    place that knows the dense block is built over the SHUNT sub-block only:
+    The CLI's `_attr_zt`, for the reason above.  It is the one place that knows
+    the dense block is built over the SHUNT sub-block only:
     `termination_impedance_shared_return` assumes every element it is handed is
     a ball sharing the return plane, so giving it a `short_to` as well would
     quietly stop that being a short.
     """
-    import pkg_rlc_extractor                              # noqa: PLC0415
-    return pkg_rlc_extractor._attr_zt(ctx, kind, z)
+    return _attr_zt(ctx, kind, z)
 
 
 def _role_colour(kind: str) -> str:
