@@ -18,7 +18,8 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `pkg_rlc_solve.py`      | **The arithmetic.** `s_to_y` / `y_to_s`, `compute_z_matrix` (and its nested `merge_terms`) / `compute_z` / `_probe_impedance` / `_is_singular_2x2`, the four Schur/probe warning builders, `extract_rlc_at_freq` / `extract_coupling_at_freq` and their result dataclasses, `fit_inductor` / `fit_capacitor` / `fit_auto` / `_scaled_lstsq` / the `eval_*_model` helpers, and `PINV_RCOND` / `PROBE_RANGE_TOL` / `SCHUR_COLLAPSE_TOL` / `SCHUR_LSTSQ_RCOND` / `RECIPROCITY_WARN`. Imports `pkg_rlc_spec` and (`DEFAULT_Z0`, `_freq_batch`) from `pkg_rlc_touchstone`; nothing imports it back. **Every bit-exactness rule in "Measurement ports / coupling (Mode 6)" below applies to THIS file now** — the `G == 1` verbatim branches, the `np.add.at` merge, the per-frequency 5f contraction. |
 | `pkg_rlc_attrib.py`     | **Port attribution.** Given `Y(f)` and a `TerminationSet`, answers three questions at one frequency. (a) An EXACT additive signed decomposition of `Z_ab` into the bare EM coupling plus one term per declared termination (`build_context` / `decompose` / `format_decomposition`). (b) The EXACT what-if of changing any of them (`sensitivity`, `group_joint`, `cumulative_curve`, `leave_one_out`, `sweep_mobius`, `transfer_ratio`). (c) The **cold-start screen** — which ports matter BEFORE a spec exists, from all-open: `cold_start_context` / `cold_start_bracket` / `cold_start_screen` / `cold_start_pairs` / `cold_start_leave_one_out` / `cold_start_cumulative` / `name_family_suggestions` / `cold_start_negative_result` / `cold_start_report` / `format_cold_start`, with `Bracket` / `PortScreenRow` / `PairEffect` / `FamilySuggestion` / `ColdStartContext` / `ColdStart` and the `COLD_START_*` constants. Plus `Element` / `Term` / `ReturnBudget` / `Decomposition` / `AttribContext`, the `DECOMPOSABLE` / `NON_DECOMPOSABLE` registries, the `Alternative` builders, `termination_impedance_diagonal` / `termination_impedance_shared_return`, `SIGN_CONVENTION_TEXT` and `AttribError`. Plus the **composed-network gauge** — `COMPOSED_BASELINE_TEXT`, `PortBlocks`, `BaselineLinks`, the `baseline=` argument every entry point takes, and `_island_elements`, the ungated structural warning for an element whose whole support sits in a probe-free component of the baseline. Imports `pkg_rlc_core` ONLY (acyclic, the `pkg_rlc_plot` rule), no scipy. `pkg_rlc_extractor.py` drives it from the `--attribute*` and `--cold-start*` flag groups (`--mode coupling` only); the GUI surface for (a) and (b) is `pkg_rlc_attrib_gui.py`, and (c) is CLI-only. |
 | `pkg_rlc_compose.py`    | **Several Touchstone files measured as ONE network.** `ComposeInput` / `compose` / `ComposedNetwork` / `FileBlock` stack k files into one `Y` on a common frequency axis; every cross-file link is an ordinary `ShortPair` / `LumpedBetween` on the global indices handed to the SAME `compute_z_matrix`, so every mode, the Mode 5 DSL and the coupling path work on a composition without a line of their own. Plus the mandatory reference-node check (`reference_check`, `REF_LIVE` / `REF_WELDED` / `REF_NO_GROUND` / `REF_UNKNOWN`), the frequency plan (`align_frequencies` / `FreqPlan` / `interpolate_s`), the namespace (`COMPOSE_TAG_SEP`, `parse_scoped_ports`, `format_scoped_port`, `default_alias`, `link_short` / `link_lumped`), the pre-reduction (`reduce_block_y`), the Touchstone writer (`write_composed_touchstone`), the limit case (`limit_case_check`), `solve_composed` and `ComposeError`. Imports `pkg_rlc_core` ONLY. |
-| `pkg_rlc_attrib_gui.py` | **The Attribution window** (`AttributionWindow`, `open_attribution_window`, `ATTRIB_MENU_LABEL`, `attribution_refusal`, `refresh_attribution_windows`, `attribution_session_state` / `apply_attribution_session_state`) plus the pure formatters it is testable through with no display (`render_table` / `Column` / `TableText`, `contributions_table`, `sensitivity_table`, `detail_lines`, `sweep_caption`, `reconciliation_verdict` / `reconciliation_line`, `provenance_lines`, `staleness_text`, `stability_line`, `report_text`, `csv_records`, `signed_str`, `parse_candidate`). A modeless `Toplevel` over `pkg_rlc_attrib`; `pkg_rlc_gui.py` holds only the Analyze-menu entry, the Traces right-click entry, the Results-pane pointer line and the refresh hooks. It is a separate module because `pkg_rlc_gui.py` was already 7000+ lines; `pkg_rlc_gui` imports it, and it imports `pkg_rlc_gui` back only from **inside functions** (`_gui()`), so the cycle never exists at import time. |
+| `pkg_rlc_attrib_gui.py` | **The Attribution window** (`AttributionWindow`, `open_attribution_window`, `ATTRIB_MENU_LABEL`, `attribution_refusal`, `refresh_attribution_windows`, `attribution_session_state` / `apply_attribution_session_state`) plus the pure formatters it is testable through with no display (`render_table` / `Column` / `TableText`, `contributions_table`, `sensitivity_table`, `detail_lines`, `sweep_caption`, `reconciliation_verdict` / `reconciliation_line`, `provenance_lines`, `staleness_text`, `stability_line`, `report_text`, `csv_records`, `signed_str`, `parse_candidate`). A modeless `Toplevel` over `pkg_rlc_attrib`; `pkg_rlc_gui.py` holds only the Analyze-menu entry, the Traces right-click entry, the Results-pane pointer line and the refresh hooks. It is a separate module because `pkg_rlc_gui.py` was already 7000+ lines; `pkg_rlc_gui` imports it, and it imports `pkg_rlc_gui` back only from **inside functions** (`_gui()`), so the cycle never exists at import time — **that is now its ONE deferred import**, the pair to `pkg_rlc_extractor` having gone when the ground-model grammar moved to `pkg_rlc_attrib_report`, which this module imports normally at the top. |
+| `pkg_rlc_attrib_report.py` | **The attribution report as TEXT.** The thirteen `_attr_print_*` / `_cold_print_*` sections `pkg_rlc_extractor.py` used to print, moved whole and RETURNING `list[str]`; the CLI's `_emit` is the only thing that prints them again, which is what lets `tests/fixtures/cli_reference/` pin the surface with no stream to capture. Also the CLI's own SPELLING of the shared formatters (`_trunc`'s `~` rather than U+2026, `_fmt_complex`'s `a + jb` rather than the pane's `a+bj`, `_table_lines`, `_attr_wrap`, `_attr_section`), the ranked-section caps (`ATTR_RANK_ROWS` / `ATTR_SWEEP_GROUPS` / `ATTR_PAIR_POOL` / `ATTR_GROUP_ROWS` / `COLD_RANK_ROWS` / `COLD_PAIR_ROWS` / `COLD_MIRROR_ROWS` / `COLD_QUANTITY`), the two CSV RECORD shapers (`_ATTR_CSV_FIELDS` / `_attr_row` / `_COLD_CSV_FIELDS` / `_cold_row` — a record is data shaping; the WRITERS stay in the CLI with the path and the flags), and the three things the CLI and the Attribution window genuinely share: the ground-model grammar (`_attr_series_impedance` / `_attr_alternative` / `_attr_ground_model` / `_attr_zt`), the grid snap (`_attr_snap`) and `rank_map`. Imports `pkg_rlc_attrib`, `pkg_rlc_core` and `pkg_rlc_report` and nothing else — **no tkinter and no matplotlib**, because this module is on the CLI's import path and `test_attrib_cli*` are in `FAST_MODULES` on exactly that property. `pkg_rlc_extractor` re-exports every symbol it lost. |
 | `pkg_rlc_files_gui.py`  | **Which FILES a trace is made of** (round 3): the `Files in this trace…` window (`FilePairWindow`, `open_files_window`, `FILES_MENU_LABEL`, `files_refusal`, `refresh_files_windows`, `slots_of` / `FileSlot`, `spec_problems`), the port-cell scope rules (`render_port_cell` / `cell_scope` / `cell_is_foreign` / `port_choices` / `resolve_cell`, `ALIAS_MAX_CHARS`, `PORT_CELL_CHARS`) and the GUI rendering of the reference-node check (`reference_checks_of`, `reference_strip_text`, `reference_report_lines`, `reference_provenance`, `REFERENCE_HEADLINE`). Same split as `pkg_rlc_attrib_gui` against `pkg_rlc_attrib`: `pkg_rlc_compose` does every piece of arithmetic and this is presentation, budget and refusal. Both `pkg_rlc_gui` and `pkg_rlc_attrib_gui` import it at module level; it imports `pkg_rlc_gui` only from inside functions. |
 | `pkg_rlc_validate.py`   | **What a spec SAYS, what it will DO, and what is wrong with it** (L2). The file set and the composed port namespace (`trace_file_labels` / `trace_file_aliases` / `trace_is_composed` / `trace_file_legend` / `trace_file_scope`, `compose_spec_problems`, `ComposeSpecError`, `_scope_port_field` / `_scope_dsl_text` / `_scope_conn_rows` / `_scope_mport_rows`, `_field_has_tag`, `scope_echo_messages`, `_collect_nets_safe`, `_check_bare_ports`, `_namespace_network`); what the spec says (`_port_descriptor` and the `_fmt_*` renderers under it, `_port_overview_text` / `_bucket_counts`, `_import_dsl_text` / `_dsl_meaning` / `_ordering_diff_summary`, `_scan_count`); and what is wrong with it (`_VMsg`, the `V_WRONG_NUMBER` / `V_NO_RESULT` / `V_ROW_INERT` / `V_OK` tiers, `_validation_report` / `_validation_messages`, `_measured_port_messages`, `_probe_ground_messages`, `_rlc_echo`, `_extra_lines_indicator`, `_trace_role_rows`, `_role_warnings` and the `WARN_*` texts, `_roles_header`, `_append_port_spec`, `_validation_strip_text`, `_footer_strip_text`). Imports `pkg_rlc_core` and `pkg_rlc_compose` ONLY. **Every entry point is pure and NONE may raise** — the editor strips call them from inside Tk variable traces, once per keystroke, where a raised exception reaches no handler we control and the GUI carries on showing a stale verdict. A `TraceConfig` is read by duck typing and never imported. |
 | `pkg_rlc_report.py`     | **Turning a finished run into TEXT** (L3). The three results views and every formatter under them (`_format_results_table`, `_format_coupling_block`, `_format_summary_self` / `_format_summary_coupling`, `_format_compare` and `_wrap_name` / `_compare_head_cells` / `_compare_groups` / `_delta_cell`, `_render_columns`, `_value_formatter` / `_fmt_plain` / `_fmt_aligned` / `_aligned_prefix_for`, `_sign_flag`, `_trunc_str`, `_file_alias_map` / `_file_cell` / `_row_file_labels` / `_snapshot_file_legend`, `_format_z_matrix`, `rank_coupling_pairs` and `COUPLING_FLOOR_DB` / `COUPLING_LEGEND_LINES`), the tab labels and the run-to-run diff (`log_tab_label`, `run_tab_label`, `run_headline`, `run_stale_banner`, `keep_button_label`, `describe_run_change`, `run_change_line`, the `LOG_*` and `RUN_*` constants), the view and width budgets (`RESULTS_VIEWS` / `VIEW_*`, `RESULTS_PANE_COLS`, `COMPARE_*`, `SUMMARY_LABEL_MAX`, `RESULTS_SWATCH`), and the **frequency provenance** the reports print through (`FreqSnap`, `freq_grid_step`, `snap_to_grid`, `combine_freq_snaps`, `marker_freq_text`, `_table_freq_note`, `run_freq_snap` / `run_file_freq`, the `FREQ_*` constants). Imports `pkg_rlc_core` only. **This module is what `tests/fixtures/render_reference.json` pins byte-for-byte**, which is exactly why it must stay Tk-free: a formatter that reaches a widget cannot be captured with no display. |
@@ -26,10 +27,14 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `pkg_rlc_conntable.py`  | **The connections table's SHAPE, and the RowTable vocabulary it is spoken in** (L3): `conn_table_layout` / `_conn_row_cells`, `CONN_TABLE_COLUMNS` and its measured column budget, `_join_short_group` / `conn_cells_from_row` / `conn_row_from_cells`, `CONN_ON_GLYPH` / `CONN_OFF_GLYPH`, `CONN_NET_KEY` / `CONN_NET_SUPPORTED`, the `_CONN_COL_*` grid columns, `CONN_KIND_HINTS` / `conn_hint_text` / `CONN_TABLE_HINT*` / `HINT_SHORT_CHARS` — **and `ColumnSpec` / `TableLayout` / `identity_layout`**. Those three are here rather than beside `RowTable` because they are the INTERFACE between the layout rules at this layer and the widget one layer above, and the layer map puts this module BELOW `pkg_rlc_widgets`: a shared type has to sit at the lower of its two users or the import runs upward. Imports `pkg_rlc_core` only. |
 | `pkg_rlc_widgets.py`    | **The generic Tk widgets, which know nothing about this app** (L4): `PlaceholderEntry`, `PlaceholderText`, `PLACEHOLDER_FG`, `RowTable`, `_CollapsibleHint`, `_tk_dash`, `editor_scroll_fraction`, and **`ReflowRow` / `reflow_rows`, which used to live in `pkg_rlc_plot`**. It imports six names from `pkg_rlc_conntable` and nothing else from this repo. `StylePicker` is deliberately NOT here — see the two invariants below. |
 | `pkg_rlc_plot.py`       | Matplotlib plot panel: multi-subplot grid over R/L/C/\|Z\|/Re/Im/Q/**k**, draggable freq marker, M / V / Delete keys, fullscreen window, and the `ReflowRow` / `reflow_rows` control strip that wraps instead of losing its tail. Quantities that cannot be derived from one `(freqs, Z)` pair (today only `k`) arrive via the optional `Trace.aux` dict. **`ReflowRow` / `reflow_rows` no longer live here** — they are a generic layout widget that happened to land in this module because the control strip needed one first; they are now in `pkg_rlc_widgets` and RE-EXPORTED from here, so `from pkg_rlc_plot import ReflowRow` keeps resolving (`pkg_rlc_attrib_gui` and `tests/test_plot_controls.py` both use that spelling). |
-| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), the frozen-trace snapshot (`_freeze_trace_config`, `freeze_label`, `freeze_refusal`, the Traces-list right-click menu), the File menu and the JSON session format (`session_to_dict` / `session_from_dict` / `SessionError` / `autosave_path`), the results pane (a `ttk.Notebook` whose tab 0 is the Log, with `log_tab_label` / `_append_result(severity)` / `_select_results_tab`), and the immutable run record (`RowSnapshot` / `CouplingSnapshot` / `FitSnapshot` / `RunSnapshot`, `_snapshot_row` / `_snapshot_block` / `_snapshot_fit`) that `_render_results` consumes instead of live traces, and the THREE RESULTS VIEWS (`RESULTS_VIEWS` / `VIEW_DETAIL` / `VIEW_SUMMARY` / `VIEW_COMPARE`, the `View:` combobox on the `ReflowRow` header, `_on_results_view_changed` / `_rerender_every_page`, and the pure formatters `_format_summary_self` / `_format_summary_coupling` / `_format_compare` / `_compare_groups` / `_delta_cell` / `_render_columns` / `_file_alias_map`) that `_run_report_segments` dispatches over, above the shared `_footer_segments`. Re-exports the DSL helpers it no longer defines. **Six modules have been split out of it** — `pkg_rlc_conntable`, `pkg_rlc_widgets`, `pkg_rlc_report`, `pkg_rlc_csv`, `pkg_rlc_validate` (and `pkg_rlc_session`, when `pkg_rlc_model` lands). Every moved symbol is RE-EXPORTED at the top of this file, the same precedent the Mode 5 DSL helpers set, so `from pkg_rlc_gui import <anything>` keeps resolving for all 25 test modules and every call site. The file is 6985 lines, down from 10954. |
+| `pkg_rlc_panels_files.py` | **The Loaded Files section** (L5): `FilesPanel` — the frame, its four buttons, the Listbox, the right-click menu, and `_load_one_file` / `_on_add_file` / `_on_remove_file` / `_on_check_file` / `_on_file_selected` / `_refresh_file_list`. |
+| `pkg_rlc_panels_traces.py` | **The Traces section** (L5): `TracesPanel` — the frame, its four buttons, the Listbox, the right-click menu, add / remove / duplicate / toggle / freeze / unfreeze, `_refresh_trace_list`, and `FREEZE_MENU_LABEL` / `UNFREEZE_MENU_LABEL`, which moved with the menu they label. |
+| `pkg_rlc_panels_results.py` | **The Results pane** (L5): `ResultsPanel` — the header strip (View / Units / Runs / Keep), the notebook, the Log tab and its badge, the run pages with keep / evict, both menus, `_run_report_segments` and the view builders under it, plus `RunTab` and `_tag_swatch_rows`. `_tag_swatch_rows` is the one results-pane renderer that is NOT a formatter — it WRITES INTO a Tk `Text` — which is why it never went to `pkg_rlc_report`. |
+| `pkg_rlc_panels_editor.py` | **The editor** (L5): `EditorPanel` — the pinned footer, the whole mode-aware form, both `RowTable`s, both scrollbars and `_apply_editor_scrollbars`, the scrollregion, `_update_mode_visibility`, the strips, the footer route, the text hatch, the auto-apply sync chain — plus `StylePicker` and the editor's own constants (`MODE_PLACEHOLDERS` / `LABEL_PLACEHOLDER` / `EDITOR_FIELD_CHARS` / `FROZEN_EDITOR_NOTE` / both `MP_TABLE_HINT`s / both `MUTUAL_CURVE_HINT`s / `TEXT_DIALOG_NOTE`). `FROZEN_EDITOR_NOTE` went with the EDITOR and not with its two former neighbours on the Traces menu: it names the editor's state, not a menu entry. |
+| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), the frozen-trace snapshot (`_freeze_trace_config`, `freeze_label`, `freeze_refusal`, the Traces-list right-click menu), the File menu and the JSON session format (`session_to_dict` / `session_from_dict` / `SessionError` / `autosave_path`), the results pane (a `ttk.Notebook` whose tab 0 is the Log, with `log_tab_label` / `_append_result(severity)` / `_select_results_tab`), and the immutable run record (`RowSnapshot` / `CouplingSnapshot` / `FitSnapshot` / `RunSnapshot`, `_snapshot_row` / `_snapshot_block` / `_snapshot_fit`) that `_render_results` consumes instead of live traces, and the THREE RESULTS VIEWS (`RESULTS_VIEWS` / `VIEW_DETAIL` / `VIEW_SUMMARY` / `VIEW_COMPARE`, the `View:` combobox on the `ReflowRow` header, `_on_results_view_changed` / `_rerender_every_page`, and the pure formatters `_format_summary_self` / `_format_summary_coupling` / `_format_compare` / `_compare_groups` / `_delta_cell` / `_render_columns` / `_file_alias_map`) that `_run_report_segments` dispatches over, above the shared `_footer_segments`. Re-exports the DSL helpers it no longer defines. **Six modules have been split out of it** — `pkg_rlc_conntable`, `pkg_rlc_widgets`, `pkg_rlc_report`, `pkg_rlc_csv`, `pkg_rlc_validate` (and `pkg_rlc_session`, when `pkg_rlc_model` lands). Every moved symbol is RE-EXPORTED at the top of this file, the same precedent the Mode 5 DSL helpers set, so `from pkg_rlc_gui import <anything>` keeps resolving for all 25 test modules and every call site. **The four SECTIONS of the window have since gone too** — `pkg_rlc_panels_files`, `pkg_rlc_panels_traces`, `pkg_rlc_panels_results`, `pkg_rlc_panels_editor` — leaving `App` with `__init__`, the wheel router, `_build_ui`, the menubar, the PanedWindows, the session methods, Calculate, and the wiring between panels; the widgets are ALIASED back onto `App` and every moved method keeps a one-line delegator, which is the re-export rule one level down (see "The four panels of the main window"). The file is 4436 lines, down from 10954. |
 | `pkg_rlc_gui.py` (cont.) | Plus the **Ports & Roles** window (`PortRolesWindow`, `_trace_role_rows`, `_role_warnings`, `_roles_header`, `apply_ports_as`), which is what `Show Ports` now opens; and the **Attribution hooks** — the `Analyze` cascade, the third Traces right-click entry, `_on_attribution`, the Results-pane pointer line, and the `refresh_attribution_windows` calls. The window itself is `pkg_rlc_attrib_gui.py`. Plus the **multi-file schema and engine** (round 3): `TraceConfig.file_labels` and its helpers (`trace_file_labels` / `trace_file_aliases` / `trace_is_composed` / `trace_file_legend` / `trace_file_scope` / `compose_spec_problems`), the port-field scopers (`_scope_port_field` / `_scope_dsl_text` / `_scope_conn_rows` / `_scope_mport_rows`, `ComposeSpecError`), `SolveNetwork` / `_trace_network` / `_cached_trace_network` / `_namespace_network` / `_trace_namespace`, `_reference_checks`, `set_trace_home_file`, and the `Files in this trace…` entries on the Analyze cascade and on BOTH right-click menus. |
 | `pkg_rlc_help.py`       | In-app Help window content (`HELP_DIR`, `_help_text`, the ten `HELP_*` names, `HELP_TOPICS`, `HelpWindow`, `HELP_WINDOW_WIDTH`) — **133 lines: the 2295 lines of prose are ten plain-text files under `docs/help/`, read at import time.** See "The Help window's prose lives in `docs/help/`". One tab per mode + syntax + save/load + worked examples. **Ten tabs, and there is no room for an eleventh** — port attribution, the Attribution window and the cold-start screen all live at the bottom of `Mode 6 (Coupling)`, cross-referenced from `Overview`, `Input syntax` and `Worked examples`. See the measurement under "Port attribution". |
-| `pkg_rlc_extractor.py`  | Entry point: dispatches GUI vs CLI from argv. CLI `--mode gnd \| p2p \| coupling`, `--mport` repeatable. |
+| `pkg_rlc_extractor.py`  | Entry point: dispatches GUI vs CLI from argv. CLI `--mode gnd \| p2p \| coupling`, `--mport` repeatable. **The attribution and cold-start report sections are no longer here** — they are `pkg_rlc_attrib_report`, returning `list[str]`, and what is left on this side is the argparser, the flag refusals, the CSV writers (path and flags), the drivers that decide the printed ORDER, and `_emit`, the one `print` on the path. Every moved symbol is re-exported. |
 | `reduce_snp.py`         | **Standalone** CLI: shrinks a big `.sNp` to a few ports (KEEP / GND-short / open-or-matched elimination). Deliberately imports nothing from this repo — it gets copied to simulation servers on its own. |
 | `deploy.sh`             | **Top level on purpose.** Red-zone update entry point: `cd <install> && bash deploy.sh` auto-detects the uploaded tarball. The operator's cross-project convention is `<install>/deploy.sh` — do not move it back under `deploy/`. |
 | `deploy/`               | Rest of the air-gapped ("red zone") pipeline: `pack.ps1` (Windows, `git archive`), `doctor.sh` + `_env_check.py` (what can this box run?). No network, no pip, no venv on the far side. |
@@ -258,20 +263,132 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
   lazy imports to one and the pair set would not move — so
   `KNOWN_BACK_IMPORT_COUNTS` is declared beside it and asserted separately.
   Measured, both halves mutation-checked against copies of the real tree.
-- **Today's set is 12 statements over 4 pairs, and TWO of them are not
+- **Today's set is 10 statements over 3 pairs, and every one of them is
   `pkg_rlc_gui`.** `pkg_rlc_files_gui -> pkg_rlc_gui` x8,
+  `pkg_rlc_attrib_gui -> pkg_rlc_gui` x1 (`_gui`), `pkg_rlc_extractor ->
+  pkg_rlc_gui` x1 (`main`). The fourth pair —
   `pkg_rlc_attrib_gui -> pkg_rlc_extractor` x2 (`parse_ground_model`,
-  `ground_model_zt`), `pkg_rlc_attrib_gui -> pkg_rlc_gui` x1 (`_gui`),
-  `pkg_rlc_extractor -> pkg_rlc_gui` x1 (`main`). The `pkg_rlc_extractor` pair
-  is a DIFFERENT defect from the `TraceConfig`/colour-constant cycle: it is a
-  panel importing two pure functions out of the CLI entry point, and those two
-  look like L0/L3 material.
+  `ground_model_zt`) — is GONE: it was a panel importing two pure functions out
+  of the CLI entry point, those two were L0/L3 material as recorded, and they
+  are now in `pkg_rlc_attrib_report`, which the window imports at the top of the
+  file like anything else. That leaves the remaining ten all pointing at the one
+  cycle that is real. **The four new `pkg_rlc_panels_*` modules add NONE** — a
+  panel may not import `pkg_rlc_gui` at module level or inside a function, and
+  the prefix is declared in `LAYER_PREFIXES` so an unlayered `pkg_rlc_*.py`
+  still fails outright.
+  **OPEN AS OF THIS WAVE:** `KNOWN_BACK_IMPORTS` /
+  `KNOWN_BACK_IMPORT_COUNTS` in `tests/test_layering.py` still declare the
+  removed pair, so both halves of `TestTheBackImportsAreExactlyKnown` are RED.
+  That is the gate working exactly as designed — *"REMOVING one also fails until
+  the same commit updates the declaration"* — and the fix is to delete that pair
+  from both declarations, nothing else.
 - **A CLASS-BODY import counts as module-level; only a `def` body defers.**
   An import written in a class body runs at import time, so it is part of the
   real graph and cannot be a dodge. Both cases are pinned.
 - **The fix is always to MOVE THE SYMBOL, not the import**, and every failure
   message in the file says so by name. A lazy import hides the cycle from the
   interpreter and leaves it in the design.
+
+### The four panels of the main window (`pkg_rlc_panels_*.py`)
+
+`pkg_rlc_gui.py` was 6985 lines with a ~4600-line `App` in it. The four
+sections of the window are now four classes in four modules, and `App` keeps
+`__init__`, the wheel router, `_build_ui`, the menubar, the PanedWindows, the
+session methods, Calculate, and the wiring between panels. `pkg_rlc_gui.py`
+is 4436 lines.
+
+- **HAS-A, NOT IS-A, and the reason is ORDER.** Each panel is a plain class
+  that OWNS its widgets and is CONSTRUCTED BY `App` with the app injected.
+  Mixins were rejected: almost every rule these sections have to keep is a
+  rule about order — pack order, build order, what is populated before
+  `PanedWindow.add()`, when `update_idletasks()` may not be called, which
+  button is fourth in a row that `pack` unmaps from the end — and a mixin
+  hides exactly that. `_build_left_panel` still shows Global Controls being
+  packed `side=BOTTOM` BEFORE the editor; `_build_right_panel` still creates
+  BOTH frames, populates the results one, builds the plot, and `add()`s both
+  last, which is the 2 px sash rule
+  `tests/test_row_table.py::TestResultsPaneVisible` exists for.
+- **A binding that had a position keeps it: the panel exposes a hook and
+  `_bind_events` calls it there.** `FilesPanel` and `TracesPanel` each have
+  `bind_selection()` and `bind_context_menu()` rather than one `bind_events()`,
+  because `_bind_events` interleaves the two lists' bindings and the order in
+  which two `tk.Menu(app)` widgets are created is the order of their Tcl
+  pathnames. Nothing is known to depend on it; keeping the calls where the
+  lines were is cheaper than finding out.
+- **THE COMPATIBILITY SURFACE IS THE RE-EXPORT RULE, ONE LEVEL DOWN.** Widgets
+  are ALIASED onto App right after the panel is built (`self.files_lb =
+  self._files_panel.files_lb`, and 45 more for the editor), and every moved
+  method keeps a one-line DELEGATOR on App. That is what leaves 25 test
+  modules and every call site unchanged, and it is the same property as
+  `from N import X` in the module a symbol moved out of. An alias is safe
+  because every one of those widgets is created once during the build and
+  never reassigned. Two verifications, both cheap and both worth re-running
+  after any further split: an AST sweep that every `from pkg_rlc_gui import X`
+  and `pkg_rlc_gui.X` in `tests/` still resolves, and a live headless `App()`
+  proving every `app.<attr>` the tests touch still exists.
+  `_build_editor` / `_build_editor_form` deliberately get NO delegator: the
+  panel builds itself, and a forward that would build a SECOND editor into a
+  fresh parent is a trap rather than a re-export.
+- **PANELS OWN WIDGETS; APP STILL OWNS THE MUTABLE STATE.** `_run_tabs`,
+  `_last_run`, `_run_counter`, `_log_unseen`, `_log_forced`, the two run caps
+  and their IntVars, `_run_tab_menu_target`, `_suppress_editor_sync`,
+  `_ed_extra_lines`, `_ed_strips_pending`, `_ed_sync_after` /
+  `_ed_sync_target`, `_ed_shown_mode` and the two `_ed_scroll_*` flags stay on
+  `App`; the panels read and write them through the injected app. Those are
+  REASSIGNED at runtime and are read straight off `app` by the tests, so
+  moving them would need forwarding properties — two places one value can be
+  read from, and one more pair that can drift. Do not "finish the job" by
+  moving them without also moving what reads them.
+- **A PANEL MAY NOT IMPORT `pkg_rlc_gui`, at module level OR inside a
+  function.** The panels are L5 and the frontend is L6
+  (`tests/test_layering.py`), and the function-level back-import counts are
+  pinned, so the lazy dodge is not available either. That is also why the
+  modules are named `pkg_rlc_panelS_*` — the gate's `LAYER_PREFIXES` declares
+  that exact prefix, and a `pkg_rlc_*.py` matching no prefix is unlayered and
+  fails outright.
+- **What a panel needed and could not import came down WITH it.**
+  `FREEZE_MENU_LABEL` / `UNFREEZE_MENU_LABEL` moved with the menu they label;
+  `RunTab` and `_tag_swatch_rows` with the notebook they belong to
+  (`_tag_swatch_rows` is the one results-pane renderer that is NOT a formatter
+  — it WRITES INTO a Tk Text — which is why it never went to
+  `pkg_rlc_report`); `StylePicker` and `MODE_PLACEHOLDERS` /
+  `LABEL_PLACEHOLDER` / `EDITOR_FIELD_CHARS` / `FROZEN_EDITOR_NOTE` / both
+  `MP_TABLE_HINT`s / both `MUTUAL_CURVE_HINT`s / `TEXT_DIALOG_NOTE` with the
+  form. All are re-exported from `pkg_rlc_gui`. `FROZEN_EDITOR_NOTE` went with
+  the EDITOR and not with its two former neighbours: it names the editor's
+  state, not a menu entry.
+- **`App`'s STATICMETHOD ALIAS BLOCK IS THE REMAINING DEBT, AND IT IS THE
+  CHECKLIST FOR THE MODEL PHASE.** `pkg_rlc_model` (L1) and `pkg_rlc_run` (L2)
+  are declared in the layer map and do not exist yet, so `TraceConfig`,
+  `FileEntry` and `RunSnapshot` are still L6 and the pure functions over them
+  cannot come down. Seven of those are carried on `App` as plain
+  `staticmethod(...)` aliases — `_duplicate_trace_config`,
+  `_freeze_trace_config`, `freeze_refusal`, `_snapshot_row`, `_snapshot_block`,
+  `_config_signature`, `_draw_signature` — so a panel reaches them through
+  the app it already holds. ALIASES, NOT WRAPPERS: `pkg_rlc_gui.X` and
+  `app.X` are the same object, so there is nothing that can disagree with the
+  module-level name every test imports. The one factory beside them is
+  `_make_file_entry`, which mirrors the `_make_default_trace` that was already
+  there. WHEN THAT BLOCK IS EMPTY, the panels import their model directly and
+  this bullet goes.
+- **`RunSnapshot` and `TraceConfig` survive in the panels only as unevaluated
+  annotations** (`from __future__ import annotations`). They are inert today
+  and will NameError the moment anything calls `get_type_hints` on those
+  modules. `_empty_run`, the one place a `RunSnapshot` is CONSTRUCTED, stayed
+  on `App` for that reason.
+- **THE FAILURE MODE THIS SPLIT HAS is a bare `self` where the App was meant**,
+  and it is invisible to the eye and mostly invisible to the tests. Five of
+  them were in the first draft: `dlg.transient(self)`, three window-refresh
+  calls (`refresh_attribution_windows`, `refresh_files_windows`,
+  `attribution_windows`) and one `refresh_attribution_windows(self,
+  rerender=True)`. Only the first raised; the other four silently did nothing.
+  Grep does not find them reliably (`(self)\b` never matches — there is no
+  word boundary after `)`), and neither does reading. THE CHECK IS AN AST
+  PASS: walk each panel module for a `Name` load of `self` that is not the
+  `value` of an `Attribute`, excluding the classes that really are widgets
+  (`StylePicker`). Run it after moving anything else into a panel. Its
+  companion is a `symtable` pass for free names, which is what catches a moved
+  body whose import did not come with it.
 
 ### One formatter, two spellings (the CLI and the results pane)
 
@@ -1519,6 +1636,89 @@ failure this repo has already had more than once.
   far file's ball at exactly 0) is visible as a fold count rather than as a
   zero. Both are `contributions_table` / `_fold_terms` behaviour, not this
   reference's, and changing either moves the reference.
+
+### The two attribution reports (`pkg_rlc_attrib_report.py`)
+
+One analysis, two surfaces. `tests/fixtures/cli_reference/` pins the terminal's
+and `tests/fixtures/attrib_reference/` pins the window's, both byte for byte.
+
+- **A SECTION RETURNS ITS LINES; ONE FUNCTION PRINTS THEM.** Every
+  `_attr_print_*` / `_cold_print_*` hands back `list[str]` and
+  `pkg_rlc_extractor._emit` is the only `print` on the path. Before this the
+  only way to see what the CLI says was to run it and capture fd 1, which is
+  also the only way a refactor of it could be checked.
+- **THE NAMES KEEP THEIR `_print` PREFIX AND THAT IS DELIBERATE.** They are
+  called by those names in the CLI, in `tests/_cli_capture.py`'s docstring and
+  in three design notes. Read `_attr_print_x` as "the lines section x would
+  print"; a rename is a separate, greppable change.
+- **THE PRINTED ORDER IS PART OF THE REPORT.** The bracket comes before the
+  ranking (`test_the_BRACKET_comes_before_the_RANKING` pins that pair on its
+  own), the sign convention comes before the first signed number, and
+  `--attribute` with `--cold-start` puts cold start LAST so the attribution
+  stays next to the `M` it explains. The drivers own the order; the sections
+  own their own text and neither knows about the other.
+- **`SIGN_CONVENTION_TEXT`, `COMPOSED_BASELINE_TEXT`, `Bracket.caveat` and
+  `ColdStart.blind_spot` are ONE STRING EACH and are never reflowed into a
+  formatter.** Every export carries them verbatim; that is the rule they exist
+  for and it survives the split untouched.
+- **WHAT THE TWO SURFACES SHARE IS THE DATA SHAPING, NEVER THE RENDERING, and
+  that is a measurement rather than a preference.** The window's strips CLIP at
+  a measured 48 characters at 150% / 720 px and 65 at 150% / 980 px against
+  this report's 95-column widest line, so the same sentence cannot serve both:
+  the badge must lead with its verdict and the report can afford a paragraph.
+  The blocks differ in CONTENT too — section 1 groups by provenance and prints
+  Z and M side by side with the share/quadrature pair, while
+  `contributions_table` folds a negligible tail, signs with U+2212, prefixes a
+  swatch and shows one quantity. **Do not unify a rendering; unify the step
+  underneath it.**
+- **`rank_map(dec)` is that step, and it was written twice.** "Which element
+  ranks where at this frequency" — sort the element terms by `|contribution|`,
+  number from 1, key on the element DESCRIPTION because a lumped element whose
+  admittance vanishes at one frequency is DROPPED there and an index would name
+  a different element in each column. Section 8 renders it as a column per
+  frequency with a `RANK IS NOT STABLE` paragraph; `stability_ranks` /
+  `stability_line` render the same maps as a one-line badge. Same for
+  `_attr_snap`, whose argmin `stability_ranks` had written out inline: two
+  surfaces landing on different grid points is the failure the snap exists to
+  prevent.
+- **`pkg_rlc_attrib_gui` no longer imports `pkg_rlc_extractor` from inside a
+  function.** That lazy import existed only to reach `_attr_ground_model` /
+  `_attr_zt` while dodging the cycle through `main()`. With the parser here the
+  import is at the top, and the window is left with exactly ONE deferred import
+  — `pkg_rlc_gui`, where the cycle is real.
+  `test_attrib_window.test_it_IS_the_CLI_parser_and_not_a_copy` still compares
+  `ag.parse_ground_model` against `pkg_rlc_extractor._attr_ground_model` and
+  still guards it: the re-export makes them the same object.
+- **KNOWN, NOT FIXED — the two surfaces sort an UNDEFINED delta to OPPOSITE
+  ENDS.** `_attr_print_sensitivity` keys
+  `(0 if isfinite else 1, -abs_delta …)`, so NaN sorts LAST, and its docstring
+  states the rule ("NaN is a missing measurement, not a small number", the same
+  rule `rank_coupling_pairs` follows). `pkg_rlc_attrib_gui.sensitivity_table`
+  keys `-abs_delta if isfinite else float("-inf")`, and `-inf` is the SMALLEST
+  key on an ascending sort — so NaN sorts FIRST, above the strongest real
+  effect. The window contradicts itself as well: `_fold_terms` uses `+inf` for
+  precisely this case and comments on why. Fix it from the window's side with
+  `attrib_reference` regenerated in the same commit; do not "align" the CLI,
+  whose spelling is the documented one.
+- **KNOWN, NOT FIXED — two `_e`, at two precisions.**
+  `pkg_rlc_attrib_report._e` writes `%.6e` and `pkg_rlc_attrib_gui._e` writes
+  `%.12e`, both putting a float from the same decomposition into a CSV. They
+  cannot share a module under one name, which is why the window's `_e` /
+  `CSV_FIELDS` / `csv_records` stayed in `pkg_rlc_attrib_gui`.
+- **KNOWN, NOT FIXED — two candidate grammars.** `--attribute-alt` splits on
+  COMMA (`R=0.5,L=1n`, via `_attr_series_impedance` and `y_series_rlc`); the
+  window's Candidates field splits on WHITESPACE (`R=0.5 L=1n`, via
+  `parse_candidate`, building `R + jwL + 1/(jwC)` directly). Both refuse a
+  token with no `=` for the same measured `R=5 m` reason, and the two
+  expressions are not obliged to agree at `omega == 0`.
+- **The window's own formatters could not move here, and matplotlib is why.**
+  `sweep_picture` / `si_tick` / `_si_formatter` / `sweep_caption` need
+  `matplotlib.ticker`, and this module is on the CLI's import path — moving
+  them would put matplotlib in the CLI and in `FAST_MODULES`. Everything above
+  them (`contributions_table`, `sensitivity_table`, `report_text`) could move
+  on the imports alone now that `_value_formatter` lives in `pkg_rlc_report`,
+  but it renders a block this report does not produce, so moving it would
+  co-locate rather than de-duplicate.
 
 ### The cold-start screen (`--cold-start`, CLI only)
 
