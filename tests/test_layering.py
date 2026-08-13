@@ -1,13 +1,13 @@
 """The import layering gate.
 
 This file is a FENCE, not a measurement.  It exists because the repo's import
-graph is currently held together by twelve `import pkg_rlc_gui` statements
+graph is currently held together by ten `import pkg_rlc_gui` statements
 hidden inside function bodies, whose only purpose is to dodge a cycle: a shared
 data model (`TraceConfig`) and a handful of colour constants live in the same
 module as the Tk `App`, so every panel that needs either has to reach UP into
 the frontend, and it can only do that after import time.  A later phase splits
 those out.  This file is what stops the dodge coming back afterwards, and what
-stops a THIRTEENTH one being added in the meantime.
+stops an ELEVENTH one being added in the meantime.
 
 Three properties are asserted:
 
@@ -130,15 +130,24 @@ HELP_MAX_LAYER = L1_MODEL
 # --------------------------------------------------------------------------
 # The dodges that exist today.
 #
-# Each of these is an `import pkg_rlc_gui` (or `pkg_rlc_extractor`) written
-# INSIDE a function body so it does not run at import time.  They are all the
-# same defect: `pkg_rlc_gui` holds `TraceConfig`, the colour palettes and the
-# App, so a panel that wants the data model has to reach up into the frontend.
+# Each of these is an `import pkg_rlc_gui` written INSIDE a function body so it
+# does not run at import time.  They are all the same defect: `pkg_rlc_gui`
+# holds `TraceConfig`, the colour palettes and the App, so a panel that wants
+# the data model has to reach up into the frontend.
 # The fix is to MOVE THE SYMBOL DOWN, never to add another lazy import.
+#
+# A fourth pair, `pkg_rlc_attrib_gui -> pkg_rlc_extractor` x2, was here until
+# the ground-model parser moved out of the CLI entry point.  The two lazy
+# imports sat inside `parse_ground_model` / `ground_model_zt`, which are thin
+# wrappers in the window; what they reached for -- `_attr_ground_model` and
+# `_attr_zt` -- now lives in `pkg_rlc_attrib_report` and is imported at the top
+# of the file like anything else.  (Both are still re-exported from
+# `pkg_rlc_extractor`, so `pkg_rlc_extractor._attr_zt` keeps resolving.)
+# That is what the removal half of this gate is for, and it is the shape every
+# later phase should take: MOVE THE SYMBOL DOWN, then delete the pair here.
 # --------------------------------------------------------------------------
 
 KNOWN_BACK_IMPORTS = frozenset({
-    ("pkg_rlc_attrib_gui", "pkg_rlc_extractor"),
     ("pkg_rlc_attrib_gui", "pkg_rlc_gui"),
     ("pkg_rlc_extractor", "pkg_rlc_gui"),
     ("pkg_rlc_files_gui", "pkg_rlc_gui"),
@@ -146,10 +155,9 @@ KNOWN_BACK_IMPORTS = frozenset({
 
 # How many statements per pair, so that removing SOME of a module's dodges is
 # visible here too.  Without this, `pkg_rlc_files_gui` could go from eight to
-# one and the pair set would not move.  Twelve statements in total, which is the
-# number CLAUDE.md's "12 function-level `import pkg_rlc_gui` statements" counts.
+# one and the pair set would not move.  Ten statements in total, which is the
+# number CLAUDE.md's "10 statements over 3 pairs" counts.
 KNOWN_BACK_IMPORT_COUNTS = {
-    ("pkg_rlc_attrib_gui", "pkg_rlc_extractor"): 2,
     ("pkg_rlc_attrib_gui", "pkg_rlc_gui"): 1,
     ("pkg_rlc_extractor", "pkg_rlc_gui"): 1,
     ("pkg_rlc_files_gui", "pkg_rlc_gui"): 8,

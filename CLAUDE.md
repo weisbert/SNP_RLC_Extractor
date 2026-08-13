@@ -267,21 +267,26 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
   `pkg_rlc_gui`.** `pkg_rlc_files_gui -> pkg_rlc_gui` x8,
   `pkg_rlc_attrib_gui -> pkg_rlc_gui` x1 (`_gui`), `pkg_rlc_extractor ->
   pkg_rlc_gui` x1 (`main`). The fourth pair —
-  `pkg_rlc_attrib_gui -> pkg_rlc_extractor` x2 (`parse_ground_model`,
-  `ground_model_zt`) — is GONE: it was a panel importing two pure functions out
-  of the CLI entry point, those two were L0/L3 material as recorded, and they
-  are now in `pkg_rlc_attrib_report`, which the window imports at the top of the
-  file like anything else. That leaves the remaining ten all pointing at the one
+  `pkg_rlc_attrib_gui -> pkg_rlc_extractor` x2 — is GONE: it was a panel
+  importing two pure functions out of the CLI entry point, those two were
+  L0/L3 material as recorded, and they are now in `pkg_rlc_attrib_report`,
+  which the window imports at the top of the file like anything else. **Name
+  the moved symbols precisely, because the two names are easy to swap:** what
+  moved is `_attr_ground_model` / `_attr_zt`; the lazy imports sat INSIDE
+  `parse_ground_model` / `ground_model_zt`, which are thin wrappers that never
+  left `pkg_rlc_attrib_gui`. Both moved symbols are still re-exported from
+  `pkg_rlc_extractor` (rule 2), so `pkg_rlc_extractor._attr_zt` keeps
+  resolving — verified against the live modules, not inferred from the diff. That leaves the remaining ten all pointing at the one
   cycle that is real. **The four new `pkg_rlc_panels_*` modules add NONE** — a
   panel may not import `pkg_rlc_gui` at module level or inside a function, and
   the prefix is declared in `LAYER_PREFIXES` so an unlayered `pkg_rlc_*.py`
   still fails outright.
-  **OPEN AS OF THIS WAVE:** `KNOWN_BACK_IMPORTS` /
-  `KNOWN_BACK_IMPORT_COUNTS` in `tests/test_layering.py` still declare the
-  removed pair, so both halves of `TestTheBackImportsAreExactlyKnown` are RED.
-  That is the gate working exactly as designed — *"REMOVING one also fails until
-  the same commit updates the declaration"* — and the fix is to delete that pair
-  from both declarations, nothing else.
+  The removal was CLOSED by deleting that pair from `KNOWN_BACK_IMPORTS` and
+  `KNOWN_BACK_IMPORT_COUNTS`, which is the only edit to a test file the whole
+  wave made — and it is the gate working exactly as designed
+  (*"REMOVING one also fails until the same commit updates the declaration"*).
+  Re-measured off the live scan after the deletion: **10 statements over 3
+  pairs**, matching the declaration exactly, over 23 scanned source files.
 - **A CLASS-BODY import counts as module-level; only a `def` body defers.**
   An import written in a class body runs at import time, so it is part of the
   real graph and cannot be a dodge. Both cases are pinned.
