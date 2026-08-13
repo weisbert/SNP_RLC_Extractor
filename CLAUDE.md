@@ -3,12 +3,17 @@
 Conventions for Claude Code sessions on this repo. The authoritative spec is `CLAUDE_CODE_PROMPT.md`; the user docs are `README.md` and `docs/theory.md`.
 
 **How the tree got its current shape:** `docs/REFACTOR_REPORT.md` is the account
-of the 2026-08-13 layering refactor — the before/after line counts, the three
-modules that were planned and are not here (`pkg_rlc_model`, `pkg_rlc_session`,
-`pkg_rlc_run`), the seven places the CLI and the GUI told users different things
-about the same data (one fixed, six open), and what is still owed. Read it
-before starting anything that moves a symbol between modules; the sections
-below are the rules, that file is the state.
+of the 2026-08-13 layering refactor — the before/after line counts, the places
+the CLI and the GUI told users different things about the same data (one fixed,
+six open), and what is still owed. Read it before starting anything that moves a
+symbol between modules; the sections below are the rules, that file is the state.
+**Two things in it are out of date, deliberately — it is an account of that
+night, not a live document.** `pkg_rlc_model` is no longer "reverted,
+recoverable from history": the three reverts were reverted and the module was
+finished, so it holds the data model, the frequency snap and the whole run
+record. `pkg_rlc_session` and `pkg_rlc_run` are still absent, and only
+`pkg_rlc_run` is still blocked — on the L3/L4 symbols listed under "The run
+module", not on the model.
 
 ## Project purpose
 
@@ -29,9 +34,9 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `pkg_rlc_attrib_gui.py` | **The Attribution window** (`AttributionWindow`, `open_attribution_window`, `ATTRIB_MENU_LABEL`, `attribution_refusal`, `refresh_attribution_windows`, `attribution_session_state` / `apply_attribution_session_state`) plus the pure formatters it is testable through with no display (`render_table` / `Column` / `TableText`, `contributions_table`, `sensitivity_table`, `detail_lines`, `sweep_caption`, `reconciliation_verdict` / `reconciliation_line`, `provenance_lines`, `staleness_text`, `stability_line`, `report_text`, `csv_records`, `signed_str`, `parse_candidate`). A modeless `Toplevel` over `pkg_rlc_attrib`; `pkg_rlc_gui.py` holds only the Analyze-menu entry, the Traces right-click entry, the Results-pane pointer line and the refresh hooks. It is a separate module because `pkg_rlc_gui.py` was already 7000+ lines; `pkg_rlc_gui` imports it, and **it now imports NOTHING back**. The `_gui()` shim and its lazy `import pkg_rlc_gui` are DELETED: `_config_signature` is `pkg_rlc_model`'s, `_trace_role_rows` / the three port-field scopers / `trace_is_composed` are `pkg_rlc_validate`'s, `_value_formatter` and `LOG_WARN` are `pkg_rlc_report`'s and the palette is `pkg_rlc_widgets`', all of them below this file and all imported at the top. `spec_signature` survives as the one-line pass-through that keeps the ONE-definition promise visible. The earlier `pkg_rlc_extractor` pair went the same way when the ground-model grammar moved to `pkg_rlc_attrib_report`. **This module has no deferred imports left.** |
 | `pkg_rlc_attrib_report.py` | **The attribution report as TEXT.** The thirteen `_attr_print_*` / `_cold_print_*` sections `pkg_rlc_extractor.py` used to print, moved whole and RETURNING `list[str]`; the CLI's `_emit` is the only thing that prints them again, which is what lets `tests/fixtures/cli_reference/` pin the surface with no stream to capture. Also the CLI's own SPELLING of the shared formatters (`_trunc`'s `~` rather than U+2026, `_fmt_complex`'s `a + jb` rather than the pane's `a+bj`, `_table_lines`, `_attr_wrap`, `_attr_section`), the ranked-section caps (`ATTR_RANK_ROWS` / `ATTR_SWEEP_GROUPS` / `ATTR_PAIR_POOL` / `ATTR_GROUP_ROWS` / `COLD_RANK_ROWS` / `COLD_PAIR_ROWS` / `COLD_MIRROR_ROWS` / `COLD_QUANTITY`), the two CSV RECORD shapers (`_ATTR_CSV_FIELDS` / `_attr_row` / `_COLD_CSV_FIELDS` / `_cold_row` — a record is data shaping; the WRITERS stay in the CLI with the path and the flags), and the three things the CLI and the Attribution window genuinely share: the ground-model grammar (`_attr_series_impedance` / `_attr_alternative` / `_attr_ground_model` / `_attr_zt`), the grid snap (`_attr_snap`) and `rank_map`. Imports `pkg_rlc_attrib`, `pkg_rlc_core` and `pkg_rlc_report` and nothing else — **no tkinter and no matplotlib**, because this module is on the CLI's import path and `test_attrib_cli*` are in `FAST_MODULES` on exactly that property. `pkg_rlc_extractor` re-exports every symbol it lost. |
 | `pkg_rlc_files_gui.py`  | **Which FILES a trace is made of** (round 3): the `Files in this trace…` window (`FilePairWindow`, `open_files_window`, `FILES_MENU_LABEL`, `files_refusal`, `refresh_files_windows`, `slots_of` / `FileSlot`, `spec_problems`), the port-cell scope rules (`render_port_cell` / `cell_scope` / `cell_is_foreign` / `port_choices` / `resolve_cell`, `ALIAS_MAX_CHARS`, `PORT_CELL_CHARS`) and the GUI rendering of the reference-node check (`reference_checks_of`, `reference_strip_text`, `reference_report_lines`, `reference_provenance`, `REFERENCE_HEADLINE`). Same split as `pkg_rlc_attrib_gui` against `pkg_rlc_attrib`: `pkg_rlc_compose` does every piece of arithmetic and this is presentation, budget and refusal. Both `pkg_rlc_gui` and `pkg_rlc_attrib_gui` import it at module level, and **it imports `pkg_rlc_gui` NOT AT ALL** — the eight lazy `import pkg_rlc_gui` statements it used to carry inside function bodies are gone, replaced by ordinary top-of-file imports of `pkg_rlc_model` / `pkg_rlc_validate` / `pkg_rlc_report` / `pkg_rlc_widgets`, all of which sit below it. Its own `trace_file_labels` still DELEGATES to the live definition (now `pkg_rlc_validate`'s, bound as `_live_trace_file_labels`) and still falls back to a local walk; `TestFileListsAgree` still pins the two against each other. |
-| `pkg_rlc_model.py`      | **The shared data model every layer above passes around** (L1): `FileEntry`; `TraceConfig` with `migrate_legacy_mode` / `migrate_legacy_mports` / `migrate_legacy_custom_text`; `SolveNetwork` / `_composed_solve_network`; `_duplicate_trace_config`; `_config_signature` / `_draw_signature`; and `_SIGNATURE_FIELDS` / `trace_signature_fields` / `run_signatures`. It exists because all of that used to sit in the same file as the Tk `App`, so every panel and every window that needed the data model had to reach UP into the frontend — and the only way to do that without a cycle was an `import pkg_rlc_gui` inside a function body. **There were ten; nine are gone and this module is why.** Imports `pkg_rlc_core` and `pkg_rlc_validate` and nothing else: no Tk, no matplotlib, no `App`. A COLOUR is not part of the data model and lives in `pkg_rlc_widgets`; a RENDERING of it is `pkg_rlc_report`'s. Everything here is RE-EXPORTED from `pkg_rlc_gui`, so `pkg_rlc_gui.TraceConfig` and friends keep resolving for every call site and all 45 test modules. |
+| `pkg_rlc_model.py`      | **The shared data model every layer above passes around** (L1): `FileEntry`; `TraceConfig` with `migrate_legacy_mode` / `migrate_legacy_mports` / `migrate_legacy_custom_text`; `SolveNetwork` / `_composed_solve_network`; `_duplicate_trace_config`; `_config_signature` / `_draw_signature`; `_SIGNATURE_FIELDS` / `trace_signature_fields` / `run_signatures`; the **frequency snap** (`FreqSnap`, `freq_grid_step`, `snap_to_grid`, `combine_freq_snaps` and the `FREQ_EXACT_FRAC` / `FREQ_EXACT_REL` / `FREQ_UNIFORM_TOL` tolerances — where a measurement LANDED is a fact about the measurement, and `marker_freq_text`, which is the rendering of it, stayed in `pkg_rlc_report`); and the whole **run record** (`RowSnapshot` / `CouplingSnapshot` / `FitSnapshot` / `RunSnapshot`, `_snapshot_files`, `_snapshot_reference` / `_snapshot_row` / `_snapshot_block` / `_snapshot_fit`), which sits here because a record of one Calculate is the data model with the live trace resolved out of it. The three builders take a `provenance=` CALLABLE so the L5 reference-node render can be injected without this file naming an L5 module — see "How the run record got its home". It exists because all of that used to sit in the same file as the Tk `App`, so every panel and every window that needed the data model had to reach UP into the frontend — and the only way to do that without a cycle was an `import pkg_rlc_gui` inside a function body. **There were ten; nine are gone and this module is why.** Imports `pkg_rlc_core` and `pkg_rlc_validate` and nothing else: no Tk, no matplotlib, no `App`. A COLOUR is not part of the data model and lives in `pkg_rlc_widgets`; a RENDERING of it is `pkg_rlc_report`'s. Everything here is RE-EXPORTED from `pkg_rlc_gui`, so `pkg_rlc_gui.TraceConfig` and friends keep resolving for every call site and all 45 test modules. |
 | `pkg_rlc_validate.py`   | **What a spec SAYS, what it will DO, and what is wrong with it** (L1, moved down from L2 when `pkg_rlc_model` landed — `TraceConfig.port_descriptor()` is one call into it, `info_str()` counts the file set through it, all three legacy migrations use it and `_config_signature` ends on it, so the model imports this and this therefore has to sit at or below the model; it does so honestly, importing only L0 and duck-typing the trace rather than importing it, which is the same two-peers-in-one-layer case as `pkg_rlc_attrib` -> `pkg_rlc_core`). The file set and the composed port namespace (`trace_file_labels` / `trace_file_aliases` / `trace_is_composed` / `trace_file_legend` / `trace_file_scope`, `compose_spec_problems`, `ComposeSpecError`, `_scope_port_field` / `_scope_dsl_text` / `_scope_conn_rows` / `_scope_mport_rows`, `_field_has_tag`, `scope_echo_messages`, `_collect_nets_safe`, `_check_bare_ports`, `_namespace_network`); what the spec says (`_port_descriptor` and the `_fmt_*` renderers under it, `_port_overview_text` / `_bucket_counts`, `_import_dsl_text` / `_dsl_meaning` / `_ordering_diff_summary`, `_scan_count`); and what is wrong with it (`_VMsg`, the `V_WRONG_NUMBER` / `V_NO_RESULT` / `V_ROW_INERT` / `V_OK` tiers, `_validation_report` / `_validation_messages`, `_measured_port_messages`, `_probe_ground_messages`, `_rlc_echo`, `_extra_lines_indicator`, `_trace_role_rows`, `_role_warnings` and the `WARN_*` texts, `_roles_header`, `_append_port_spec`, `_validation_strip_text`, `_footer_strip_text`). Imports `pkg_rlc_core` and `pkg_rlc_compose` ONLY. **Every entry point is pure and NONE may raise** — the editor strips call them from inside Tk variable traces, once per keystroke, where a raised exception reaches no handler we control and the GUI carries on showing a stale verdict. A `TraceConfig` is read by duck typing and never imported. |
-| `pkg_rlc_report.py`     | **Turning a finished run into TEXT** (L3). The three results views and every formatter under them (`_format_results_table`, `_format_coupling_block`, `_format_summary_self` / `_format_summary_coupling`, `_format_compare` and `_wrap_name` / `_compare_head_cells` / `_compare_groups` / `_delta_cell`, `_render_columns`, `_value_formatter` / `_fmt_plain` / `_fmt_aligned` / `_aligned_prefix_for`, `_sign_flag`, `_trunc_str`, `_file_alias_map` / `_file_cell` / `_row_file_labels` / `_snapshot_file_legend`, `_format_z_matrix`, `rank_coupling_pairs` and `COUPLING_FLOOR_DB` / `COUPLING_LEGEND_LINES`), the tab labels and the run-to-run diff (`log_tab_label`, `run_tab_label`, `run_headline`, `run_stale_banner`, `keep_button_label`, `describe_run_change`, `run_change_line`, the `LOG_*` and `RUN_*` constants), the view and width budgets (`RESULTS_VIEWS` / `VIEW_*`, `RESULTS_PANE_COLS`, `COMPARE_*`, `SUMMARY_LABEL_MAX`, `RESULTS_SWATCH`), and the **frequency provenance** the reports print through (`FreqSnap`, `freq_grid_step`, `snap_to_grid`, `combine_freq_snaps`, `marker_freq_text`, `_table_freq_note`, `run_freq_snap` / `run_file_freq`, the `FREQ_*` constants). Imports `pkg_rlc_core` only. **This module is what `tests/fixtures/render_reference.json` pins byte-for-byte**, which is exactly why it must stay Tk-free: a formatter that reaches a widget cannot be captured with no display. |
+| `pkg_rlc_report.py`     | **Turning a finished run into TEXT** (L3). The three results views and every formatter under them (`_format_results_table`, `_format_coupling_block`, `_format_summary_self` / `_format_summary_coupling`, `_format_compare` and `_wrap_name` / `_compare_head_cells` / `_compare_groups` / `_delta_cell`, `_render_columns`, `_value_formatter` / `_fmt_plain` / `_fmt_aligned` / `_aligned_prefix_for`, `_sign_flag`, `_trunc_str`, `_file_alias_map` / `_file_cell` / `_row_file_labels` / `_snapshot_file_legend`, `_format_z_matrix`, `rank_coupling_pairs` and `COUPLING_FLOOR_DB` / `COUPLING_LEGEND_LINES`), the tab labels and the run-to-run diff (`log_tab_label`, `run_tab_label`, `run_headline`, `run_stale_banner`, `keep_button_label`, `describe_run_change`, `run_change_line`, the `LOG_*` and `RUN_*` constants), the view and width budgets (`RESULTS_VIEWS` / `VIEW_*`, `RESULTS_PANE_COLS`, `COMPARE_*`, `SUMMARY_LABEL_MAX`, `RESULTS_SWATCH`), and the **frequency provenance** the reports print through — `marker_freq_text` (THE renderer: it takes a format string and returns a sentence), `FREQ_WIDE_FMT`, `_table_freq_note` and `run_freq_snap` / `run_file_freq`. **`FreqSnap` and the three functions that BUILD one (`freq_grid_step` / `snap_to_grid` / `combine_freq_snaps`, with their tolerances) are `pkg_rlc_model`'s** — where a measurement landed is a fact about it, not a rendering of it, and a run record holds one — and are re-exported from here, so `from pkg_rlc_report import FreqSnap` keeps resolving. Imports `pkg_rlc_core` and `pkg_rlc_model` only. **This module is what `tests/fixtures/render_reference.json` pins byte-for-byte**, which is exactly why it must stay Tk-free: a formatter that reaches a widget cannot be captured with no display. |
 | `pkg_rlc_csv.py`        | **The CSV export blocks** (L3): `_write_coupling_csv`, `write_coupling_table` and `_coupling_k_array`. Beside `pkg_rlc_report` rather than inside it because the two answer different questions — the results pane is a measured 144-column budget with one SI prefix per column, the CSV is every value at full precision under a header a spreadsheet can read. **`write_coupling_table` is the ONE copy of the coupling table** and both front ends write their own comment block above it: the GUI names the measurement ports, the CLI names the file, the port map and the spec that was run. `pkg_rlc_extractor` used to carry a second, independent implementation of the same table under the same name; it is gone. |
 | `pkg_rlc_conntable.py`  | **The connections table's SHAPE, and the RowTable vocabulary it is spoken in** (L3): `conn_table_layout` / `_conn_row_cells`, `CONN_TABLE_COLUMNS` and its measured column budget, `_join_short_group` / `conn_cells_from_row` / `conn_row_from_cells`, `CONN_ON_GLYPH` / `CONN_OFF_GLYPH`, `CONN_NET_KEY` / `CONN_NET_SUPPORTED`, the `_CONN_COL_*` grid columns, `CONN_KIND_HINTS` / `conn_hint_text` / `CONN_TABLE_HINT*` / `HINT_SHORT_CHARS` — **and `ColumnSpec` / `TableLayout` / `identity_layout`**. Those three are here rather than beside `RowTable` because they are the INTERFACE between the layout rules at this layer and the widget one layer above, and the layer map puts this module BELOW `pkg_rlc_widgets`: a shared type has to sit at the lower of its two users or the import runs upward. Imports `pkg_rlc_core` only. |
 | `pkg_rlc_widgets.py`    | **The generic Tk widgets, which know nothing about this app** (L4): `PlaceholderEntry`, `PlaceholderText`, `PLACEHOLDER_FG`, `RowTable`, `_CollapsibleHint`, `_tk_dash`, `editor_scroll_fraction`, **`ReflowRow` / `reflow_rows`, which used to live in `pkg_rlc_plot`**, and **THE WHOLE PALETTE** — `PLACEHOLDER_FG` was always here and `WARN_FG` / `PORT_ROLE_FG` / the `_fixed_map_filter` Treeview workaround have joined it from `pkg_rlc_gui`. One palette in one module was the point: while two of the three lived beside the `App`, a panel that wanted the warning colour had to reach UP into the frontend, and three of the ten lazy `import pkg_rlc_gui` statements were nothing but a colour lookup. They are colours, not data, so they did NOT go down to `pkg_rlc_model` with the trace — the layering test's own advice is that colour constants belong at L3/L4. All four are re-exported from `pkg_rlc_gui`. It imports six names from `pkg_rlc_conntable`, seven `ROLE_*` names from `pkg_rlc_core` (the keys `PORT_ROLE_FG` is built on — a second spelling of those is how a bucket comes to have no colour and be painted the default one in silence), and nothing else from this repo. `StylePicker` is deliberately NOT here — see the two invariants below. |
@@ -40,7 +45,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `pkg_rlc_panels_traces.py` | **The Traces section** (L5): `TracesPanel` — the frame, its four buttons, the Listbox, the right-click menu, add / remove / duplicate / toggle / freeze / unfreeze, `_refresh_trace_list`, and `FREEZE_MENU_LABEL` / `UNFREEZE_MENU_LABEL`, which moved with the menu they label. |
 | `pkg_rlc_panels_results.py` | **The Results pane** (L5): `ResultsPanel` — the header strip (View / Units / Runs / Keep), the notebook, the Log tab and its badge, the run pages with keep / evict, both menus, `_run_report_segments` and the view builders under it, plus `RunTab` and `_tag_swatch_rows`. `_tag_swatch_rows` is the one results-pane renderer that is NOT a formatter — it WRITES INTO a Tk `Text` — which is why it never went to `pkg_rlc_report`. |
 | `pkg_rlc_panels_editor.py` | **The editor** (L5): `EditorPanel` — the pinned footer, the whole mode-aware form, both `RowTable`s, both scrollbars and `_apply_editor_scrollbars`, the scrollregion, `_update_mode_visibility`, the strips, the footer route, the text hatch, the auto-apply sync chain — plus `StylePicker` and the editor's own constants (`MODE_PLACEHOLDERS` / `LABEL_PLACEHOLDER` / `EDITOR_FIELD_CHARS` / `FROZEN_EDITOR_NOTE` / both `MP_TABLE_HINT`s / both `MUTUAL_CURVE_HINT`s / `TEXT_DIALOG_NOTE`). `FROZEN_EDITOR_NOTE` went with the EDITOR and not with its two former neighbours on the Traces menu: it names the editor's state, not a menu entry. |
-| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), the frozen-trace snapshot (`_freeze_trace_config`, `freeze_label`, `freeze_refusal`, the Traces-list right-click menu), the File menu and the JSON session format (`session_to_dict` / `session_from_dict` / `SessionError` / `autosave_path`), the results pane (a `ttk.Notebook` whose tab 0 is the Log, with `log_tab_label` / `_append_result(severity)` / `_select_results_tab`), and the immutable run record (`RowSnapshot` / `CouplingSnapshot` / `FitSnapshot` / `RunSnapshot`, `_snapshot_row` / `_snapshot_block` / `_snapshot_fit`) that `_render_results` consumes instead of live traces, and the THREE RESULTS VIEWS (`RESULTS_VIEWS` / `VIEW_DETAIL` / `VIEW_SUMMARY` / `VIEW_COMPARE`, the `View:` combobox on the `ReflowRow` header, `_on_results_view_changed` / `_rerender_every_page`, and the pure formatters `_format_summary_self` / `_format_summary_coupling` / `_format_compare` / `_compare_groups` / `_delta_cell` / `_render_columns` / `_file_alias_map`) that `_run_report_segments` dispatches over, above the shared `_footer_segments`. Re-exports the DSL helpers it no longer defines. **Six modules have been split out of it** — `pkg_rlc_conntable`, `pkg_rlc_widgets`, `pkg_rlc_report`, `pkg_rlc_csv`, `pkg_rlc_validate` and `pkg_rlc_model` (`pkg_rlc_session` is still declared-and-absent). `FileEntry`, `TraceConfig`, `SolveNetwork`, `_duplicate_trace_config` and the two signature functions are `pkg_rlc_model`'s now, and `WARN_FG` / `PORT_ROLE_FG` / `_fixed_map_filter` are `pkg_rlc_widgets`'; the four snapshot types and `freeze_label` / `freeze_refusal` / `_freeze_trace_config` are still here (see "What the run record is still waiting on"). Every moved symbol is RE-EXPORTED at the top of this file, the same precedent the Mode 5 DSL helpers set, so `from pkg_rlc_gui import <anything>` keeps resolving for all 23 test modules that import it and every call site. **The four SECTIONS of the window have since gone too** — `pkg_rlc_panels_files`, `pkg_rlc_panels_traces`, `pkg_rlc_panels_results`, `pkg_rlc_panels_editor` — leaving `App` with `__init__`, the wheel router, `_build_ui`, the menubar, the PanedWindows, the session methods, Calculate, and the wiring between panels; the widgets are ALIASED back onto `App` and every moved method keeps a one-line delegator, which is the re-export rule one level down (see "The four panels of the main window"). The file is 4004 lines, down from 10954. |
+| `pkg_rlc_gui.py`        | Tkinter GUI: file management, trace management, mode-aware editor with `PlaceholderEntry` hints and the `RowTable` / `ColumnSpec` row editor (measurement ports in modes 5+6, connections in mode 5), the `StylePicker` colour/linestyle palette, auto-apply (`_schedule_editor_sync` / `_flush_editor_sync`), per-trace plot visibility (`_replot_from_cache`), the port-overview / validation strips, the "Edit as text…" hatch (`_import_dsl_text`, `_editor_dsl_text`), the frozen-trace snapshot (`_freeze_trace_config`, `freeze_label`, `freeze_refusal`, the Traces-list right-click menu), the File menu and the JSON session format (`session_to_dict` / `session_from_dict` / `SessionError` / `autosave_path`), the results pane (a `ttk.Notebook` whose tab 0 is the Log, with `log_tab_label` / `_append_result(severity)` / `_select_results_tab`), and the immutable run record (`RowSnapshot` / `CouplingSnapshot` / `FitSnapshot` / `RunSnapshot`, `_snapshot_row` / `_snapshot_block` / `_snapshot_fit`) that `_render_results` consumes instead of live traces, and the THREE RESULTS VIEWS (`RESULTS_VIEWS` / `VIEW_DETAIL` / `VIEW_SUMMARY` / `VIEW_COMPARE`, the `View:` combobox on the `ReflowRow` header, `_on_results_view_changed` / `_rerender_every_page`, and the pure formatters `_format_summary_self` / `_format_summary_coupling` / `_format_compare` / `_compare_groups` / `_delta_cell` / `_render_columns` / `_file_alias_map`) that `_run_report_segments` dispatches over, above the shared `_footer_segments`. Re-exports the DSL helpers it no longer defines. **Six modules have been split out of it** — `pkg_rlc_conntable`, `pkg_rlc_widgets`, `pkg_rlc_report`, `pkg_rlc_csv`, `pkg_rlc_validate` and `pkg_rlc_model` (`pkg_rlc_session` is still declared-and-absent). `FileEntry`, `TraceConfig`, `SolveNetwork`, `_duplicate_trace_config`, the two signature functions **and the whole run record** (`RowSnapshot` / `CouplingSnapshot` / `FitSnapshot` / `RunSnapshot` and the `_snapshot_*` builders) are `pkg_rlc_model`'s now, and `WARN_FG` / `PORT_ROLE_FG` / `_fixed_map_filter` are `pkg_rlc_widgets`'. What is still defined here of that group is THREE WRAPPERS — `_snapshot_reference` / `_snapshot_row` / `_snapshot_block` — which do nothing but supply `reference_provenance` to the model's builders, because that render is `pkg_rlc_files_gui`'s at L5 and must happen exactly once, at snapshot time (see "How the run record got its home"). `freeze_label` / `freeze_refusal` / `_freeze_trace_config` are still here too. Every moved symbol is RE-EXPORTED at the top of this file, the same precedent the Mode 5 DSL helpers set, so `from pkg_rlc_gui import <anything>` keeps resolving for all 23 test modules that import it and every call site. **The four SECTIONS of the window have since gone too** — `pkg_rlc_panels_files`, `pkg_rlc_panels_traces`, `pkg_rlc_panels_results`, `pkg_rlc_panels_editor` — leaving `App` with `__init__`, the wheel router, `_build_ui`, the menubar, the PanedWindows, the session methods, Calculate, and the wiring between panels; the widgets are ALIASED back onto `App` and every moved method keeps a one-line delegator, which is the re-export rule one level down (see "The four panels of the main window"). The file is 4004 lines, down from 10954. |
 | `pkg_rlc_gui.py` (cont.) | Plus the **Ports & Roles** window (`PortRolesWindow`, `_trace_role_rows`, `_role_warnings`, `_roles_header`, `apply_ports_as`), which is what `Show Ports` now opens; and the **Attribution hooks** — the `Analyze` cascade, the third Traces right-click entry, `_on_attribution`, the Results-pane pointer line, and the `refresh_attribution_windows` calls. The window itself is `pkg_rlc_attrib_gui.py`. Plus the **multi-file schema and engine** (round 3): `TraceConfig.file_labels` and its helpers (`trace_file_labels` / `trace_file_aliases` / `trace_is_composed` / `trace_file_legend` / `trace_file_scope` / `compose_spec_problems`), the port-field scopers (`_scope_port_field` / `_scope_dsl_text` / `_scope_conn_rows` / `_scope_mport_rows`, `ComposeSpecError`), `SolveNetwork` / `_trace_network` / `_cached_trace_network` / `_namespace_network` / `_trace_namespace`, `_reference_checks`, `set_trace_home_file`, and the `Files in this trace…` entries on the Analyze cascade and on BOTH right-click menus. |
 | `pkg_rlc_help.py`       | In-app Help window content (`HELP_DIR`, `_help_text`, the ten `HELP_*` names, `HELP_TOPICS`, `HelpWindow`, `HELP_WINDOW_WIDTH`) — **133 lines: the 2295 lines of prose are ten plain-text files under `docs/help/`, read at import time.** See "The Help window's prose lives in `docs/help/`". One tab per mode + syntax + save/load + worked examples. **Ten tabs, and there is no room for an eleventh** — port attribution, the Attribution window and the cold-start screen all live at the bottom of `Mode 6 (Coupling)`, cross-referenced from `Overview`, `Input syntax` and `Worked examples`. See the measurement under "Port attribution". |
 | `pkg_rlc_extractor.py`  | Entry point: dispatches GUI vs CLI from argv. CLI `--mode gnd \| p2p \| coupling`, `--mport` repeatable. **The attribution and cold-start report sections are no longer here** — they are `pkg_rlc_attrib_report`, returning `list[str]`, and what is left on this side is the argparser, the flag refusals, the CSV writers (path and flags), the drivers that decide the printed ORDER, and `_emit`, the one `print` on the path. Every moved symbol is re-exported. |
@@ -63,7 +68,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `tests/run_parallel.py` | **The test runner to use.** Class-sharded, longest-first. Measured when it was written: `python -m unittest discover -s tests` 293 s against `python tests/run_parallel.py` 108 s over the same 906 tests (2.7x). **The current totals live in "How to run tests" at the bottom of this file and nowhere else** — one copy, because two of them drift; `-m <substr>` picks modules by name. Sharded by CLASS not module because `test_run_history` alone is 86 s of the serial 293. Exit code 0 means every shard passed. NOT auto-discovered (no `test_` prefix). |
 | `tests/test_freq_label.py` | Frequency-label honesty: the marker frequency a report prints says where the numbers came from. Both extractors snap to the nearest grid point via `argmin`, and the default 0.1 GHz marker on `diff_pair_4port.s4p` lands on 0.10099 GHz — every default session in the repo snapped and said nothing. `TestTheCommandLineSaysItToo` is the CLI's half (added later — the GUI was fixed first and the terminal kept its own format string for months): the load-bearing test there is `test_the_two_surfaces_render_ONE_snap_identically`, which builds the pane's Z-matrix line and the terminal's from the SAME `FreqSnap` and compares them character for character, because "each surface says something reasonable" is the state this file exists to end. Mutation-checked: reverting either printer, or narrowing the CLI's precision back to `{:.4g}`, turns it red. |
 | `tests/test_large_files.py` | How big a file the tool will read and what it says when it will not: the escalating port-count sniff past `MAX_SNIFF_NPORTS` to `SNIFF_HARD_CAP`, the refusal as a `TouchstoneParseError`, and the memory envelope. |
-| `tests/`                | `unittest`-based suite (2522 tests run by `tests/run_parallel.py` at the time of writing, covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, named merged nodes, the `RowTable` widget and its per-kind layout, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, port attribution and its cross-check against the engine, the Attribution window, the cold-start screen, several files composed into one network and the composed-network attribution baseline, the bit-exact golden regression, the CLI's printed output and the Attribution window's text pinned byte for byte, the import-layering gate, and `reduce_snp`). |
+| `tests/`                | `unittest`-based suite (the current total is in "How to run tests" at the bottom of this file, which is the ONE copy of it; covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, named merged nodes, the `RowTable` widget and its per-kind layout, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, port attribution and its cross-check against the engine, the Attribution window, the cold-start screen, several files composed into one network and the composed-network attribution baseline, the bit-exact golden regression, the CLI's printed output and the Attribution window's text pinned byte for byte, the import-layering gate, and `reduce_snp`). |
 | `tests/test_editor_autoapply.py` | The commit-step removal: WHEN the editor writes into a `TraceConfig` and WHICH one it lands on (the deferral, the object capture, the flush-before-selection-change), the style picker's storage / reachability / honesty about multi-curve traces, and that hiding a curve neither recomputes it nor destroys the cursors. Every guard here was mutation-checked. |
 | `tests/test_connection_rows.py` | Row model: rows<->DSL round trip, the equivalence tests pinning that rows reproduce `build_terminations_mode1/2/3` *including* the ground-wins overlap the golden reference cannot see, and the reordering hazard that forces `_import_dsl_text`'s verbatim fallback. |
 | `tests/test_row_table.py` | Drives real Tk widgets (skips cleanly with no display): `RowTable` add/delete/get/set/defaults/notification, the `mp1_*`->`mports` and `custom_text`->tables migrations, and that Duplicate shares neither row list. |
@@ -421,11 +426,16 @@ is 4407 lines.
 - **`App`'s STATICMETHOD ALIAS BLOCK IS THE REMAINING DEBT, AND IT IS THE
   CHECKLIST FOR THE MODEL PHASE.** `pkg_rlc_model` (L1) now EXISTS and holds
   `TraceConfig`, `FileEntry`, `SolveNetwork`, `_duplicate_trace_config`,
-  `_config_signature` / `_draw_signature` and the signature-field renderers.
-  What is still L6 is the RUN RECORD — `RowSnapshot` / `CouplingSnapshot` /
-  `FitSnapshot` / `RunSnapshot` and their builders — and `pkg_rlc_run` (L2) does
-  not exist; see "What the run record is still waiting on" below for the one
-  design question that blocks it. Seven pure functions are carried on `App` as
+  `_config_signature` / `_draw_signature`, the signature-field renderers, the
+  frequency snap and the RUN RECORD (`RowSnapshot` / `CouplingSnapshot` /
+  `FitSnapshot` / `RunSnapshot` and their builders). `pkg_rlc_run` (L2) still
+  does not exist, and what blocks it is no longer a data-model question — see
+  "The run module" above. **The alias block itself has not shrunk**, and that
+  is on purpose: `app._snapshot_row` / `app._snapshot_block` must keep resolving
+  to `pkg_rlc_gui`'s WRAPPERS, which are what supply `reference_provenance`, so
+  a panel importing `pkg_rlc_model._snapshot_row` directly would silently lose
+  the reference-node verdict off every row. Emptying the block is a job for
+  whoever moves that render, not a tidy-up. Seven pure functions are carried on `App` as
   plain `staticmethod(...)` aliases — `_duplicate_trace_config`,
   `_freeze_trace_config`, `freeze_refusal`, `_snapshot_row`, `_snapshot_block`,
   `_config_signature`, `_draw_signature` — so a panel reaches them through
@@ -565,58 +575,81 @@ the finding is written here so the next session does not rediscover it.
   assumed: a two-line `pkg_rlc_run.py` importing `pkg_rlc_report` and
   `pkg_rlc_plot` turns `test_no_module_imports_from_a_higher_layer` red naming
   both, with its own message — *"MOVE THE SYMBOL, not the import"*.
-- **The model types are the structural half, and they have no home yet.** The
-  body constructs `RowSnapshot` / `CouplingSnapshot` / `FitSnapshot` /
-  `RunSnapshot` and `SolveNetwork`, and reads `TraceConfig` — all in
-  `pkg_rlc_gui` at L6. Relocating them into `pkg_rlc_run` does not rescue the
-  phase, because `RunSnapshot`'s own construction path reaches L3 (the
-  `FreqSnap` objects `_snapshot_block(freq=…)` stores come from `snap_to_grid`)
-  and L5 (`reference_provenance`). Naming the module `pkg_rlc_panels_run` to
-  buy L5 fails on the same L6 types.
-- **P3A's PREREQUISITE IS HALF DONE.** `pkg_rlc_model` (L1) exists and carries
-  `TraceConfig` (+ its three `migrate_legacy_*`), `FileEntry`, `SolveNetwork` /
+- **The model types were the structural half and they now HAVE a home**, which
+  is what unblocks the rest. The body constructs `RowSnapshot` /
+  `CouplingSnapshot` / `FitSnapshot` / `RunSnapshot` and `SolveNetwork` and
+  reads `TraceConfig`; all six are `pkg_rlc_model`'s (L1) now, and so are the
+  `FreqSnap` family and the three `_snapshot_*` builders. What is left blocking
+  `pkg_rlc_run` is the OTHER fifteen symbols above — the three `LOG_*`
+  severities and `describe_run_change` / `marker_freq_text` at L3,
+  `_coupling_k_array` at L3, the four plot names at L4 — none of which is a
+  data-model question. See "How the run record got its home" for what the move
+  cost and what it deliberately did not touch.
+- **P3A's PREREQUISITE IS DONE.** `pkg_rlc_model` (L1) carries `TraceConfig`
+  (+ its three `migrate_legacy_*`), `FileEntry`, `SolveNetwork` /
   `_composed_solve_network`, `_duplicate_trace_config`, `_config_signature` /
-  `_draw_signature` and `trace_signature_fields` / `run_signatures`.
-  `pkg_rlc_session` (L2) is still declared-and-absent.
+  `_draw_signature`, `trace_signature_fields` / `run_signatures`, the frequency
+  snap and the whole run record. `pkg_rlc_session` (L2) is still
+  declared-and-absent, and nothing structural is in its way any more:
+  `trace_to_dict` / `trace_from_dict` needed `TraceConfig` and `TraceConfig` is
+  below them.
 
-### What the run record is still waiting on — READ THIS BEFORE MOVING IT
+### How the run record got its home — READ THIS BEFORE MOVING ANY OF IT
 
-  The four snapshot types and their builders were on the model phase's list and
-  **were deliberately NOT moved**, because the move is not mechanical: it runs
-  into a real design question that should be answered by somebody looking at
-  the tree rather than guessed at in the small hours. Both halves of it are
-  about what a snapshot STORES, not about where the class file sits.
+The four snapshot types and their builders were the last thing in `pkg_rlc_gui`
+that every layer below had to reach UP for. They are in `pkg_rlc_model` now.
+Two things blocked the move and each was resolved rather than worked around;
+both are about what a snapshot STORES, not about where the class file sits, so
+they are the two places a later session will be tempted to undo it.
 
-- **`FreqSnap` is the first half.** `CouplingSnapshot.freq` and
-  `RunSnapshot.freqs` store `FreqSnap` objects, and `FreqSnap` /
-  `snap_to_grid` / `combine_freq_snaps` / `marker_freq_text` live in
-  `pkg_rlc_report` (L3). So the snapshot types **cannot go below L3 while they
-  hold one**. Either `FreqSnap` moves down to the model — which is arguable, it
-  is a frozen record of where a marker landed on a file's grid, i.e. a fact and
-  not a rendering, and `marker_freq_text` is the rendering and would stay — or
-  the run record is not L2 material at all and the layer map's *"L2 services:
-  the session file, the run record"* is the line that is wrong. **Do not split
-  the four `FreqSnap` helpers without deciding which**: `snap_to_grid` builds
-  the record and `marker_freq_text` prints it, and they are on opposite sides
-  of that call.
-- **`reference_provenance` is the second half, and the brief that raised this
-  named the two honest fixes.** `_snapshot_reference` calls it to freeze
-  `ref_strip` / `ref_warn` / `ref_lines` onto every row, and it lives in
-  `pkg_rlc_files_gui` (L5) — presentation, reached from the model layer, i.e.
-  an upward edge. Rendering it once at snapshot time is DELIBERATE (R3-5: two
-  copies of one verdict are two things that can disagree), so the fix is either
-  (i) move it down and accept a rendering function below presentation, or
-  (ii) INJECT the rendered text so the model stores text it was handed. (ii) is
-  cleaner and is a signature change, not a pure move. **The cheap shape of (ii)
-  that was worked out and not applied:** give the three builders a
-  `provenance=` keyword and leave a three-line wrapper in `pkg_rlc_gui` that
-  supplies `reference_provenance`, so all ~10 call sites — six in `App`, two in
-  `pkg_rlc_panels_traces` through the `staticmethod` aliases, and the tests —
-  need no edit at all and behaviour stays byte-identical.
-- **Whatever is done, `tests/fixtures/render_reference.json` is the guard** and
-  it must not be regenerated: it pins the rendered page byte-for-byte and a
-  single-file trace's snapshot carries no reference text and no file list, which
-  is exactly what keeps it byte-identical.
+- **`FreqSnap` MOVED DOWN, and that is the answer to "is it a fact or a
+  rendering".** `CouplingSnapshot.freq` and `RunSnapshot.freqs` store one, so
+  while it sat in `pkg_rlc_report` (L3) the snapshot types could not go below
+  L3 — a model type would have had a field whose type lives two layers above
+  it. It is a FACT ABOUT THE MEASUREMENT: `requested_hz`, `actual_hz`,
+  `delta_hz`, `exact`, `off_grid` and `agreed` say where a value was read and
+  how far that is from what was asked for, and nothing at all about how to
+  print it. So `FreqSnap`, `freq_grid_step`, `snap_to_grid`,
+  `combine_freq_snaps` and the three `FREQ_EXACT_*` / `FREQ_UNIFORM_TOL`
+  tolerances are `pkg_rlc_model`'s. **`marker_freq_text` did NOT go with them**
+  and the split is the deliberate one the old note warned against making
+  carelessly: it takes a FORMAT STRING and returns a sentence, every one of its
+  callers is a surface, and nothing in the model needs it — so it and its
+  `FREQ_WIDE_FMT` stayed in `pkg_rlc_report`. `snap_to_grid` builds the record
+  and `marker_freq_text` prints it; they are on opposite sides of that call and
+  they are now on opposite sides of the layer line for the same reason. All
+  four moved names are re-exported from `pkg_rlc_report`, so
+  `pkg_rlc_extractor`, `pkg_rlc_gui`, `pkg_rlc_panels_results` and
+  `tests/test_freq_label.py` are untouched.
+- **`reference_provenance` is INJECTED, which was option (ii) of the two the
+  earlier brief named.** `_snapshot_reference` freezes `ref_strip` /
+  `ref_warn` / `ref_lines` onto every row by calling it, and it lives in
+  `pkg_rlc_files_gui` (L5) — presentation, and it stays there, because
+  rendering a composition's verdict for a reader belongs beside the window that
+  shows it. Rendering it ONCE at snapshot time is R3-5 and is not negotiable
+  (two copies of one verdict are two things that can disagree), so the call
+  could not be dropped either. So the three builders take a `provenance=`
+  keyword — a CALLABLE, so nothing at L1 names an L5 module — the model stores
+  the text it is handed, and `pkg_rlc_gui` keeps three wrappers of the same
+  names that supply `reference_provenance`. **This one signature is the whole
+  of the exception to the pure-move rule**, and it is what let all ~10 call
+  sites (six in `App`, two in `pkg_rlc_panels_traces` through the
+  `staticmethod` aliases, and the tests) stay exactly as they were.
+  `from pkg_rlc_gui import _snapshot_row` still resolves, and still resolves to
+  the WRAPPER — the version every caller in the repo has always had. With no
+  renderer supplied the three fields come back empty, which is the same answer
+  a single-file trace already got.
+- **`_row_file_labels` and `_snapshot_file_legend` were on the move list and
+  stayed in `pkg_rlc_report` on purpose.** `_snapshot_file_legend` returns
+  `files: F1=die.s6p + F2=pkg.s4p` — a display string — and `_row_file_labels`
+  exists to feed it and the two file-column helpers beside it. Nothing outside
+  `pkg_rlc_report` calls either. Moving them would have put presentation into
+  the model, against this file's own rule that *a rendering of the data model
+  is `pkg_rlc_report`'s*. Both are still re-exported from `pkg_rlc_gui`.
+- **`tests/fixtures/render_reference.json` was the guard and it was NOT
+  regenerated.** It pins the rendered page byte-for-byte, and a single-file
+  trace's snapshot carries no reference text and no file list — which is
+  exactly what makes it byte-identical across this move.
 - **The plot-curve helpers can NEVER be part of `pkg_rlc_run`.**
   `_make_plot_trace`, `_compose_curve_label`, `_plot_trace_label` and
   `_coupling_plot_traces` are defined by `PlotTrace` / `COLORS` / `LINESTYLES` /
@@ -4269,12 +4302,12 @@ every claim below was measured on this box.
 
 ```bash
 python tests/run_parallel.py            # the whole suite -- use this
-python tests/run_parallel.py --fast     # 5.0 s, 1044 tests, the eighteen no-Tk modules
+python tests/run_parallel.py --fast     # 4.5 s, 1044 tests, the eighteen no-Tk modules
 python tests/run_parallel.py -m attrib coupling core    # substring on module name
 ```
 
-**Re-measured on this box after the layering-gate wave: 2522 tests / 452 shards in 400.1 s
-at `-j 4` (the agreed budget while the user is on the box), and 1044 tests in 5.0 s for
+**Re-measured on this box after the model phase landed: 2531 tests / 453 shards in 357.8 s
+at `-j 4` (the agreed budget while the user is on the box), and 1044 tests in 4.5 s for
 `--fast`.** (The historical figures the runner's docstring
 opens with — 293 s serial against 108 s parallel over 906 tests — are what justified the
 runner and are kept as such.) The full number tracks CONTENTION as much as anything: 120 s
@@ -4299,7 +4332,7 @@ modules on the same qualification (`test_compose`, `test_compose_cli`, `test_att
 `test_conn_nets` — `test_compose_cli` has its own test asserting `pkg_rlc_gui` never entered
 `sys.modules`), for **976 tests / 5.5 s**. `test_conn_rowshape` is deliberately excluded:
 it drives real widgets and its slowest shard alone is 19 s. The list has not moved since,
-so `--fast` at **1044 tests / 5.0 s** is the same eighteen modules with their own growth in
+so `--fast` at **1044 tests / 4.5 s** is the same eighteen modules with their own growth in
 them. Three modules now QUALIFY on that one property and are not in the list yet:
 `test_layering` (21 tests / 0.31 s, pure `ast`), `test_cli_golden` (37 / 1.8 s) and
 `test_run_parallel` (already in). `test_attrib_golden` does **not** qualify — it creates no
