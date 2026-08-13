@@ -223,6 +223,13 @@
    "lines": 14
   },
   {
+   "name": "sensitivity_fake_undefined_delta",
+   "describe": "two candidates that could not be measured among three that could: an undefined delta ranks LAST, never first (hand-built)",
+   "sha256": "19c21c74aec4e8d6151ccd5351c7de9f0e5a6d4dae7b4519b32961225f6e0be9",
+   "chars": 349,
+   "lines": 7
+  },
+  {
    "name": "detail_bare_em",
    "describe": "detail_lines for the bare EM row (key None), including the wrapped return-path budget",
    "sha256": "f7169ca790ed2181ddb91d6191aa54cea68d5ae7bb44010cd7a6c4d3e168d933",

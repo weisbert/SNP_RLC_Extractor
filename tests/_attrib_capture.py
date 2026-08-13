@@ -517,6 +517,37 @@ def fake_nan_and_inf():
     ], resid=float("nan"), trustworthy=False)
 
 
+def fake_undefined_sensitivity():
+    """A sensitivity scan in which one candidate could not be measured.
+
+    None of the four real captures above can produce this: every candidate on
+    every shipped fixture returns a finite delta, so the RANKING of a
+    non-finite one was captured nowhere and the reference could not see it
+    move.  It moved -- `sensitivity_table` keyed a NaN at `float("-inf")`, the
+    SMALLEST key on an ascending sort, so the row that measured nothing led
+    the table.
+
+    Hand-built for the same reason `fake_nan_and_inf` is: a probe with no
+    return path is ordinary in the field and expressible in none of the
+    repo's fixtures.  The two undefined rows are there to pin that they sort
+    last AMONG THEMSELVES in declaration order too, which is the stable sort
+    doing its job; the three real ones straddle them in strength.
+    """
+    nan = complex(float("nan"), float("nan"))
+
+    def row(label, alt, delta, db=float("nan")):
+        return at.SensitivityResult("element", label, (0,), alt, "M", "H",
+                                    1e-9, 1e-9 + delta, delta, db)
+
+    return [
+        row("ground port 2", "open", nan),
+        row("ground port 4", "L=1 nH", 4.3e-12, 0.05),
+        row("short 3-4", "open", nan),
+        row("ground port 2", "R=50 Ohm", -5.0e-10, -6.07),
+        row("ground port 4", "C=100 pF", -4.2e-14, -0.00),
+    ]
+
+
 def fake_complex_dec():
     """Quantity `Z`, i.e. the only shape with TWO value columns."""
     return fake_dec([
@@ -732,6 +763,11 @@ def build_cases() -> list[Case]:
         "sensitivity_table for ImZ, i.e. a different unit and a different "
         "column suffix",
         lambda: ag.sensitivity_table(sens("diff_short_and_ground", "ImZ")).text)
+
+    add("sensitivity_fake_undefined_delta",
+        "two candidates that could not be measured among three that could: "
+        "an undefined delta ranks LAST, never first (hand-built)",
+        lambda: ag.sensitivity_table(fake_undefined_sensitivity()).text)
 
     # ---- the detail pane -------------------------------------------------
     add("detail_bare_em",
