@@ -39,6 +39,7 @@ import numpy as np  # noqa: E402
 
 import pkg_rlc_attrib as at  # noqa: E402
 import pkg_rlc_attrib_gui as ag  # noqa: E402
+import pkg_rlc_attrib_report as ar  # noqa: E402
 from pkg_rlc_core import (  # noqa: E402
     MeasPortRow,
     ROLE_ELEMENT,
@@ -521,6 +522,103 @@ class TestFolding(unittest.TestCase):
     def test_fold_false_keeps_everything(self):
         t = ag.contributions_table(self._many(), "smart", fold=False)
         self.assertEqual(len(t.rows), 6)
+
+
+# ============================================================================
+# PURE: the sensitivity table's ranking
+# ============================================================================
+
+class TestSensitivityRanking(unittest.TestCase):
+    """`sensitivity_table` ranks an UNDEFINED delta LAST, like every other
+    ranking in this repo.
+
+    This is one rule with three implementations, and the window's used to be
+    the odd one out.  `pkg_rlc_attrib_report._attr_print_sensitivity` sorts on
+    `(0 if isfinite else 1, -abs_delta)`, `_fold_terms` keys a non-finite
+    contribution at `+inf`, and `rank_coupling_pairs` in core says the same
+    thing in its own docstring: NaN is a MISSING MEASUREMENT, not a small
+    number.  The window sorted on `-abs_delta if isfinite else float("-inf")`,
+    and `-inf` is the SMALLEST key on an ascending sort -- so the one row that
+    measured nothing printed above the strongest real effect in the table.
+    """
+
+    @staticmethod
+    def _sens(label, delta, db=-6.02):
+        """One `SensitivityResult`; `abs_delta` is derived from `delta`."""
+        return at.SensitivityResult("element", label, (0,), "open", "M", "H",
+                                    1e-9, 1e-9 + delta, delta, db)
+
+    def test_an_undefined_delta_sorts_BELOW_a_real_one(self):
+        """The defect, stated as the smallest case that shows it.
+
+        Mutation: key the NaN at `float("-inf")` instead of the (1, 0.0) tuple
+        -- the shipped spelling -- and `no return path` sorts to the top, above
+        a 500 pH change.  Proven to fail before the fix.
+        """
+        nan = complex(float("nan"), float("nan"))
+        rows = [self._sens("no return path", nan, float("nan")),
+                self._sens("ground port 3", 5e-10)]
+        text = ag.sensitivity_table(rows).text
+        self.assertLess(text.index("ground port 3"), text.index("no return path"),
+                        "a NaN delta must not outrank a measured one")
+
+    def test_the_undefined_row_is_still_SHOWN(self):
+        """Sorting it last is not the same as hiding it.
+
+        The sensitivity table has no fold at all, so this holds by
+        construction -- the guard is here so a later cap cannot quietly drop
+        the row `_fold_terms` goes out of its way to spare.
+        """
+        nan = complex(float("nan"), float("nan"))
+        text = ag.sensitivity_table([self._sens("no return path", nan,
+                                                float("nan")),
+                                     self._sens("ground port 3", 5e-10)]).text
+        self.assertIn("no return path", text)
+
+    def test_the_real_rows_are_still_ranked_strongest_first(self):
+        """The fix must not cost the ordering the table exists for.
+
+        Mutation: drop the `-` from `-abs_delta` and the weakest effect leads.
+        """
+        rows = [self._sens("weak", 1e-12),
+                self._sens("strong", 5e-10),
+                self._sens("middling", 2e-11)]
+        text = ag.sensitivity_table(rows).text
+        self.assertLess(text.index("strong"), text.index("middling"))
+        self.assertLess(text.index("middling"), text.index("weak"))
+
+    def test_the_window_and_the_CLI_rank_the_same_rows_the_same_way(self):
+        """The two surfaces are one rule, so they are pinned against each other
+        rather than each against a literal.
+
+        `_attr_print_sensitivity` renders its own table, so what is compared is
+        the ORDER OF THE LABELS in each -- which is the thing that diverged.
+        """
+        nan = complex(float("nan"), float("nan"))
+        rows = [self._sens("undefined a", nan, float("nan")),
+                self._sens("weak", 1e-12),
+                self._sens("strong", 5e-10),
+                self._sens("undefined b", nan, float("nan")),
+                self._sens("middling", 2e-11)]
+        labels = ["undefined a", "weak", "strong", "undefined b", "middling"]
+
+        gui = ag.sensitivity_table(rows).text
+        # The CLI printer also appends CSV records, which need a decomposition
+        # for their provenance columns; neither reaches the ranking.
+        cli = "\n".join(ar._attr_print_sensitivity(rows, [], fake_dec([])))
+        order = lambda t: sorted(labels, key=t.index)     # noqa: E731
+        self.assertEqual(order(gui), order(cli))
+        # ... and that shared order really is the documented one.
+        self.assertEqual(order(gui),
+                         ["strong", "middling", "weak",
+                          "undefined a", "undefined b"])
+
+    def test_ties_keep_input_order(self):
+        """The sort is STABLE, so two equal deltas stay as declared -- and the
+        two undefined rows above rely on it to be comparable at all."""
+        rows = [self._sens("first", 3e-10), self._sens("second", 3e-10)]
+        text = ag.sensitivity_table(rows).text
+        self.assertLess(text.index("first"), text.index("second"))
 
 
 # ============================================================================

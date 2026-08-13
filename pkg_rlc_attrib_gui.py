@@ -1120,12 +1120,22 @@ def sensitivity_table(results: Sequence, units_mode: str = "smart",
     `results` is a list of `attrib.SensitivityResult`; `kinds` maps element
     index -> element kind so the rows can keep the Ports & Roles colour they
     have in the contributions table.  Pure.
+
+    An UNDEFINED delta sorts LAST, and the key is spelled exactly as
+    `pkg_rlc_attrib_report._attr_print_sensitivity` spells it so the two read
+    alike to anyone comparing them.  NaN is a missing measurement, not a small
+    number -- `rank_coupling_pairs` in core says so in its own docstring and
+    `_fold_terms` above keys the same case at +inf for the same reason.  This
+    line used to read `-r.abs_delta if isfinite else float("-inf")`, and
+    `-inf` is the SMALLEST key on an ASCENDING sort: a row that measured
+    nothing printed above the strongest real effect in the table, on the one
+    surface a user reads before deciding which port to go and fix.
     """
     kinds = kinds or {}
     rows_in = sorted(results,
-                     key=lambda r: (-r.abs_delta
-                                    if math.isfinite(r.abs_delta)
-                                    else float("-inf")))
+                     key=lambda r: (0 if math.isfinite(r.abs_delta) else 1,
+                                    -r.abs_delta
+                                    if math.isfinite(r.abs_delta) else 0.0))
     unit = rows_in[0].unit if rows_in else ""
     newv = [r.new_value.real for r in rows_in]
     delv = [r.delta.real for r in rows_in]
