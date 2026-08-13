@@ -40,67 +40,14 @@ from pkg_rlc_conntable import (
     TableLayout,
     identity_layout,
 )
-# The role names PORT_ROLE_FG is keyed on.  `port_roles` in pkg_rlc_core is the
-# ONE classifier; a second spelling of the keys here is how a bucket comes to
-# have no colour and be painted the default one in silence.
-from pkg_rlc_core import (
-    ROLE_ELEMENT,
-    ROLE_GROUND,
-    ROLE_OPEN,
-    ROLE_PROBE_MINUS,
-    ROLE_PROBE_PLUS,
-    ROLE_SHORTED,
-    ROLE_VDD,
-)
-
-
-# ============================================================================
-# The palette
-# ============================================================================
-#
-# ONE palette for the application, in ONE module.  These three used to be split
-# between here and `pkg_rlc_gui`, which meant a panel that wanted the warning
-# colour had to reach UP into the frontend for it -- three of the ten
-# function-level `import pkg_rlc_gui` dodges were nothing but a colour lookup.
-# They are colours and a ttk style helper, not data, so they did not go down to
-# `pkg_rlc_model` with the trace: `tests/test_layering.py`'s own advice is that
-# colour constants belong at L3/L4, and this is the L4 module every panel that
-# paints already imports.
-
-PLACEHOLDER_FG = "#888888"
-
-# The colour a flagged row takes in the Ports & Roles window. Same #b04000 as
-# the frozen-trace note and the results pane's "flag" tag -- one warning colour
-# in the application, not three.
-WARN_FG = "#b04000"
-
-# One colour per bucket, so a 153-row list can be skimmed rather than read.
-PORT_ROLE_FG = {
-    ROLE_PROBE_PLUS: "#1f5fb4",
-    ROLE_PROBE_MINUS: "#1f5fb4",
-    ROLE_GROUND: "#207020",
-    ROLE_VDD: "#207020",
-    ROLE_ELEMENT: "#7030a0",
-    ROLE_SHORTED: "#a06000",
-    ROLE_OPEN: "#808080",
-}
-
-
-def _fixed_map_filter(entries: Sequence) -> list:
-    """
-    Drop the ('!disabled', '!selected') state specs from a ttk style map.
-
-    This is the standard workaround for the Tk bug that makes a Treeview ignore
-    tag colours: those two negated states match every ordinary row, so the
-    style map wins over the tag and every row is painted the default colour.
-    Pure, so the rule itself is testable without a display.
-    """
-    return [e for e in entries if tuple(e[:2]) != ("!disabled", "!selected")]
 
 
 # ============================================================================
 # Placeholder-text helpers
 # ============================================================================
+
+PLACEHOLDER_FG = "#888888"
+
 
 class PlaceholderEntry(ttk.Entry):
     """ttk.Entry that shows greyed-out hint text when empty and unfocused."""
