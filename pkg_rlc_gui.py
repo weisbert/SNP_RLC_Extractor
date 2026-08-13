@@ -403,6 +403,14 @@ from pkg_rlc_files_gui import (
 # they are L5 in tests/test_layering.py and this file is L6.  What they need
 # from here they get through the injected App.
 from pkg_rlc_panels_files import FilesPanel
+# FREEZE_MENU_LABEL / UNFREEZE_MENU_LABEL moved WITH the menu they label and
+# are RE-EXPORTED here, the same rule as the DSL helpers and the connections
+# table: `from pkg_rlc_gui import FREEZE_MENU_LABEL` keeps resolving.
+from pkg_rlc_panels_traces import (
+    FREEZE_MENU_LABEL,
+    TracesPanel,
+    UNFREEZE_MENU_LABEL,
+)
 
 
 # ============================================================================
@@ -2065,12 +2073,12 @@ LABEL_PLACEHOLDER = "trace name shown in plot legend (optional)"
 # width where the form fits they look identical.
 EDITOR_FIELD_CHARS = 40
 
-# The two Traces-list context-menu entries, and the note that explains why the
-# editor is greyed out.  Named constants because three tests and one menu
-# lookup key off them, and a menu entry nobody can find is the same as no
-# feature at all.
-FREEZE_MENU_LABEL = "Freeze as new trace"
-UNFREEZE_MENU_LABEL = "Unfreeze"
+# The note that explains why the editor is greyed out.  A named constant
+# because three tests and one menu lookup key off it and its two neighbours,
+# and a menu entry nobody can find is the same as no feature at all.  Those
+# two neighbours -- FREEZE_MENU_LABEL / UNFREEZE_MENU_LABEL -- moved to
+# pkg_rlc_panels_traces with the menu they label and are re-exported at the
+# top of this file.  This one names the EDITOR's state and stayed.
 FROZEN_EDITOR_NOTE = (
     "❄ frozen snapshot — unfreeze to edit "
     "(right-click it in the Traces list)")
@@ -2476,6 +2484,25 @@ class App(tk.Tk):
     _WHEEL_OWNERS = frozenset({"Text", "Listbox", "Treeview",
                                "TSpinbox", "Spinbox", "TScrollbar", "Scrollbar"})
 
+    # ---------------------------------------- what a panel reaches through App
+    #
+    # A panel is L5 and this module is L6 (tests/test_layering.py), so a panel
+    # may not import these -- not at module level and not inside a function.
+    # Every one of them is a pure function over a TraceConfig or a RunSnapshot
+    # and BELONGS at L1 / L2 with those types; it cannot go there until they
+    # do.  Until then a panel reaches them through the App it already holds.
+    #
+    # Plain aliases, deliberately: `pkg_rlc_gui._duplicate_trace_config` and
+    # `app._duplicate_trace_config` are the SAME object, so there is nothing
+    # here that can come to disagree with the module-level name every test
+    # imports.  This list is also the checklist for the phase that moves the
+    # model down -- when it is empty, the panels import their model directly.
+    _duplicate_trace_config = staticmethod(_duplicate_trace_config)
+    _freeze_trace_config = staticmethod(_freeze_trace_config)
+    freeze_refusal = staticmethod(freeze_refusal)
+    _snapshot_row = staticmethod(_snapshot_row)
+    _snapshot_block = staticmethod(_snapshot_block)
+
     def _install_wheel_router(self) -> None:
         """
         One pointer-based wheel router for the whole window.
@@ -2628,27 +2655,11 @@ class App(tk.Tk):
         self.files_lb = self._files_panel.files_lb
 
         # --- Traces section ---
-        traces_frame = ttk.LabelFrame(parent, text="Traces")
-        traces_frame.pack(side=tk.TOP, fill=tk.X, padx=4, pady=2)
-        tr_btn_row = ttk.Frame(traces_frame)
-        tr_btn_row.pack(side=tk.TOP, fill=tk.X)
-        ttk.Button(tr_btn_row, text="Add Trace", command=self._on_add_trace
-                   ).pack(side=tk.LEFT, padx=2, pady=2)
-        ttk.Button(tr_btn_row, text="Remove", command=self._on_remove_trace
-                   ).pack(side=tk.LEFT, padx=2, pady=2)
-        ttk.Button(tr_btn_row, text="Duplicate", command=self._on_duplicate_trace
-                   ).pack(side=tk.LEFT, padx=2, pady=2)
-        # FOURTH button in this row, and pack unmaps from the end, so this was
-        # measured before it was added: at the 1040x600 minsize the row is
-        # 448 px and four buttons ask 364 (three ask 273).  Re-measure before a
-        # fifth.  It duplicates the editor's "Plot: this trace" checkbox on
-        # purpose -- the checkbox needs the trace selected first, and the
-        # keyboard route (space) is invisible.
-        ttk.Button(tr_btn_row, text="Show/Hide", command=self._on_toggle_trace
-                   ).pack(side=tk.LEFT, padx=2, pady=2)
-        self.traces_lb = tk.Listbox(traces_frame, height=8, exportselection=False,
-                                    activestyle="dotbox")
-        self.traces_lb.pack(side=tk.TOP, fill=tk.X, padx=2, pady=2)
+        # Built by TracesPanel, in this position and in this pack order; the
+        # widget alias is what keeps `app.traces_lb` resolving.  Same rule as
+        # the Files section above.
+        self._traces_panel = TracesPanel(parent, self)
+        self.traces_lb = self._traces_panel.traces_lb
 
         # --- Global controls ---
         # PACKED BEFORE THE EDITOR, AND side=BOTTOM.  pack allocates in call
@@ -3346,7 +3357,7 @@ class App(tk.Tk):
         # The Files list's own binding, in the position the line held.  See
         # FilesPanel: the panel is a HAS-A, so the ORDER stays visible here.
         self._files_panel.bind_selection()
-        self.traces_lb.bind("<<ListboxSelect>>", lambda e: self._on_trace_selected())
+        self._traces_panel.bind_selection()
         # A different file means a different port count: the Port / To
         # dropdowns and the overview strip both key off it.
         self.ed_file_cbo.bind("<<ComboboxSelected>>",
@@ -3355,42 +3366,12 @@ class App(tk.Tk):
         self.bind("<<HintToggled>>",
                   lambda e: self._refresh_editor_scrollregion(preserve=True),
                   add="+")
-        # Space toggles the selected trace's visibility -- the sweep gesture for
-        # "hide these four".  Returning "break" stops the Listbox class binding
-        # from also treating space as select-activate-item.
-        self.traces_lb.bind("<space>", self._on_toggle_trace_key)
-
-        # Freeze / Unfreeze live on a right-click menu, NOT on a fifth button:
-        # the Traces row is measured at 448 px with four buttons already asking
-        # 364, and Global Controls has no spare row either (a fifth one comes
-        # straight out of an editor viewport that is down to 45 px at the
-        # minsize).
-        self._trace_menu = tk.Menu(self, tearoff=0)
-        self._trace_menu.add_command(label=FREEZE_MENU_LABEL,
-                                     command=self._on_freeze_trace)
-        self._trace_menu.add_command(label=UNFREEZE_MENU_LABEL,
-                                     command=self._on_unfreeze_trace)
-        # Attribution is on this menu for the same reason Freeze is: it acts on
-        # ONE trace, and the right-click selects the row under the pointer
-        # first, so the gesture and the subject cannot disagree.  It is also on
-        # the Analyze menu, which is the discoverable route -- a right-click
-        # menu is invisible until you try it.
-        #
-        # APPENDED, and with NO separator in front of it.  A separator carries
-        # no -label, so `entrycget(i, "label")` raises TclError on it, and the
-        # existing guard in tests/test_freeze_trace.py enumerates this menu's
-        # labels by index; a separator would turn a one-token test update into
-        # an error.  Three commands, all acting on the selected trace, do not
-        # need a rule between them anyway.
-        self._trace_menu.add_command(label=ATTRIB_MENU_LABEL,
-                                     command=self._on_attribution)
-        # APPENDED for the same two reasons, and it is the FOURTH entry: the
-        # file set belongs to a trace, and the right-click selects the row
-        # under the pointer first so the gesture and the subject cannot
-        # disagree.  Still no separator -- see above.
-        self._trace_menu.add_command(label=FILES_MENU_LABEL,
-                                     command=self._on_files_window)
-        self.traces_lb.bind("<Button-3>", self._on_trace_context_menu)
+        # The Traces list's <space> binding and its right-click menu, in the
+        # position these lines held.  `_trace_menu` is aliased for the same
+        # reason `traces_lb` is: tests/test_freeze_trace.py enumerates its four
+        # entries by index off `app._trace_menu`.
+        self._traces_panel.bind_context_menu()
+        self._trace_menu = self._traces_panel._trace_menu
 
         # The Files list's right-click menu, in the position these lines held.
         # `_files_menu` is aliased for the same reason `files_lb` is.
@@ -3613,67 +3594,21 @@ class App(tk.Tk):
         self._next_trace_id += 1
         return tc
 
+    # The Traces section is `pkg_rlc_panels_traces.TracesPanel`, which OWNS
+    # the implementations behind the delegators below -- the method-level
+    # form of this file's re-export rule, exactly as for the Files section.
+
     def _on_add_trace(self) -> None:
-        if not self.files:
-            messagebox.showinfo("No file", "Add a file first.")
-            return
-        fe = self.files[self._sel_idx(self.files_lb) or 0]
-        tc = self._make_default_trace(fe)
-        self.traces.append(tc)
-        self._refresh_trace_list()
-        self.traces_lb.selection_clear(0, tk.END)
-        self.traces_lb.selection_set(tk.END)
-        self._on_trace_selected()
+        self._traces_panel._on_add_trace()
 
     def _on_remove_trace(self) -> None:
-        idx = self._sel_idx(self.traces_lb)
-        if idx is None:
-            return
-        self.traces.pop(idx)
-        self._refresh_trace_list()
-        self._replot_from_cache()
-        # An Attribution window HOLDS a result, so unlike the Ports & Roles
-        # window it cannot re-read app.traces and degrade -- it has to be
-        # told.  Same class of omission as the _on_remove_file
-        # forgot-to-replot bug: nothing raises, and the window carries on
-        # naming a trace that is gone with a [Recompute] button that would
-        # answer about nothing.  It resolves its subject by identity against
-        # app.traces, so this call is the whole of what is needed.
-        refresh_attribution_windows(self)
-        # Same reason, same position: a file window resolves its subject by
-        # identity too, and one on a trace that is gone would keep offering
-        # [Set as home] on it.
-        refresh_files_windows(self)
+        self._traces_panel._on_remove_trace()
 
     def _on_toggle_trace_key(self, _event=None) -> str:
-        self._on_toggle_trace()
-        return "break"      # or the Listbox also select-activates on space
+        return self._traces_panel._on_toggle_trace_key(_event)
 
     def _on_toggle_trace(self) -> None:
-        """
-        Show / hide the selected trace without deleting it.
-
-        Replots from the cached Z instead of recomputing: the whole point is
-        that taking a curve off the plot should not cost a Schur reduction of a
-        153-port file to arrive at numbers that have not changed.
-        """
-        self._flush_editor_sync()
-        idx = self._sel_idx(self.traces_lb)
-        if idx is None:
-            return
-        tc = self.traces[idx]
-        tc.enabled = not tc.enabled
-        # The editor is showing this trace, so its checkbox has to follow --
-        # suppressed, or the write trace schedules a sync that would just write
-        # the same value back.
-        self._suppress_editor_sync = True
-        try:
-            self.ed_enabled_var.set(tc.enabled)
-        finally:
-            self._suppress_editor_sync = False
-        self._refresh_trace_list()
-        self.traces_lb.selection_set(idx)
-        self._replot_from_cache()
+        self._traces_panel._on_toggle_trace()
 
     def set_trace_home_file(self, tc: TraceConfig, label: str) -> None:
         """
@@ -3740,20 +3675,7 @@ class App(tk.Tk):
         self._refresh_port_roles_window()
 
     def _on_duplicate_trace(self) -> None:
-        # Without the flush the copy is taken from the trace as it was BEFORE
-        # the edit still queued in the editor -- i.e. Duplicate would silently
-        # copy something the user cannot see any more.
-        self._flush_editor_sync()
-        idx = self._sel_idx(self.traces_lb)
-        if idx is None:
-            return
-        new = _duplicate_trace_config(self.traces[idx], self._next_trace_id)
-        self._next_trace_id += 1
-        self.traces.append(new)
-        self._refresh_trace_list()
-        self.traces_lb.selection_clear(0, tk.END)
-        self.traces_lb.selection_set(tk.END)
-        self._on_trace_selected()
+        self._traces_panel._on_duplicate_trace()
 
     # ------------------------------------------------------- Freeze / Unfreeze
     #
@@ -3769,48 +3691,10 @@ class App(tk.Tk):
     # hides, it exports, Remove removes it.
 
     def _on_trace_context_menu(self, event) -> None:
-        """
-        Right-click on the Traces list.
-
-        The click SELECTS the row under the pointer first.  A menu that acts on
-        whatever happened to be selected before is how you freeze the wrong
-        trace -- and the two entries are enabled from that row's state, so the
-        selection has to be settled before the menu is posted.
-        """
-        idx = self.traces_lb.nearest(event.y)
-        if idx < 0 or idx >= len(self.traces):
-            return
-        self.traces_lb.selection_clear(0, tk.END)
-        self.traces_lb.selection_set(idx)
-        self.traces_lb.activate(idx)
-        self._on_trace_selected()
-        self._sync_trace_menu(self.traces[idx])
-        try:
-            self._trace_menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            self._trace_menu.grab_release()
+        self._traces_panel._on_trace_context_menu(event)
 
     def _sync_trace_menu(self, tc: TraceConfig) -> None:
-        """Only one of the FREEZE pair is ever live, and it says which."""
-        self._trace_menu.entryconfigure(
-            FREEZE_MENU_LABEL, state=tk.DISABLED if tc.frozen else tk.NORMAL)
-        self._trace_menu.entryconfigure(
-            UNFREEZE_MENU_LABEL,
-            state=tk.NORMAL if tc.frozen else tk.DISABLED)
-        # Attribution is the exception: it stays LIVE even on a trace it cannot
-        # run on, because `attribution_refusal` names five different reasons
-        # (frozen / file not loaded / never calculated / one measurement port /
-        # edited since the last Calculate) and each of them tells the user what
-        # to do next.  A greyed entry would be the same bug report -- the
-        # identical decision, in the identical words, as the Freeze entry on a
-        # stale trace.  It is set explicitly rather than left at its default so
-        # the invariant is stated where it can be read and asserted.
-        self._trace_menu.entryconfigure(ATTRIB_MENU_LABEL, state=tk.NORMAL)
-        # LIVE on a frozen trace too, and for the same reason: the window is
-        # read-only on one (`_apply_file_set` refuses by name), and a snapshot
-        # is exactly the trace whose file set someone wants to READ while
-        # comparing it against the live one beside it.
-        self._trace_menu.entryconfigure(FILES_MENU_LABEL, state=tk.NORMAL)
+        self._traces_panel._sync_trace_menu(tc)
 
     def _on_files_context_menu(self, event) -> None:
         self._files_panel._on_files_context_menu(event)
@@ -3841,75 +3725,10 @@ class App(tk.Tk):
         return open_files_window(self, tc)
 
     def _on_freeze_trace(self) -> None:
-        # Same flush as Duplicate, for the same reason: without it the snapshot
-        # is taken from the trace as it was BEFORE the edit still sitting in
-        # the idle queue -- i.e. it would freeze a spec that is not on screen.
-        self._flush_editor_sync()
-        idx = self._sel_idx(self.traces_lb)
-        if idx is None:
-            messagebox.showinfo("No trace", "Select a trace first.")
-            return
-        src = self.traces[idx]
-        if src.frozen:
-            return
-        # The flush above is what makes the stale check reliable: the freshest
-        # spec is on the trace by now, so `stale` answers about the spec the
-        # user can see rather than the one that was there an event ago.
-        refusal = freeze_refusal(src)
-        if refusal:
-            messagebox.showinfo(*refusal)
-            return
-        tc = _freeze_trace_config(src, self._next_trace_id)
-        self._next_trace_id += 1
-        self.traces.append(tc)
-        self._refresh_trace_list()
-        # The SOURCE stays selected: freezing is the first half of "now change
-        # something and look at the difference", so the editor must not jump to
-        # the copy the user is not going to edit.
-        self.traces_lb.selection_set(idx)
-        self._append_result(
-            f"  Froze [{src.id}] {src.label} as [{tc.id}] {tc.label}: it keeps "
-            f"these numbers, Calculate skips it and the editor will not write "
-            f"it (right-click → {UNFREEZE_MENU_LABEL} to release it).")
-        # It goes into the results table NOW, not at the next Calculate -- the
-        # table is where the two are read against each other, and a baseline
-        # that appears one press later is a baseline nobody trusts.  It joins
-        # the CURRENT run rather than starting one: the run number counts
-        # Calculates, and freezing measures nothing.
-        run = self._last_run or self._empty_run()
-        if tc.coupling is not None:
-            run = replace(run, blocks=run.blocks + (
-                _snapshot_block(tc, tc.file_label, tc.coupling),))
-        elif tc.rlc is not None:
-            run = replace(run, rows=run.rows + (
-                _snapshot_row(tc, tc.file_label, tc.rlc),))
-        self._last_run = run
-        self._render_results(run)
-        # The run PAGE is rewritten in place for the same reason: freezing
-        # measures nothing, so it is not a new run and gets no new tab.
-        newest = self._newest_run_tab()
-        if newest is not None and newest.run.number == run.number:
-            newest.run = run
-            self._render_run_tab(newest)
-        self._replot_from_cache()
+        self._traces_panel._on_freeze_trace()
 
     def _on_unfreeze_trace(self) -> None:
-        idx = self._sel_idx(self.traces_lb)
-        if idx is None:
-            return
-        tc = self.traces[idx]
-        if not tc.frozen:
-            return
-        tc.frozen = False
-        self._refresh_trace_list()
-        self.traces_lb.selection_set(idx)
-        # The selection is this trace, so the editor showing it has to come
-        # back to life in the same gesture.
-        self._set_editor_editable(True)
-        self._append_result(
-            f"  [{tc.id}] {tc.label} is no longer frozen: the next Calculate "
-            f"will recompute it and REPLACE the snapshot numbers it is "
-            f"holding.", LOG_WARN)
+        self._traces_panel._on_unfreeze_trace()
 
     # ------------------------------------------------------------ Attribution
     #
@@ -6235,49 +6054,7 @@ class App(tk.Tk):
         self._files_panel._refresh_file_list()
 
     def _refresh_trace_list(self) -> None:
-        """
-        Re-render the trace list, but only when it would actually look
-        different.
-
-        Auto-apply calls this on every keystroke, and rebuilding a Listbox
-        resets its scroll position -- so a user editing trace 9 of 12 would be
-        yanked back to the top on each character.  Comparing the rendered
-        strings costs nothing and is what makes the live list usable.
-        (Programmatic delete / insert / selection_set do NOT fire
-        <<ListboxSelect>>, verified on Tk 8.6, so this cannot re-enter
-        _on_trace_selected and reload the editor mid-typing.)
-        """
-        lines = [tc.info_str() for tc in self.traces]
-        # The cache key carries the COLOUR as well as the text.  info_str() has
-        # no colour in it -- deliberately, the ☑/☐ prefix is the only state it
-        # renders -- so picking a new palette slot leaves `lines` byte-identical
-        # and the early return would keep the old foreground on screen forever,
-        # with the plot already redrawn in the new one.
-        key = [(ln, tc.color_idx) for ln, tc in zip(lines, self.traces)]
-        if key == self._trace_list_shown:
-            return
-        self._trace_list_shown = key
-        sel = self._sel_idx(self.traces_lb)
-        self.traces_lb.delete(0, tk.END)
-        for i, (tc, line) in enumerate(zip(self.traces, lines)):
-            self.traces_lb.insert(tk.END, line)
-            # itemconfig does not survive delete(), so BOTH foregrounds are
-            # re-applied here every time rather than at the point of the
-            # toggle.  The colour is the only thing tying a name in this list
-            # to a curve on the plot -- without it four traces are four
-            # identical lines of black text and the reader has to open the
-            # editor on each one to find out which curve is which.  A hidden
-            # trace keeps the grey: it has no curve to be tied to, and grey
-            # is the state, not the style.
-            #
-            # A mode-6 trace expands into several curves taking consecutive
-            # palette slots (_coupling_plot_traces), so this is its FIRST
-            # colour -- the same one the style preview shows.
-            self.traces_lb.itemconfig(
-                i, foreground=("#909090" if not tc.enabled
-                               else COLORS[tc.color_idx % len(COLORS)]))
-        if sel is not None and sel < len(self.traces):
-            self.traces_lb.selection_set(sel)
+        self._traces_panel._refresh_trace_list()
 
     def _refresh_file_combobox(self) -> None:
         self.ed_file_cbo["values"] = [fe.label for fe in self.files]
