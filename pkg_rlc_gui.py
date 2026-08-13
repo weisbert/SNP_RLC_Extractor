@@ -2473,7 +2473,21 @@ class App(tk.Tk):
                                   term: TerminationSet | None = None) -> object:
         """Reduce to the G x G measurement-port Z matrix and extract the
         coupling result at the marker frequency.  See
-        `run._calculate_coupling_trace`."""
+        `run._calculate_coupling_trace`.
+
+        The migration is HERE for the same reason it is on
+        `_build_termination`, and on the same condition the old code had it:
+        this function builds its own `TerminationSet` only when the caller did
+        not, and that build used to go through `App._build_termination`, which
+        migrates.  `run._build_termination` does not, so the wrapper has to --
+        otherwise a legacy-shaped trace reaching this path with `term=None`
+        would be read UNMIGRATED (mode 4 still mode 4, `mp1_*` still unfolded)
+        and answer a different question in silence.  `_on_calculate` always
+        passes `term`, so this is the rarely-taken half; it is preserved
+        because it was there, not because it is hot.
+        """
+        if term is None:
+            self._migrate_trace(tc)
         return run._calculate_coupling_trace(tc, sn, f_rlc_hz,
                                              self._append_result, term=term)
 
