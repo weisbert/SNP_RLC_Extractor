@@ -534,6 +534,33 @@ RESULTS_VIEWS = (VIEW_DETAIL, VIEW_SUMMARY, VIEW_COMPARE)
 
 
 # ============================================================================
+# What a line written to the Results pane MEANS
+# ============================================================================
+#
+# Severity of a line written to the Results pane.  INFO is what every call site
+# had before the pane became a notebook, so the default keeps the old behaviour
+# exactly; WARN counts towards the Log tab's badge and ERROR also brings the
+# Log tab to the front.
+#
+# WHY THEY ARE HERE.  A severity is a property of the MESSAGE, not of the pane
+# that shows it -- the rule is already written down in those words: "Severity
+# routing follows what the line MEANS, not where it is printed."  So the code
+# that PRODUCES a line is what classifies it, and every layer produces lines:
+# `pkg_rlc_run` (L2) emits the Schur / lstsq fallback warning, the
+# reference-node check that could not run, and the probe whose current has
+# nowhere to return; the panels and the App emit the rest.  A vocabulary shared
+# from L2 up to L6 lives at or below the lowest of them.
+#
+# Everything about how a severity is RENDERED stayed in `pkg_rlc_report`, which
+# re-exports these three: `LOG_BADGE_CAP`, `log_tab_label` and the measured
+# width-stable badge.  That is the split -- what a line means here, what the
+# tab strip does about it there.
+LOG_INFO = "info"
+LOG_WARN = "warn"
+LOG_ERROR = "error"
+
+
+# ============================================================================
 # Frequency provenance -- what a printed marker frequency actually IS
 # ============================================================================
 #

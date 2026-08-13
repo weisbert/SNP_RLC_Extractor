@@ -34,6 +34,9 @@ from pkg_rlc_model import (
     FREQ_EXACT_REL,
     FREQ_UNIFORM_TOL,
     FreqSnap,
+    LOG_ERROR,
+    LOG_INFO,
+    LOG_WARN,
     RESULTS_VIEWS,
     VIEW_COMPARE,
     VIEW_DETAIL,
@@ -252,14 +255,19 @@ _SWATCH_PAD = " " * len(RESULTS_SWATCH)
 
 # --------------------------------------------------------- the Log tab badge
 #
-# Severity of a line written to the Results pane.  INFO is what every call
-# site had before the pane became a notebook, so the default keeps the old
-# behaviour exactly; WARN counts towards the Log tab's badge and ERROR also
-# brings the Log tab to the front.
-LOG_INFO = "info"
-LOG_WARN = "warn"
-LOG_ERROR = "error"
-
+# `LOG_INFO` / `LOG_WARN` / `LOG_ERROR` are RE-EXPORTED here from
+# `pkg_rlc_model`.  They moved down because a severity is a property of the
+# MESSAGE and not of the pane that shows it -- CLAUDE.md's own rule, in those
+# words: "Severity routing follows what the line MEANS, not where it is
+# printed."  The code that produces a line classifies it; this module and the
+# Results notebook only decide what to DO with the classification (count it
+# towards the badge, or pull the Log to the front).
+#
+# What forced the move is that `pkg_rlc_run` (L2) produces warnings -- the
+# Schur / lstsq fallback, the reference-node check that could not run, the
+# probe with no return path -- and it may not import this file.  Everything
+# about how a severity is RENDERED stayed here: the cap below, `log_tab_label`
+# and the measured width-stable badge.
 # The badge counts unseen warnings, and it stops counting at 99.  The cap is
 # not cosmetic: the number of DIGITS decides the label's width, and a label
 # that changes width on the LEFTMOST tab reflows every tab to its right.
