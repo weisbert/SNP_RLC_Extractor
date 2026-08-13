@@ -67,6 +67,7 @@ import json
 import math
 import sys
 import tempfile
+import time
 import unittest
 from dataclasses import fields
 from pathlib import Path
@@ -326,18 +327,38 @@ class _AppCase(unittest.TestCase):
         self.assertEqual(win._selected, key, "the click selected nothing")
         return key
 
-    def _wait_for_stability(self, win, rounds: int = 80) -> str:
+    def _wait_for_stability(self, win, timeout: float = 10.0) -> str:
         """
         Pump the loop until the across-frequency check has landed.
 
         `_on_toggle_stability` writes "checking…" synchronously and puts the
         WORK on `after(1)`, so the verdict is one turn of the event loop away
         and a fixed `_settle()` count is a race dressed as a constant.
+
+        THE BOUND HAS TO BE WALL CLOCK FOR THE SAME REASON, and a pump COUNT
+        is that same race one level up.  `after(1)` is the only wall-clock
+        timer in this application -- everything else is `after_idle`, which
+        `update_idletasks()` flushes deterministically -- and Tcl decides
+        whether it is due by reading `GetSystemTimeAsFileTime`, whose tick on
+        Windows is ~15.6 ms.  Measured on an IDLE box: the old bound of 80
+        rounds of `_settle(2)`, i.e. 160 `update()` calls, completed in
+        **1.03 ms** with the timer still not due, `_compute_stability` never
+        entered (0 calls, `_stability_after` still holding its id) and the
+        helper failed a perfectly healthy window; `time.sleep(0.2)` plus ONE
+        more pump then landed the verdict immediately.  That is why it read as
+        flakiness rather than as breakage: the busier the box, the slower each
+        `update()`, so a loaded run outlives a clock tick and passes while a
+        quiet one does not.  Sleeping between rounds is what makes the wait be
+        about the timer it is waiting for.
         """
-        for _ in range(rounds):
+        deadline = time.monotonic() + timeout
+        while True:
             self._settle(2)
             if win._res.stability:
                 return win._res.stability
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.005)
         self.fail("the across-frequency check never produced a verdict")
 
 
