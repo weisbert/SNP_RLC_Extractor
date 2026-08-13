@@ -12,6 +12,7 @@ The four properties the task asked for, and where they are:
     stale-entry expiry              TestStaleEntries
     an explicit -j overrides        TestExplicitJobsWins
     a corrupt lock file degrades    TestCorruptRegistryDegrades
+    shards yield to the desktop     TestShardPriority
 
 Everything here was mutation-checked: each guard was confirmed to go red when
 the behaviour it names is reverted (notes are on the individual tests where the
@@ -23,6 +24,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -37,9 +39,11 @@ from tests.run_parallel import (          # noqa: E402
     STALE_S,
     RunRegistry,
     _make_arg_parser,
+    _priority_kwargs,
     _registry_dir,
     decide_jobs,
     jobs_and_reason,
+    run_shard,
     share_out,
     worker_budget,
 )
@@ -585,6 +589,128 @@ class TestMainAlwaysReleases(_TempRegistry):
         events, _ = self._main_with(boom)
         self.assertEqual(events, ["release"])
         self.assertFalse((self.dir / "12345.json").exists())
+
+
+class TestShardPriority(unittest.TestCase):
+    """Shards must yield to the user, who is working on this box while they run.
+
+    A full run is up to 8 test processes for several minutes at NORMAL priority,
+    i.e. head-on competition with whatever the user is doing.  On Windows each
+    shard is therefore spawned BELOW NORMAL.  Nothing here spawns a real
+    process: this file's whole contract is 0.25 s and no subprocesses, so the
+    spawn is recorded through a patched `subprocess.run` and the platform guard
+    is exercised by patching `sys.platform`.
+
+    The two constants are hardcoded from WinBase.h rather than read back off
+    `subprocess`, so a test that reads them cannot agree with a mutation that
+    changed them.
+    """
+
+    BELOW_NORMAL = 0x00004000
+    IDLE = 0x00000040
+
+    @contextlib.contextmanager
+    def _as(self, platform: str):
+        """Pretend to be `platform`, and supply the flag if this box lacks it."""
+        with contextlib.ExitStack() as st:
+            st.enter_context(mock.patch.object(run_parallel.sys, "platform",
+                                               platform))
+            if not hasattr(run_parallel.subprocess, "BELOW_NORMAL_PRIORITY_CLASS"):
+                # A POSIX box running this suite: the constant is Windows-only,
+                # so the Windows branch is otherwise untestable there.
+                st.enter_context(mock.patch.object(
+                    run_parallel.subprocess, "BELOW_NORMAL_PRIORITY_CLASS",
+                    self.BELOW_NORMAL, create=True))
+            yield
+
+    def _record_spawn(self, platform: str) -> dict:
+        """run_shard() once against a patched spawn; return the call kwargs."""
+        seen: dict = {}
+
+        def fake_run(cmd, **kw):
+            seen["cmd"] = cmd
+            seen.update(kw)
+            return subprocess.CompletedProcess(cmd, 0, stdout="",
+                                               stderr="Ran 3 tests in 0.1s\n\nOK\n")
+
+        with self._as(platform), mock.patch.object(run_parallel.subprocess,
+                                                   "run", fake_run):
+            out = run_shard("tests.test_nothing.Nothing")
+        self.assertEqual(out[0], "tests.test_nothing.Nothing")
+        self.assertEqual((out[2], out[3]), (3, True))    # parsing still works
+        return seen
+
+    # -- the pure decision --------------------------------------------------
+
+    def test_on_windows_a_shard_is_spawned_BELOW_NORMAL(self):
+        with self._as("win32"):
+            self.assertEqual(_priority_kwargs(),
+                             {"creationflags": self.BELOW_NORMAL})
+
+    def test_it_is_BELOW_NORMAL_and_deliberately_not_IDLE(self):
+        # Idle is starved by anything that compiles, so a suite at Idle stops
+        # making progress exactly when the user is busiest -- which is when it
+        # was left running.  BelowNormal only loses to the foreground app.
+        with self._as("win32"):
+            flag = _priority_kwargs()["creationflags"]
+        self.assertNotEqual(flag, self.IDLE)
+        self.assertEqual(flag, self.BELOW_NORMAL)
+
+    def test_off_windows_the_spawn_is_left_completely_alone(self):
+        # `{}`, not `{"creationflags": 0}`: POSIX Popen accepts only 0 there and
+        # the point of the guard is that nothing about the POSIX spawn moves.
+        for platform in ("linux", "darwin", "freebsd13", "cygwin"):
+            with self.subTest(platform=platform), self._as(platform):
+                self.assertEqual(_priority_kwargs(), {})
+
+    def test_a_subprocess_module_without_the_flag_degrades_instead_of_raising(self):
+        # The hasattr half of the guard.  `sys.platform` alone would be an
+        # AttributeError on any box whose subprocess lacks the constant, and
+        # this runner gates every test in the repo -- it may not be the thing
+        # that cannot start.
+        saved = getattr(run_parallel.subprocess, "BELOW_NORMAL_PRIORITY_CLASS",
+                        None)
+        if saved is not None:
+            delattr(run_parallel.subprocess, "BELOW_NORMAL_PRIORITY_CLASS")
+            self.addCleanup(setattr, run_parallel.subprocess,
+                            "BELOW_NORMAL_PRIORITY_CLASS", saved)
+        with mock.patch.object(run_parallel.sys, "platform", "win32"):
+            self.assertEqual(_priority_kwargs(), {})
+
+    # -- and that it reaches the actual spawn -------------------------------
+
+    def test_the_flag_reaches_the_real_subprocess_call_on_windows(self):
+        # `_priority_kwargs` being right is worth nothing if `run_shard` does
+        # not pass it -- the mutation this catches is dropping the `**`.
+        seen = self._record_spawn("win32")
+        self.assertEqual(seen.get("creationflags"), self.BELOW_NORMAL)
+
+    def test_off_windows_run_shard_passes_no_creationflags_at_all(self):
+        seen = self._record_spawn("linux")
+        self.assertNotIn("creationflags", seen)
+
+    def test_everything_else_about_the_spawn_is_unchanged(self):
+        # The priority change may not quietly take the output capture, the text
+        # mode or the cwd with it -- `_RAN_RE` reads stderr as text, and a shard
+        # run from anywhere but the repo root cannot import `tests`.
+        for platform in ("win32", "linux"):
+            with self.subTest(platform=platform):
+                seen = self._record_spawn(platform)
+                self.assertEqual(seen["cmd"], [sys.executable, "-m", "unittest",
+                                               "tests.test_nothing.Nothing"])
+                self.assertIs(seen["capture_output"], True)
+                self.assertIs(seen["text"], True)
+                self.assertEqual(seen["cwd"], str(run_parallel.REPO))
+
+    def test_no_real_process_is_ever_spawned_by_this_class(self):
+        # The property the whole file rests on, stated once where it is most at
+        # risk: this is the only class here that touches `subprocess` at all.
+        with mock.patch.object(run_parallel.subprocess, "run") as spawn:
+            with self._as("win32"):
+                _priority_kwargs()
+            with self._as("linux"):
+                _priority_kwargs()
+        spawn.assert_not_called()
 
 
 if __name__ == "__main__":

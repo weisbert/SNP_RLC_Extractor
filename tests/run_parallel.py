@@ -70,6 +70,47 @@ The full number tracks CONTENTION as much as anything -- 120 s on an idle box
 and 339 s with another agent on the same cores have both been measured on the
 same tree -- so read the exit code, not the clock.
 
+DESKTOP PRIORITY: on Windows every shard is spawned BELOW NORMAL
+(`_priority_kwargs`).  The user works on this box while the suite runs, and a
+full run is 4-8 test processes for six to ten minutes at NORMAL priority, i.e.
+head-on competition with whatever they are doing.  BelowNormal and NOT Idle:
+Idle is starved by anything that compiles, and a suite that stops making
+progress whenever the user builds something is a suite that stops being left
+running.
+
+It costs nothing.  The A/B at ONE worker count, two adjacent runs on the same
+tree with sibling agents' test processes on the box throughout (2522 tests /
+452 shards, 20 cores, 14-20 python.exe live of which ~6 were mine):
+
+    -j 4, NORMAL                                461.7 s
+    -j 4, BelowNormal                           464.6 s    +0.6%, i.e. noise
+
+and the two configurations that get quoted, which differ in the WORKER COUNT
+and not in the priority:
+
+    -j 8, NORMAL       (the old default)        414.2 s    2473 tests / 441
+    -j 4, BelowNormal  (what the gates pass)    464.6 s    2522 tests / 452
+    --fast -j 4, BelowNormal                     10.2 s    1044 tests / 169
+    --fast -j 4, NORMAL                          10.6 s
+
+Read that pair with the contention rule above rather than as a cost of this
+change: the two are 49 tests and 11 shards apart (siblings committed between
+them), the SAME -j 8 NORMAL run repeated on the later tree while 22-46
+python.exe were live read 648.1 s, and a -j 4 BelowNormal run taken during a
+similar spike read 542.3 s against the 464.6 s here.  The exit code, not the
+clock.
+
+Verified on a real process rather than inferred: spawned as `run_shard` spawns
+it, `(Get-Process -Id N).PriorityClass` reads BelowNormal, and Normal through
+the same spawn without the flag.  A foreground-priority CPU probe running
+alongside (a fixed 8 MiB hash, repeated) could NOT separate the two conditions
+-- 1.87 ms median at -j 8 NORMAL against 1.84 ms at -j 4 BelowNormal, both
+~1.05x their own idle baseline -- because 8 processes on 20 cores does not
+starve a CPU probe.  Do not quote it in either direction: what BelowNormal buys
+is scheduling preference for the foreground WINDOW, which that probe does not
+measure.  Off Windows the constant does not exist, `_priority_kwargs` returns
+`{}`, and the spawn is byte-for-byte what it always was.
+
 CONCURRENT RUNS: the runner used to assume it was the only thing on the box.
 In a multi-agent workflow it is not -- eight agents each starting `-j 8` on a
 20-core box is 64 test processes -- so each run now registers in a heartbeat
@@ -514,10 +555,32 @@ def discover_shards(patterns: list[str] | None, fast: bool) -> list[tuple[str, i
     return shards
 
 
+def _priority_kwargs() -> dict:
+    """Extra `subprocess.run` kwargs so a shard yields to the user's desktop.
+
+    WINDOWS ONLY, and the guard is two-part on purpose:
+    `BELOW_NORMAL_PRIORITY_CLASS` does not exist in the `subprocess` module off
+    Windows, so `sys.platform` alone would be an AttributeError on any POSIX box
+    and `hasattr` alone would be a silent no-op that nobody notices.  Off
+    Windows this returns `{}` and the spawn is byte-for-byte what it always was.
+
+    BelowNormal, NOT Idle: the box this runs on is a workstation the user is
+    working on, so the suite must give way -- but Idle is starved by anything
+    that compiles, and a suite that stops making progress whenever the user
+    builds something is not a suite that gets run.  BelowNormal only loses to
+    the foreground application; against an otherwise idle box it costs nothing,
+    which is what the docstring's measurements show.
+    """
+    if sys.platform == "win32" and hasattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS"):
+        return {"creationflags": subprocess.BELOW_NORMAL_PRIORITY_CLASS}
+    return {}
+
+
 def run_shard(name: str) -> tuple[str, float, int, bool, str]:
     t0 = time.perf_counter()
     p = subprocess.run([sys.executable, "-m", "unittest", name],
-                       capture_output=True, text=True, cwd=str(REPO))
+                       capture_output=True, text=True, cwd=str(REPO),
+                       **_priority_kwargs())
     dt = time.perf_counter() - t0
     err = p.stderr or ""
     m = _RAN_RE.search(err)
