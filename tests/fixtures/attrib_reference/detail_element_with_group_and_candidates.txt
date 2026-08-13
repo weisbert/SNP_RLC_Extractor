@@ -1,0 +1,23 @@
+port 3 -> gnd     [lumped_to_gnd, lumped]
+
+  declared by      text line 3
+  contribution     +508 pH   (+50.17% of the total, +0.00% at right angles)
+  element current  +1e+03 uA  −9.45 nAj        (per 1 A into the aggressor)
+  transimpedance   −391 uΩ  −16 kΩj     (baseline r_a, victim-side)
+
+  contribution = − current × transimpedance. Both factors are real
+  physical quantities, which is what makes the term exact rather
+  than a linearisation.
+
+  group 'conn row 3' has 2 elements. The sweep beside this
+  moves the WHOLE group together — with n ground balls every
+  one-at-a-time delta is about zero because the other n−1
+  already carry the return.
+
+  Candidates (each row is a full re-solve, not a slope):
+    open                  +504 pH   Δ        −508 pH   −6.05 dB
+    ideal                +1.01 nH   Δ          −1 pH   −0.01 dB
+    R=50 Ohm             +1.01 nH   Δ       −1.01 pH   −0.01 dB
+    L=1 nH               +1.01 nH   Δ   +3.03e-05 fH   +0.00 dB
+    R=100 mOhm+L=1 nH       +1.01 nH   Δ        +0.00 H   +0.00 dB
+    C=100 pF             +1.01 nH   Δ       −1.02 pH   −0.01 dB

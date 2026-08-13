@@ -1,0 +1,21 @@
+Attribution of M: victim 'vic' ← aggressor 'agg'
+Trace   : [3] coil   file die.s6p + pkg.s4p
+Run     : #7
+Read at : 5.6 GHz
+Units   : smart
+
+Ground model: diag (as declared)  (field: diag)
+    'diag' puts every element on the impedance its own row declares (0 for an ideal ground / short, 1/y_series_rlc(omega) for a lumped one), each INDEPENDENT of the others. 'shared:SPEC' (e.g. shared:L=0.3n) keeps those declared impedances and adds ONE shared return impedance across every shunt element, which is what a real package ground plane is: measured on decap_4port.s4p, four balls at 1 nH each independently versus the same four tied through one shared 1 nH moved |M| by 9.60 dB. 'diag:SPEC' overrides every shunt lead with SPEC and leaves them independent. The spelling is the CLI's, verbatim: --attribute-ground-model diag|diag:SPEC|shared:SPEC.
+
+Reference-node check:
+  F1 die.s6p    LIVE     the declared ground moves the answer.
+  F2 pkg.s4p    WELDED   the declared ground does NOT move the answer.
+
+Sign convention. The victim reading is V(+) - V(-) of the victim measurement port and the aggressor is driven with +1 A into its (+) side and out of its (-) side, so every term below is signed the way Z_ab = V_a / I_b is. An element current I_e > 0 flows OUT of the structure into ground for a shunt element (ground / vdd / lumped_to_gnd) and from the first port to the second for a series element (short_to / lumped_between). Flipping either measurement port's +/- assignment flips every term together: the RELATIVE signs between terms are physical, the absolute signs are a labelling choice.
+A negative term OPPOSES the total; the terms sum to it exactly. Shares are of the SIGNED total, so they exceed 100% and go negative wherever terms cancel.
+
+Termination spec, verbatim (the DSL the numbers were computed from):
+    1 signal vic +
+    3 signal agg +
+    2 ground
+    4 ground

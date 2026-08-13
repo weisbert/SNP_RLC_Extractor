@@ -1,0 +1,3 @@
+M ∈ [+456 pH, +1.06 nH]  ideal +1.01 nH  open +504 pH  — AWAY FROM THE POLE, over series inductance ∈ [0, ∞)
+POLE at 505 nH: the added element ANTI-RESONATES with the structure there, so the curve LEAVES the [ideal, open] bracket around it and runs OFF-SCALE — it is drawn as a vertical line and the interval above excludes it. Over the whole half-line, pole included, it is [+1.01 nH, +1.03 nH].
+The sweep LEAVES the [ideal, open] bracket [504 pH, 1.01 nH] -- a series L resonates with the structure's shunt C, so the two endpoints are not a bound. (Only t <= 20 nH was swept, so the open endpoint is outside the range reported.)

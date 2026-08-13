@@ -1,0 +1,16 @@
+poles       : 1
+  index 0  t=5.062544822690891e-07  t_lo=5.062544822690891e-07  t_hi=5.062544822690891e-07  visible=False
+drawn       : 0
+clusters    : 0
+interval    : (0.0, 0.0)
+ylim        : (0.0, 0.0)
+linthresh   : 0.0
+linear_ticks: True
+n_offscale  : 0
+
+si_tick over the y limits and zero:
+                         0.0 -> '0'
+                         0.0 -> '0'
+                         0.0 -> '0'
+                         nan -> '--'
+                         inf -> '--'

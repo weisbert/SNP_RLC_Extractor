@@ -1,0 +1,6 @@
+M ∈ [+19 fH, +1.06 nH]  ideal +1.01 nH  open +251 pH  — AWAY FROM THE POLE, over series inductance ∈ [0, ∞)
+POLE at 505 nH…506 nH (2 poles): the added element ANTI-RESONATES with the structure there, so the curve LEAVES the [ideal, open] bracket around it and runs OFF-SCALE — it is drawn as a vertical line and the interval above excludes it. Over the whole half-line, pole included, it is [−5.19 H, +5.19 H].
+NON-MONOTONIC away from the pole as well: the curve LEAVES the [ideal, open] bracket, so those two endpoints are not a bound.
+This what-if replaced 2 shunt elements with INDEPENDENT impedances (no shared return). Real ground balls share a return plane, which understates the common-mode return inductance by (1 + (n-1)k) -- measured at 6.03 dB on a two-ball spec. Ask the shared-return question too before believing this one.
+The extremum is 5.14e+09 times the [ideal, open] bracket and sits at series inductance = 505 nH: that is a near-POLE of the Mobius map, i.e. this termination anti-resonating with the structure. Check that value is reachable by a real component -- if it is not, pass t_max and get the interval over a range you can build.
+The sweep LEAVES the [ideal, open] bracket [251 pH, 1.01 nH] -- a series L resonates with the structure's shunt C, so the two endpoints are not a bound.

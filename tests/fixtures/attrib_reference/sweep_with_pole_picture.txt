@@ -1,0 +1,17 @@
+poles       : 1
+  index 0  t=5.052512636599061e-07  t_lo=4.907374258877923e-08  t_hi=5.201943564180116e-06  visible=True
+drawn       : 1
+clusters    : 1
+  label 'pole  505 nH'  span '505 nH'
+interval    : (4.56279128096023e-10, 1.058895155572285e-09)
+ylim        : (3.8396520479887156e-10, 1.1312090788694365e-09)
+linthresh   : 1.0109500519810694e-09
+linear_ticks: True
+n_offscale  : 41
+
+si_tick over the y limits and zero:
+      3.8396520479887156e-10 -> '384 pH'
+                         0.0 -> '0'
+      1.1312090788694365e-09 -> '1.13 nH'
+                         nan -> '--'
+                         inf -> '--'

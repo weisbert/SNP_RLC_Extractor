@@ -1,0 +1,1 @@
+M ∈ [+0.00 H, +0.00 H]  ideal +0.00 H  open +0.00 H  — over series inductance ∈ [0, ∞)

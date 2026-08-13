@@ -1,0 +1,23 @@
+stability_offer, default:
+  not checked — press ▸: 4 more solves, re-ranking at 5 frequencies across the band. A ranking read off ONE frequency is a statement about that frequency; this line will then say which ranks moved and where.
+
+stability_offer on a 153-port file:
+  not checked — press ▸: 4 more solves (153-port file), re-ranking at 5 frequencies across the band. A ranking read off ONE frequency is a statement about that frequency; this line will then say which ranks moved and where.
+
+one frequency only -- falls back to the offer:
+  not checked — press ▸: 4 more solves, re-ranking at 5 frequencies across the band. A ranking read off ONE frequency is a statement about that frequency; this line will then say which ranks moved and where.
+
+STABLE:
+  STABLE — nothing changed places across 5 frequencies (4 GHz … 6 GHz), so the order above is not a property of 4 GHz alone
+
+two elements change places:
+  NOT stable — 'ground port 2' #1→#2 at 5 GHz, 'ground port 4' #2→#1 at 5 GHz; checked across 4 GHz … 6 GHz, so the ranking above belongs to 4 GHz only
+
+an element goes ABSENT:
+  NOT stable — 'port 3 -> gnd' #2→absent at 5.5 GHz; checked across 4 GHz … 6 GHz, so the ranking above belongs to 4 GHz only
+
+more than three moved -- the tail is counted:
+  NOT stable — 'ground port 2' #2→#7 at 4.5 GHz, 'ground port 3' #3→#6 at 4.5 GHz, 'ground port 4' #4→#5 at 4.5 GHz … +3 more; checked across 4 GHz … 6 GHz, so the ranking above belongs to 4 GHz only
+
+no ranking at any frequency:
+  no ranking is available at any of these frequencies — the per-element split was withheld (see the reconciliation above)

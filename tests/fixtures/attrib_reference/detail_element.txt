@@ -1,0 +1,10 @@
+ground port 2     [ground, ideal]
+
+  declared by      text line 3
+  contribution     +413 pH   (+50.26% of the total, +0.00% at right angles)
+  element current  +4.21 mA  −1.03 uAj        (per 1 A into the aggressor)
+  transimpedance   −152 mΩ  −3.14 kΩj     (baseline r_a, victim-side)
+
+  contribution = − current × transimpedance. Both factors are real
+  physical quantities, which is what makes the term exact rather
+  than a linearisation.

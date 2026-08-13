@@ -1,0 +1,15 @@
+  element              from                 M   share
+  ──────────────────── ────────────── ─────── ───────
+█ bare EM coupling                    +251 pH +24.68%
+█ ground port 2        conn row 1     +506 pH +50.26%
+█ a_very_long_element… connection ro… −252 pH −25.06%
+
+width = 53
+rows  = ((2, None, ''), (3, 0, 'ground'), (4, 1, 'lumped_to_gnd'))
+
+--- text property ---
+  element              from                 M   share
+  ──────────────────── ────────────── ─────── ───────
+█ bare EM coupling                    +251 pH +24.68%
+█ ground port 2        conn row 1     +506 pH +50.26%
+█ a_very_long_element… connection ro… −252 pH −25.06%

@@ -1,0 +1,33 @@
+Attribution of M: victim 'vic' ← aggressor 'agg'
+Trace   : [3] coil_pair   file coupled_4port_float.s4p
+Run     : #7
+Read at : 5.1 GHz
+Units   : smart
+
+Ground model: diag (as declared)  (field: diag)
+    'diag' puts every element on the impedance its own row declares (0 for an ideal ground / short, 1/y_series_rlc(omega) for a lumped one), each INDEPENDENT of the others. 'shared:SPEC' (e.g. shared:L=0.3n) keeps those declared impedances and adds ONE shared return impedance across every shunt element, which is what a real package ground plane is: measured on decap_4port.s4p, four balls at 1 nH each independently versus the same four tied through one shared 1 nH moved |M| by 9.60 dB. 'diag:SPEC' overrides every shunt lead with SPEC and leaves them independent. The spelling is the CLI's, verbatim: --attribute-ground-model diag|diag:SPEC|shared:SPEC.
+
+Sign convention. The victim reading is V(+) - V(-) of the victim measurement port and the aggressor is driven with +1 A into its (+) side and out of its (-) side, so every term below is signed the way Z_ab = V_a / I_b is. An element current I_e > 0 flows OUT of the structure into ground for a shunt element (ground / vdd / lumped_to_gnd) and from the first port to the second for a series element (short_to / lumped_between). Flipping either measurement port's +/- assignment flips every term together: the RELATIVE signs between terms are physical, the absolute signs are a labelling choice.
+A negative term OPPOSES the total; the terms sum to it exactly. Shares are of the SIGNED total, so they exceed 100% and go negative wherever terms cancel.
+
+Termination spec, verbatim (the DSL the numbers were computed from):
+    1 signal vic +
+    3 signal agg +
+    4 lumped_to_gnd R=50
+
+Reconciliation: NOT reconciled — split WITHHELD   M = nan   rel diff nan (floor 1)   the two algorithms disagree about the answer itself, so apportioning it between elements would be fiction
+
+  (no per-element split — see the reconciliation line above; the TOTAL above it still stands)
+
+Sensitivity: not run — switch the window to the Sensitivity view and export again.
+
+note: Port(s) 4 are IN THE BASELINE because the structure has no reference without them: with every non-probe port open the node admittance is singular, so port 4 -> gnd was folded in and has no term of its own.
+note: The condition numbers and the 1:inf scale ratio between the largest intermediate quantity and this answer mean floating point guarantees NOTHING here: the error bound exceeds the answer. The measured residual is the only evidence, and it is evidence about this run, not a bound.
+note: This is a decomposition of the DECLARATIONS in the spec, not a ranking of ports: an open port contributes no element and no term. It also depends on how the spec is spelled -- '6:1:14 ground' and '6 short_to 7:1:14' + '6 ground' are the same network and decompose differently.
+
+WARN: The baseline node admittance is still singular after folding (cond = 1.5e+16); Zbase is a pseudo-inverse and only probes and elements orthogonal to its null space are meaningful.
+WARN: Measurement port(s) 'vic' have no return path for the injected current; their row and column are undefined, exactly as compute_z_matrix reports them.
+WARN: Reconciliation could not be measured: compute_z_matrix reports Z_ab = (nan+nanj) for this pair. Nothing here has been checked against a second algorithm, so the per-element split is WITHHELD -- an unchecked split is not a checked one that happened to pass.
+WARN: compute_z_matrix: Measurement port(s) 'vic' have no return path for the injected current at freq[0]=5.1e+09 Hz (their probes are not orthogonal to the null space of the node admittance). Their row and column of Z are NaN. Add the missing '-' side or a ground port.
+
+Return path: Return-path budget: the declared elements carry 100.00% of the aggressor's return current (1e+03 mA) and the EM model's own reference 0.00% (0.446 fA).

@@ -1,0 +1,5 @@
+  element          from             ReZ   share   quad
+  ──────────────── ─────────── ──────── ─────── ──────
+█ bare EM coupling              +785 uΩ +12.26% +0.00%
+█ ground port 2    text line 3 +3.86 mΩ +60.23% +0.00%
+█ ground port 4    text line 4 +1.76 mΩ +27.52% +0.00%

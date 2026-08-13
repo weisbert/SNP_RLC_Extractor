@@ -1,0 +1,8 @@
+kind,victim,aggressor,quantity,unit,element,element_kind,declared_by,candidate,value_re,value_im,delta_re,delta_im,delta_dB,share_inline,share_quad,current_re,current_im,transz_re,transz_im,note
+total,vic,agg,M,H,(compute_z_matrix),,,,1.000000000000e-09,0.000000000000e+00,,,,,,,,,,
+total,vic,agg,M,H,(sum of terms),,,,1.000000000000e-09,0.000000000000e+00,,,,,,,,,,residual=nan;floor=1e-10;trustworthy=False
+term,vic,agg,M,H,bare EM coupling,,,,2.500000000000e-10,0.000000000000e+00,,,,2.500000000000e-01,0.000000000000e+00,1.000000000000e-03,-2.000000000000e-04,-1.250000000000e+00,5.000000000000e-01,
+term,vic,agg,M,H,ground port 2,ground,conn row 1,,nan,0.000000000000e+00,,,,nan,nan,1.000000000000e-03,-2.000000000000e-04,-1.250000000000e+00,5.000000000000e-01,
+term,vic,agg,M,H,port 3 -> gnd,lumped_to_gnd,conn row 1,,inf,0.000000000000e+00,,,,inf,0.000000000000e+00,1.000000000000e-03,-2.000000000000e-04,-1.250000000000e+00,5.000000000000e-01,
+term,vic,agg,M,H,short 5-6,short,conn row 1,,0.000000000000e+00,0.000000000000e+00,,,,0.000000000000e+00,0.000000000000e+00,1.000000000000e-03,-2.000000000000e-04,-1.250000000000e+00,5.000000000000e-01,
+term,vic,agg,M,H,port 7-8,lumped_between,conn row 1,,-3.000000000000e-10,0.000000000000e+00,,,,-3.000000000000e-01,0.000000000000e+00,1.000000000000e-03,-2.000000000000e-04,-1.250000000000e+00,5.000000000000e-01,

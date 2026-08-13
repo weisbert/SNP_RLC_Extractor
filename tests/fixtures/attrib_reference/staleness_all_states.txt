@@ -1,0 +1,19 @@
+everything agrees:
+  ("from run #7 @ 5.6 GHz   ·   M: 'vic' ← 'agg'", False)
+
+the trace has been REMOVED:
+  ("from run #7 @ 5.6 GHz   ·   M: 'vic' ← 'agg'   ·   the trace this describes has been REMOVED. The numbers below are still the ones that were computed; nothing here can be recomputed.", True)
+
+the spec has MOVED since (this outranks the one below):
+  ("from run #7 @ 5.6 GHz   ·   M: 'vic' ← 'agg'   ·   the spec has been EDITED since — press Recompute to decompose what is on screen now.", True)
+
+computed from the spec AS EDITED, not from the run:
+  ("from run #7 @ 5.6 GHz   ·   M: 'vic' ← 'agg'   ·   computed from the spec AS EDITED, not from the run: the plot, the results table and Export CSV are still showing run #7. Calculate to make them agree.", True)
+
+both true at once -- the moved signature wins:
+  ("from run #7 @ 5.6 GHz   ·   M: 'vic' ← 'agg'   ·   the spec has been EDITED since — press Recompute to decompose what is on screen now.", True)
+
+header_trace_text, at and past the cap:
+  short: 'Trace [3] pkg.s4p   ·   pkg.s4p'
+  exactly 18: 'Trace [3] abcdefghijklmnopqr   ·   abcdefghijklmnopqr'
+  19, so elided: 'Trace [3] abcdefghijklmnopq…   ·   abcdefghijklmnopq…'

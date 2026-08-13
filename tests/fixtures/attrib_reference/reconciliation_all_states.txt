@@ -1,0 +1,60 @@
+hand-built states:
+  healthy
+    verdict : 'reconciled'  ok=True
+    line    : reconciled   M = +1 nH   rel diff 1e-13 (floor 1e-10)
+  above floor
+    verdict : 'reconciled (above floor)'  ok=True
+    line    : reconciled (above floor)   M = +1 nH   rel diff 3.1e-07 (floor 4.3e-10)
+  withheld
+    verdict : 'NOT reconciled'  ok=False
+    line    : NOT reconciled — split WITHHELD   M = +1 nH   rel diff 1.01 (floor 4.3e-10)   the two algorithms disagree about the answer itself, so apportioning it between elements would be fiction
+  not comparable
+    verdict : 'not comparable'  ok=True
+    line    : not comparable   M = +1 nH   — a what-if network compute_z_matrix was never asked about; the arithmetic is still checked on the declared spec
+  complex quantity
+    verdict : 'reconciled'  ok=True
+    line    : reconciled   Z = +200 mΩ  +1.75 Ωj   rel diff 1e-13 (floor 1e-10)
+  NaN residual
+    verdict : 'NOT reconciled'  ok=False
+    line    : NOT reconciled — split WITHHELD   M = +1 nH   rel diff nan (floor 1e-10)   the two algorithms disagree about the answer itself, so apportioning it between elements would be fiction
+
+every real spec in the registry:
+  coupled_grounds
+    verdict : 'reconciled'  ok=True
+    line    : reconciled   M = +821 pH   rel diff 1.36e-13 (floor 4.25e-10)
+  coupled_diff_probes
+    verdict : 'reconciled'  ok=True
+    line    : reconciled   M = +810 pH   rel diff 2.78e-16 (floor 1.33e-11)
+  diff_lumped_grounds
+    verdict : 'reconciled'  ok=True
+    line    : reconciled   M = +1.01 nH   rel diff 6.25e-13 (floor 3.61e-09)
+  diff_ideal_grounds
+    verdict : 'reconciled'  ok=True
+    line    : reconciled   M = +1.01 nH   rel diff 6.25e-13 (floor 3.62e-09)
+  diff_grounds_diag
+    verdict : 'not comparable'  ok=True
+    line    : not comparable   M = +1.01 nH   — a what-if network compute_z_matrix was never asked about; the arithmetic is still checked on the declared spec
+  diff_grounds_shared
+    verdict : 'not comparable'  ok=True
+    line    : not comparable   M = +2.03 nH   — a what-if network compute_z_matrix was never asked about; the arithmetic is still checked on the declared spec
+  diff_ideal_and_weak
+    verdict : 'reconciled'  ok=True
+    line    : reconciled   M = +504 pH   rel diff 4.07e-14 (floor 9.1e-07)
+  diff_short_and_ground
+    verdict : 'reconciled'  ok=True
+    line    : reconciled   M = +1.01 nH   rel diff 5.75e-13 (floor 7.29e-09)
+  decap_grounds
+    verdict : 'reconciled'  ok=True
+    line    : reconciled   M = +0.00 H   rel diff 0 (floor 1.44e-08)
+  float_singular
+    verdict : 'reconciled'  ok=True
+    line    : reconciled   M = +800 pH   rel diff 1.48e-15 (floor 4.43e-13)
+  float_one_coil_nan
+    verdict : 'NOT reconciled'  ok=False
+    line    : NOT reconciled — split WITHHELD   M = nan   rel diff nan (floor 1)   the two algorithms disagree about the answer itself, so apportioning it between elements would be fiction
+  composed_no_gauge
+    verdict : 'reconciled'  ok=True
+    line    : reconciled   M = +1.01 nH   rel diff 6.25e-13 (floor 2.89e-08)
+  composed_gauge
+    verdict : 'reconciled'  ok=True
+    line    : reconciled   M = +1.01 nH   rel diff 1.11e-12 (floor 1.53e-08)

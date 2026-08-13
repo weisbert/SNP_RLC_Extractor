@@ -1,0 +1,422 @@
+{
+ "__env__": {
+  "numpy": "2.4.4",
+  "python": "3.11.7",
+  "platform": "Windows"
+ },
+ "cases": [
+  {
+   "name": "signed_str",
+   "describe": "signed_str over every input class it distinguishes",
+   "sha256": "9f48f3d1bcf4a0bc464029732bffc059af3ee19a3b5d91facdc77d294c3529f3",
+   "chars": 550,
+   "lines": 20
+  },
+  {
+   "name": "render_table_model",
+   "describe": "render_table's raw model: the lines, the (line, key, kind) rows and the width, including the U+2026 cap on a text column",
+   "sha256": "817086e4cf93854944254f8ec99de1d91bcb7f0ae355ef55dfb5a51425e8616c",
+   "chars": 641,
+   "lines": 15
+  },
+  {
+   "name": "candidate_parsing",
+   "describe": "parse_candidate / candidate_list: what is accepted, and every refusal message a typed field can produce",
+   "sha256": "2c7fee6c5b7e5e5cf9364907cad370040af15075285cc382b853b256bfc14211",
+   "chars": 2008,
+   "lines": 26
+  },
+  {
+   "name": "quantity_refusals",
+   "describe": "pkg_rlc_attrib's refusal-by-name for every non-decomposable quantity, plus sweep_mobius's own two",
+   "sha256": "4874df0ab6d94fa1460fb6374459a61605d37fdcc0ecd630561beef46a3dc50f",
+   "chars": 3471,
+   "lines": 25
+  },
+  {
+   "name": "contrib_coupled_M",
+   "describe": "contributions_table on the shipped coupled_4port_diff case, quantity M",
+   "sha256": "20b49bbcb5529e6ca9daba072ec1cc0dc312fadc47c2afa9d4abff17a0295ad2",
+   "chars": 269,
+   "lines": 5
+  },
+  {
+   "name": "contrib_coupled_ImZ",
+   "describe": "contributions_table on the shipped coupled_4port_diff case, quantity ImZ",
+   "sha256": "cf3d15f0a8a1cecb14fd8fff50d8ae639ddeb975914bf370614e680cc8f6a343",
+   "chars": 269,
+   "lines": 5
+  },
+  {
+   "name": "contrib_coupled_ReZ",
+   "describe": "contributions_table on the shipped coupled_4port_diff case, quantity ReZ",
+   "sha256": "5016cb4f560cba944db6237d835f998a4e65cd1338f401f0f060f8d527b32fd0",
+   "chars": 274,
+   "lines": 5
+  },
+  {
+   "name": "contrib_coupled_Z",
+   "describe": "contributions_table on the shipped coupled_4port_diff case, quantity Z",
+   "sha256": "f53ccfab9aa124f702f2b95414e8b4bf21d022abdf95fcae5b35919314210eb5",
+   "chars": 314,
+   "lines": 5
+  },
+  {
+   "name": "contrib_coupled_M_over_L_a",
+   "describe": "contributions_table on the shipped coupled_4port_diff case, quantity M/L_a",
+   "sha256": "6972091d16707a0f018b1f84d38a0f9b7c2466bdeb69ad95f2da107636c46ba7",
+   "chars": 264,
+   "lines": 5
+  },
+  {
+   "name": "contrib_coupled_k",
+   "describe": "contributions_table on the shipped coupled_4port_diff case, quantity k",
+   "sha256": "a214ff5fc3357709d92869679a7aee426dff1fda1e011de7bc317105dc4a3efd",
+   "chars": 269,
+   "lines": 5
+  },
+  {
+   "name": "contrib_coupled_M_aligned",
+   "describe": "the same table in the ALIGNED units mode (one SI prefix per column, in the header)",
+   "sha256": "19241adb698c59266efe5fc57eccc3032ffbaf98abc027f6e2b9509a897ed555",
+   "chars": 264,
+   "lines": 5
+  },
+  {
+   "name": "contrib_coupled_Z_aligned",
+   "describe": "the complex two-column table in the aligned units mode",
+   "sha256": "a4e36c3ea5c80588bafa4dc620e6af5ec50633d0a3b6414fa7071bedc4cc141d",
+   "chars": 324,
+   "lines": 5
+  },
+  {
+   "name": "contrib_bare_only",
+   "describe": "a spec with no element at all: the bare EM term on its own",
+   "sha256": "44886100fc42e34770cd720d8c8fb4dc2e38f3153b48490d7860dbe46417238b",
+   "chars": 143,
+   "lines": 3
+  },
+  {
+   "name": "contrib_folded_tail",
+   "describe": "the folded tail line -- a 1 GOhm lead beside an ideal ground",
+   "sha256": "ffc2827c9c7665aa0dd0ded242ecbde7692e05613dce287ed14b221896e37021",
+   "chars": 325,
+   "lines": 5
+  },
+  {
+   "name": "contrib_folded_tail_unfolded",
+   "describe": "the same decomposition with fold=False, which is what the exported report uses: still RANKED, nothing hidden",
+   "sha256": "d6bd9eedc87f77a078b83522726ca2055c10e7277cd868537da9330e2d4a337c",
+   "chars": 294,
+   "lines": 5
+  },
+  {
+   "name": "contrib_two_kinds",
+   "describe": "a short and a ground in one table",
+   "sha256": "064be695877cbda2cf2a3a60f75f9a6a97eb485a22ededfe498fd396376419cc",
+   "chars": 269,
+   "lines": 5
+  },
+  {
+   "name": "contrib_lumped_declared",
+   "describe": "two lumped ground leads, element impedances as DECLARED",
+   "sha256": "3a4780c9cd4a7ba790fe359a34a1f223f67f7de03ae6a7d036a238273ae9e00d",
+   "chars": 269,
+   "lines": 5
+  },
+  {
+   "name": "contrib_ground_model_declared",
+   "describe": "two IDEAL grounds -- the base the two models below are measured against",
+   "sha256": "8227f18ad535af1f0131faffd7099100f54476212e11c38ef4ab33c5fac864b0",
+   "chars": 269,
+   "lines": 5
+  },
+  {
+   "name": "contrib_ground_model_diag",
+   "describe": "the same two grounds through INDEPENDENT 1 nH leads",
+   "sha256": "b0ce9ecafc0666e783545c0156ad88463d160abcf1e78e64450579ac61208733",
+   "chars": 269,
+   "lines": 5
+  },
+  {
+   "name": "contrib_ground_model_shared",
+   "describe": "the same two grounds through ONE SHARED 1 nH return -- the 9.6 dB choice, and the reason neither model may be a default",
+   "sha256": "87ee9fa2bb3bfb9a20c9c20ed679df6d3f73d6e5cbdd53571263efbf2edb19d4",
+   "chars": 274,
+   "lines": 5
+  },
+  {
+   "name": "contrib_singular_baseline",
+   "describe": "coupled_4port_float: cond(Y) = 2.5e16, so the baseline is recovered by SVD and any out-of-range element is folded in and named",
+   "sha256": "0f22467d75b1f64cc806cdd99033fd50cd55197dac0f3378bd954ee74af75115",
+   "chars": 143,
+   "lines": 3
+  },
+  {
+   "name": "contrib_composed_no_gauge",
+   "describe": "the composition WITHOUT the baseline gauge -- the far file's ground ball is exactly zero",
+   "sha256": "2001cd02f5f5af6aa4ba998f78252e3740201b14b1fae05f66b0aade2a80cc19",
+   "chars": 374,
+   "lines": 6
+  },
+  {
+   "name": "contrib_composed_gauge",
+   "describe": "the composition WITH BaselineLinks: the cross-file link is in the baseline and the far element is no longer zero",
+   "sha256": "1d0ea04609587146017950a90e5e66cc26e040c1a46d38945b1f21cef8d6ab94",
+   "chars": 269,
+   "lines": 5
+  },
+  {
+   "name": "contrib_fake_nan_inf_zero",
+   "describe": "a NaN term, a signed infinity and an exact zero in one table (hand-built)",
+   "sha256": "9a0e63edf9f2a2788f551ce04a34d2413b693e6b5493445614e93eab18481a12",
+   "chars": 422,
+   "lines": 7
+  },
+  {
+   "name": "contrib_fake_withheld",
+   "describe": "the empty-terms message: no per-element split, pointing at the reconciliation line (hand-built)",
+   "sha256": "05031981d6972cc455780cc9041f617a329f6210816a120bd5c19ce7a1d8d4aa",
+   "chars": 93,
+   "lines": 1
+  },
+  {
+   "name": "contrib_fake_complex_aligned",
+   "describe": "the hand-built complex decomposition in the aligned units mode",
+   "sha256": "2c64ab5ef9d5b8a4e47a2b5452f3b27bbd2914a59899b812632f9bbddd437cc1",
+   "chars": 255,
+   "lines": 4
+  },
+  {
+   "name": "reconciliation_all_states",
+   "describe": "reconciliation_verdict and reconciliation_line over all four header states plus every real spec",
+   "sha256": "0973eaa85072c8f5f838d16055121fa36e1267e9789067e659abc671a145c379",
+   "chars": 3172,
+   "lines": 60
+  },
+  {
+   "name": "sensitivity_coupled_default",
+   "describe": "sensitivity_table over the six default candidates on the shipped coupled case",
+   "sha256": "5e80119b385faa653597627e855ff1720ceb30bc2efeb4c29b68a2e1fd16a3ac",
+   "chars": 783,
+   "lines": 14
+  },
+  {
+   "name": "sensitivity_coupled_aligned",
+   "describe": "the same table in the aligned units mode",
+   "sha256": "78763feb74a4ab0872ce3f601a415d7c071a870356c7b0fda2eae7fc227b0eb6",
+   "chars": 853,
+   "lines": 14
+  },
+  {
+   "name": "sensitivity_typed_candidates",
+   "describe": "sensitivity_table over a TYPED candidate field, with the element kinds supplied so the rows keep their Ports & Roles colour",
+   "sha256": "4868d5721753eb164d79a083435e7badcf2a58f870e670ff2d3f34dca8dfd1b5",
+   "chars": 549,
+   "lines": 10
+  },
+  {
+   "name": "sensitivity_ImZ",
+   "describe": "sensitivity_table for ImZ, i.e. a different unit and a different column suffix",
+   "sha256": "129ca369ada52fd459141e9fb3cd4e7bcbccf9c75c716bdb4000350a7f4b3cb1",
+   "chars": 797,
+   "lines": 14
+  },
+  {
+   "name": "detail_bare_em",
+   "describe": "detail_lines for the bare EM row (key None), including the wrapped return-path budget",
+   "sha256": "f7169ca790ed2181ddb91d6191aa54cea68d5ae7bb44010cd7a6c4d3e168d933",
+   "chars": 508,
+   "lines": 17
+  },
+  {
+   "name": "detail_no_selection_empty",
+   "describe": "detail_lines with key None on a decomposition that has no bare term",
+   "sha256": "7890dbf544544185b60d8c76fbbcd27c291c1480c3e9a7889f073ef94c5207b4",
+   "chars": 83,
+   "lines": 1
+  },
+  {
+   "name": "detail_element",
+   "describe": "detail_lines for a declared element: current, transimpedance and the exactness sentence",
+   "sha256": "d56e4729c3f1e4951d9fdc82d9b5043d00b353b4d1f7df52633e4bdc7790d47b",
+   "chars": 443,
+   "lines": 10
+  },
+  {
+   "name": "detail_element_with_group_and_candidates",
+   "describe": "the same, plus the multi-member group paragraph and the candidate rows underneath",
+   "sha256": "eb3e953b30c63e9ce3b32453a23504e220904255ded6237f1a86bc35a2b0590f",
+   "chars": 1102,
+   "lines": 23
+  },
+  {
+   "name": "detail_unknown_key",
+   "describe": "detail_lines for an element index that is not in this decomposition",
+   "sha256": "d5bf5dfb4b4b6071c1a672ae23fcee76d28ec1db343e6d3a9efd6947caa2309d",
+   "chars": 43,
+   "lines": 1
+  },
+  {
+   "name": "sweep_with_pole",
+   "describe": "sweep_caption on the documented anti-resonance: the pole-free interval, the POLE line and the whole-half-line interval",
+   "sha256": "26e063002b9e2f155b853d72013bc3a0816e6ca19e4abba84cee5b65617e7a80",
+   "chars": 870,
+   "lines": 4
+  },
+  {
+   "name": "sweep_with_pole_picture",
+   "describe": "the SweepPicture behind that caption -- poles, interval, ylim, linthresh and the off-scale count",
+   "sha256": "0334e8e6fc2b65be985573df668c585af07f40a299ed3df6a9b3dc0d88452434",
+   "chars": 616,
+   "lines": 17
+  },
+  {
+   "name": "sweep_no_pole_flat",
+   "describe": "decap, whose residues are all exactly zero, so ideal == open and there is no pole at all",
+   "sha256": "2c3b2922c9f187505a35120452965e6de82639ff284e9247efbcbd005ffa8952",
+   "chars": 86,
+   "lines": 1
+  },
+  {
+   "name": "sweep_no_pole_flat_picture",
+   "describe": "the SweepPicture for the constant sweep -- the SWEEP_Y_PAD_FLAT case",
+   "sha256": "e4b4ca01d24cf28e95cea2d72882d168ca82eafef9cbd0f63702f68dbe0654a4",
+   "chars": 475,
+   "lines": 16
+  },
+  {
+   "name": "sweep_bounded_t_max",
+   "describe": "the same element swept over a BOUNDED range, which is what makes 'physical' mean something",
+   "sha256": "c17432b530ab1f7e151fdb9b675ade26509dc2d97ca6c564d84a1df4bb1c4cb5",
+   "chars": 630,
+   "lines": 3
+  },
+  {
+   "name": "sweep_complex_quantity",
+   "describe": "a sweep of the COMPLEX quantity Z, whose interval and endpoints are over the MAGNITUDE and are labelled |Z|",
+   "sha256": "511c290201e63570bb3323987789924a8530a22054225d2212ae0adfe7caf82b",
+   "chars": 1144,
+   "lines": 6
+  },
+  {
+   "name": "sweep_group",
+   "describe": "both ground leads swept as ONE group, which is the |S| >= 2 case",
+   "sha256": "25b39dd9f4d3d47ad479c98ebe4e257778024f6c634dce7b01f79a248eea50a1",
+   "chars": 1310,
+   "lines": 6
+  },
+  {
+   "name": "sweep_note_text",
+   "describe": "sweep_note_text: the three-line cap, the problems-first order and the '+N more' pointer",
+   "sha256": "6a1c4f7e4c5218a3b44595bc014fd36446f678c4812f8248879a3ae9a1377fde",
+   "chars": 1083,
+   "lines": 22
+  },
+  {
+   "name": "provenance_plain",
+   "describe": "provenance_lines for an ordinary single-file run",
+   "sha256": "cd71be04cf1122cb4a07dddfbf1f43360bd399aa6b2f7532ad941dbc6c4cd0a3",
+   "chars": 1740,
+   "lines": 17
+  },
+  {
+   "name": "provenance_snapped_and_edited",
+   "describe": "the frequency snap note, the spec-edited marker and a non-default units mode",
+   "sha256": "be3e198eef7c1f65de902dc56381974fc23ffe11a23851a42cee40b369efe65c",
+   "chars": 1938,
+   "lines": 17
+  },
+  {
+   "name": "provenance_ground_model_ignored",
+   "describe": "a ground model that was NOT applied, with the parser's own note ahead of the standing explanation",
+   "sha256": "200d60200bec4824be9683e7697c55c9609b0db506ff1898420c9c284e4215a7",
+   "chars": 1841,
+   "lines": 18
+  },
+  {
+   "name": "provenance_composed",
+   "describe": "a composed trace: the reference-node verdicts go BEFORE the sign convention and the spec",
+   "sha256": "712557f8bec1330b64473dcd3bf9b8d4a2214cdd69129780d01d2b1d3cfab0f0",
+   "chars": 1887,
+   "lines": 21
+  },
+  {
+   "name": "provenance_empty_spec",
+   "describe": "an empty termination spec still prints '(empty)' rather than nothing at all",
+   "sha256": "b52521808cc160f86c068c6068ec60345e6db79d630b46cea89fd6a539612521",
+   "chars": 1668,
+   "lines": 14
+  },
+  {
+   "name": "staleness_all_states",
+   "describe": "staleness_text's four states, and header_trace_text's cap",
+   "sha256": "688f11e881cc244beebdc18dd501e9cedec9753bbb7427774cb20c867483cb9f",
+   "chars": 1195,
+   "lines": 19
+  },
+  {
+   "name": "stability_all_states",
+   "describe": "stability_offer and stability_line: the offer, the STABLE verdict, a moved ranking, an absent element and the no-ranking case",
+   "sha256": "c7d3415e0316850771df5e373a8275fd00d2811cdf5601451368a746785b9c93",
+   "chars": 1614,
+   "lines": 23
+  },
+  {
+   "name": "report_full",
+   "describe": "report_text with everything present: sensitivity, refused candidates, the unabridged sweep caption, the stability verdict, notes and warnings",
+   "sha256": "2042774390829807a542ce304f24b7076ac23380fafcd90001c90dd962c00518",
+   "chars": 5113,
+   "lines": 61
+  },
+  {
+   "name": "report_minimal",
+   "describe": "report_text with nothing but the decomposition -- the 'Sensitivity: not run' branch is SAID, not omitted",
+   "sha256": "743089a2c07be9376f12718a872fef91434a869d168ee980d28379ecab9f81af",
+   "chars": 2620,
+   "lines": 31
+  },
+  {
+   "name": "report_withheld",
+   "describe": "report_text over a withheld split (hand-built)",
+   "sha256": "27f2acb5e86c5840972d2cf499f3936a699065c8a5200ffc3974f508f8468477",
+   "chars": 2304,
+   "lines": 25
+  },
+  {
+   "name": "report_singular_fold",
+   "describe": "report_text on the singular baseline: the folded elements are named in the notes, which is the half of the auto-recovery that is not optional -- a folded element has no term of its own",
+   "sha256": "5a9d47f1203c54ce904ccda4a3e1f7383de0c918029babaace79cbd0654c59ed",
+   "chars": 2752,
+   "lines": 30
+  },
+  {
+   "name": "report_nan_total",
+   "describe": "report_text over the REAL NaN case: compute_z_matrix could not measure it, so the residual is NaN, the split is withheld and the warnings say so",
+   "sha256": "3139b2dc9bb9a46507124df33b0f98cddfbf90f827368b48d1965aaeb8d730bf",
+   "chars": 3934,
+   "lines": 33
+  },
+  {
+   "name": "report_aligned_units",
+   "describe": "report_text in the aligned units mode",
+   "sha256": "9eca52476978008c8f38453fce4d73ea90724d5e59328363ebafd2c5d9109b8d",
+   "chars": 3840,
+   "lines": 47
+  },
+  {
+   "name": "csv_records_full",
+   "describe": "csv_records over a real decomposition plus its sensitivity rows",
+   "sha256": "c1638ec50957f67c8f71d370e10da43509c5ca8d839d94443db959af2a067113",
+   "chars": 2798,
+   "lines": 18
+  },
+  {
+   "name": "csv_records_nan_inf",
+   "describe": "csv_records over the hand-built NaN / infinity table: 'nan', 'inf' and '-inf' are written, never blanked",
+   "sha256": "6e42422f4e0c3aa48b26840a50058f5cafa78d29547ea89365d513fab8a8d628",
+   "chars": 1367,
+   "lines": 8
+  }
+ ]
+}

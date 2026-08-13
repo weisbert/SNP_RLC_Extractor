@@ -1,0 +1,5 @@
+  element          from              M   share   quad
+  ──────────────── ─────────── ─────── ─────── ──────
+█ bare EM coupling             +377 pH +37.33% +0.00%
+█ ground port 4    text line 4 +379 pH +37.51% +0.00%
+█ ground port 6    text line 5 +254 pH +25.16% +0.00%

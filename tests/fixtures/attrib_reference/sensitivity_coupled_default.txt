@@ -1,0 +1,14 @@
+  element       candidate      new value        Δ  Δ dB
+  ───────────── ────────────── ───────── ──────── ─────
+█ ground port 4 open             +407 pH  −414 pH −6.09
+█ ground port 2 open             +408 pH  −413 pH −6.07
+█ ground port 4 L=1 nH           +825 pH +4.33 pH +0.05
+█ ground port 4 R=100 mOhm+L=…   +825 pH +4.33 pH +0.05
+█ ground port 2 L=1 nH           +825 pH  +4.3 pH +0.05
+█ ground port 2 R=100 mOhm+L=…   +825 pH  +4.3 pH +0.05
+█ ground port 4 R=50 Ohm         +821 pH  −110 fH −0.00
+█ ground port 2 R=50 Ohm         +821 pH  −109 fH −0.00
+█ ground port 4 C=100 pF         +821 pH −41.7 fH −0.00
+█ ground port 2 C=100 pF         +821 pH −41.5 fH −0.00
+█ ground port 2 ideal            +821 pH  +0.00 H +0.00
+█ ground port 4 ideal            +821 pH  +0.00 H +0.00

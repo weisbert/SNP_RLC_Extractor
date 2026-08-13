@@ -1,0 +1,1 @@
+Select a row above to see its current, its transimpedance and what would change it.

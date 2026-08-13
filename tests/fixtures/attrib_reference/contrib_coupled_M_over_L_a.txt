@@ -1,0 +1,5 @@
+  element          from         M/L_a   share   quad
+  ──────────────── ─────────── ────── ─────── ──────
+█ bare EM coupling             +100 m +24.68% +0.00%
+█ ground port 2    text line 3 +204 m +50.26% +0.00%
+█ ground port 4    text line 4 +102 m +25.06% +0.00%

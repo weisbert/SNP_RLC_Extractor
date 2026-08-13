@@ -1,0 +1,25 @@
+decompose, refused BY NAME:
+         'C_c' -> AttribError: 'C_c' cannot be decomposed per element: C_c = -1/(omega*Im Z_ab) is a RECIPROCAL of the decomposed quantity. Superposition adds impedances, not their inverses, so the per-element terms of C_c do not sum to C_c and any 'share' would be meaningless. C_c is still reported as a TOTAL -- it is the right reading whenever Im(Z_ab) < 0 -- just never per term. Decompose 'ImZ' or 'Z' instead.
+          'Cc' -> AttribError: 'Cc' cannot be decomposed per element: C_c = -1/(omega*Im Z_ab) is a RECIPROCAL of the decomposed quantity. Superposition adds impedances, not their inverses, so the per-element terms of C_c do not sum to C_c and any 'share' would be meaningless. C_c is still reported as a TOTAL -- it is the right reading whenever Im(Z_ab) < 0 -- just never per term. Decompose 'ImZ' or 'Z' instead.
+           'Q' -> AttribError: 'Q' cannot be decomposed per element: Q = Im(Z)/Re(Z) is a ratio of two decomposable quantities, which is not itself decomposable. Decompose 'ReZ' and 'ImZ' separately.
+         '|Z|' -> AttribError: '|Z|' cannot be decomposed per element: |Z_ab| is not R-linear in Z_ab (it is a norm), so the terms of |Z| do not add. Decompose 'Z' and read the per-term magnitudes off the complex terms, which DO add.
+        'absZ' -> AttribError: 'absZ' cannot be decomposed per element: |Z_ab| is not R-linear in Z_ab (it is a norm), so the terms of |Z| do not add. Decompose 'Z' and read the per-term magnitudes off the complex terms, which DO add.
+          'dB' -> AttribError: 'dB' cannot be decomposed per element: a dB value is a logarithm of a magnitude and is neither linear nor signed. Decompose the underlying linear quantity.
+    'M/L_a_dB' -> AttribError: 'M/L_a_dB' cannot be decomposed per element: a dB value is a logarithm of a magnitude and is neither linear nor signed. Decompose the underlying linear quantity.
+        'k_dB' -> AttribError: 'k_dB' cannot be decomposed per element: a dB value is a logarithm of a magnitude and is neither linear nor signed. Decompose the underlying linear quantity.
+      'banana' -> AttribError: Unknown quantity 'banana'. Decomposable: ImZ, M, M/L_a, ReZ, Z, k. Refused by name: C_c, Cc, M/L_a_dB, Q, absZ, dB, k_dB, |Z|
+
+sweep_mobius, refused BY NAME (a curve has no single configuration to take a scale from):
+           'k' -> AttribError: sweep_mobius cannot sweep 'k': k divides by sqrt(L_a L_b), both of which the swept termination changes; and where the sweep drives L_a negative, k is undefined rather than small (the same rule extract_coupling_at_freq applies). Sweep 'M' or 'ImZ', or ask sensitivity() for exact k at named alternatives.
+       'M/L_a' -> AttribError: sweep_mobius cannot sweep 'M/L_a': M/L_a divides by L_a, and L_a is a property of the NETWORK -- sweeping the termination changes it too. A curve of M(t) over a fixed L_a is not M/L_a(t); measured on diff_pair_4port.s4p, opening one ground takes L_a from +5.03 nH to -505 nH. Sweep 'M' or 'ImZ', or ask sensitivity() for exact M/L_a at named alternatives.
+
+accepted, for contrast:
+           'Z' -> quantity 'Z' unit 'Ohm'
+         'ReZ' -> quantity 'ReZ' unit 'Ohm'
+         'ImZ' -> quantity 'ImZ' unit 'Ohm'
+           'M' -> quantity 'M' unit 'H'
+       'M/L_a' -> quantity 'M/L_a' unit ''
+           'k' -> quantity 'k' unit ''
+        'z_ab' -> quantity 'Z' unit 'Ohm'
+          'im' -> quantity 'ImZ' unit 'Ohm'
+           'm' -> quantity 'M' unit 'H'

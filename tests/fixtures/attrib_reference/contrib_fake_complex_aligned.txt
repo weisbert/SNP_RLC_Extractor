@@ -1,0 +1,4 @@
+  element          from       Re Z [mΩ] Im Z [Ω]   share   quad
+  ──────────────── ────────── ───────── ──────── ─────── ──────
+█ bare EM coupling                 +250     −1.5 +20.00% +1.00%
+█ ground port 2    conn row 1       −50    +3.25 +80.00% −4.00%

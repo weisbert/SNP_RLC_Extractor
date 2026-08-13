@@ -1,0 +1,17 @@
+bare EM coupling
+
+  What the file already has with every non-probe port OPEN.
+  It carries no element current and no baseline transimpedance,
+  so both read '--' rather than a plausible zero.
+
+  contribution   +203 pH
+  share          +24.68%
+
+  Nothing in the spec can move this term. It is the number every
+  other row is a correction to.
+
+Return path
+
+  Return-path budget: the declared elements carry 98.09% of the
+  aggressor's return current (1.02 A) and the EM model's own
+  reference 1.91% (19.9 mA).

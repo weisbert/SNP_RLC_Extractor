@@ -1,0 +1,5 @@
+  element          from        M [pH]   share   quad
+  ──────────────── ─────────── ────── ─────── ──────
+█ bare EM coupling             +202.6 +24.68% +0.00%
+█ ground port 2    text line 3 +412.6 +50.26% +0.00%
+█ ground port 4    text line 4 +205.8 +25.06% +0.00%

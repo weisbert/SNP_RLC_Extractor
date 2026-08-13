@@ -1,0 +1,22 @@
+the caption alone, default cap:
+M ∈ [+456 pH, +1.06 nH]  ideal +1.01 nH  open +504 pH  — AWAY FROM THE POLE, over series inductance ∈ [0, ∞)
+POLE at 505 nH: the added element ANTI-RESONATES with the structure there, so the curve LEAVES the [ideal, open] bracket around it and runs OFF-SCALE — it is drawn as a vertical line and the interval above excludes it. Over the whole half-line, pole included, it is [−10.3 mH, +10.3 mH].
+… +2 more — see Copy report
+
+with a refused candidate FIRST:
+'R=5 m': 'm' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
+M ∈ [+456 pH, +1.06 nH]  ideal +1.01 nH  open +504 pH  — AWAY FROM THE POLE, over series inductance ∈ [0, ∞)
+… +3 more — see Copy report
+
+capped at 2 lines:
+'R=5 m': 'm' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
+… +4 more — see Copy report
+
+capped at 1 line:
+… +5 more — see Copy report
+
+nothing to say:
+''
+
+blank lines are dropped, not counted:
+'one line'

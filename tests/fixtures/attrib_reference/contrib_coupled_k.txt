@@ -1,0 +1,5 @@
+  element          from              k   share   quad
+  ──────────────── ─────────── ─────── ─────── ──────
+█ bare EM coupling             +81.5 m +24.68% +0.00%
+█ ground port 2    text line 3  +166 m +50.26% +0.00%
+█ ground port 4    text line 4 +82.8 m +25.06% +0.00%

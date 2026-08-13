@@ -1,0 +1,7 @@
+  element          from             M   share   quad
+  ──────────────── ────────── ─────── ─────── ──────
+█ bare EM coupling            +250 pH +25.00% +0.00%
+█ port 7-8         conn row 1 −300 pH −30.00% +0.00%
+█ ground port 2    conn row 1      --      --     --
+█ port 3 -> gnd    conn row 1    +inf      -- +0.00%
+  … 1 more terms below 0.0001 of the strongest, +0.00 H together (+0.00%); all of them are in Export CSV

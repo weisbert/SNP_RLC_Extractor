@@ -1,0 +1,61 @@
+Attribution of M: victim 'vic' ← aggressor 'agg'
+Trace   : [3] coil_pair   file diff_pair_4port.s4p
+Run     : #7
+Read at : 5.0005 GHz  (asked for 5 GHz; read at the nearest data point)
+Units   : smart
+
+Ground model: diag (as declared)  (field: diag)
+    'diag' puts every element on the impedance its own row declares (0 for an ideal ground / short, 1/y_series_rlc(omega) for a lumped one), each INDEPENDENT of the others. 'shared:SPEC' (e.g. shared:L=0.3n) keeps those declared impedances and adds ONE shared return impedance across every shunt element, which is what a real package ground plane is: measured on decap_4port.s4p, four balls at 1 nH each independently versus the same four tied through one shared 1 nH moved |M| by 9.60 dB. 'diag:SPEC' overrides every shunt lead with SPEC and leaves them independent. The spelling is the CLI's, verbatim: --attribute-ground-model diag|diag:SPEC|shared:SPEC.
+
+Sign convention. The victim reading is V(+) - V(-) of the victim measurement port and the aggressor is driven with +1 A into its (+) side and out of its (-) side, so every term below is signed the way Z_ab = V_a / I_b is. An element current I_e > 0 flows OUT of the structure into ground for a shunt element (ground / vdd / lumped_to_gnd) and from the first port to the second for a series element (short_to / lumped_between). Flipping either measurement port's +/- assignment flips every term together: the RELATIVE signs between terms are physical, the absolute signs are a labelling choice.
+A negative term OPPOSES the total; the terms sum to it exactly. Shares are of the SIGNED total, so they exceed 100% and go negative wherever terms cancel.
+
+Termination spec, verbatim (the DSL the numbers were computed from):
+    1 signal vic +
+    2 signal agg +
+    3 lumped_to_gnd R=0.1 L=1n
+    4 lumped_to_gnd R=0.1 L=1n
+
+Reconciliation: reconciled   M = +1.01 nH   rel diff 6.25e-13 (floor 3.61e-09)
+
+  element          from              M   share   quad
+  ──────────────── ─────────── ─────── ─────── ──────
+█ bare EM coupling             +251 pH +24.83% +0.00%
+█ port 3 -> gnd    text line 3 +508 pH +50.17% +0.00%
+█ port 4 -> gnd    text line 4 +253 pH +25.00% +0.00%
+
+Sensitivity — every element against every candidate:
+
+  element       candidate      new value            Δ  Δ dB
+  ───────────── ────────────── ───────── ──────────── ─────
+█ port 3 -> gnd open             +504 pH      −508 pH −6.05
+█ port 4 -> gnd open             +504 pH      −508 pH −6.05
+█ port 3 -> gnd C=100 pF        +1.01 nH     −1.02 pH −0.01
+█ port 4 -> gnd C=100 pF        +1.01 nH     −1.02 pH −0.01
+█ port 3 -> gnd R=50 Ohm        +1.01 nH     −1.01 pH −0.01
+█ port 4 -> gnd R=50 Ohm        +1.01 nH     −1.01 pH −0.01
+█ port 3 -> gnd ideal           +1.01 nH        −1 pH −0.01
+█ port 4 -> gnd ideal           +1.01 nH        −1 pH −0.01
+█ port 4 -> gnd L=1 nH          +1.01 nH +3.03e-05 fH +0.00
+█ port 3 -> gnd L=1 nH          +1.01 nH +3.03e-05 fH +0.00
+█ port 3 -> gnd R=100 mOhm+L=…  +1.01 nH      +0.00 H +0.00
+█ port 4 -> gnd R=100 mOhm+L=…  +1.01 nH      +0.00 H +0.00
+
+Candidates REFUSED (they contribute no row above):
+    'R=5 m': 'm' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… with no spaces inside a value
+
+Sweep of the selected element:
+    M ∈ [+456 pH, +1.06 nH]  ideal +1.01 nH  open +504 pH  — AWAY FROM THE POLE, over series inductance ∈ [0, ∞)
+    POLE at 505 nH: the added element ANTI-RESONATES with the structure there, so the curve LEAVES the [ideal, open] bracket around it and runs OFF-SCALE — it is drawn as a vertical line and the interval above excludes it. Over the whole half-line, pole included, it is [−10.3 mH, +10.3 mH].
+    The extremum is 1.02e+07 times the [ideal, open] bracket and sits at series inductance = 505 nH: that is a near-POLE of the Mobius map, i.e. this termination anti-resonating with the structure. Check that value is reachable by a real component -- if it is not, pass t_max and get the interval over a range you can build.
+    The sweep LEAVES the [ideal, open] bracket [504 pH, 1.01 nH] -- a series L resonates with the structure's shunt C, so the two endpoints are not a bound.
+
+Across frequency: NOT stable — 'port 3 -> gnd' #1→#2 at 5 GHz, 'port 4 -> gnd' #2→#1 at 5 GHz; checked across 4.5 GHz … 5 GHz, so the ranking above belongs to 4.5 GHz only
+
+note: The element impedance matrix is DIAGONAL over 2 shunt elements, i.e. every ground path is modelled as independent. Real ground balls share a return plane; an independent model understates the effective common-mode return inductance by (1 + (n-1)k). See termination_impedance_shared_return.
+note: This is a decomposition of the DECLARATIONS in the spec, not a ranking of ports: an open port contributes no element and no term. It also depends on how the spec is spelled -- '6:1:14 ground' and '6 short_to 7:1:14' + '6 ground' are the same network and decompose differently.
+note: a registry note
+
+WARN: a registry warning
+
+Return path: Return-path budget: the declared elements carry 99.22% of the aggressor's return current (1.01 A) and the EM model's own reference 0.78% (7.95 mA).

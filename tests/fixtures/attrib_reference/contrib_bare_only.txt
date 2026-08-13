@@ -1,0 +1,3 @@
+  element          from       M    share   quad
+  ──────────────── ──── ─────── ──────── ──────
+█ bare EM coupling      +810 pH +100.00% +0.00%

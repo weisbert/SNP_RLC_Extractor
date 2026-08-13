@@ -1,0 +1,14 @@
+  element       candidate      new value        Δ   Δ dB
+  ───────────── ────────────── ───────── ──────── ──────
+█ ground port 4 open               −8 kΩ −8.03 kΩ +48.03
+█ ground port 4 L=1 nH           +63.7 Ω  +31.9 Ω  +6.05
+█ ground port 4 R=100 mOhm+L=…   +63.7 Ω  +31.9 Ω  +6.05
+█ short 3-4     open             +15.8 Ω  −15.9 Ω  −6.04
+█ ground port 4 C=100 pF         +31.4 Ω  −322 mΩ  −0.09
+█ ground port 4 R=50 Ohm         +31.4 Ω  −319 mΩ  −0.09
+█ short 3-4     L=1 nH           +31.8 Ω +31.5 mΩ  +0.01
+█ short 3-4     R=100 mOhm+L=…   +31.8 Ω +31.5 mΩ  +0.01
+█ short 3-4     C=100 pF         +31.7 Ω  −319 uΩ  −0.00
+█ short 3-4     R=50 Ohm         +31.7 Ω  −158 uΩ  −0.00
+█ ground port 4 ideal            +31.7 Ω  +0.00 Ω  +0.00
+█ short 3-4     ideal            +31.7 Ω  +0.00 Ω  +0.00

@@ -1,0 +1,4 @@
+M ∈ [+456 pH, +1.06 nH]  ideal +1.01 nH  open +504 pH  — AWAY FROM THE POLE, over series inductance ∈ [0, ∞)
+POLE at 505 nH: the added element ANTI-RESONATES with the structure there, so the curve LEAVES the [ideal, open] bracket around it and runs OFF-SCALE — it is drawn as a vertical line and the interval above excludes it. Over the whole half-line, pole included, it is [−10.3 mH, +10.3 mH].
+The extremum is 1.02e+07 times the [ideal, open] bracket and sits at series inductance = 505 nH: that is a near-POLE of the Mobius map, i.e. this termination anti-resonating with the structure. Check that value is reachable by a real component -- if it is not, pass t_max and get the interval over a range you can build.
+The sweep LEAVES the [ideal, open] bracket [504 pH, 1.01 nH] -- a series L resonates with the structure's shunt C, so the two endpoints are not a bound.

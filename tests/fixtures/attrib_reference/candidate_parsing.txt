@@ -1,0 +1,26 @@
+accepted:
+                'open' -> name 'open'  z None
+               'ideal' -> name 'ideal'  z 0j
+               'short' -> name 'ideal'  z 0j
+                   '0' -> name 'ideal'  z 0j
+                'R=50' -> name 'R=50'  z (50+0j)
+                'L=1n' -> name 'L=1n'  z 31.41592653589793j
+          'R=0.1 L=1n' -> name 'R=0.1 L=1n'  z (0.1+31.41592653589793j)
+              'C=100p' -> name 'C=100p'  z -0.3183098861837907j
+     'R=1m L=50p C=2p' -> name 'R=1m L=50p C=2p'  z (0.001-14.34469798239464j)
+
+refused, one message each:
+                    '' -> ValueError: empty candidate
+                 '   ' -> ValueError: empty candidate
+               'R=5 m' -> ValueError: 'R=5 m': 'm' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
+                  '50' -> ValueError: '50': '50' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
+                   'R' -> ValueError: 'R': 'R' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
+              'banana' -> ValueError: 'banana': 'banana' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
+          'R=5 L=1n C' -> ValueError: 'R=5 L=1n C': 'C' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
+
+candidate_list('open, R=5 m, ideal, banana'):
+  alternatives: ['open', 'ideal']
+  problem: 'R=5 m': 'm' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
+  problem: 'banana': 'banana' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
+
+candidate_list('') -> ([], [])

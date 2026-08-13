@@ -1,0 +1,10 @@
+  element       candidate new value            Δ  Δ dB
+  ───────────── ───────── ───────── ──────────── ─────
+█ port 3 -> gnd open        +504 pH      −508 pH −6.05
+█ port 4 -> gnd open        +504 pH      −508 pH −6.05
+█ port 3 -> gnd R=50       +1.01 nH     −1.01 pH −0.01
+█ port 4 -> gnd R=50       +1.01 nH     −1.01 pH −0.01
+█ port 3 -> gnd ideal      +1.01 nH        −1 pH −0.01
+█ port 4 -> gnd ideal      +1.01 nH        −1 pH −0.01
+█ port 4 -> gnd L=1n       +1.01 nH +3.03e-05 fH +0.00
+█ port 3 -> gnd L=1n       +1.01 nH +3.03e-05 fH +0.00

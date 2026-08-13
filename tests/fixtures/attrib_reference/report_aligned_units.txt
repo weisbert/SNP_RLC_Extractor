@@ -1,0 +1,47 @@
+Attribution of M: victim 'vic' ← aggressor 'agg'
+Trace   : [3] coil_pair   file diff_pair_4port.s4p
+Run     : #7
+Read at : 5.0005 GHz  (asked for 5 GHz; read at the nearest data point)
+Units   : aligned
+
+Ground model: diag (as declared)  (field: diag)
+    'diag' puts every element on the impedance its own row declares (0 for an ideal ground / short, 1/y_series_rlc(omega) for a lumped one), each INDEPENDENT of the others. 'shared:SPEC' (e.g. shared:L=0.3n) keeps those declared impedances and adds ONE shared return impedance across every shunt element, which is what a real package ground plane is: measured on decap_4port.s4p, four balls at 1 nH each independently versus the same four tied through one shared 1 nH moved |M| by 9.60 dB. 'diag:SPEC' overrides every shunt lead with SPEC and leaves them independent. The spelling is the CLI's, verbatim: --attribute-ground-model diag|diag:SPEC|shared:SPEC.
+
+Sign convention. The victim reading is V(+) - V(-) of the victim measurement port and the aggressor is driven with +1 A into its (+) side and out of its (-) side, so every term below is signed the way Z_ab = V_a / I_b is. An element current I_e > 0 flows OUT of the structure into ground for a shunt element (ground / vdd / lumped_to_gnd) and from the first port to the second for a series element (short_to / lumped_between). Flipping either measurement port's +/- assignment flips every term together: the RELATIVE signs between terms are physical, the absolute signs are a labelling choice.
+A negative term OPPOSES the total; the terms sum to it exactly. Shares are of the SIGNED total, so they exceed 100% and go negative wherever terms cancel.
+
+Termination spec, verbatim (the DSL the numbers were computed from):
+    1 signal vic +
+    2 signal agg +
+    3 lumped_to_gnd R=0.1 L=1n
+    4 lumped_to_gnd R=0.1 L=1n
+
+Reconciliation: reconciled   M = +1.01 nH   rel diff 6.25e-13 (floor 3.61e-09)
+
+  element          from        M [pH]   share   quad
+  ──────────────── ─────────── ────── ─────── ──────
+█ bare EM coupling             +251.2 +24.83% +0.00%
+█ port 3 -> gnd    text line 3 +507.7 +50.17% +0.00%
+█ port 4 -> gnd    text line 4   +253 +25.00% +0.00%
+
+Sensitivity — every element against every candidate:
+
+  element       candidate      new value [nH]    Δ [pH]  Δ dB
+  ───────────── ────────────── ────────────── ───────── ─────
+█ port 3 -> gnd open                  +0.5042    −507.7 −6.05
+█ port 4 -> gnd open                  +0.5042    −507.7 −6.05
+█ port 3 -> gnd C=100 pF               +1.011    −1.015 −0.01
+█ port 4 -> gnd C=100 pF               +1.011    −1.015 −0.01
+█ port 3 -> gnd R=50 Ohm               +1.011     −1.01 −0.01
+█ port 4 -> gnd R=50 Ohm               +1.011     −1.01 −0.01
+█ port 3 -> gnd ideal                  +1.011    −1.005 −0.01
+█ port 4 -> gnd ideal                  +1.011    −1.005 −0.01
+█ port 4 -> gnd L=1 nH                 +1.012 +3.03e-08 +0.00
+█ port 3 -> gnd L=1 nH                 +1.012 +3.03e-08 +0.00
+█ port 3 -> gnd R=100 mOhm+L=…         +1.012        +0 +0.00
+█ port 4 -> gnd R=100 mOhm+L=…         +1.012        +0 +0.00
+
+note: The element impedance matrix is DIAGONAL over 2 shunt elements, i.e. every ground path is modelled as independent. Real ground balls share a return plane; an independent model understates the effective common-mode return inductance by (1 + (n-1)k). See termination_impedance_shared_return.
+note: This is a decomposition of the DECLARATIONS in the spec, not a ranking of ports: an open port contributes no element and no term. It also depends on how the spec is spelled -- '6:1:14 ground' and '6 short_to 7:1:14' + '6 ground' are the same network and decompose differently.
+
+Return path: Return-path budget: the declared elements carry 99.22% of the aggressor's return current (1.01 A) and the EM model's own reference 0.78% (7.95 mA).
