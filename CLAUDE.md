@@ -1065,6 +1065,34 @@ was measured and was worse.
   safe** — the two are indistinguishable in the file, in the `TerminationSet`
   and in the table, which is what the Ports & Roles open-port name check exists
   to catch.
+- **AN UNDEFINED READING SORTS LAST, ON EVERY SURFACE, AND IS NEVER FOLDED
+  AWAY.** NaN is a **missing measurement, not a small number** — a probe with
+  no return path, a port past its SRF — and it is the one row the reader most
+  needs to see, so it goes to the bottom of the ranking and stays on the
+  screen. This is ONE rule with four implementations and they are pinned
+  against each other, not each against a literal: `rank_coupling_pairs` in
+  core (which states it), `_fold_terms` in `pkg_rlc_attrib_gui` (which keys the
+  case at **`+inf`**, because an element whose contribution is exactly `0` is
+  an ordinary reading — an annihilated lumped element — and `-0.0` compares
+  EQUAL to `0.0`, so a NaN keyed at `0.0` ties with it and a stable sort puts
+  the missing measurement on top), `_attr_print_sensitivity` in
+  `pkg_rlc_attrib_report` and `sensitivity_table` in `pkg_rlc_attrib_gui`
+  (both `(0 if isfinite else 1, -abs_delta)` — **the same spelling on purpose**,
+  so the two read alike to anyone comparing them). The window was the odd one
+  out and contradicted not only the other three but ITSELF: it keyed a
+  non-finite delta at `float("-inf")`, which is the **SMALLEST** key on an
+  ascending sort, so the row that measured nothing printed **above the
+  strongest real effect in the table** — on the surface a user reads before
+  deciding which port to go and fix, twelve hundred lines below `_fold_terms`
+  getting the identical case right in the same file. Whatever a later session
+  does here, do not "simplify" any of the four into a bare `-abs_delta`: the
+  ordering is only visible on data no shipped fixture produces, which is
+  exactly why it went unnoticed. `tests/test_attrib_window.py::
+  TestSensitivityRanking` is the guard and pins the window against the CLI
+  directly; the reference case is `sensitivity_fake_undefined_delta`, which is
+  **hand-built because no `.sNp` in this repo reaches the branch** — before it,
+  all four captured sensitivity cases held finite deltas and the golden
+  reference could not see the ranking move at all.
 - **The split depends on how the spec is SPELLED, and that cannot be fixed.**
   `6:1:14 ground` (9 elements) and `6 short_to 7:1:14` + `6 ground` (8 shorts +
   1 ground) are the same network, give the same total, and decompose
