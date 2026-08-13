@@ -1938,6 +1938,30 @@ VIEW_SUMMARY = "summary"
 VIEW_COMPARE = "compare"
 RESULTS_VIEWS = (VIEW_DETAIL, VIEW_SUMMARY, VIEW_COMPARE)
 
+#: The Results pane's MEASURED width in characters at the default 1500x900
+#: window: 1014 px of Consolas 9, every glyph this report emits being 7 px.
+#: (102 at 1200x800, 79 at the 1040x600 minsize.)  `wrap=tk.NONE`, so a line
+#: past this is reachable only by a horizontal scroll that takes the leftmost
+#: column off the edge at the same time -- which is why it is a budget the
+#: formatters spend rather than a number they may exceed.
+RESULTS_PANE_COLS = 144
+
+#: How many lines of stacked trace name a compare header may spend before the
+#: view switches to the numbered legend instead.  Past this the header is taller
+#: than the group of numbers it labels and the name reads as a column of
+#: syllables; the legend says the same thing in one line per trace.
+COMPARE_STACK_LINES_MAX = 4
+
+#: Floor on a stacked segment.  Below it a name is shredded into more lines than
+#: a reader can reassemble, whatever the depth cap says.
+COMPARE_SEG_MIN = 6
+
+#: Ceiling on a label anywhere it is one cell of a row (both summary tables).
+#: Not a width budget -- `_render_columns` already sizes that column to its
+#: widest cell, and the measured cost of the full names on the reported run is
+#: 10 columns of 144.  It is a backstop against a pasted path for a label.
+SUMMARY_LABEL_MAX = 40
+
 
 # Global controls, and the values the two readonly comboboxes will accept.  A
 # combobox is state="readonly", so a value from outside its list would sit
@@ -3564,7 +3588,7 @@ def _file_cell(rec, alias: dict) -> str:
     return "+".join(alias[fl] for fl in _row_file_labels(rec))
 
 
-def _render_columns(headers: Sequence[str], aligns: Sequence[str],
+def _render_columns(headers: Sequence, aligns: Sequence[str],
                     rows: Sequence[Sequence[str]], lead: str = "",
                     gap: str = "  ") -> list:
     """
@@ -3577,10 +3601,21 @@ def _render_columns(headers: Sequence[str], aligns: Sequence[str],
     nothing is ellipsised here: a clipped NUMBER is a plausible wrong number,
     so callers truncate their own text cells before they get here.
 
+    A HEADER CELL MAY BE SEVERAL LINES: pass a list of strings instead of a
+    string and the header is rendered that deep, each line exactly where the
+    caller put it.  The placement is deliberately NOT decided here -- where a
+    stacked name sits relative to the numbers it labels is a reading decision,
+    so the caller pads with "" (see _compare_head_cells).  A plain `str`
+    header is one line, byte-for-byte what it always was.
+
     The last cell of every line is right-stripped, so a table copied into a
     mail carries no trailing whitespace.
     """
-    w = [max([len(h)] + [len(r[i]) for r in rows]) for i, h in enumerate(headers)]
+    heads = [[h] if isinstance(h, str) else list(h) for h in headers]
+    depth = max([len(h) for h in heads] + [1])
+    heads = [h + [""] * (depth - len(h)) for h in heads]
+    w = [max([len(x) for x in h] + [len(r[i]) for r in rows])
+         for i, h in enumerate(heads)]
 
     def line(cells):
         out = gap.join(
@@ -3588,7 +3623,8 @@ def _render_columns(headers: Sequence[str], aligns: Sequence[str],
             for i, c in enumerate(cells))
         return (lead + out).rstrip()
 
-    return [line(headers)] + [line(r) for r in rows]
+    return ([line([h[d] for h in heads]) for d in range(depth)]
+            + [line(r) for r in rows])
 
 
 def _format_results_table(rows: Sequence[RowSnapshot], units_mode: str,
@@ -4186,7 +4222,14 @@ def _format_summary_self(rows, blocks, units_mode: str) -> tuple:
 
     body, colors = [], []
     for rec, name, v in entries:
-        cells = [f"{RESULTS_SWATCH} [{rec.id:>2}]", _trunc_str(rec.label, 18)]
+        # SUMMARY_LABEL_MAX, not 18.  A Label column sized to 18 made
+        # '..._RDL_shield_open' and '..._RDL_shield_short' one string,
+        # 'VCO_EM_0812_RDL_s…', on the two rows the reader is comparing --
+        # and bought nothing, because _render_columns already sizes this
+        # column to its widest cell: measured on the reported run, the full
+        # names cost 10 columns of 144 (73 -> 83).
+        cells = [f"{RESULTS_SWATCH} [{rec.id:>2}]",
+                 _trunc_str(rec.label, SUMMARY_LABEL_MAX)]
         if have_port:
             # A scalar row has no measurement-port NAME; its port descriptor is
             # what identifies it, and is what the detail table prints.
@@ -4234,7 +4277,8 @@ def _format_summary_coupling(blocks, units_mode: str) -> tuple:
     body, colors = [], []
     for b, p in entries:
         body.append([
-            f"{RESULTS_SWATCH} [{b.id:>2}]", _trunc_str(b.label, 18),
+            f"{RESULTS_SWATCH} [{b.id:>2}]",
+            _trunc_str(b.label, SUMMARY_LABEL_MAX),   # see _format_summary_self
             f"{p.name_a} x {p.name_b}",
             fmt_m(p.M_henry), _fmt_plain(p.k),
             f"{_fmt_plain(_pair_strength_db(p))} dB",
@@ -4262,6 +4306,133 @@ def _format_summary_coupling(blocks, units_mode: str) -> tuple:
 # It is a VIEW and not a mode: it reads the same RunSnapshot, adds nothing to
 # it, and refuses (in words, with a fallback) rather than inventing a
 # comparison it cannot make.
+#
+# THE TRACE NAME IS NEVER TRUNCATED HERE, AND THAT IS A MEASUREMENT RATHER THAN
+# A PREFERENCE.  It used to be head-cut at 14 characters, which on a set of
+# revision names COLLIDES -- measured on four realistic ones,
+# 'VCO_EM_0731_ideal_ground_ref' / 'VCO_EM_0812_ideal_ground_ref' /
+# 'VCO_EM_0812_RDL_shield_open' / 'VCO_EM_0812_RDL_shield_short', the last two
+# both render as 'VCO_EM_0812_RDL_shie…': two columns of a table whose whole
+# purpose is telling those two apart, headed byte-identically.  That is the
+# `freeze_label` defect arriving in the Results pane.
+#
+# NO BETTER TRUNCATION RULE EXISTS, which is why none was chosen.  At the 15
+# characters each column gets with five traces, measured on that same set:
+# head-cut collides, TAIL-cut collides ('…eal_ground_ref' twice -- and tail is
+# what pkg_rlc_plot._fit_names keeps, for its own good reasons), middle-elision
+# collides ('VCO_EM_…und_ref' twice), and stripping the common prefix first
+# rescues only the middle form.  The reason is structural: [1] and [2] differ
+# only at the HEAD (0731 vs 0812) while [3] and [4] differ only at the TAIL
+# (open vs short), so one rule cannot keep both ends.
+#
+# So the name is shown in FULL, in one of two shapes, and the shape is chosen
+# by the height it would cost:
+#
+#   STACKED (the default) -- the name is wrapped down the column heading at
+#       '_' / '.' / '-' boundaries.  This is also NARROWER than truncating,
+#       because the name stops setting the column width: the values need ~10
+#       characters and a 22-character name was forcing 22.  Measured on the
+#       reported run, 3 traces: 87 columns head-cut against 60 stacked.
+#   LEGEND -- one line per trace above the table carrying the full name and its
+#       curve colour, with the heading reduced to '# [N]'.  57 columns on the
+#       same run.  It costs a lookup, and is used only when stacking would go
+#       past COMPARE_STACK_LINES_MAX.
+#
+# Both fit the 144-column pane where the shipped 14-character head-cut needed
+# 131 at five traces and 87 at three.
+
+#: Where a stacked trace name may be broken.  The separator stays with the
+#: segment it ENDS, so a reader can see the break is a wrap and not a character
+#: the name does not contain.
+_NAME_BREAK_RE = re.compile(r"[^_.\-]+[_.\-]*")
+
+
+def _wrap_name(s: str, w: int) -> list:
+    """
+    A trace label as a list of lines at most `w` wide, broken at '_', '.', '-'.
+
+    A token longer than `w` is HARD-wrapped rather than truncated: a name with
+    no separators in it still has to be shown in full, because the alternative
+    is the collision this whole shape exists to remove.  Never returns [] -- an
+    empty label is one empty line, so the column keeps its place.
+    """
+    s = s or ""
+    if w <= 0:
+        return [s]
+    out: list = []
+    cur = ""
+    for tok in (_NAME_BREAK_RE.findall(s) or [s]):
+        if cur and len(cur) + len(tok) > w:
+            out.append(cur)
+            cur = tok
+        else:
+            cur += tok
+        while len(cur) > w:
+            out.append(cur[:w])
+            cur = cur[w:]
+    if cur:
+        out.append(cur)
+    return out or [""]
+
+
+def _compare_head_cells(records, base_w: Sequence[int], fixed_w: int,
+                        gap: int = 2) -> tuple:
+    """
+    (header cells, legend lines, colour repeats) for the compare table.
+
+    `base_w` is what each trace column already costs for its VALUES (and its
+    id cell) and `fixed_w` everything else on the line, so what is left of
+    RESULTS_PANE_COLS is what the name may spend.
+
+    THE PRIORITY IS THE WHOLE NAME ON AS FEW LINES AS THE BUDGET ALLOWS, not
+    the narrowest possible table.  The complaint this answers is a name being
+    ELIDED, and a name on one line is easier to read than the same name in
+    three; width matters only in that it is what forced the eliding.  So the
+    segment is the widest the budget affords, capped at the name itself -- with
+    few traces every name lands on one line and the table is as wide as it
+    honestly needs to be (measured, the reported run: 85 columns of 144, where
+    the 14-character head-cut was 87 AND wrong).  As the trace count rises the
+    share shrinks and the names wrap instead of the table overflowing: five
+    28-character revision names come out three lines deep at 91 columns.
+
+    The id cell is pinned to header line 0 for every column and the name is
+    BOTTOM-aligned under it.  Both halves are load-bearing.  Line 0, because
+    `_tag_swatch_rows` walks lines and consumes one colour per swatch it finds,
+    so swatches spread over several header lines would be coloured in the wrong
+    order.  Bottom-aligned, because the last line of the name then sits directly
+    above the numbers it labels whatever depth its neighbours needed.
+    """
+    n = len(records)
+    names = [r.label or "" for r in records]
+    spare = max(0, RESULTS_PANE_COLS - fixed_w - sum(b + gap for b in base_w))
+    share = spare // n
+    # Floored at COMPARE_SEG_MIN so a name that must wrap always has something
+    # to wrap INTO; the floor cannot widen a column, because _render_columns
+    # takes the max against the value cells anyway.
+    seg = [max(COMPARE_SEG_MIN, min(len(nm), max(b, share)))
+           for nm, b in zip(names, base_w)]
+
+    wrapped = [_wrap_name(nm, s) for nm, s in zip(names, seg)]
+    depth = max(len(w) for w in wrapped)
+    # A name with no separator inside the column has to be cut MID-TOKEN, and a
+    # hard-wrapped name reads as corruption rather than as a wrap -- the legend
+    # is the honest shape for it, exactly as it is for one too deep to stack.
+    hard = any(len(tok) > s
+               for nm, s in zip(names, seg)
+               for tok in (_NAME_BREAK_RE.findall(nm) or [nm]))
+    if depth <= COMPARE_STACK_LINES_MAX and not hard:
+        # Stacked: id on line 0, name bottom-aligned in the lines under it.
+        cells = [[f"{RESULTS_SWATCH} [{r.id}]"]
+                 + [""] * (depth - len(w)) + w
+                 for r, w in zip(records, wrapped)]
+        return cells, [], 1
+    # The legend carries the curve COLOUR as well as the name, so the mapping a
+    # reader needs (colour on the plot -> name -> column) is on one line.  That
+    # is also why the caller repeats the colour tuple: the legend lines and the
+    # header line each hold one swatch per record, in the same order.
+    legend = [f"  {RESULTS_SWATCH} [{r.id}] {r.label or ''}" for r in records]
+    return [[f"{RESULTS_SWATCH} [{r.id}]"] for r in records], legend, 2
+
 
 #: Rows of the compare table, as (quantity label, attribute, kind).  `kind`
 #: picks how the delta is expressed: a ratio for a physical value, a plain
@@ -4363,12 +4534,9 @@ def _format_compare(rows, blocks, units_mode: str) -> tuple:
         return "", (), "nothing to compare — showing the summary instead"
 
     ids = [r.id for r in records]
-    heads = ["", ""] + [f"{RESULTS_SWATCH} [{r.id}] {_trunc_str(r.label, 14)}"
-                        for r in records]
     aligns = ["<", "<"] + [">"] * len(records)
     two = len(records) == 2
     if two:
-        heads.append("Δ")
         aligns.append(">")
 
     body: list = []
@@ -4400,12 +4568,33 @@ def _format_compare(rows, blocks, units_mode: str) -> tuple:
                              else _delta_cell(a, b, unit))
             body.append(cells)
             first = False
+
+    # The header shape is decided from what the BODY costs, so the name is only
+    # ever charged for the width it does not already have for free.  base_w is
+    # per trace column: its values, or its id cell, whichever is wider.
+    n = len(records)
+    base_w = [max([len(f"{RESULTS_SWATCH} [{r.id}]")]
+                  + [len(row[2 + i]) for row in body])
+              for i, r in enumerate(records)]
+    fixed_w = (2                                            # lead
+               + max(len(row[0]) for row in body) + 2       # group column
+               + max(len(row[1]) for row in body) + 2       # quantity column
+               + ((max(len("Δ"), max(len(row[-1]) for row in body)) + 2)
+                  if two else 0))
+    head_cells, legend, repeats = _compare_head_cells(records, base_w, fixed_w)
+
     # The swatch is in the HEADER here, because a column is a trace and the
     # heading is the only cell that names it.  _tag_swatch_rows consumes every
     # occurrence on a line, left to right, so the header's swatches are
-    # coloured in column order.
-    return ("\n".join(_render_columns(heads, aligns, body, lead="  ")),
-            tuple(r.color_idx for r in records), "")
+    # coloured in column order -- and in the legend shape the same tuple is
+    # consumed once by the legend lines and once by the header, in that order,
+    # which is why `repeats` is 2 there.
+    heads: list = ["", ""] + list(head_cells)
+    if two:
+        heads.append("Δ")
+    lines = legend + _render_columns(heads, aligns, body, lead="  ")
+    return ("\n".join(lines),
+            tuple(r.color_idx for r in records) * repeats, "")
 
 
 # ============================================================================

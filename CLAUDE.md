@@ -59,7 +59,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `tests/test_run_history.py` | The run tabs: the width-stable label pair measured in the tab strip's own font, the three header lines, the named-signature diff (pinned one-for-one against `_config_signature`), and — Tk-driven — that eviction touches only the auto ring, that the kept cap bites at Keep time and the button says so, that the page being read survives as the SAME widget, the widget-count leak guard after a churn loop, the conditional auto-switch in all three directions (including that a KEPT page is never yanked away), the units re-render creating no tab and reaching EVERY page, the Keep button's readability at 150% font scaling, and that no run reaches the session file. Every guard mutation-checked. |
 | `tests/test_run_snapshot.py` | The immutable run snapshot: that the rendered page is byte-identical to `tests/fixtures/render_reference.json` (captured before the refactor), that a record does not move when its `TraceConfig` is relabelled / renumbered / re-ported, that no per-frequency array is reachable from a run, and the run number / frozen-visibility rules. Every guard mutation-checked. |
 | `tests/_render_capture.py` | Script + case registry that (re)generates `render_reference.json`, and the ONE place that knows the renderers' signatures. NOT auto-discovered (leading underscore). Regenerate ONLY in the same commit that justifies moving the reference. |
-| `tests/test_results_views.py` | The Results pane's THREE VIEWS and the slimming under all of them (53 tests). Pure with no display: that no block carries a legend any more and every legend line is inside the pane's measured **144 columns**; that the reciprocity line is a verdict; that the `G <= 2` Z-matrix fold LOSES NO NUMBER (checked by looking for every entry of the matrix elsewhere in the block, not by counting lines) while `G >= 3` is untouched and gains no trailing whitespace; the summary's row-per-port / row-per-pair shape, its colour order, and that it ranks through `rank_coupling_pairs` rather than sorting for itself; and `_delta_cell`'s four forms — percentage, factor past ×10, dB difference, and `—` for a value that is not there. Tk-driven: the three views round-tripping through the session (a bad value dropped with a note), that a view switch creates no run tab and repaints EVERY page, that `compare` falls back to the summary naming the reason, and that every control lies WHOLLY inside the Results header at 100% and 150% at both the default size and the minsize. Every guard mutation-checked: 18 mutations, 18 caught. |
+| `tests/test_results_views.py` | The Results pane's THREE VIEWS and the slimming under all of them (53 tests). Pure with no display: that no block carries a legend any more and every legend line is inside the pane's measured **144 columns**; that the reciprocity line is a verdict; that the `G <= 2` Z-matrix fold LOSES NO NUMBER (checked by looking for every entry of the matrix elsewhere in the block, not by counting lines) while `G >= 3` is untouched and gains no trailing whitespace; the summary's row-per-port / row-per-pair shape, its colour order, and that it ranks through `rank_coupling_pairs` rather than sorting for itself; and `_delta_cell`'s four forms — percentage, factor past ×10, dB difference, and `—` for a value that is not there. Plus **the trace name never being elided** (`TestTheTraceNameIsNeverElided` / `TestTheNameWrapper` / `TestTheSummaryLabelColumn`): the two PRECONDITIONS that the old caps really did collide, that no two compare columns are headed alike, that every column's name reassembles CHARACTER FOR CHARACTER at 2…10 traces, that the ids stay on header line 0 (measured off a fixture whose columns need DIFFERENT depths — with two traces the padding is empty and the mutation is a no-op), and both fallbacks to the legend. Tk-driven: the three views round-tripping through the session (a bad value dropped with a note), that a view switch creates no run tab and repaints EVERY page, that `compare` falls back to the summary naming the reason, that every control lies WHOLLY inside the Results header at 100% and 150% at both the default size and the minsize, and — the formatter-to-widget JOIN — that a long name reaches the pane whole with EVERY swatch tagged (`tagged == swatch count`, not `> 0`, which the `* repeats` mutation passes). Every guard mutation-checked: 32 mutations, 32 caught. |
 | `tests/test_report_readability.py` | Four display-only changes, none of which touches a number: the ranked / floored coupling list (pure — the key, the two things never hidden, the sign invariant), the coloured trace Listbox, the tagged results-table swatch, and the editor's footer summary line (mapped window at the 1040x600 minsize). Every guard mutation-checked. |
 | `tests/generate_test_snp.py` | Builds synthetic fixtures with analytically known R/L/C/M; run as a script to (re)generate `tests/fixtures/`. The `COUPLED_*` module constants are the single source of truth for the coupled-coil fixtures. |
 | `tests/test_golden_regression.py` | Replays `tests/fixtures/golden_legacy.npz` through the current API and asserts `assert_array_equal`. This is the guard on every "stays bit-identical" claim below. |
@@ -2722,6 +2722,78 @@ the left edge at the same moment.
   have to pick a reference, and a column headed `Δ` that is secretly "against
   whichever trace sorted first" is the kind of quiet decision this tool refuses
   everywhere else.
+- **THE TRACE NAME IS NEVER TRUNCATED IN `compare` OR IN `summary`, AND NO
+  BETTER TRUNCATION RULE EXISTS — that is a measurement, not a preference.**
+  The user reported the names being elided ("有些名字我其实包含了重要的信息的");
+  what the measurement found is worse than hiding a tail. The compare header
+  was head-cut at **14** characters and the summary Label column at **18**, and
+  on a set of real EM revision names that COLLIDES: with
+  `VCO_EM_0731_ideal_ground_ref` / `VCO_EM_0812_ideal_ground_ref` /
+  `VCO_EM_0812_RDL_shield_open` / `VCO_EM_0812_RDL_shield_short`, the last two
+  head-cut to the same `VCO_EM_0812_RD…` and, at 18, to the same
+  `VCO_EM_0812_RDL_s…` — **two columns (and two rows) of the table whose entire
+  purpose is telling those two apart, headed byte-identically.** That is
+  `freeze_label`'s defect arriving in the Results pane. Then: at the **15**
+  characters each column gets with five traces, **head-cut collides, TAIL-cut
+  collides** (`…eal_ground_ref` twice — and the tail is what
+  `pkg_rlc_plot._fit_names` keeps, correctly, for its own case), **middle-elision
+  collides** (`VCO_EM_…und_ref` twice), and stripping the common prefix first
+  rescues only the middle form. The reason is structural and cannot be
+  engineered around: `[1]`/`[2]` differ only at the **HEAD** (0731 vs 0812) and
+  `[3]`/`[4]` only at the **TAIL** (open vs short), so one rule cannot keep both
+  ends. Do not "improve" this back into a cleverer `_trunc_str`.
+- **The summary cap bought NOTHING, which is why it simply went.**
+  `_render_columns` already sizes that column to its widest cell, so the full
+  names cost **10 columns of 144** (self 73 → 83, coupling 85 → 95).
+  `SUMMARY_LABEL_MAX = 40` stays as a backstop against a pasted path arriving
+  as a label — not as a width budget.
+- **`compare` shows the whole name in one of TWO shapes, and the shape is chosen
+  by the HEIGHT it would cost.** STACKED is the default: the name is wrapped
+  down the column heading at `_` / `.` / `-` boundaries by `_wrap_name`, with
+  the separator kept on the LEFT of the break so a reader can see it is a wrap
+  and not a character the name lacks. LEGEND is the fallback: one line per trace
+  above the table carrying the curve colour and the full name, heading reduced
+  to `█ [N]`. Measured on the reported run (3 traces): **87 columns head-cut
+  (and wrong) → 85 stacked → 57 legend**, against the pane's 144. The fallback
+  fires on two conditions, both of them real: the stack would be deeper than
+  `COMPARE_STACK_LINES_MAX = 4` name lines, or a name has **no separator inside
+  the column** and would have to be cut mid-token — a hard-wrapped name reads as
+  corruption rather than as a wrap.
+- **THE PRIORITY IS THE WHOLE NAME ON AS FEW LINES AS THE BUDGET ALLOWS, not the
+  narrowest table.** The complaint was a name being ELIDED; width mattered only
+  because it was what forced the eliding. So `_compare_head_cells` takes the
+  widest segment the budget affords, **capped at the name itself** — with few
+  traces every name lands on one line, and as the trace count rises the
+  per-column share shrinks and the names wrap instead of the table overflowing.
+  Measured, `VCO_EM_0812_RDL_shield_variant_N` at 2/3/4/5/6/8/10 traces: 96 96
+  93 91 93 117 141 columns, every one inside 144, every name reassembling
+  character for character.
+- **THE IDS STAY ON HEADER LINE 0 AND THE NAME IS BOTTOM-ALIGNED UNDER IT.**
+  Line 0 because `_tag_swatch_rows` walks lines and consumes ONE colour per
+  swatch it finds, so swatches spread over several header lines would colour the
+  columns in the wrong order; bottom-aligned because the last line of a name
+  then sits directly above the numbers it labels whatever depth its neighbours
+  needed. The legend shape emits a swatch per legend line **and** per column,
+  which is what `_format_compare`'s `* repeats` is for — and why the guard on it
+  asserts `tagged == swatch count` rather than `> 0`, which the mutation passes.
+  **A test of any of this needs a fixture whose columns require DIFFERENT
+  depths**: with two traces the share is wide enough for both names to fit on
+  one line, the padding is empty, and the alignment mutation is a no-op (six
+  traces squeeze the share to 10 characters, which is what the guard uses).
+- **`_render_columns` takes a multi-line header cell (a list instead of a str)
+  and places it EXACTLY as given.** Where a stacked name sits relative to its
+  numbers is a reading decision, so the caller pads with `""`; every line of the
+  header counts towards the column width. A plain `str` is one line,
+  byte-for-byte what it always was — which is what keeps the two
+  reference-pinned renderers out of this change.
+- **KNOWN, NOT FIXED: the `detail` view's Label column is still head-cut at 18.**
+  It is `_format_results_table`, which `tests/fixtures/render_reference.json`
+  pins byte-for-byte, and the reference deliberately contains a 30-character
+  label (`a_very_long_trace_label_indeed`) — so widening it moves two reference
+  cases and needs the documented "regenerate ONLY in the same commit that
+  justifies it" escape. The collision above applies there too. Fix it from that
+  side, with the reference regenerated in the same commit; do not paper over it
+  by changing `LABEL_W` and quietly re-capturing.
 - **A big change is a FACTOR, a dB change is a dB DIFFERENCE, and a missing
   quantity is an EMPTY CELL.** Measured on the reported run, `M` goes
   `-516 fH → -7.19 pH`, which is `-1293%` and `13.93×`; the crossover is a

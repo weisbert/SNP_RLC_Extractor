@@ -51,9 +51,12 @@ from pkg_rlc_core import (  # noqa: E402
     parse_touchstone,
 )
 from pkg_rlc_gui import (  # noqa: E402
+    COMPARE_STACK_LINES_MAX,
     COUPLING_LEGEND_LINES,
+    RESULTS_PANE_COLS,
     RESULTS_SWATCH,
     RESULTS_VIEWS,
+    SUMMARY_LABEL_MAX,
     VIEW_COMPARE,
     VIEW_DETAIL,
     VIEW_SUMMARY,
@@ -63,12 +66,14 @@ from pkg_rlc_gui import (  # noqa: E402
     RowSnapshot,
     RunSnapshot,
     TraceConfig,
+    _compare_head_cells,
     _delta_cell,
     _format_compare,
     _format_coupling_block,
     _format_summary_coupling,
     _format_summary_self,
     _render_columns,
+    _wrap_name,
 )
 
 FIX = Path(__file__).resolve().parent / "fixtures"
@@ -176,6 +181,58 @@ def _row(rid=2, label="tank", R=1.5, L=2.0e-9, C=-1.2e-12, Q=0.84,
 def _run(blocks=(), rows=(), number=5) -> RunSnapshot:
     return RunSnapshot(number=number, when=None, marker_freq_hz=5.55e9,
                        rows=tuple(rows), blocks=tuple(blocks))
+
+
+def _compare_split(text: str, n_body: int):
+    """
+    (header lines, body lines) of a rendered compare table.
+
+    The body row count is passed rather than sniffed on purpose.  A compare
+    header is now as many lines deep as the stacked trace name needs, and every
+    rule that could tell a header line from a body row by looking at it is
+    wrong on real data: a name line carries digits ('0812EM'), a group label
+    carries none, and an id cell carries them inside brackets.  The fixture
+    knows how many rows it produces -- 4 quantities per measurement port plus 4
+    per pair -- so stating it here is both exact and self-documenting.
+    """
+    lines = text.split("\n")
+    assert len(lines) > n_body, f"no header left: {len(lines)} lines"
+    return lines[:-n_body], lines[-n_body:]
+
+
+def _duplicates_for_compare(app, tc, labels):
+    """
+    One extra mode-6 trace per label, so `compare` has that many more columns.
+
+    Returns them, so the caller can take them back out: these run against one
+    App per test method, and a leftover trace would change the header shape the
+    next subTest measures -- which is exactly the thing being measured.
+    """
+    made = []
+    for i, label in enumerate(labels):
+        dup = TraceConfig(id=tc.id + 1 + i, file_label=tc.file_label, mode=6,
+                          label=label, color_idx=(1 + i) % 12,
+                          mports=[MeasPortRow(name="c1", plus="1"),
+                                  MeasPortRow(name="c2", plus="2")])
+        app.traces.append(dup)
+        made.append(dup)
+    app._refresh_trace_list()
+    return made
+
+
+def _looks_like_the_legend_shape(lines) -> bool:
+    """
+    True when the table put the names on their own lines above it.
+
+    A legend line carries exactly ONE swatch and nothing after the name; the
+    stacked shape's id line carries one per column.  Sniffing the shape rather
+    than being told it is deliberate -- these are the App's own rendered lines,
+    and the point is what a reader sees.
+    """
+    return any(ln.count(RESULTS_SWATCH) == 1 and "]" in ln
+               and len(ln.split("] ", 1)) == 2
+               and " " not in ln.split("] ", 1)[1].strip()
+               for ln in lines[:12])
 
 
 # ============================================================================
@@ -583,12 +640,21 @@ class TestTheCompareTable(unittest.TestCase):
                                 color_idx=3)]
 
     def test_one_column_per_trace_and_a_delta_at_exactly_two(self):
+        """The header is SEVERAL lines deep now (the name is stacked, not
+        elided), so nothing here may assume the table starts at line 1."""
         text, colors, refusal = _format_compare([], self._two(), "smart")
         self.assertEqual(refusal, "")
-        head = text.split("\n")[0]
-        self.assertIn("[1] WUR_EM", head)
-        self.assertIn("[4] 0812EM", head)
-        self.assertTrue(head.rstrip().endswith("Δ"))
+        head, _body = _compare_split(text, 12)
+        joined = "\n".join(head)
+        self.assertIn("[1]", joined)
+        self.assertIn("WUR_EM", joined)
+        self.assertIn("[4]", joined)
+        self.assertIn("0812EM", joined)
+        # The ids are on ONE line, and it is the first: _tag_swatch_rows walks
+        # lines and consumes one colour per swatch, so ids spread over several
+        # header lines would colour the columns in the wrong order.
+        self.assertEqual(head[0].count(RESULTS_SWATCH), 2, head[0])
+        self.assertTrue(head[0].rstrip().endswith("Δ"))
         self.assertEqual(colors, (0, 3))
 
     def test_three_traces_get_no_delta_column(self):
@@ -629,7 +695,8 @@ class TestTheCompareTable(unittest.TestCase):
 
     def test_the_quantities_are_grouped_by_port_then_by_pair(self):
         text, _c, _r = _format_compare([], self._two(), "smart")
-        labels = [ln.split()[0] for ln in text.split("\n")[1:] if ln.strip()]
+        _head, body = _compare_split(text, 12)
+        labels = [ln.split()[0] for ln in body if ln.strip()]
         self.assertEqual(labels[0], "VCO")
         self.assertIn("RX", labels)
         self.assertEqual(labels[-4], "VCO")      # the 'VCO x RX' group
@@ -645,6 +712,275 @@ class TestTheCompareTable(unittest.TestCase):
         text, _c, _r = _format_compare([], self._two(), "smart")
         for line in text.split("\n"):
             self.assertLessEqual(len(line), PANE_COLS, line)
+
+
+#: Four realistic EM revision names.  [1]/[2] differ only at the HEAD
+#: (0731 vs 0812) and [3]/[4] only at the TAIL (open vs short), which is what
+#: makes them un-truncatable by any single rule -- see the class below.
+REVISIONS = ["VCO_EM_0731_ideal_ground_ref", "VCO_EM_0812_ideal_ground_ref",
+             "VCO_EM_0812_RDL_shield_open", "VCO_EM_0812_RDL_shield_short"]
+
+
+def _revision_blocks(labels):
+    return [_two_port_block(i + 1, lab, color_idx=i)
+            for i, lab in enumerate(labels)]
+
+
+def _column_names(records):
+    """
+    What each compare column says its trace is called, reassembled.
+
+    Goes through `_compare_head_cells` rather than through the rendered text
+    because a stacked name is spread down several lines of one column, and
+    slicing columns back out of a monospace table by eye is exactly the kind of
+    arithmetic that makes a test agree with a bug.
+    """
+    base = [max(len(f"{RESULTS_SWATCH} [{r.id}]"), 10) for r in records]
+    cells, legend, repeats = _compare_head_cells(records, base, 23)
+    if legend:
+        return [ln.split("] ", 1)[1] for ln in legend], "legend", repeats
+    return ["".join(c[1:]) for c in cells], "stacked", repeats
+
+
+class TestTheTraceNameIsNeverElided(unittest.TestCase):
+    """
+    The reported complaint, and it was worse than it looked: the 14-character
+    head-cut did not merely hide the tail of a name, it made two DIFFERENT
+    traces share one heading.
+
+    Measured on REVISIONS, head-cut at 14: [3] and [4] both render as
+    'VCO_EM_0812_RD…'.  Two columns of the table whose entire purpose is telling
+    those two apart, headed byte-identically.  That is `freeze_label`'s defect
+    arriving in the Results pane.
+
+    And no better truncation rule exists, which is why none was chosen -- at the
+    15 characters each column gets with five traces, head-cut, tail-cut AND
+    middle-elision all collide on this set (the first pair differs only at the
+    head, the second only at the tail).  So the name is shown whole, stacked
+    down the heading or moved to a legend.
+    """
+
+    def test_the_shipped_head_cut_really_did_collide(self):
+        """The precondition.  Without it every assertion below could pass on a
+        table that never had a problem, and the class would prove nothing."""
+        cut = [s[:13] + "…" for s in REVISIONS]
+        self.assertEqual(cut[2], cut[3],
+                         "the fixture no longer reproduces the defect")
+        self.assertEqual(len(set(cut)), 3, cut)
+
+    def test_no_two_columns_are_headed_the_same(self):
+        """Mutation: head the column with _trunc_str(r.label, 14) again."""
+        for n in range(2, len(REVISIONS) + 1):
+            with self.subTest(traces=n):
+                names, shape, _r = _column_names(
+                    _revision_blocks(REVISIONS[:n]))
+                self.assertEqual(len(set(names)), n,
+                                 f"{shape}: two columns agree: {names}")
+
+    def test_every_column_carries_its_WHOLE_name(self):
+        """
+        Whichever shape is chosen, the label must come back character for
+        character -- that is the entire point.
+
+        Mutation: truncate in either branch of _compare_head_cells.
+        """
+        for n in (2, 3, 4, 5, 6, 8, 10):
+            labels = [f"VCO_EM_0812_RDL_shield_variant_{i}" for i in range(n)]
+            with self.subTest(traces=n):
+                names, shape, _r = _column_names(_revision_blocks(labels))
+                self.assertEqual(names, labels, shape)
+
+    def test_the_ids_are_all_on_the_FIRST_header_line(self):
+        """
+        _tag_swatch_rows walks lines and consumes ONE colour per swatch it
+        finds, so a swatch on a lower header line would colour the wrong
+        column.
+
+        Mutation: bottom-align the whole cell (id included) instead of pinning
+        the id to line 0 -- a short name then drags its id down a line.
+
+        THE COLUMNS MUST NEED DIFFERENT DEPTHS or this proves nothing: with two
+        traces the share is wide enough for both names to land on one line, the
+        padding is empty, and bottom-aligning the whole cell is a NO-OP.  Six
+        traces squeeze the share to 10 characters, so the long names wrap to
+        four lines while 'x' still takes one -- measured, and asserted below
+        before anything else.
+        """
+        labels = ["x"] + [f"VCO_EM_0812_RDL_shield_variant_{i}"
+                          for i in range(5)]
+        blocks = _revision_blocks(labels)
+        _names, shape, _r = _column_names(blocks)
+        self.assertEqual(shape, "stacked")
+        text, _c, _r = _format_compare([], blocks, "smart")
+        head, _body = _compare_split(text, 12)
+        # The precondition: the header really is several lines deep and the
+        # short name really does sit on the LAST of them, not the first.
+        self.assertGreater(len(head), 2, head)
+        self.assertIn("x", head[-1].split())
+        self.assertEqual(head[0].count(RESULTS_SWATCH), len(labels), head[0])
+        for line in head[1:]:
+            self.assertEqual(line.count(RESULTS_SWATCH), 0, line)
+
+    def test_a_swatch_is_emitted_for_every_colour_and_no_more(self):
+        """
+        The colour tuple is consumed one swatch at a time, so the two counts
+        have to agree in BOTH shapes -- the legend shape emits a swatch per
+        legend line AND per column, which is what `repeats` is for.
+
+        Mutation: return 1 from the legend branch -- the header's swatches then
+        run past the end of the colour list.
+        """
+        cases = {"stacked": REVISIONS[:3],
+                 "legend": ["x" * 50, "y" * 50, "z" * 50]}
+        for shape, labels in cases.items():
+            with self.subTest(shape):
+                blocks = _revision_blocks(labels)
+                text, colors, _r = _format_compare([], blocks, "smart")
+                _n, got, _rep = _column_names(blocks)
+                self.assertEqual(got, shape)
+                self.assertEqual(text.count(RESULTS_SWATCH), len(colors),
+                                 f"{shape}: swatches != colours")
+
+    def test_a_name_with_no_separator_goes_to_the_LEGEND(self):
+        """
+        Wrapping it would cut mid-token, and a hard-wrapped name reads as
+        corruption rather than as a wrap.
+
+        Mutation: drop the `hard` test in _compare_head_cells -- the six names
+        come back sliced into arbitrary 15-character pieces.
+        """
+        labels = [c * 60 for c in "abcdef"]
+        names, shape, _r = _column_names(_revision_blocks(labels))
+        self.assertEqual(shape, "legend")
+        self.assertEqual(names, labels)
+
+    def test_a_name_too_deep_to_stack_goes_to_the_LEGEND(self):
+        """
+        Mutation: remove the COMPARE_STACK_LINES_MAX test -- the header grows
+        taller than the block of numbers it labels.
+        """
+        deep = "_".join(f"seg{i}" for i in range(12))     # 12 breakable tokens
+        labels = [f"{deep}_{c}" for c in "abcdefghij"]    # 10 traces
+        names, shape, _r = _column_names(_revision_blocks(labels))
+        self.assertEqual(shape, "legend")
+        self.assertEqual(names, labels)
+
+    def test_a_stacked_header_stays_inside_the_line_cap(self):
+        """Mutation: raise the depth the stacked branch accepts."""
+        for n in (2, 3, 4, 5, 6, 8, 10):
+            labels = [f"VCO_EM_0812_RDL_shield_variant_{i}" for i in range(n)]
+            blocks = _revision_blocks(labels)
+            _names, shape, _r = _column_names(blocks)
+            if shape != "stacked":
+                continue
+            text, _c, _r2 = _format_compare([], blocks, "smart")
+            head, _body = _compare_split(text, 12)
+            with self.subTest(traces=n):
+                # id line + at most COMPARE_STACK_LINES_MAX name lines
+                self.assertLessEqual(len(head), COMPARE_STACK_LINES_MAX + 1,
+                                     f"{len(head)} header lines")
+
+    def test_showing_the_whole_name_did_not_cost_the_pane_budget(self):
+        """
+        The names got LONGER and the table got no wider than the pane: the name
+        no longer sets the column width on its own, it wraps instead.
+
+        Mutation: spend the whole spare width per column with no cap (`share`
+        without the min against the name length is fine, but dropping the wrap
+        and letting the column take the full name is not) -- 10 long names then
+        run past 144.
+        """
+        for n in (2, 3, 4, 5, 6, 8, 10):
+            labels = [f"VCO_EM_0812_RDL_shield_variant_{i}" for i in range(n)]
+            text, _c, _r = _format_compare(
+                [], _revision_blocks(labels), "smart")
+            for line in text.split("\n"):
+                with self.subTest(traces=n):
+                    self.assertLessEqual(len(line), RESULTS_PANE_COLS, line)
+
+
+class TestTheNameWrapper(unittest.TestCase):
+
+    def test_it_breaks_at_a_separator_and_keeps_it_on_the_LEFT(self):
+        """
+        The separator staying with the segment it ends is what tells the reader
+        the break is a wrap and not a character the name lacks.
+
+        Mutation: put the separator at the head of the next segment.
+        """
+        self.assertEqual(_wrap_name("aaa_bbb_ccc", 8), ["aaa_bbb_", "ccc"])
+        self.assertEqual(_wrap_name("a.b-c_d", 4), ["a.b-", "c_d"])
+
+    def test_a_name_that_fits_is_one_line_and_unchanged(self):
+        self.assertEqual(_wrap_name("short", 10), ["short"])
+
+    def test_an_unbreakable_token_is_hard_wrapped_not_truncated(self):
+        """
+        The wrapper never drops characters; refusing the shape is
+        _compare_head_cells' job, not this function's.
+
+        Mutation: return [s[:w]] for a token past the budget.
+        """
+        got = _wrap_name("abcdefghij", 4)
+        self.assertEqual("".join(got), "abcdefghij")
+        self.assertTrue(all(len(x) <= 4 for x in got), got)
+
+    def test_an_empty_label_keeps_its_place(self):
+        """Mutation: return [] -- the column loses a header line and every
+        name below it shifts up one."""
+        self.assertEqual(_wrap_name("", 8), [""])
+
+
+class TestTheSummaryLabelColumn(unittest.TestCase):
+    """
+    The same eliding, one table over.  The 18-character cap bought NOTHING --
+    `_render_columns` already sizes that column to its widest cell -- and cost
+    the two rows a reader is comparing their identity: measured, both
+    '..._RDL_shield_open' and '..._RDL_shield_short' rendered as
+    'VCO_EM_0812_RDL_s…'.  The full names cost 10 columns of 144.
+    """
+
+    def test_the_old_cap_really_did_collide(self):
+        """The precondition, as above."""
+        cut = [s[:17] + "…" for s in REVISIONS[2:]]
+        self.assertEqual(cut[0], cut[1], "fixture no longer shows the defect")
+
+    def test_both_summary_tables_carry_the_whole_label(self):
+        """Mutation: put the 18 back in either _format_summary_self or
+        _format_summary_coupling."""
+        blocks = _revision_blocks(REVISIONS)
+        for name, fn in (("self", lambda: _format_summary_self(
+                [], blocks, "smart")),
+                ("coupling", lambda: _format_summary_coupling(
+                    blocks, "smart"))):
+            text, _c = fn()
+            for lab in REVISIONS:
+                with self.subTest(f"{name}/{lab}"):
+                    self.assertIn(lab, text)
+            self.assertNotIn("…", text)
+
+    def test_it_still_fits_the_pane(self):
+        blocks = _revision_blocks(REVISIONS)
+        for text, _c in (_format_summary_self([], blocks, "smart"),
+                         _format_summary_coupling(blocks, "smart")):
+            for line in text.split("\n"):
+                self.assertLessEqual(len(line), RESULTS_PANE_COLS, line)
+
+    def test_a_pathological_label_is_STILL_capped(self):
+        """
+        SUMMARY_LABEL_MAX is a backstop against a pasted file path arriving as
+        a label, not a width budget.
+
+        Mutation: remove the cap entirely -- one label takes the table past the
+        pane on its own.
+        """
+        blocks = _revision_blocks(["p" * 400])
+        text, _c = _format_summary_self([], blocks, "smart")
+        self.assertIn("…", text)
+        for line in text.split("\n"):
+            self.assertLessEqual(len(line), RESULTS_PANE_COLS, line)
+        self.assertLessEqual(max(len(x) for x in text.split("\n")),
+                             SUMMARY_LABEL_MAX + 60)
 
 
 class TestTheColumnRenderer(unittest.TestCase):
@@ -664,6 +1000,46 @@ class TestTheColumnRenderer(unittest.TestCase):
         out = _render_columns(["a", "bbbb"], ["<", "<"], [["x", "y"]])
         for line in out:
             self.assertEqual(line, line.rstrip())
+
+    def test_a_STRING_header_is_still_exactly_one_line(self):
+        """
+        Every caller but compare passes strings, and the two reference-pinned
+        renderers are among them.
+
+        Mutation: always render COMPARE_STACK_LINES_MAX header lines -- the
+        summary tables grow blank rows and render_reference.json moves.
+        """
+        out = _render_columns(["a", "b"], ["<", "<"], [["x", "y"], ["z", "w"]])
+        self.assertEqual(len(out), 3)
+        self.assertEqual(out[0].split(), ["a", "b"])
+
+    def test_a_multi_line_header_is_rendered_where_the_CALLER_put_it(self):
+        """
+        The placement is the caller's decision (see _compare_head_cells: the id
+        pinned to line 0, the name bottom-aligned), so this function must pad
+        depth and change nothing else.
+
+        Mutation: bottom- or top-align the cells here instead of honouring the
+        list as given.
+        """
+        out = _render_columns([["id1", "", "nm"], ["id2", "aa", "bb"]],
+                              ["<", "<"], [["v1", "v2"]])
+        self.assertEqual(len(out), 4)             # 3 header lines + 1 row
+        self.assertEqual(out[0].split(), ["id1", "id2"])
+        self.assertEqual(out[1].split(), ["aa"])  # column 0 is blank here
+        self.assertEqual(out[2].split(), ["nm", "bb"])
+        self.assertEqual(out[3].split(), ["v1", "v2"])
+
+    def test_a_multi_line_header_counts_towards_the_COLUMN_WIDTH(self):
+        """
+        Every line of it, not just the first -- otherwise a long name segment
+        on line 3 is drawn through its neighbour.
+
+        Mutation: measure only heads[i][0].
+        """
+        out = _render_columns([["a", "wwwwwwww"], ["b", "c"]],
+                              ["<", "<"], [["x", "y"]])
+        self.assertTrue(out[-1].startswith("x" + " " * 8), repr(out[-1]))
 
 
 # ============================================================================
@@ -717,6 +1093,64 @@ class TestTheViewSelector(unittest.TestCase):
                 self.app._on_results_view_changed()
                 self._settle()
                 self.assertIn("re-rendered with view=" + view, self._log())
+
+    def test_a_LONG_trace_name_reaches_the_pane_whole_and_stays_coloured(self):
+        """
+        The join between the formatter and the widget, which no pure test
+        reaches: `_tag_swatch_rows` walks the inserted lines and pops ONE
+        colour per swatch it finds, so a shape that emits a different number of
+        swatches than the formatter declared colours for either mis-colours the
+        columns or runs off the end of the list.  The legend shape emits a
+        swatch per legend line AND per column, which is the case that would
+        break it.
+
+        Mutation: return `tuple(...)` instead of `tuple(...) * repeats` from
+        _format_compare -- the legend shape then leaves the header's swatches
+        untagged, and the colour a reader maps back to the plot is gone.
+        """
+        # Two traces leave enough width for a long name to sit on one line, so
+        # reaching the LEGEND shape needs both an unbreakable name and enough
+        # columns to squeeze the per-column share below it -- with two traces
+        # BOTH of these render stacked, and this test then never touches the
+        # branch `repeats` exists for.  Measured, hence six.
+        cases = (("stacked", ["VCO_EM_0812_RDL_shield_variant_open"], 1),
+                 ("legend", ["n" * 60] * 6, 6))
+        for shape, labels, n in cases:
+            with self.subTest(shape):
+                self.tc.label = labels[0]
+                dups = _duplicates_for_compare(
+                    self.app, self.tc,
+                    [f"{labels[0][:40]}_{i}" for i in range(n)])
+                self.app.results_view_var.set(VIEW_COMPARE)
+                self.app._on_calculate()
+                self._settle()
+                # Cleared so the two counts below are about THIS render only;
+                # the Log accumulates every previous one otherwise.
+                self.app.results_text.delete("1.0", tk.END)
+                self.app._on_results_view_changed()
+                self._settle()
+                log = self._log()
+                lines = log.split("\n")
+                # The precondition: this really is the shape being claimed.
+                self.assertEqual(_looks_like_the_legend_shape(lines),
+                                 shape == "legend", f"{shape}: wrong shape")
+                # The whole name is on screen: contiguous in the legend shape,
+                # and as its own wrapped segments in the stacked one.
+                for seg in _wrap_name(self.tc.label, 12):
+                    self.assertIn(seg, log, f"{shape}: '{seg}' missing")
+                # EVERY swatch is tagged, not merely some.  `> 0` would pass
+                # the mutation this test exists for: dropping `* repeats`
+                # leaves the legend lines tagged and the HEADER bare.
+                txt = self.app.results_text
+                tagged = sum(len(txt.tag_ranges(f"c{i}")) // 2
+                             for i in range(12))
+                self.assertEqual(tagged, log.count(RESULTS_SWATCH),
+                                 f"{shape}: a swatch went untagged")
+                # One per trace column at the very least, or the equality above
+                # could be satisfied by a table with no swatches in it at all.
+                self.assertGreaterEqual(tagged, 2, f"{shape}: none emitted")
+                for d in dups:
+                    self.app.traces.remove(d)
 
     def test_switching_the_view_creates_no_run_tab(self):
         """Choosing a view measures nothing, so it is not a run.  Mutation:
