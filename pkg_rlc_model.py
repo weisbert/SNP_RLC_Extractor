@@ -488,6 +488,52 @@ def run_signatures(traces: Sequence) -> tuple:
 
 
 # ============================================================================
+# The three results views -- a SAVED choice about how a run is rendered
+# ============================================================================
+#
+# One run, three renderings, chosen by the reader and never by the code.  They
+# exist because the report had exactly one shape and it was the widest one:
+# measured on a two-trace mode-6 run, 40 lines and 3538 characters against a
+# pane that shows 144 columns at the default 1500x900 window (79 at the
+# 1040x600 minsize) and does NOT wrap, with 12 lines over 90 columns and the
+# widest at 272.
+#
+#   detail   -- everything, one block per trace.  What the tool always had.
+#   summary  -- two tables for the whole run, one row per port and one per
+#               pair.  Reading ACROSS traces is a matter of reading down a
+#               column instead of paging between blocks 17 lines apart.
+#   compare  -- traces become COLUMNS, with a delta.  This is the one that
+#               answers "what did this EM revision change", which is what a
+#               run with two versions of one structure in it is for.
+#
+# The choice is a RENDERING choice, not a recorded fact about the MEASUREMENT
+# -- the same rule as the units mode, and the reason both are read live off the
+# App by `_run_report_segments` rather than frozen onto a RunSnapshot.
+#
+# WHY THE NAMES ARE HERE and not beside the three `_format_*` functions that
+# act on them.  `results_view` is SAVED: the session file writes the chosen
+# name and reads it back, and `pkg_rlc_session._CONTROL_CHOICES` validates it
+# against this tuple.  So the vocabulary is shared between the file FORMAT (L2)
+# and the RENDERER (L3), and a shared vocabulary lives at or below the lower of
+# the two.  Spelling it as a literal in both places was the alternative, and it
+# is the failure this repo names everywhere else -- two copies of one list are
+# two things that can come to disagree, and here the disagreement would be a
+# saved view silently refused on load.
+#
+# It belongs in the MODEL rather than merely fitting here: a stored choice
+# about how to draw something is already model data -- `color_idx`, `ls_idx`,
+# `plot_self` and `plot_mutual` are all fields of `TraceConfig` above, and this
+# is the same kind of fact one level up, per RUN instead of per trace.
+#
+# `pkg_rlc_report` re-exports all four, so every existing
+# `from pkg_rlc_report import VIEW_DETAIL` keeps resolving.
+VIEW_DETAIL = "detail"
+VIEW_SUMMARY = "summary"
+VIEW_COMPARE = "compare"
+RESULTS_VIEWS = (VIEW_DETAIL, VIEW_SUMMARY, VIEW_COMPARE)
+
+
+# ============================================================================
 # Frequency provenance -- what a printed marker frequency actually IS
 # ============================================================================
 #

@@ -34,6 +34,10 @@ from pkg_rlc_model import (
     FREQ_EXACT_REL,
     FREQ_UNIFORM_TOL,
     FreqSnap,
+    RESULTS_VIEWS,
+    VIEW_COMPARE,
+    VIEW_DETAIL,
+    VIEW_SUMMARY,
     combine_freq_snaps,
     freq_grid_step,
     snap_to_grid,
@@ -42,28 +46,28 @@ from pkg_rlc_model import (
 
 # ---- the three results views ----------------------------------------------
 #
-# One run, three renderings, chosen by the reader and never by the code.  They
-# exist because the report had exactly one shape and it was the widest one:
-# measured on a two-trace mode-6 run, 40 lines and 3538 characters against a
-# pane that shows 144 columns at the default 1500x900 window (79 at the
-# 1040x600 minsize) and does NOT wrap, with 12 lines over 90 columns and the
-# widest at 272.
+# The four names above are RE-EXPORTED here, and the prose describing what each
+# rendering IS stayed with the renderers, in `_run_report_segments` and the
+# three `_format_*` functions this file holds.  They moved down to
+# `pkg_rlc_model` because `results_view` is a SAVED SETTING: the session file
+# writes the chosen name and reads it back, and `pkg_rlc_session` validates it
+# against this tuple (`_CONTROL_CHOICES`) -- so the vocabulary is shared
+# between the format and the renderer, and the format is the lower of the two.
+# Spelling it as a literal in both places was the alternative and is the
+# failure this repo names everywhere else: two copies of one list are two
+# things that can come to disagree, and the disagreement here would be a saved
+# view silently refused on load.
 #
-#   detail   -- everything, one block per trace.  What the tool always had.
-#   summary  -- two tables for the whole run, one row per port and one per
-#               pair.  Reading ACROSS traces is a matter of reading down a
-#               column instead of paging between blocks 17 lines apart.
-#   compare  -- traces become COLUMNS, with a delta.  This is the one that
-#               answers "what did this EM revision change", which is what a
-#               run with two versions of one structure in it is for.
+# The model is where it belongs rather than merely where it fits: a stored
+# choice about how to draw something is already model data here -- `color_idx`,
+# `ls_idx`, `plot_self` and `plot_mutual` are all fields of `TraceConfig`, and
+# this is the same kind of fact one level up, per RUN instead of per trace.
 #
-# The choice is a RENDERING choice, not a recorded fact -- the same rule as
-# the units mode, and the reason both are read live off the App by
-# `_run_report_segments` rather than frozen onto a RunSnapshot.
-VIEW_DETAIL = "detail"
-VIEW_SUMMARY = "summary"
-VIEW_COMPARE = "compare"
-RESULTS_VIEWS = (VIEW_DETAIL, VIEW_SUMMARY, VIEW_COMPARE)
+# The choice is still a RENDERING choice, not a recorded fact ABOUT THE
+# MEASUREMENT -- the same rule as the units mode, and the reason both are read
+# live off the App by `_run_report_segments` rather than frozen onto a
+# RunSnapshot.  What is saved is what the READER had set up, which is why it is
+# in the session file at all.
 
 #: The Results pane's MEASURED width in characters at the default 1500x900
 #: window: 1014 px of Consolas 9, every glyph this report emits being 7 px.
