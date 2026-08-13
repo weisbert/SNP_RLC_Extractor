@@ -895,18 +895,27 @@ class TestFileListsAgree(unittest.TestCase):
         Mutation: make `trace_file_labels` call the fallback directly and this
         goes red -- which is the point, because then the test above would be
         comparing the fallback with itself.
+
+        The patch is on `fg._live_trace_file_labels`, which is the name the
+        delegation actually calls.  It used to patch `pkg_rlc_gui`'s re-export,
+        which worked while `pkg_rlc_files_gui` reached the live definition by a
+        lazy `import pkg_rlc_gui` and an attribute lookup on it.  That lazy
+        import is gone -- the live definition is `pkg_rlc_validate`'s and is
+        bound at the top of the file -- so the OLD patch point no longer sits
+        on the edge under test, and patching it would have made this test pass
+        against a function that had stopped delegating entirely.  Same
+        property, same mutation, aimed at where the call now goes.
         """
-        import pkg_rlc_gui as g
         if not fg.trace_files_supported():                   # pragma: no cover
             self.skipTest("this build stores one file per trace")
         tc = TraceConfig(id=1, file_label="a.s2p")
         sentinel = ["sentinel.s1p"]
-        real = g.trace_file_labels
-        g.trace_file_labels = lambda _tc: list(sentinel)
+        real = fg._live_trace_file_labels
+        fg._live_trace_file_labels = lambda _tc: list(sentinel)
         try:
             self.assertEqual(fg.trace_file_labels(tc), sentinel)
         finally:
-            g.trace_file_labels = real
+            fg._live_trace_file_labels = real
 
     def test_the_aliases_agree_too(self):
         """`trace_file_aliases` is the tag every other surface prints."""

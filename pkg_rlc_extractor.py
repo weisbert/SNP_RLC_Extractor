@@ -3033,8 +3033,24 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 2
 
-    # Launch GUI
-    from pkg_rlc_gui import App
+    # Launch GUI.
+    #
+    # THE ONE DEFERRED IMPORT LEFT IN THIS REPO, and it is not a cycle dodge --
+    # the ten that were are gone (see pkg_rlc_model's docstring).  This module
+    # and pkg_rlc_gui are both L6 in tests/test_layering.py, so a module-level
+    # import here would be legal.  It stays inside `main()` because of what it
+    # COSTS: measured in three fresh processes on this box, `import
+    # pkg_rlc_extractor` is 95 / 98 / 99 ms, and adding `import pkg_rlc_gui`
+    # on top of it is a further 265 / 251 / 251 ms of tkinter and matplotlib.
+    # Every CLI invocation -- every --diagnose, every --compose, every
+    # --attribute in a script -- would pay a quarter of a second to import a
+    # window it never opens.
+    #
+    # And what it reaches for is `App`, a real Tk class, which is exactly the
+    # thing that cannot be moved down: it IS the frontend.  So this pair stays
+    # pinned in KNOWN_BACK_IMPORTS at one statement, with this paragraph as
+    # the reason.
+    from pkg_rlc_gui import App                              # noqa: PLC0415
     app = App()
     app.mainloop()
     return 0

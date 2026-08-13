@@ -150,39 +150,56 @@ HELP_MAX_LAYER = L1_MODEL
 
 
 # --------------------------------------------------------------------------
-# The dodges that exist today.
+# The dodges.  There is ONE left, and it is not a dodge.
 #
-# Each of these is an `import pkg_rlc_gui` written INSIDE a function body so it
-# does not run at import time.  They are all the same defect: `pkg_rlc_gui`
-# holds `TraceConfig`, the colour palettes and the App, so a panel that wants
-# the data model has to reach up into the frontend.
-# The fix is to MOVE THE SYMBOL DOWN, never to add another lazy import.
+# There were TEN: `pkg_rlc_files_gui -> pkg_rlc_gui` x8 and
+# `pkg_rlc_attrib_gui -> pkg_rlc_gui` x1 (through a `_gui()` shim), plus the
+# one below.  Every one of the nine was the same defect -- `pkg_rlc_gui` held
+# `TraceConfig`, the colour palette and the App in one file, so a panel that
+# wanted the data model had to reach UP into the frontend, and an
+# `import pkg_rlc_gui` inside a function body was the only way to do it
+# without a cycle.
 #
-# A fourth pair, `pkg_rlc_attrib_gui -> pkg_rlc_extractor` x2, was here until
-# the ground-model parser moved out of the CLI entry point.  The two lazy
-# imports sat inside `parse_ground_model` / `ground_model_zt`, which are thin
-# wrappers in the window; what they reached for -- `_attr_ground_model` and
-# `_attr_zt` -- now lives in `pkg_rlc_attrib_report` and is imported at the top
-# of the file like anything else.  (Both are still re-exported from
-# `pkg_rlc_extractor`, so `pkg_rlc_extractor._attr_zt` keeps resolving.)
-# That is what the removal half of this gate is for, and it is the shape every
-# later phase should take: MOVE THE SYMBOL DOWN, then delete the pair here.
+# They are gone, and they were removed the way this file demands: BY MOVING
+# THE SYMBOL DOWN, never by adding an exception here.  `FileEntry`,
+# `TraceConfig`, `SolveNetwork` and the signature functions went to the new
+# `pkg_rlc_model` (L1); `WARN_FG`, `PORT_ROLE_FG` and `_fixed_map_filter` went
+# to `pkg_rlc_widgets` (L4) beside `PLACEHOLDER_FG`, so the application has one
+# palette in one module.  The rest of what those functions reached for --
+# `compose_spec_problems`, `trace_file_labels`, `_trace_role_rows`, the three
+# port-field scopers, `_value_formatter`, `LOG_WARN` -- had ALREADY moved down
+# in earlier waves, so those lazy imports were reaching through `pkg_rlc_gui`
+# for symbols that were no longer its.
+#
+# An earlier pair, `pkg_rlc_attrib_gui -> pkg_rlc_extractor` x2, went the same
+# way when the ground-model parser moved into `pkg_rlc_attrib_report`.
+#
+# WHY THE LAST ONE STAYS, and why it is a different thing.  `main()` in
+# `pkg_rlc_extractor` imports `App` inside the GUI-launch branch.  Both modules
+# are L6, so a module-level import would be LEGAL here -- this pair is not
+# dodging a cycle and never was.  It is deferred because of COST: measured in
+# three fresh processes, `import pkg_rlc_extractor` is 95 / 98 / 99 ms and
+# `import pkg_rlc_gui` on top is a further 265 / 251 / 251 ms of tkinter and
+# matplotlib, which every --diagnose, --compose and --attribute run in a script
+# would pay for a window it never opens.  And what it reaches for is `App`
+# itself, a real Tk class: there is nothing to move down, because it IS the
+# frontend.  The reason is written beside the statement too.
+#
+# So: this set is now a whitelist of ONE justified deferral, not a list of
+# defects.  Adding to it needs the same standard -- a measured cost, and a
+# symbol that genuinely cannot live below its caller.
 # --------------------------------------------------------------------------
 
 KNOWN_BACK_IMPORTS = frozenset({
-    ("pkg_rlc_attrib_gui", "pkg_rlc_gui"),
     ("pkg_rlc_extractor", "pkg_rlc_gui"),
-    ("pkg_rlc_files_gui", "pkg_rlc_gui"),
 })
 
 # How many statements per pair, so that removing SOME of a module's dodges is
-# visible here too.  Without this, `pkg_rlc_files_gui` could go from eight to
-# one and the pair set would not move.  Ten statements in total, which is the
-# number CLAUDE.md's "10 statements over 3 pairs" counts.
+# visible here too.  Without this, a module could go from eight to one and the
+# pair set above would not move -- which is exactly the half that made the
+# removal above provable.
 KNOWN_BACK_IMPORT_COUNTS = {
-    ("pkg_rlc_attrib_gui", "pkg_rlc_gui"): 1,
     ("pkg_rlc_extractor", "pkg_rlc_gui"): 1,
-    ("pkg_rlc_files_gui", "pkg_rlc_gui"): 8,
 }
 
 _FIX = (
