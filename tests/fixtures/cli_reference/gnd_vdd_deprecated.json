@@ -23,7 +23,7 @@
   "  max |S| = 1",
   "NOTE: --vdd is deprecated. For AC small-signal analysis VDD is identical to ground, so these ports are merged into --gnd.",
   "",
-  "@ 5 GHz:",
+  "@ 5.0005 GHz  (requested 5 GHz; nearest point, grid step 25 MHz):",
   "  Z      = -7.469e-09 + j157.9 Ω",
   "  R      = -7.469e-06 mΩ",
   "  L      = 5.026 nH",

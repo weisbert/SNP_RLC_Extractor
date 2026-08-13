@@ -18,7 +18,7 @@
   "  Frequency: 1 MHz - 10 GHz  (linear, step 25 MHz)",
   "  max |S| = 0.9923",
   "",
-  "@ 0.101 GHz:",
+  "@ 0.10099 GHz  (requested 0.1 GHz; nearest point, grid step 25 MHz):",
   "  Z      = 0.5 + j0.6345 Ω",
   "  R      = 500 mΩ",
   "  L      = 1 nH",

@@ -84,7 +84,7 @@
   "        to reach the system through one of its ports: declare that port as",
   "        ground, or connect it, and run this again.",
   "",
-  "@ 5 GHz:",
+  "@ 5.0005 GHz  (requested 5 GHz; nearest point, grid step 25 MHz):",
   "  Z      = 0.6001 + j62.84 Ω",
   "  R      = 600.1 mΩ",
   "  L      = 2 nH",

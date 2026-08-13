@@ -26,7 +26,7 @@
   "",
   "Measurement ports: vic [0], agg [1]",
   "",
-  "@ 2.001 GHz  --  Z matrix (Ω), open-circuit: every other measurement port carries no current",
+  "@ 2.0008 GHz  (requested 2 GHz; nearest point, grid step 25 MHz)  --  Z matrix (Ω), open-circuit: every other measurement port carries no current",
   "                        vic                   agg",
   "  vic   0.2494 - j3.977e+04  -0.2507 - j3.978e+04",
   "  agg  -0.2507 - j3.978e+04   0.2494 - j3.977e+04",

@@ -22,7 +22,7 @@
   "",
   "Measurement ports: c1 [0], c2 [1]",
   "",
-  "@ 5 GHz  --  Z matrix (Ω), open-circuit: every other measurement port carries no current",
+  "@ 5 GHz  (requested 5.05 GHz; nearest point, grid step 100 MHz)  --  Z matrix (Ω), open-circuit: every other measurement port carries no current",
   "                       c1                   c2",
   "  c1         0.6 + j62.83  -2.158e-15 + j25.13",
   "  c2  -2.158e-15 + j25.13         0.9 + j94.25",
