@@ -315,9 +315,28 @@ drop-in:
 ```python
 from _isolated_desktop import available, desktop, run as run_isolated
 # ... open ONE `desktop()` around the whole run, then per shard:
-p = run_isolated([sys.executable, "-m", "unittest", name], cwd=str(REPO))
+p = run_isolated([sys.executable, "-m", "unittest", name], cwd=str(REPO),
+                 **_priority_kwargs())          # <- see below, do not drop this
 ```
 
 Guard it on `available()` and keep the plain `subprocess.run` as the fallback,
 and put it behind a flag so a developer who *wants* to watch the windows still
 can.
+
+**Carry `_priority_kwargs()` through, or you silently undo the other half.**
+`run_shard` spawns every shard `BELOW_NORMAL_PRIORITY_CLASS` so the suite
+gives way to the user at the CPU — the same concern this document is about,
+solved at the other end. `CreateProcessW` takes its own `dwCreationFlags`, and
+a launcher that hardcodes 0 there puts every shard silently back to NORMAL. So
+`run()` takes a `creationflags` argument and passes it straight through.
+Verified rather than assumed — the child's `PriorityClass` read through
+`Get-Process`:
+
+```
+run(..., creationflags=0)                            -> Normal
+run(..., creationflags=BELOW_NORMAL_PRIORITY_CLASS)  -> BelowNormal
+```
+
+The two changes are complementary and independent: priority is about CPU
+contention, the desktop object is about windows and focus. Neither replaces
+the other.

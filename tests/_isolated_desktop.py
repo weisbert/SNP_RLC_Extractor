@@ -243,15 +243,26 @@ class desktop:
             self.handle = None
         return False
 
-    def run(self, argv, cwd=None, timeout=None):
-        return run(argv, cwd=cwd, timeout=timeout, name=self.name)
+    def run(self, argv, cwd=None, timeout=None, creationflags=0):
+        return run(argv, cwd=cwd, timeout=timeout, name=self.name,
+                   creationflags=creationflags)
 
 
-def run(argv, cwd=None, timeout=None, name: str = DEFAULT_DESKTOP):
+def run(argv, cwd=None, timeout=None, name: str = DEFAULT_DESKTOP,
+        creationflags: int = 0):
     """Run `argv` on the desktop object `name`; capture stdout and stderr.
 
     Returns a `subprocess.CompletedProcess` so this is a drop-in for
     `subprocess.run(argv, capture_output=True, text=True, cwd=cwd)`.
+
+    `creationflags` is passed straight to `CreateProcessW`'s
+    `dwCreationFlags` and exists so that the caller's process-priority choice
+    SURVIVES the move onto the desktop object.  `run_parallel.run_shard`
+    spawns every shard `BELOW_NORMAL_PRIORITY_CLASS` so the suite gives way to
+    the user; routing that spawn through here with the flag dropped would put
+    it silently back to NORMAL, i.e. undo one of the two things being done for
+    the same reason.  Pass `**_priority_kwargs()`-worth of flags through this
+    argument, not by editing the call.
 
     Output goes to inheritable temporary FILES rather than pipes: a pipe needs
     a reader thread per stream or the child blocks once it fills, and a test
@@ -295,7 +306,8 @@ def run(argv, cwd=None, timeout=None, name: str = DEFAULT_DESKTOP):
         # nobody wrote.  list2cmdline implements the MSVCRT rules exactly and
         # is what `subprocess` itself passes to `CreateProcessW`.
         cmdline = ctypes.create_unicode_buffer(subprocess.list2cmdline(argv))
-        ok = kernel32.CreateProcessW(None, cmdline, None, None, True, 0, None,
+        ok = kernel32.CreateProcessW(None, cmdline, None, None, True,
+                                     wt.DWORD(creationflags), None,
                                      str(cwd) if cwd else None,
                                      ctypes.byref(si), ctypes.byref(pi))
         if not ok:
