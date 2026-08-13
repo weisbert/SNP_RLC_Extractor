@@ -52,7 +52,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `tests/test_attrib_window.py` | The Attribution window IN ISOLATION (212 tests). Split in two on purpose: the pure formatters run with **no display** (the monospace table model, the width-stable sign pair, the reconciliation verdict, the provenance and staleness text, the CSV records), and the rest drives real Tk off a hand-built `TraceConfig` — the four refusals by name, the header `ReflowRow` budget, both PanedWindow starvation cases, the lazy sweep draw, that crossing the canvas does NOT steal focus from the frequency Entry (measured with `focus -lastfor`, not `focus_get()`, because the test process rarely owns WM focus under the parallel runner), the `[Recompute]`-not-auto-refresh contract, and that the swatch stays equal to `pkg_rlc_gui.RESULTS_SWATCH`. Plus the integration pass's own classes: `TestGesturesThatMustNotDiscardWork` (Escape from inside a field, and a click past the last row), `TestTheDetailPaneSaysWhatItRefused` (a refused candidate reaching a widget, the sweep not collapsing, the Candidates entry on screen at the minimum), `TestTheHeaderHearsAboutItsOwnText` (`ReflowRow.refresh`) and `TestTheDeclaredMinimumShowsContent`, which builds a SECOND App at `tk scaling 2.0` with every named font x1.5 and asserts the content is mapped at the enforced minimum, that the 100% minimum did not move, and that the layout SETTLES over eight resizes. Every guard mutation-checked. |
 | `tests/test_attrib_gui_integration.py` | The same window END TO END through the REAL app, which is the other half: nothing here constructs a `TraceConfig`, a `FileEntry` or an `AttribResult` — the file goes in through `_on_add_file`, the measurement ports are typed into the real `RowTable`, and the window is opened through the menu entries a user clicks. It owns the JOIN, i.e. every defect where `pkg_rlc_gui`'s hooks and `pkg_rlc_attrib_gui`'s window are each right on their own: the number on the table against `pkg_rlc_attrib` called directly AND against the `M` the results pane printed down the separate `compute_z_matrix` path, the right-click SELECTING the row under the pointer first, every refusal by name, rule 6 in full, rule 11 (remove the trace / remove the file / load a session, each with the window open), the Results-pane pointer and its gate, and that none of it put a run or a result into the session file. **The window is MAPPED everywhere here** — a withdrawn root answers 0 to every geometry query and `Listbox.nearest()` then answers row 0 for every y, which is exactly the answer the right-click tests exist to rule out. |
 | `tests/run_parallel.py` | **The test runner to use.** Class-sharded, longest-first. Measured when it was written: `python -m unittest discover -s tests` 293 s against `python tests/run_parallel.py` 108 s over the same 906 tests (2.7x). **The current totals live in "How to run tests" at the bottom of this file and nowhere else** — one copy, because two of them drift; `-m <substr>` picks modules by name. Sharded by CLASS not module because `test_run_history` alone is 86 s of the serial 293. Exit code 0 means every shard passed. NOT auto-discovered (no `test_` prefix). |
-| `tests/test_freq_label.py` | Frequency-label honesty: the marker frequency a report prints says where the numbers came from. Both extractors snap to the nearest grid point via `argmin`, and the default 0.1 GHz marker on `diff_pair_4port.s4p` lands on 0.10099 GHz — every default session in the repo snapped and said nothing. |
+| `tests/test_freq_label.py` | Frequency-label honesty: the marker frequency a report prints says where the numbers came from. Both extractors snap to the nearest grid point via `argmin`, and the default 0.1 GHz marker on `diff_pair_4port.s4p` lands on 0.10099 GHz — every default session in the repo snapped and said nothing. `TestTheCommandLineSaysItToo` is the CLI's half (added later — the GUI was fixed first and the terminal kept its own format string for months): the load-bearing test there is `test_the_two_surfaces_render_ONE_snap_identically`, which builds the pane's Z-matrix line and the terminal's from the SAME `FreqSnap` and compares them character for character, because "each surface says something reasonable" is the state this file exists to end. Mutation-checked: reverting either printer, or narrowing the CLI's precision back to `{:.4g}`, turns it red. |
 | `tests/test_large_files.py` | How big a file the tool will read and what it says when it will not: the escalating port-count sniff past `MAX_SNIFF_NPORTS` to `SNIFF_HARD_CAP`, the refusal as a `TouchstoneParseError`, and the memory envelope. |
 | `tests/`                | `unittest`-based suite (2522 tests run by `tests/run_parallel.py` at the time of writing, covering parser line-break/signed-zero edge cases, port range, mport specs, short groups, content sniffer, terminations, termination precedence, the connection-row model, named merged nodes, the `RowTable` widget and its per-kind layout, the Mode 5 editor, auto-apply / style picker / plot visibility, the session file, the ranked coupling report, fits, Schur fallback, the coupling matrix, degenerate probes, port attribution and its cross-check against the engine, the Attribution window, the cold-start screen, several files composed into one network and the composed-network attribution baseline, the bit-exact golden regression, the CLI's printed output and the Attribution window's text pinned byte for byte, the import-layering gate, and `reduce_snp`). |
 | `tests/test_editor_autoapply.py` | The commit-step removal: WHEN the editor writes into a `TraceConfig` and WHICH one it lands on (the deferral, the object capture, the flush-before-selection-change), the style picker's storage / reachability / honesty about multi-curve traces, and that hiding a curve neither recomputes it nor destroys the cursors. Every guard here was mutation-checked. |
@@ -429,21 +429,43 @@ own SPELLING of each, handed to the shared formatter as an argument, because
   two spellings of one file format are two things that can come to disagree
   about a number.
 
-**FOUR DIVERGENCES BETWEEN THE CLI AND THE PANE SURVIVED THE MERGE, because
-they are content and not layout.** They are pre-existing, they are preserved
-byte for byte, and each is a place the two front ends tell a user something
-different about the same data:
+**THE FIRST OF FOUR DIVERGENCES IS NOW FIXED; the other three survive, because
+they are content and not layout.** The three below are pre-existing, are
+preserved byte for byte, and each is a place the two front ends tell a user
+something different about the same data. Only the first was fixed, and only
+because the repo had already taken a written position on it — the rule applied
+was: *where the two surfaces disagree AND the repo has a documented position (a
+CLAUDE.md entry, a test file's stated purpose, `docs/theory.md`), the surface
+matching that position wins and the other is fixed; where there is none, it is
+a product choice and is listed rather than decided.*
 
-- **The CLI's frequency provenance line ROUNDS and the pane's does not**, which
-  is the one worth fixing first — it is the class of bug
-  `tests/test_freq_label.py` exists for. `_print_coupling_report` prints
-  `res.freq_hz / 1e9:.4g`; `_format_coupling_block` prints
+- **FIXED — the CLI's frequency provenance line used to ROUND, and to carry no
+  snap note at all.** `_print_coupling_report` printed
+  `res.freq_hz / 1e9:.4g` where `_format_coupling_block` printed
   `marker_freq_text(freq, '{:.6g}')`. Measured on `diff_pair_4port.s4p` at
-  `--freq 0.11`, which snaps to 100.99 MHz: the CLI says **`@ 0.101 GHz`** and
-  the pane says **`Z matrix @ 0.10099 GHz`**. The CLI's coupling path has no
-  snap note anywhere else either (`snapped to` exists only under `--attribute`
-  and `--cold-start`), so that rounded number is its ONLY statement of where the
-  numbers came from.
+  `--freq 0.11`, which resolves to 100 990 000 Hz: the CLI said
+  **`@ 0.101 GHz`** — a frequency that **is not in the file** — while the pane
+  said `Z matrix @ 0.10099 GHz`, and the coupling path said nothing anywhere
+  about the 990 kHz snap (`snapped to` existed only under `--attribute` and
+  `--cold-start`), so that rounded number was its ONLY statement of where the
+  numbers came from. Both CLI marker lines — the coupling Z-matrix line and
+  the scalar `@ <f>:` line above R/L/C/Q, which had the identical defect — now
+  go through `marker_freq_text`, so **the provenance arrives WITH the number
+  rather than beside it**: a second, separately-worded note next to a shared
+  renderer that already carries one would be two renderings of one fact, which
+  is what this section is about. `_cli_marker` is the one-line helper that
+  builds the `FreqSnap`, and it re-uses `_format_coupling_block`'s own rule —
+  the EXTRACTOR's `freq_hz` overrides the re-derived point, because that is
+  where the numbers came from. **Precision is per line and deliberately not
+  uniform**: the coupling line takes the pane's `{:.6g}` (at `{:.4g}` an exact
+  5.0005 GHz point renders `5 GHz`), the scalar line keeps its historical
+  `{:.4g}`, and `marker_freq_text` widens BOTH numbers to `FREQ_WIDE_FMT`
+  itself the moment there are two to tell apart — so a marker that IS a data
+  point renders byte-for-byte what it always did at both sites. Fixing it moved
+  **55 lines of `tests/fixtures/cli_reference/`, every one of them a `@ <freq>`
+  marker line** — no number, no table, no exit code and no CSV cell — and
+  `render_reference.json` and `golden_legacy.npz` did not move at all, which is
+  the shape the change had to have: the GUI was already right.
 - **The CLI does not rank or floor the pair list.** It is still
   `for pr in res.pairs:` — nested-loop `(a, b)` order, every pair, no
   `rank_coupling_pairs`, no `COUPLING_FLOOR_DB`, and `worst M/L` (the rank key)
