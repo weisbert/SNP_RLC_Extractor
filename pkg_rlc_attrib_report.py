@@ -926,6 +926,29 @@ def _attr_print_ground_model(ctx, a: int, b: int, gm_label: str,
     return out
 
 
+def rank_map(dec) -> dict[str, int]:
+    """
+    One decomposition -> {element description: 1-based rank by |contribution|}.
+
+    THE ONE STEP THE TWO SURFACES REALLY SHARE.  Section 8 here prints these as
+    a column per frequency with a "RANK IS NOT STABLE" paragraph under it;
+    `pkg_rlc_attrib_gui.stability_ranks` collects the same maps and
+    `stability_line` renders them as a one-line badge that has to fit 65
+    characters at 150% DPI.  Those two renderings are not reconcilable and both
+    are measured -- but "which element ranks where" is one question with one
+    answer, and it was computed by two identical copies of these three lines
+    until this function existed.
+
+    Keyed by the element DESCRIPTION, not by index: a lumped element whose
+    admittance vanishes at one frequency is dropped there, so the element LISTS
+    can legitimately differ between columns and an index would silently name a
+    different element in each.
+    """
+    order = sorted([t for t in dec.terms if t.element is not None],
+                   key=lambda t: -abs(t.contribution))
+    return {t.label: i + 1 for i, t in enumerate(order)}
+
+
 def _attr_print_stability(ts, Y, term, src, a, b, f_primary, decZ0,
                           extra_freqs, csv_rows: list[dict]) -> list[str]:
     """
@@ -946,7 +969,8 @@ def _attr_print_stability(ts, Y, term, src, a, b, f_primary, decZ0,
 
     # element description -> [rank per column]; the description is the key
     # because a lumped element whose admittance vanishes at one frequency is
-    # dropped there, so the element LISTS can legitimately differ.
+    # dropped there, so the element LISTS can legitimately differ.  `rank_map`
+    # is that rule, and the Attribution window's badge reads it too.
     ranks: list[dict[str, int]] = []
     totals: list[complex] = []
     for f in freqs:
@@ -957,9 +981,7 @@ def _attr_print_stability(ts, Y, term, src, a, b, f_primary, decZ0,
                 attrib.build_context(Y, ts.freqs, term, f, sources=src),
                 a, b, "Z")
         totals.append(dec.total_reference)
-        order = sorted([t for t in dec.terms if t.element is not None],
-                       key=lambda t: -abs(t.contribution))
-        col = {t.label: i + 1 for i, t in enumerate(order)}
+        col = rank_map(dec)
         ranks.append(col)
         for label, r in col.items():
             csv_rows.append(_attr_row(

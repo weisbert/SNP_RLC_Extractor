@@ -199,10 +199,19 @@ from matplotlib.figure import Figure
 
 import pkg_rlc_attrib as attrib
 import pkg_rlc_files_gui as files_gui
-# The CLI's ground-model parser.  One grammar, one set of error messages, one
-# label format for `--attribute-ground-model` and for the Grounds field on this
-# window -- see `parse_ground_model`, which is two lines for that reason.
-from pkg_rlc_attrib_report import _attr_ground_model, _attr_zt
+# What this window and the command line's report REALLY share, which is the
+# data-shaping and not the rendering: the ground-model grammar (one set of
+# error messages and one label format for `--attribute-ground-model` and for
+# the Grounds field here -- see `parse_ground_model`), the grid snap, and the
+# rank map behind the across-frequency badge.  The two RENDERINGS stay
+# separate on purpose: this window's strips clip at a measured 48 characters
+# at 150% DPI against the CLI's 95, so neither can be the other.
+from pkg_rlc_attrib_report import (
+    _attr_ground_model,
+    _attr_snap,
+    _attr_zt,
+    rank_map,
+)
 from pkg_rlc_core import (
     ROLE_ELEMENT,
     ROLE_GROUND,
@@ -2540,7 +2549,9 @@ def stability_ranks(app, trace, file_entry, res: AttribResult,
                                  max(2, n_points - 1)))
     picked: list[float] = []
     for f in want:
-        snapped = float(freqs_all[int(np.argmin(np.abs(freqs_all - f)))])
+        # `_attr_snap` is that same argmin, and it is the CLI's, so section 8
+        # of --attribute and this badge cannot land on different grid points.
+        snapped = _attr_snap(freqs_all, f)
         if snapped not in picked:
             picked.append(snapped)
     picked = picked[:n_points]
@@ -2573,10 +2584,11 @@ def stability_ranks(app, trace, file_entry, res: AttribResult,
                                    res.dec.quantity)
         # Keyed by the element DESCRIPTION, not by index: a lumped element
         # whose admittance vanishes at one frequency is dropped there, so the
-        # element LISTS can legitimately differ between columns.
-        order = sorted([t for t in dec.terms if t.element is not None],
-                       key=lambda t: -abs(t.contribution))
-        ranks.append({t.label: i + 1 for i, t in enumerate(order)})
+        # element LISTS can legitimately differ between columns.  That rule is
+        # `rank_map`, shared with the CLI's section 8 -- the badge and the
+        # printed table answer "which element ranks where" the same way and
+        # then render it for 65 characters and for 95 respectively.
+        ranks.append(rank_map(dec))
     return picked, ranks
 
 
