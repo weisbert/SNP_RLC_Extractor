@@ -711,7 +711,7 @@ def _file_cell(rec, alias: dict) -> str:
 
 def _render_columns(headers: Sequence, aligns: Sequence[str],
                     rows: Sequence[Sequence[str]], lead: str = "",
-                    gap: str = "  ") -> list:
+                    gap: str = "  ", rule: str = "") -> list:
     """
     A monospace table: every column as wide as its widest cell OR its header.
 
@@ -731,6 +731,15 @@ def _render_columns(headers: Sequence, aligns: Sequence[str],
 
     The last cell of every line is right-stripped, so a table copied into a
     mail carries no trailing whitespace.
+
+    `rule` draws a run of that character under the header, one per column,
+    joined by the same gap.  The results pane does not want one -- its tables
+    sit inside a block that is already delimited -- but the CLI's tables have
+    always carried one, and its stdout is pinned byte for byte
+    (tests/fixtures/cli_reference/).  So it is a parameter, and
+    `pkg_rlc_extractor._print_table` is now four lines that call this.  The
+    rule line is deliberately NOT right-stripped: that is what the CLI's own
+    printer did, and a zero-width column would otherwise change the line.
     """
     heads = [[h] if isinstance(h, str) else list(h) for h in headers]
     depth = max([len(h) for h in heads] + [1])
@@ -744,8 +753,10 @@ def _render_columns(headers: Sequence, aligns: Sequence[str],
             for i, c in enumerate(cells))
         return (lead + out).rstrip()
 
-    return ([line([h[d] for h in heads]) for d in range(depth)]
-            + [line(r) for r in rows])
+    out = [line([h[d] for h in heads]) for d in range(depth)]
+    if rule:
+        out.append(lead + gap.join(rule * width for width in w))
+    return out + [line(r) for r in rows]
 
 
 def _format_results_table(rows: Sequence[RowSnapshot], units_mode: str,
@@ -903,9 +914,18 @@ def _format_results_table(rows: Sequence[RowSnapshot], units_mode: str,
 # used to be defined in this module.
 
 
-def _trunc_str(s: str, w: int) -> str:
+def _trunc_str(s: str, w: int, ell: str = "…") -> str:
+    """
+    Cut to `w` characters, marking the cut with `ell`.
+
+    The marker is a PARAMETER because the CLI's is '~' and the pane's is
+    U+2026, and the CLI's stdout is pinned byte for byte by
+    tests/fixtures/cli_reference/ -- so the glyph is the one thing about this
+    that the two front ends cannot share.  Everything else about it they now
+    do; `pkg_rlc_extractor._trunc` was a second copy of these two lines.
+    """
     s = s or ""
-    return s if len(s) <= w else s[: w - 1] + "…"
+    return s if len(s) <= w else s[: w - 1] + ell
 
 
 def _value_formatter(values, unit: str, units_mode: str):
@@ -1019,11 +1039,31 @@ def _pair_flag(pair) -> str:
     return ",".join(flags)
 
 
-def _format_z_matrix(names, Zk, indent: str = "      ") -> str:
-    """Render the G x G Z matrix with aligned columns (Re + jIm, in ohms)."""
+def _pane_z_name(n) -> str:
+    """The results pane's row/column label for a measurement port."""
+    return _trunc_str(n, 12)
+
+
+def _pane_z_cell(z) -> str:
+    """The results pane's spelling of one matrix entry: 'a+bj'."""
+    return f"{z.real:.4g}{z.imag:+.4g}j"
+
+
+def _format_z_matrix(names, Zk, indent: str = "      ",
+                     name=_pane_z_name, cell=_pane_z_cell) -> str:
+    """Render the G x G Z matrix with aligned columns (Re + jIm, in ohms).
+
+    The ALIGNMENT is the shared part and it is all of the arithmetic here:
+    one column width for every cell and every label, the labels left in their
+    own column.  `indent`, `name` and `cell` are parameters because the CLI
+    prints the same matrix with a two-space indent, a 16-character '~'
+    truncation and 'a + jb' notation, and its stdout is pinned byte for byte
+    (tests/fixtures/cli_reference/).  The defaults are the results pane's,
+    unchanged -- render_reference.json pins those.
+    """
     G = len(names)
-    disp = [_trunc_str(n, 12) for n in names]
-    cells = [[f"{Zk[i, j].real:.4g}{Zk[i, j].imag:+.4g}j" for j in range(G)]
+    disp = [name(n) for n in names]
+    cells = [[cell(Zk[i, j]) for j in range(G)]
              for i in range(G)]
     name_w = max(len(n) for n in disp)
     col_w = max([len(c) for row in cells for c in row] + [name_w])

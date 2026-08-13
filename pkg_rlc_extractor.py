@@ -137,6 +137,14 @@ from pkg_rlc_core import (
     s_to_y,
     y_series_rlc,
 )
+from pkg_rlc_csv import write_coupling_table
+from pkg_rlc_report import (
+    _fmt_plain,
+    _format_z_matrix,
+    _render_columns,
+    _sign_flag,
+    _trunc_str,
+)
 
 
 def _make_arg_parser() -> argparse.ArgumentParser:
@@ -498,12 +506,23 @@ def _make_arg_parser() -> argparse.ArgumentParser:
 # ============================================================================
 # Formatting helpers (coupling report)
 # ============================================================================
+#
+# NONE OF THE ARITHMETIC BELOW IS THIS FILE'S ANY MORE.  Truncation, the
+# plain-number format, the sign flag, the monospace table and the Z matrix
+# were each written twice -- once here for the terminal and once in
+# `pkg_rlc_report` for the results pane -- and two renderings of one number
+# are two things that can come to disagree.  What is left here is the CLI's
+# own SPELLING of each of them (a '~' rather than U+2026, a rule under the
+# header, 'a + jb' rather than 'a+bj'), passed to the shared formatter as an
+# argument.  The names survive because the `_attr_print_*` / `_cold_print_*`
+# sections call them by name.
 
 _NAME_W = 16          # measurement-port names are truncated to this for tables
 
 
 def _trunc(s: str, w: int) -> str:
-    return s if len(s) <= w else s[: w - 1] + "~"
+    """`_trunc_str` with the CLI's cut marker."""
+    return _trunc_str(s, w, "~")
 
 
 def _fmt_complex(z: complex, sig: int = 4) -> str:
@@ -514,68 +533,45 @@ def _fmt_complex(z: complex, sig: int = 4) -> str:
     return f"{re:.{sig}g} {sign} j{abs(im):.{sig}g}"
 
 
-def _fmt_num(value: float, sig: int = 4) -> str:
-    return "nan" if not math.isfinite(value) else f"{value:.{sig}g}"
+#: The plain-number format, which is `pkg_rlc_report._fmt_plain` exactly -- it
+#: was the same two lines in both files.  Kept under the CLI's own name
+#: because every `_attr_print_*` and `_cold_print_*` section calls it that.
+_fmt_num = _fmt_plain
 
 
 def _fmt_db(value: float, sig: int = 4) -> str:
-    return "nan dB" if not math.isfinite(value) else f"{value:.{sig}g} dB"
-
-
-def _sign_flag_port(port) -> str:
-    """Compact flag: 'cap' or 'ind' per Im(Z) sign, plus 'R<0' if non-passive.
-
-    Same wording as the GUI results pane, so the two agree.
-    """
-    flags = []
-    if math.isfinite(port.L_henry):
-        if port.L_henry < 0:
-            flags.append("cap")
-        elif port.L_henry > 0:
-            flags.append("ind")
-    if math.isfinite(port.R_ohm) and port.R_ohm < 0:
-        flags.append("R<0")
-    return ",".join(flags)
+    return _fmt_num(value, sig) + " dB"
 
 
 def _print_table(headers: list[str], rows: list[list[str]],
                  aligns: list[str], indent: str = "  ") -> None:
-    widths = [len(h) for h in headers]
-    for row in rows:
-        for i, cell in enumerate(row):
-            widths[i] = max(widths[i], len(cell))
+    """The CLI's monospace table: `_render_columns`, ruled, and printed.
 
-    def _fmt_row(cells: list[str]) -> str:
-        out = []
-        for i, cell in enumerate(cells):
-            if aligns[i] == "<":
-                out.append(f"{cell:<{widths[i]}}")
-            else:
-                out.append(f"{cell:>{widths[i]}}")
-        return indent + "  ".join(out).rstrip()
+    The argument ORDER is this file's own (headers, rows, aligns) because
+    seventeen call sites in the attribution and cold-start sections pass it
+    that way.
+    """
+    for line in _render_columns(headers, aligns, rows, lead=indent, rule="-"):
+        print(line)
 
-    print(_fmt_row(headers))
-    print(indent + "  ".join("-" * w for w in widths))
-    for row in rows:
-        print(_fmt_row(row))
+
+def _cli_z_name(n) -> str:
+    """The Z matrix's row/column label on the terminal."""
+    return _trunc(n, _NAME_W)
+
+
+def _cli_z_cell(z) -> str:
+    """One Z matrix entry on the terminal: 'a + jb', not the pane's 'a+bj'."""
+    return _fmt_complex(complex(z))
 
 
 def _print_coupling_report(res) -> None:
     """Print the Z matrix, the self table, every pair, and the reciprocity check."""
-    G = len(res.names)
-    disp = [_trunc(n, _NAME_W) for n in res.names]
-
     # --- 1. The G x G Z matrix -------------------------------------------
     print(f"\n@ {res.freq_hz / 1e9:.4g} GHz  --  Z matrix (Ω), open-circuit: "
           "every other measurement port carries no current")
-    cells = [[_fmt_complex(complex(res.Z_matrix[i, j])) for j in range(G)]
-             for i in range(G)]
-    cell_w = max([len(c) for row in cells for c in row] + [len(n) for n in disp])
-    lbl_w = max(len(n) for n in disp)
-    print("  " + " " * lbl_w + "  " + "  ".join(f"{n:>{cell_w}}" for n in disp))
-    for i in range(G):
-        print(f"  {disp[i]:<{lbl_w}}  "
-              + "  ".join(f"{c:>{cell_w}}" for c in cells[i]))
+    print(_format_z_matrix(res.names, res.Z_matrix, indent="  ",
+                           name=_cli_z_name, cell=_cli_z_cell))
 
     # --- 2. Self impedance table -----------------------------------------
     print("\nSelf impedance (diagonal). Signs are physical (Cadence convention):")
@@ -587,7 +583,7 @@ def _print_coupling_report(res) -> None:
             format_si(p.L_henry, "H"),
             format_si(p.C_farad, "F"),
             _fmt_num(p.Q, 4),
-            _sign_flag_port(p),
+            _sign_flag(p),
         ])
     _print_table(["Port", "R", "L", "C", "Q", "Sign"], rows,
                  ["<", ">", ">", ">", ">", "<"])
@@ -704,10 +700,14 @@ def _compose_csv_header(fh, net) -> None:
 
 def _write_coupling_csv(path: str, ts, args, Zmat: np.ndarray,
                         names: list[str], net=None) -> None:
-    """Per frequency: Re/Im of every Z_ij, plus M_nH and k for every pair."""
-    G = len(names)
-    freqs = ts.freqs
-    omega = 2 * np.pi * freqs
+    """Per frequency: Re/Im of every Z_ij, plus M_nH and k for every pair.
+
+    The comment block is the CLI's -- it names the file, the port map and the
+    spec that was run, none of which the GUI's export has to say because the
+    session does.  The TABLE under it is `pkg_rlc_csv.write_coupling_table`,
+    the same one the GUI writes: this file used to carry a second,
+    independent implementation of it, under the same name.
+    """
     with open(path, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         fh.write(f"# File: {ts.source_path}\n")
@@ -718,42 +718,7 @@ def _write_coupling_csv(path: str, ts, args, Zmat: np.ndarray,
                  "k = M/sqrt(L_i*L_j) with L = Im(Z_ii)/omega.\n")
         fh.write("# All values keep their physical sign (Cadence convention); "
                  "k is nan where L_i <= 0 or L_j <= 0.\n")
-        head = ["Freq_GHz"]
-        for i in range(G):
-            for j in range(G):
-                head.append(f"Re_Z_{names[i]}_{names[j]}")
-                head.append(f"Im_Z_{names[i]}_{names[j]}")
-        for i in range(G):
-            for j in range(i + 1, G):
-                head.append(f"M_nH_{names[i]}_{names[j]}")
-                head.append(f"k_{names[i]}_{names[j]}")
-        w.writerow(head)
-
-        for kf in range(len(freqs)):
-            om = float(omega[kf])
-            Zk = Zmat[kf]
-            row = [f"{freqs[kf]/1e9:.6g}"]
-            for i in range(G):
-                for j in range(G):
-                    z = complex(Zk[i, j])
-                    row.append(f"{z.real:.6e}")
-                    row.append(f"{z.imag:.6e}")
-            if om != 0.0:
-                Ls = [float(Zk[g, g].imag) / om for g in range(G)]
-            else:
-                Ls = [float("nan")] * G
-            for i in range(G):
-                for j in range(i + 1, G):
-                    M = float(Zk[i, j].imag) / om if om != 0.0 else float("nan")
-                    La, Lb = Ls[i], Ls[j]
-                    if (math.isfinite(M) and math.isfinite(La)
-                            and math.isfinite(Lb) and La > 0.0 and Lb > 0.0):
-                        kk = M / math.sqrt(La * Lb)
-                    else:
-                        kk = float("nan")
-                    row.append(f"{M*1e9:.6e}")
-                    row.append(f"{kk:.6e}")
-            w.writerow(row)
+        write_coupling_table(w, Zmat, names, ts.freqs)
 
 
 # ============================================================================

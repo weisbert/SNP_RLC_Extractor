@@ -10,11 +10,12 @@ precision with a header row a spreadsheet can read.
 Pure: it writes into a file handle and a `csv.writer` the caller opened, and
 knows nothing about Tk or the App.
 
-`pkg_rlc_extractor.py` carries a SECOND, independent `_write_coupling_csv` for
-the CLI.  A later phase deletes that one and points the CLI here; the two are
-not merged in this commit because the GUI one is called with a `TraceConfig`
-by tests/test_report_readability.py, and moving the signature to plain arrays
-means editing a test that is not this phase's to touch.
+`pkg_rlc_extractor.py` used to carry a SECOND, independent
+`_write_coupling_csv` for the CLI -- same columns, same order, same formats,
+written twice.  It is gone: `write_coupling_table` is the one copy of the
+table and each front end writes its own comment block above it.  The GUI's
+entry point keeps its `TraceConfig` signature because
+tests/test_report_readability.py calls it that way.
 """
 
 from __future__ import annotations
@@ -51,15 +52,39 @@ def _write_coupling_csv(fh, writer, tc: "TraceConfig", freqs) -> None:
     `freqs` is the axis the matrix was COMPUTED on, handed in rather than
     fetched from the home file: a composed Zmat lives on the composed axis, and
     the home file's sweep is neither the same length nor the same points.
+
+    The two comment lines are this caller's; the table under them is
+    `write_coupling_table`, which the CLI writes under its own header.
     """
-    Zmat = tc.Zmat
-    names = list(tc.mport_names or [])
+    fh.write("# Measurement ports: " + ", ".join(tc.mport_names or []) + "\n")
+    fh.write("# Off-diagonal Z is open-circuit mutual impedance "
+             "(every other measurement port open).\n")
+    write_coupling_table(writer, tc.Zmat, list(tc.mport_names or []), freqs)
+
+
+def write_coupling_table(writer, Zmat, names, freqs) -> None:
+    """
+    The coupling table itself: the column header, then one row per frequency.
+
+    Columns are Freq_GHz, Re/Im of every Z_ij in row-major order, then M_nH
+    and k for every unordered pair in (i, j<i) order.  Values are `%.6e` and
+    keep their physical sign; k is nan wherever it is genuinely undefined
+    (L_i <= 0 or L_j <= 0, or omega == 0).
+
+    THIS IS THE ONE COPY.  `pkg_rlc_extractor` carried a second, independent
+    implementation of the same table under the same name -- same columns, same
+    order, same formats, arrived at twice -- differing only in the comment
+    block above it, which is why the split is header-in-the-caller and table
+    here.  Two spellings of one file format are two things that can come to
+    disagree about a number, which is the failure this repo's references exist
+    to refuse.
+
+    `writer` is a `csv.writer` the caller opened; the caller has already
+    written whatever comment lines it wants above this.
+    """
     G = int(Zmat.shape[1])
     pairs = [(a, b) for a in range(G) for b in range(a + 1, G)]
 
-    fh.write("# Measurement ports: " + ", ".join(names) + "\n")
-    fh.write("# Off-diagonal Z is open-circuit mutual impedance "
-             "(every other measurement port open).\n")
     header = ["Freq_GHz"]
     for i in range(G):
         for j in range(G):
