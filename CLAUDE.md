@@ -2,6 +2,14 @@
 
 Conventions for Claude Code sessions on this repo. The authoritative spec is `CLAUDE_CODE_PROMPT.md`; the user docs are `README.md` and `docs/theory.md`.
 
+**How the tree got its current shape:** `docs/REFACTOR_REPORT.md` is the account
+of the 2026-08-13 layering refactor — the before/after line counts, the three
+modules that were planned and are not here (`pkg_rlc_model`, `pkg_rlc_session`,
+`pkg_rlc_run`), the seven places the CLI and the GUI told users different things
+about the same data (one fixed, six open), and what is still owed. Read it
+before starting anything that moves a symbol between modules; the sections
+below are the rules, that file is the state.
+
 ## Project purpose
 
 Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files via Y-parameter Schur-complement reduction — and, with more than one measurement port defined, the mutual coupling between them (M, k, M/L, C_c). Used for IC packages, EMX layout traces, DCO inductors, decap, and inductor-to-inductor pulling / spur budgeting.
