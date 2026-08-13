@@ -102,6 +102,7 @@ import re
 import sys
 import textwrap
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -141,6 +142,8 @@ from pkg_rlc_csv import write_coupling_table
 from pkg_rlc_report import (
     _format_z_matrix,
     _sign_flag,
+    marker_freq_text,
+    snap_to_grid,
 )
 # The attribution and cold-start REPORT.  Every one of these was defined in
 # this file and moved out whole; the import is what keeps
@@ -597,10 +600,45 @@ def _cli_z_cell(z) -> str:
     return _fmt_complex(complex(z))
 
 
-def _print_coupling_report(res) -> None:
-    """Print the Z matrix, the self table, every pair, and the reciprocity check."""
+def _cli_marker(freqs, requested_hz: float, actual_hz: float):
+    """The `FreqSnap` for a marker frequency the CLI is about to print.
+
+    `extract_rlc_at_freq` / `extract_coupling_at_freq` pick their point with
+    argmin and throw away how far it moved and how coarse the grid is;
+    `snap_to_grid` recovers exactly those two facts by re-doing the same argmin
+    on the same axis.  The extractor's own `freq_hz` is nevertheless what the
+    numbers came from, so it OVERRIDES the re-derived point -- that override is
+    what stops the two from ever drifting into printing different numbers, and
+    it is the same rule (and the same two lines) as `_format_coupling_block`'s
+    in `pkg_rlc_report`, where the GUI does this for its Z-matrix line.
+    """
+    snap = snap_to_grid(freqs, requested_hz)
+    if snap.resolved:
+        snap = replace(snap, actual_hz=float(actual_hz))
+    return snap
+
+
+def _print_coupling_report(res, freq=None) -> None:
+    """Print the Z matrix, the self table, every pair, and the reciprocity check.
+
+    `freq` is the `FreqSnap` for this measurement -- see `_cli_marker`.  A bare
+    float, or None for `res.freq_hz`, renders as the plain '<f> GHz' this
+    report has always printed, because that is `marker_freq_text`'s own
+    contract for a caller with no grid to compare against.
+    """
     # --- 1. The G x G Z matrix -------------------------------------------
-    print(f"\n@ {res.freq_hz / 1e9:.4g} GHz  --  Z matrix (Ω), open-circuit: "
+    # THE SAME RENDERER AND THE SAME PRECISION AS THE GUI'S Z-MATRIX LINE
+    # (`_format_coupling_block`, '{:.6g}'), which is the point: this line and
+    # that one name one measurement, and they printed it differently.  Measured
+    # on tests/fixtures/diff_pair_4port.s4p with --freq 0.11, which resolves to
+    # 100 990 000 Hz: this line said '0.101 GHz' -- a frequency that is not in
+    # the file -- while the pane said '0.10099 GHz', and neither the rounding
+    # nor the 990 kHz snap was mentioned anywhere on the coupling path.  The
+    # provenance arrives with the number because marker_freq_text carries it;
+    # a second, separately-worded note beside it would be two renderings of one
+    # fact, which is the failure this whole section exists to end.
+    print(f"\n@ {marker_freq_text(res.freq_hz if freq is None else freq, '{:.6g}')}"
+          "  --  Z matrix (Ω), open-circuit: "
           "every other measurement port carries no current")
     print(_format_z_matrix(res.names, res.Z_matrix, indent="  ",
                            name=_cli_z_name, cell=_cli_z_cell))
@@ -2812,7 +2850,8 @@ def _run_cli(args: argparse.Namespace) -> int:
         print("\nMeasurement ports: "
               + ", ".join(f"{n} [{i}]" for i, n in enumerate(names)))
         res = extract_coupling_at_freq(ts.freqs, Zmat, names, f_target_hz)
-        _print_coupling_report(res)
+        _print_coupling_report(
+            res, _cli_marker(ts.freqs, f_target_hz, res.freq_hz))
 
         if args.attribute:
             # After the coupling report on purpose: the attribution explains
@@ -2893,7 +2932,13 @@ def _run_cli(args: argparse.Namespace) -> int:
         print(f"  WARN: {w}")
 
     res = extract_rlc_at_freq(ts.freqs, Z, f_target_hz)
-    print(f"\n@ {res.freq_hz/1e9:.4g} GHz:")
+    # The scalar half of the same defect, and the same fix: this line names the
+    # point every number under it was read at, and it snapped in silence too.
+    # It keeps its historical '{:.4g}' -- FREQ_WIDE_FMT's rule is that a caller
+    # keeps its own precision for the UNCHANGED case and marker_freq_text
+    # widens both numbers itself the moment there are two to tell apart -- so
+    # a marker that IS a data point renders byte-for-byte what it always did.
+    print(f"\n@ {marker_freq_text(_cli_marker(ts.freqs, f_target_hz, res.freq_hz))}:")
     print(f"  Z      = {res.Z.real:.4g} + j{res.Z.imag:.4g} Ω")
     print(f"  R      = {res.R_ohm*1000:.4g} mΩ")
     print(f"  L      = {res.L_henry*1e9:.4g} nH")

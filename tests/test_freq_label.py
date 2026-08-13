@@ -522,6 +522,145 @@ class TestZMatrixLine(unittest.TestCase):
         self.assertNotIn("7.7 GHz", line)
 
 
+class TestTheCommandLineSaysItToo(unittest.TestCase):
+    """
+    THE OTHER SURFACE.  Everything above this class measures the GUI, and the
+    GUI is the half that was fixed: the CLI printed the SAME measurement's
+    frequency through a format string of its own,
+
+        _print_coupling_report:  f"@ {res.freq_hz / 1e9:.4g} GHz  --  Z matrix"
+        _format_coupling_block:  f"Z matrix @ {marker_freq_text(freq, '{:.6g}')}"
+
+    so on tests/fixtures/diff_pair_4port.s4p at --freq 0.11 the terminal said
+    '0.101 GHz' and the pane said '0.10099 GHz'.  0.101 GHz is not a rounding
+    of the answer, it is a frequency that IS NOT IN THE FILE -- and the
+    coupling path carried no snap note at all, so nothing on screen said the
+    marker had moved 990 kHz.  The --attribute and --cold-start paths under it
+    had said so all along, which is what made one report disagree with itself.
+
+    The point of these tests is that the two surfaces go through ONE renderer.
+    So the load-bearing one is not that the CLI mentions a snap; it is
+    test_the_two_surfaces_render_ONE_snap_identically, which builds the pane's
+    line and the terminal's line from the same FreqSnap and compares the
+    frequency text character for character.  Two sites that each say something
+    reasonable is the state this file was written to end.
+    """
+
+    FIXTURE = FIX / "diff_pair_4port.s4p"          # snaps: 401 pts, 25 MHz
+    EXACT = FIX / "coupled_2port_gndref.s2p"       # 100 pts, 100 MHz: 5 GHz is one
+
+    @staticmethod
+    def _run(*argv) -> str:
+        """The CLI, in process, stdout only."""
+        import contextlib
+        import io
+
+        import pkg_rlc_extractor                    # noqa: WPS433
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = pkg_rlc_extractor.main(["--cli", *argv])
+        assert rc == 0, f"the CLI failed with exit {rc}:\n{buf.getvalue()}"
+        return buf.getvalue()
+
+    def _coupling(self, path, freq: str) -> str:
+        out = self._run(str(path), "--mode", "coupling",
+                        "--mport", "vic = 1", "--mport", "agg = 2",
+                        "--freq", freq)
+        return next(ln for ln in out.splitlines() if "Z matrix" in ln)
+
+    def _scalar(self, path, freq: str) -> str:
+        out = self._run(str(path), "--mode", "gnd", "--porta", "1",
+                        "--freq", freq)
+        return next(ln for ln in out.splitlines() if ln.startswith("@ "))
+
+    # -- the precondition, measured rather than assumed --------------------
+    def test_the_precondition_this_invocation_really_does_snap(self):
+        """
+        Without this the whole class passes vacuously on a fixture that
+        happens to carry the requested point.  0.11 GHz is 990 kHz off the
+        nearest point, i.e. 4% of the grid step -- a real snap, not noise.
+        """
+        ts = parse_touchstone(str(self.FIXTURE))
+        snap = snap_to_grid(ts.freqs, 0.11e9)
+        self.assertFalse(snap.exact)
+        self.assertAlmostEqual(snap.actual_hz, 100_990_000.0, delta=1.0)
+
+    # -- the coupling path -------------------------------------------------
+    def test_the_coupling_line_names_the_point_the_numbers_came_from(self):
+        line = self._coupling(self.FIXTURE, "0.11")
+        self.assertIn("0.10099 GHz", line)
+        self.assertIn("requested 0.11 GHz", line)
+        self.assertIn("grid step 25 MHz", line)
+
+    def test_the_coupling_line_no_longer_prints_a_frequency_that_is_not_there(self):
+        """The defect itself: 0.101 GHz is not a point of this file."""
+        line = self._coupling(self.FIXTURE, "0.11")
+        self.assertNotIn("@ 0.101 GHz", line)
+        ts = parse_touchstone(str(self.FIXTURE))
+        self.assertNotIn(round(0.101e9), {round(f) for f in ts.freqs.tolist()})
+
+    def test_an_exact_marker_leaves_the_coupling_line_byte_identical(self):
+        """The unchanged case is unchanged -- this file's standing rule."""
+        self.assertEqual(
+            self._coupling(self.EXACT, "5.0"),
+            "@ 5 GHz  --  Z matrix (Ω), open-circuit: every other "
+            "measurement port carries no current")
+
+    def test_the_coupling_line_carries_the_PANE_S_precision_even_when_exact(self):
+        """
+        The other half of 'the way the GUI does it', and the half that
+        survives every test above.  5.0005 GHz IS a point of this fixture, so
+        marker_freq_text adds no parenthetical and prints at the CALLER's
+        precision -- and at the old '{:.4g}' that renders '5 GHz', naming a
+        frequency 500 kHz from the one the numbers came from with nothing to
+        signal it.  The pane's line has always used '{:.6g}'; this pins that
+        the terminal now does too, in the case where the two differ.
+        """
+        line = self._coupling(self.FIXTURE, "5.0005")
+        self.assertTrue(line.startswith("@ 5.0005 GHz  --  "), line)
+        self.assertNotIn("requested", line, "an exact marker says nothing extra")
+
+    # -- the scalar path, which had the same defect ------------------------
+    def test_the_scalar_line_names_the_point_the_numbers_came_from(self):
+        line = self._scalar(self.FIXTURE, "0.11")
+        self.assertIn("0.10099 GHz", line)
+        self.assertIn("requested 0.11 GHz", line)
+        self.assertIn("grid step 25 MHz", line)
+
+    def test_an_exact_marker_leaves_the_scalar_line_byte_identical(self):
+        self.assertEqual(self._scalar(self.EXACT, "5.0"), "@ 5 GHz:")
+
+    # -- the one that matters ---------------------------------------------
+    def test_the_two_surfaces_render_ONE_snap_identically(self):
+        """
+        The pane's Z-matrix line and the terminal's, built from the same
+        FreqSnap, must carry the SAME frequency text.  A second format string
+        in the CLI passes every other test in this class and fails this one,
+        which is why it is here: '0.101 GHz' and '0.10099 GHz' were both
+        'reasonable', and that is exactly the disagreement.
+        """
+        ts = parse_touchstone(str(self.FIXTURE))
+        snap = snap_to_grid(ts.freqs, 0.11e9)
+        pane = marker_freq_text(snap, "{:.6g}")
+
+        cli = self._coupling(self.FIXTURE, "0.11")
+        self.assertTrue(cli.startswith(f"@ {pane}  --  "), f"{cli!r} vs {pane!r}")
+
+    def test_the_snap_note_is_the_shared_renderer_s_and_not_a_third_wording(self):
+        """
+        --attribute and --cold-start already said 'snapped to the file's grid'
+        in their own header; the coupling line says it in marker_freq_text's
+        words because it goes THROUGH marker_freq_text.  What must never
+        happen is a third spelling written here by hand, so the assertion is
+        equality against the renderer rather than a search for a phrase.
+        """
+        ts = parse_touchstone(str(self.FIXTURE))
+        snap = snap_to_grid(ts.freqs, 0.11e9)
+        self.assertEqual(self._scalar(self.FIXTURE, "0.11"),
+                         f"@ {marker_freq_text(snap)}:")
+
+
 class TestRunHeadlineAndRecord(unittest.TestCase):
 
     def _run(self, **kw):
