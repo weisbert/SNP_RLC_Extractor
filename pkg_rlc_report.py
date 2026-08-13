@@ -29,6 +29,15 @@ from typing import Optional, Sequence
 import numpy as np
 
 from pkg_rlc_core import RECIPROCITY_WARN, format_si
+from pkg_rlc_model import (
+    FREQ_EXACT_FRAC,
+    FREQ_EXACT_REL,
+    FREQ_UNIFORM_TOL,
+    FreqSnap,
+    combine_freq_snaps,
+    freq_grid_step,
+    snap_to_grid,
+)
 
 
 # ---- the three results views ----------------------------------------------
@@ -82,50 +91,29 @@ SUMMARY_LABEL_MAX = 40
 
 
 # ============================================================================
-# Frequency provenance -- what a printed marker frequency actually IS
+# Frequency provenance -- the RENDERER.  The VALUE is pkg_rlc_model's.
 # ============================================================================
 #
-# extract_rlc_at_freq and extract_coupling_at_freq both pick their point with
-# argmin(|freqs - target|) and report nothing at all about the distance, so the
-# tool used to print TWO different frequencies on one screen and explain
-# neither: the Calculate header and the run page printed f_rlc_hz (what the
-# user typed) while the Z-matrix line printed cres.freq_hz (the point the
-# numbers actually came from).  A real user read "@ 5.6 GHz" and "@ 5.512 GHz"
-# in the same report and had no way to know which one their L belonged to.
+# `FreqSnap` and the three functions that build one moved DOWN to
+# `pkg_rlc_model`.  Where a measurement actually landed, and how far that is
+# from what was asked for, is a FACT ABOUT THE MEASUREMENT -- delta_hz, exact
+# and off_grid say nothing about how to print them -- and a run record holds
+# one (`CouplingSnapshot.freq`, `RunSnapshot.freqs`).  A model type reaching
+# up to L3 for its own field type is the edge the layer map exists to refuse.
 #
-# It is not a corner case.  Measured on tests/fixtures/diff_pair_4port.s4p
-# (401 points, 1 MHz .. 10 GHz, step 24.9975 MHz) at the default marker of
-# 0.1 GHz: the nearest point is 0.10099 GHz.  Every default session in this
-# repo snaps by 990 kHz, and said nothing.
+# `marker_freq_text` is the one that stayed, and it stayed on its own test: it
+# takes a FORMAT STRING and returns a sentence.  Nothing in the model needs
+# it; every caller is a surface.  It is THE renderer for a printed marker
+# frequency -- the Calculate header, the run headline, the run page, the
+# results table, the Z-matrix line, the CLI's two report lines and the CSV all
+# go through it, so they cannot drift apart again.  THE RULE: when the
+# requested frequency IS a data point, every one of those renders
+# byte-for-byte what it rendered before.
 #
-# FreqSnap is that fact as a value and marker_freq_text is the ONE renderer for
-# it -- the Calculate header, the run headline, the run page, the results
-# table, the Z-matrix line and the CSV all go through it, so they cannot drift
-# apart again.  THE RULE: when the requested frequency IS a data point, every
-# one of those renders byte-for-byte what it rendered before.  The common case
-# must not grow a parenthetical, tests elsewhere pin those strings, and
-# tests/fixtures/render_reference.json pins the Z-matrix line.
+# All four names are RE-EXPORTED from here, so `from pkg_rlc_report import
+# FreqSnap` and friends keep resolving for pkg_rlc_extractor, pkg_rlc_gui,
+# pkg_rlc_panels_results and tests/test_freq_label.py.
 
-# A difference smaller than this fraction of the grid step is float noise, not
-# a snap.  The noise is real and it comes from the parser's UNIT SCALING, not
-# from parse_si (which is exact for every value anyone types: "5.6" -> 5.6e9 to
-# the bit).  A file written in MHz or kHz carries its axis as decimal text that
-# is multiplied by 1e6 / 1e3, and `33023.73 * 1e6` is 33023730000.000004 where
-# the same point typed as "33.02373" GHz is 33023730000.0 exactly -- measured,
-# worst case 3.8e-6 Hz over a 400-point decimal sweep in either unit.  Against
-# that, the snaps worth reporting are megahertz: the default marker on
-# diff_pair_4port.s4p moves 990 kHz.  1e-6 of that file's 25 MHz step is 25 Hz,
-# which sits between the two with ten orders of magnitude to spare on each side.
-FREQ_EXACT_FRAC = 1e-6
-# ... and with no gap to scale against (a one-point sweep), relative to the
-# requested frequency instead.
-FREQ_EXACT_REL = 1e-9
-# A sweep counts as uniform when every gap is within this fraction of the
-# median gap.  Real linear sweeps carry decimal round-off in the axis (the
-# fixture above: 0.0 spread); a log sweep or a band densified round a resonance
-# is orders of magnitude away from passing, and gets "nearest point" with no
-# step rather than a made-up number.
-FREQ_UNIFORM_TOL = 1e-3
 
 # Precision used by every site ONCE it has to name two frequencies at once.
 # Each caller keeps its own historical precision for the unchanged case (the
@@ -137,137 +125,6 @@ FREQ_UNIFORM_TOL = 1e-3
 # the banner said "0.101 GHz" over a table saying "0.10099 GHz".
 FREQ_WIDE_FMT = "{:.6g}"
 
-
-@dataclass(frozen=True)
-class FreqSnap:
-    """Where a value was actually read, against where it was asked for.
-
-    Floats only, deliberately: this ends up on a RunSnapshot, and
-    tests/test_run_snapshot.py walks every ndarray reachable from a run to
-    prove a record does not grow with the sweep.
-    """
-    requested_hz: float
-    # NaN means "not resolved against any grid" -- a record restored before any
-    # Calculate, or a pure-text caller.  Such a snap renders like a bare float.
-    actual_hz: float = float("nan")
-    # The sweep's step, NaN when it is not uniform.  Display only.
-    step_hz: float = float("nan")
-    # The widest gap adjacent to the chosen point.  This, not `step_hz`, is
-    # what the snap is JUDGED against -- see `off_grid`.
-    local_step_hz: float = float("nan")
-    # False when several sweeps in one run resolved to different points, so
-    # there is no single frequency to print.
-    agreed: bool = True
-
-    @property
-    def resolved(self) -> bool:
-        return math.isfinite(self.actual_hz)
-
-    @property
-    def delta_hz(self) -> float:
-        if not self.resolved:
-            return float("nan")
-        return self.actual_hz - self.requested_hz
-
-    @property
-    def exact(self) -> bool:
-        """True when the requested frequency IS a data point.
-
-        This is the predicate that keeps the common case silent, so it has to
-        tolerate float noise: see FREQ_EXACT_FRAC.
-        """
-        if not self.resolved:
-            return True
-        d = abs(self.delta_hz)
-        if d == 0.0:
-            return True
-        if math.isfinite(self.local_step_hz) and self.local_step_hz > 0.0:
-            return d <= FREQ_EXACT_FRAC * self.local_step_hz
-        return d <= FREQ_EXACT_REL * max(abs(self.requested_hz), 1.0)
-
-    @property
-    def off_grid(self) -> bool:
-        """The requested frequency is not between two points -- it is OUTSIDE
-        the swept band, and that is what earns a warning rather than a note.
-
-        For any monotone axis the two statements are the same one.  If the
-        target lies inside the band it falls in some gap [f_i, f_i+1], and the
-        nearer end of that gap is at most half of it away -- so a distance
-        greater than half the adjacent gap can only mean the target is off the
-        end.  Judging against the LOCAL gap rather than the median is what
-        makes this hold on a log sweep too, and taking the WIDER of the two
-        adjacent gaps is what keeps it free of false alarms where the spacing
-        changes.
-        """
-        if self.exact or not self.resolved:
-            return False
-        if math.isfinite(self.local_step_hz) and self.local_step_hz > 0.0:
-            return abs(self.delta_hz) > 0.5 * self.local_step_hz
-        # A one-point sweep has no gap at all: anything but that point is a
-        # request the file cannot answer.
-        return True
-
-
-def freq_grid_step(freqs) -> float:
-    """The sweep's step in Hz, or NaN when the sweep is not uniform."""
-    f = np.asarray(freqs, dtype=float).ravel()
-    if f.size < 2:
-        return float("nan")
-    d = np.abs(np.diff(f))
-    med = float(np.median(d))
-    if not math.isfinite(med) or med <= 0.0:
-        return float("nan")
-    if float(np.max(np.abs(d - med))) > FREQ_UNIFORM_TOL * med:
-        return float("nan")
-    return med
-
-
-def snap_to_grid(freqs, requested_hz: float) -> FreqSnap:
-    """
-    Resolve a requested marker frequency against a real frequency axis, the
-    same way extract_rlc_at_freq / extract_coupling_at_freq do -- and keep the
-    two things they throw away: how far it moved, and how coarse the grid is.
-
-    Measured cost: 13.4 us on the 401-point fixture and 26.4 us on a
-    5000-point sweep (median of five runs of 2000 calls, numpy 2.x).  It runs
-    once per FILE per Calculate, not once per trace, so it is invisible next to
-    the reduction it precedes.
-    """
-    f = np.asarray(freqs, dtype=float).ravel()
-    req = float(requested_hz)
-    if f.size == 0 or not math.isfinite(req):
-        return FreqSnap(requested_hz=req)
-    idx = int(np.argmin(np.abs(f - req)))
-    actual = float(f[idx])
-    gaps = []
-    if idx > 0:
-        gaps.append(abs(actual - float(f[idx - 1])))
-    if idx + 1 < f.size:
-        gaps.append(abs(float(f[idx + 1]) - actual))
-    return FreqSnap(requested_hz=req, actual_hz=actual,
-                    step_hz=freq_grid_step(f),
-                    local_step_hz=max(gaps) if gaps else float("nan"))
-
-
-def combine_freq_snaps(snaps) -> Optional[FreqSnap]:
-    """
-    One FreqSnap for a whole run.  None when there is nothing to combine.
-
-    Two traces may name two different files -- multi-file comparison is a
-    feature, not an accident -- and two files rarely carry the same sweep, so a
-    run does not always HAVE one frequency.  When the resolved points differ
-    the combined snap says so (`agreed=False`) instead of picking one of them,
-    which would be the same silent snap committed one level up.
-    """
-    snaps = [s for s in snaps if s is not None]
-    if not snaps:
-        return None
-    resolved = [s for s in snaps if s.resolved]
-    if not resolved:
-        return FreqSnap(requested_hz=snaps[0].requested_hz)
-    if len({s.actual_hz for s in resolved}) > 1:
-        return replace(resolved[0], agreed=False)
-    return resolved[0]
 
 
 def marker_freq_text(freq, fmt: str = "{:.4g}") -> str:
