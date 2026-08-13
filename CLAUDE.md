@@ -22,7 +22,7 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 | `pkg_rlc_files_gui.py`  | **Which FILES a trace is made of** (round 3): the `Files in this trace…` window (`FilePairWindow`, `open_files_window`, `FILES_MENU_LABEL`, `files_refusal`, `refresh_files_windows`, `slots_of` / `FileSlot`, `spec_problems`), the port-cell scope rules (`render_port_cell` / `cell_scope` / `cell_is_foreign` / `port_choices` / `resolve_cell`, `ALIAS_MAX_CHARS`, `PORT_CELL_CHARS`) and the GUI rendering of the reference-node check (`reference_checks_of`, `reference_strip_text`, `reference_report_lines`, `reference_provenance`, `REFERENCE_HEADLINE`). Same split as `pkg_rlc_attrib_gui` against `pkg_rlc_attrib`: `pkg_rlc_compose` does every piece of arithmetic and this is presentation, budget and refusal. Both `pkg_rlc_gui` and `pkg_rlc_attrib_gui` import it at module level; it imports `pkg_rlc_gui` only from inside functions. |
 | `pkg_rlc_validate.py`   | **What a spec SAYS, what it will DO, and what is wrong with it** (L2). The file set and the composed port namespace (`trace_file_labels` / `trace_file_aliases` / `trace_is_composed` / `trace_file_legend` / `trace_file_scope`, `compose_spec_problems`, `ComposeSpecError`, `_scope_port_field` / `_scope_dsl_text` / `_scope_conn_rows` / `_scope_mport_rows`, `_field_has_tag`, `scope_echo_messages`, `_collect_nets_safe`, `_check_bare_ports`, `_namespace_network`); what the spec says (`_port_descriptor` and the `_fmt_*` renderers under it, `_port_overview_text` / `_bucket_counts`, `_import_dsl_text` / `_dsl_meaning` / `_ordering_diff_summary`, `_scan_count`); and what is wrong with it (`_VMsg`, the `V_WRONG_NUMBER` / `V_NO_RESULT` / `V_ROW_INERT` / `V_OK` tiers, `_validation_report` / `_validation_messages`, `_measured_port_messages`, `_probe_ground_messages`, `_rlc_echo`, `_extra_lines_indicator`, `_trace_role_rows`, `_role_warnings` and the `WARN_*` texts, `_roles_header`, `_append_port_spec`, `_validation_strip_text`, `_footer_strip_text`). Imports `pkg_rlc_core` and `pkg_rlc_compose` ONLY. **Every entry point is pure and NONE may raise** — the editor strips call them from inside Tk variable traces, once per keystroke, where a raised exception reaches no handler we control and the GUI carries on showing a stale verdict. A `TraceConfig` is read by duck typing and never imported. |
 | `pkg_rlc_report.py`     | **Turning a finished run into TEXT** (L3). The three results views and every formatter under them (`_format_results_table`, `_format_coupling_block`, `_format_summary_self` / `_format_summary_coupling`, `_format_compare` and `_wrap_name` / `_compare_head_cells` / `_compare_groups` / `_delta_cell`, `_render_columns`, `_value_formatter` / `_fmt_plain` / `_fmt_aligned` / `_aligned_prefix_for`, `_sign_flag`, `_trunc_str`, `_file_alias_map` / `_file_cell` / `_row_file_labels` / `_snapshot_file_legend`, `_format_z_matrix`, `rank_coupling_pairs` and `COUPLING_FLOOR_DB` / `COUPLING_LEGEND_LINES`), the tab labels and the run-to-run diff (`log_tab_label`, `run_tab_label`, `run_headline`, `run_stale_banner`, `keep_button_label`, `describe_run_change`, `run_change_line`, the `LOG_*` and `RUN_*` constants), the view and width budgets (`RESULTS_VIEWS` / `VIEW_*`, `RESULTS_PANE_COLS`, `COMPARE_*`, `SUMMARY_LABEL_MAX`, `RESULTS_SWATCH`), and the **frequency provenance** the reports print through (`FreqSnap`, `freq_grid_step`, `snap_to_grid`, `combine_freq_snaps`, `marker_freq_text`, `_table_freq_note`, `run_freq_snap` / `run_file_freq`, the `FREQ_*` constants). Imports `pkg_rlc_core` only. **This module is what `tests/fixtures/render_reference.json` pins byte-for-byte**, which is exactly why it must stay Tk-free: a formatter that reaches a widget cannot be captured with no display. |
-| `pkg_rlc_csv.py`        | **The CSV export blocks** (L3): `_write_coupling_csv` and `_coupling_k_array`. Beside `pkg_rlc_report` rather than inside it because the two answer different questions — the results pane is a measured 144-column budget with one SI prefix per column, the CSV is every value at full precision under a header a spreadsheet can read. `pkg_rlc_extractor.py` still carries a SECOND, independent `_write_coupling_csv` for the CLI; a later phase deletes that one and points the CLI here. |
+| `pkg_rlc_csv.py`        | **The CSV export blocks** (L3): `_write_coupling_csv`, `write_coupling_table` and `_coupling_k_array`. Beside `pkg_rlc_report` rather than inside it because the two answer different questions — the results pane is a measured 144-column budget with one SI prefix per column, the CSV is every value at full precision under a header a spreadsheet can read. **`write_coupling_table` is the ONE copy of the coupling table** and both front ends write their own comment block above it: the GUI names the measurement ports, the CLI names the file, the port map and the spec that was run. `pkg_rlc_extractor` used to carry a second, independent implementation of the same table under the same name; it is gone. |
 | `pkg_rlc_conntable.py`  | **The connections table's SHAPE, and the RowTable vocabulary it is spoken in** (L3): `conn_table_layout` / `_conn_row_cells`, `CONN_TABLE_COLUMNS` and its measured column budget, `_join_short_group` / `conn_cells_from_row` / `conn_row_from_cells`, `CONN_ON_GLYPH` / `CONN_OFF_GLYPH`, `CONN_NET_KEY` / `CONN_NET_SUPPORTED`, the `_CONN_COL_*` grid columns, `CONN_KIND_HINTS` / `conn_hint_text` / `CONN_TABLE_HINT*` / `HINT_SHORT_CHARS` — **and `ColumnSpec` / `TableLayout` / `identity_layout`**. Those three are here rather than beside `RowTable` because they are the INTERFACE between the layout rules at this layer and the widget one layer above, and the layer map puts this module BELOW `pkg_rlc_widgets`: a shared type has to sit at the lower of its two users or the import runs upward. Imports `pkg_rlc_core` only. |
 | `pkg_rlc_widgets.py`    | **The generic Tk widgets, which know nothing about this app** (L4): `PlaceholderEntry`, `PlaceholderText`, `PLACEHOLDER_FG`, `RowTable`, `_CollapsibleHint`, `_tk_dash`, `editor_scroll_fraction`, and **`ReflowRow` / `reflow_rows`, which used to live in `pkg_rlc_plot`**. It imports six names from `pkg_rlc_conntable` and nothing else from this repo. `StylePicker` is deliberately NOT here — see the two invariants below. |
 | `pkg_rlc_plot.py`       | Matplotlib plot panel: multi-subplot grid over R/L/C/\|Z\|/Re/Im/Q/**k**, draggable freq marker, M / V / Delete keys, fullscreen window, and the `ReflowRow` / `reflow_rows` control strip that wraps instead of losing its tail. Quantities that cannot be derived from one `(freqs, Z)` pair (today only `k`) arrive via the optional `Trace.aux` dict. **`ReflowRow` / `reflow_rows` no longer live here** — they are a generic layout widget that happened to land in this module because the control strip needed one first; they are now in `pkg_rlc_widgets` and RE-EXPORTED from here, so `from pkg_rlc_plot import ReflowRow` keeps resolving (`pkg_rlc_attrib_gui` and `tests/test_plot_controls.py` both use that spelling). |
@@ -272,6 +272,139 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
 - **The fix is always to MOVE THE SYMBOL, not the import**, and every failure
   message in the file says so by name. A lazy import hides the cycle from the
   interpreter and leaves it in the design.
+
+### One formatter, two spellings (the CLI and the results pane)
+
+`pkg_rlc_extractor` used to carry its own copy of six things `pkg_rlc_report`
+and `pkg_rlc_csv` already had: truncation, the plain-number format, the sign
+flag, the monospace table, the Z matrix, and — under the same name on both
+sides — the coupling CSV. The copies are gone. What is left in the CLI is its
+own SPELLING of each, handed to the shared formatter as an argument, because
+`tests/fixtures/cli_reference/` pins its stdout byte for byte and
+`render_reference.json` pins the pane's.
+
+- **Three parameters exist ONLY so the two front ends can share the arithmetic,
+  and every one of them defaults to the pane's behaviour.** `_trunc_str(ell=)`
+  — `'~'` on the terminal, U+2026 in the pane. `_render_columns(rule=)` — the
+  run of dashes the CLI has always drawn under a header; the rule line is
+  deliberately NOT right-stripped, which is what the CLI's own printer did.
+  `_format_z_matrix(name=, cell=)` — the CLI cuts names at 16 and writes
+  `0.003017 + j25.45`, the pane cuts at 12 and writes `0.003017+25.45j`. Do not
+  "tidy" any of these into one spelling: changing the default moves
+  `render_reference.json` and changing the CLI's argument moves 143 reference
+  cases, and neither is a decision a refactor gets to take.
+- **`_fmt_num` IS `_fmt_plain`, `_trunc` and `_print_table` are one line each,
+  and the names survive because the `_attr_print_*` / `_cold_print_*` sections
+  call them.** `_sign_flag_port` had no caller anywhere in the repo and was
+  simply deleted.
+- **The two coupling CSVs were arrived at independently and agreed anyway** —
+  numpy-vectorised `k` in the GUI, per-frequency `math.sqrt` with `isfinite`
+  guards in the CLI, same columns, same order, same `%.6e`. They were checked
+  branch by branch (`omega == 0`, `L <= 0`, non-finite `M`, `-0.0`) before being
+  collapsed onto `write_coupling_table`. That they agreed is luck, not design:
+  two spellings of one file format are two things that can come to disagree
+  about a number.
+
+**FOUR DIVERGENCES BETWEEN THE CLI AND THE PANE SURVIVED THE MERGE, because
+they are content and not layout.** They are pre-existing, they are preserved
+byte for byte, and each is a place the two front ends tell a user something
+different about the same data:
+
+- **The CLI's frequency provenance line ROUNDS and the pane's does not**, which
+  is the one worth fixing first — it is the class of bug
+  `tests/test_freq_label.py` exists for. `_print_coupling_report` prints
+  `res.freq_hz / 1e9:.4g`; `_format_coupling_block` prints
+  `marker_freq_text(freq, '{:.6g}')`. Measured on `diff_pair_4port.s4p` at
+  `--freq 0.11`, which snaps to 100.99 MHz: the CLI says **`@ 0.101 GHz`** and
+  the pane says **`Z matrix @ 0.10099 GHz`**. The CLI's coupling path has no
+  snap note anywhere else either (`snapped to` exists only under `--attribute`
+  and `--cold-start`), so that rounded number is its ONLY statement of where the
+  numbers came from.
+- **The CLI does not rank or floor the pair list.** It is still
+  `for pr in res.pairs:` — nested-loop `(a, b)` order, every pair, no
+  `rank_coupling_pairs`, no `COUPLING_FLOOR_DB`, and `worst M/L` (the rank key)
+  is not printed at all. The reason the pane was changed applies to it verbatim:
+  six measurement ports make 15 pairs and index order says nothing about which
+  of them matter.
+- **Reciprocity is a METRIC on the CLI and a VERDICT in the pane.** The CLI
+  prints `Reciprocity error = 5.76e-15   (max|Z_ab - Z_ba| / max|Z_ab| …)` plus
+  a paragraph; the pane prints `✓ reciprocal (5.76e-15)`. Defensible — a
+  terminal has no 144-column budget — but they are now different products.
+- **The CLI's legend is per block, differently worded, and has no `|k|>1`.**
+  `_pair_flag` is pane-only, so a CLI user whose `|k|` exceeds 1 gets no "check
+  the port setup" prompt, and the pane's `COUPLING_LEGEND_LINES` is emitted once
+  per RUN where the CLI repeats its own wording under every block.
+
+Merging `_print_coupling_report` into `_format_coupling_block` is therefore NOT
+a parameterisation job — it is four content decisions, and it also has to
+survive the pane's `G <= 2` matrix fold and the CLI's lack of a `units_mode`.
+Whoever takes it should move the CLI to the pane's answer deliberately, one
+divergence per commit, regenerating `cli_reference` in the same commit that
+justifies each — which is the documented escape and the only route.
+
+### The run module (`pkg_rlc_run.py`) — ATTEMPTED, BLOCKED, NOT STARTED
+
+Extracting `App._on_calculate`'s first three jobs (choose the solve path, do
+it, build the run snapshot) into an L2 `pkg_rlc_run` was attempted and
+abandoned without a commit. It is blocked on ORDERING, not on difficulty, and
+the finding is written here so the next session does not rediscover it.
+
+- **`tests/test_layering.py` declares `pkg_rlc_run` at L2 (services), and the
+  code that would move needs sixteen runtime symbols from ABOVE it.** Measured
+  by parsing the fifteen functions with `ast` rather than by reading:
+  `LOG_INFO` / `LOG_WARN` / `LOG_ERROR`, `snap_to_grid`, `combine_freq_snaps`,
+  `marker_freq_text`, `describe_run_change` and `FreqSnap` are **L3**
+  (`pkg_rlc_report`); `_coupling_k_array` is **L3** (`pkg_rlc_csv`);
+  `PlotTrace`, `COLORS`, `LINESTYLES` and `MAX_LABEL_LEN` are **L4**
+  (`pkg_rlc_plot`); `reference_provenance` is **L5**
+  (`pkg_rlc_files_gui`), reached from `_snapshot_reference`, which
+  `_snapshot_row` and `_snapshot_block` both call. The gate was measured, not
+  assumed: a two-line `pkg_rlc_run.py` importing `pkg_rlc_report` and
+  `pkg_rlc_plot` turns `test_no_module_imports_from_a_higher_layer` red naming
+  both, with its own message — *"MOVE THE SYMBOL, not the import"*.
+- **The model types are the structural half, and they have no home yet.** The
+  body constructs `RowSnapshot` / `CouplingSnapshot` / `FitSnapshot` /
+  `RunSnapshot` and `SolveNetwork`, and reads `TraceConfig` — all in
+  `pkg_rlc_gui` at L6. Relocating them into `pkg_rlc_run` does not rescue the
+  phase, because `RunSnapshot`'s own construction path reaches L3 (the
+  `FreqSnap` objects `_snapshot_block(freq=…)` stores come from `snap_to_grid`)
+  and L5 (`reference_provenance`). Naming the module `pkg_rlc_panels_run` to
+  buy L5 fails on the same L6 types.
+- **So P3A has a PREREQUISITE: the L1 model phase.** `pkg_rlc_model` and
+  `pkg_rlc_session` are already in `LAYERS` and do not exist, which is what the
+  ordering slip looks like. The model module has to carry `TraceConfig` (+ its
+  three `migrate_legacy_*`), `FileEntry`, `SolveNetwork` /
+  `_composed_solve_network`, the four snapshot types with `_snapshot_files` /
+  `_snapshot_reference` / `_snapshot_row` / `_snapshot_block` / `_snapshot_fit`,
+  and `trace_signature_fields` / `run_signatures` — **and** it has to pull down
+  what those depend on that is currently stranded above L2: `FreqSnap` with
+  `snap_to_grid` / `combine_freq_snaps` / `marker_freq_text`, the three `LOG_*`
+  severities, and `reference_provenance`. Three separate files, three separate
+  lanes.
+- **The plot-curve helpers can NEVER be part of `pkg_rlc_run`.**
+  `_make_plot_trace`, `_compose_curve_label`, `_plot_trace_label` and
+  `_coupling_plot_traces` are defined by `PlotTrace` / `COLORS` / `LINESTYLES` /
+  `MAX_LABEL_LEN` (L4) and `_coupling_k_array` (L3). They belong beside the
+  palettes at L4/L5. This is the `StylePicker` wall from the other side — that
+  one stayed in `pkg_rlc_gui` because `COLORS` lives ABOVE it, and the same
+  measurement decides these four. Split the list before re-issuing the phase:
+  solve + snapshot to L2, curve building to L4/L5.
+- **Two App couplings that `log=` does not cover, and that a re-plan must
+  decide first.** `_build_termination` opens with `self._migrate_trace(tc)`,
+  which logs at `LOG_WARN` *and* calls `self._refresh_trace_list()` — building a
+  termination has a GUI-visible side effect on every call. And
+  `_calculate_coupling_trace` / `_reference_checks` classify their own
+  severities, including the deliberate `LOG_INFO` on the rank-deficiency
+  annotation (it exists to say the warning above it is not a fault, so badging
+  it would contradict it). Re-deriving those in the wrapper from the message
+  text is the drift this repo is repeatedly bitten by; the severities travel
+  with the code or the phase does not happen.
+- **A partial extraction was considered and rejected.** What survives the L2
+  constraint is five leaf helpers — `_trace_network`, `_cached_trace_network`,
+  `_trace_namespace`, `_collect_mports`, `_trace_plot_freqs` — and none of the
+  calculate body. That is a module named `pkg_rlc_run` containing no run logic,
+  squatting on the L2 slot with the wrong contents, while the two front ends
+  can still compute differently. Nothing is better.
 
 ### Reading files (robustness, diagnosis, refusal)
 
