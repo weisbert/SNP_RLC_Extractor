@@ -546,7 +546,7 @@ class ResultsPanel:
         # path that would be a closed-form solve per character.
         if self.app._last_run is not None and (self.app._last_run.rows
                                            or self.app._last_run.blocks):
-            refresh_attribution_windows(self, rerender=True)
+            refresh_attribution_windows(self.app, rerender=True)
 
     def _rerender_every_page(self, log_note: str) -> None:
         run = self.app._last_run
