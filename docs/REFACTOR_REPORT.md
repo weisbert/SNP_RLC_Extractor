@@ -373,7 +373,7 @@ product choices and were left for you.
 
 | # | divergence | status |
 |---|---|---|
-| 5 | **The two surfaces sort an UNDEFINED delta to OPPOSITE ENDS.** `_attr_print_sensitivity` keys `(0 if isfinite else 1, -abs_delta)` so NaN sorts **last**, and its docstring states the rule ("NaN is a missing measurement, not a small number" — the same rule `rank_coupling_pairs` follows). `pkg_rlc_attrib_gui.sensitivity_table` keys `-abs_delta if isfinite else float("-inf")`, and `-inf` is the smallest key on an ascending sort, so NaN sorts **first, above the strongest real effect**. The window contradicts *itself* too: `_fold_terms` uses `+inf` for precisely this case and comments on why. | **OPEN, and this one is a bug rather than a taste difference.** *Recommendation: fix the window's side* (the CLI's spelling is the documented one), with `attrib_reference` regenerated in the same commit. |
+| 5 | ~~**The two surfaces sort an UNDEFINED delta to OPPOSITE ENDS.**~~ `_attr_print_sensitivity` keys `(0 if isfinite else 1, -abs_delta)` so NaN sorts **last**, and its docstring states the rule ("NaN is a missing measurement, not a small number" — the same rule `rank_coupling_pairs` follows). `pkg_rlc_attrib_gui.sensitivity_table` keyed `-abs_delta if isfinite else float("-inf")`, and `-inf` is the smallest key on an ascending sort, so NaN sorted **first, above the strongest real effect**. The window contradicted *itself* too: `_fold_terms` uses `+inf` for precisely this case and comments on why. | **FIXED** (`8d98ba9`, `93326a6`, `98ee544`). The window now uses the CLI's spelling verbatim. Three things the fix turned up that the recommendation did not anticipate: the reference did **not** need regenerating for the fix — all four captured sensitivity cases hold finite deltas, so `attrib_reference` could not see the ordering move at all, which is why the bug survived a golden-referenced refactor. A hand-built case (`sensitivity_fake_undefined_delta`) was added in its own commit to close that hole, proven to catch the defect by restoring the old key. And the guard pins the **window against the CLI directly** rather than each against a literal, which is the shape the divergence would have to take to return. CLAUDE.md now states the rule once for all four implementations. |
 | 6 | **Two `_e`, at two precisions.** `pkg_rlc_attrib_report._e` writes `%.6e`; `pkg_rlc_attrib_gui._e` writes `%.12e`. Both put a float from the same decomposition into a CSV. | **OPEN.** *Recommendation: pick one, probably `%.12e`* — a CSV is for re-use, and 6 digits is lossy. Low urgency. |
 | 7 | **Two candidate grammars.** `--attribute-alt` splits on **comma** (`R=0.5,L=1n`, via `y_series_rlc`); the window's Candidates field splits on **whitespace** (`R=0.5 L=1n`, building `R + jwL + 1/(jwC)` directly). Both refuse a token with no `=` for the same measured `R=5 m` reason, but the two expressions are not obliged to agree at `omega == 0`. | **OPEN.** *Recommendation: accept both separators on both sides.* This is a user-facing trap — the spelling that works in one place silently fails in the other. |
 
@@ -421,9 +421,12 @@ two things that can come to disagree about a number:
    Calculate, read the results pane, Export CSV, open the Attribution window.
    The suite drives all of this, but 87% of it is Tk geometry and none of it is
    you looking at the screen.
-4. **Rule on divergences 2, 5 and 7** (§4.2). Those are the three where the two
-   surfaces are actively unhelpful, and #5 is a genuine ordering bug in the
-   Attribution window.
+4. **Rule on divergences 2 and 7** (§4.2). Those are where the two surfaces are
+   actively unhelpful but the right answer is a judgement call, so they are
+   left for you. **#5 was the one genuine bug in that table and it is fixed**
+   — it ranked an unmeasurable row above the strongest real one in the
+   Attribution window, contradicting the CLI, `rank_coupling_pairs` and the
+   same file twelve hundred lines up, so it was corrected rather than tabled.
 5. **Read the four new sections of `CLAUDE.md`** — the layering gate, the four
    panels, the two attribution reports, the one-formatter-two-spellings
    section. If any of them describes something you did not agree to, that is
