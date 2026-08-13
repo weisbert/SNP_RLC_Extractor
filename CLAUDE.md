@@ -210,8 +210,10 @@ Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files
   it with the arithmetic makes spec import solve and solve import spec. A file's
   port count is part of the declaration; the note above the function names all
   three callers.
-- **`pkg_rlc_core.py` is CRLF and contains a literal U+2029 at what used to be
-  line 760** (the parser's own exotic-line-break handling — the same characters
+- **`pkg_rlc_touchstone.py` is CRLF and contains a literal U+2029** (it was at
+  line 760 of the old `pkg_rlc_core.py`, and it moved with the parser that owns
+  it; `pkg_rlc_core.py` is still CRLF but no longer holds the character)
+  (the parser's own exotic-line-break handling — the same characters
   the parser is documented to split comment lines on). Anything that slices
   these files by line number must split raw bytes on `b"\r\n"`:
   `str.splitlines()` breaks on U+2029 too, so every line number after it is off
@@ -621,12 +623,12 @@ the finding is written here so the next session does not rediscover it.
 - **Port indices are validated against the file's port count** in `_validate_port_indices`, called from `compute_z_matrix` (and from `build_terminations_coupling` when `nports=` is passed, which the GUI and CLI both do). Before this, `"3 / 5"` on a 4-port file silently became a ground-referenced probe reporting a plausible wrong number. The resolver only scans `range(n)`, so nothing deeper can catch it.
 - **A probe port may not also be a GND port (Mode 6 only).** A probe side is tied together, so grounding one of its ports grounds the whole side; `build_terminations_coupling` raises. `build_terminations_mode1/2/3` keep their historical "ground wins" precedence — do not "fix" those, the golden reference pins them.
 - **`compute_z` warns when `G > 1`.** It returns only measurement port 1. Only Mode 5 can get there (the named builders always produce `G == 1`), and Mode 5 is exactly the free-text mode where `signal V` instead of `signal B` silently defines a second measurement port and changes the answer by 37%.
-- **`RECIPROCITY_WARN = 1e-3` lives in `pkg_rlc_core`** and is imported by both `pkg_rlc_gui` and `pkg_rlc_extractor`. They used to disagree (1e-3 vs 1e-12), so the same file got opposite verdicts and the CLI cried wolf on every real EM file. The metric skips non-finite off-diagonal entries so one undefined measurement port cannot poison it.
+- **`RECIPROCITY_WARN = 1e-3` lives in `pkg_rlc_solve`** (re-exported by `pkg_rlc_core`, so `pkg_rlc_core.RECIPROCITY_WARN` still resolves) and is imported by both `pkg_rlc_gui` and `pkg_rlc_extractor`. They used to disagree (1e-3 vs 1e-12), so the same file got opposite verdicts and the CLI cried wolf on every real EM file. The metric skips non-finite off-diagonal entries so one undefined measurement port cannot poison it.
 - **`M/L` is the Norton injection ratio, NOT the current-transfer ratio.** The exact ratio into a shorted port `a` is `I_a/I_b = -Z_ab/Z_aa`; `M/L_a` equals its magnitude only where `w*L_a >> R_a` (1098% apart at 10 MHz for `L=2n, R=1.5`). The label is "coupling ratio" everywhere — core docstring, CLI report, GUI legend, Help, README, theory.md, and `pkg_rlc_attrib`'s `DECOMPOSABLE` entry. Keep the six in sync. `pkg_rlc_attrib.transfer_ratio` is where the EXACT ratio is available as a number rather than as a caveat.
 - **The GUI's pair list is RANKED by `max(|M/L_a|, |M/L_b|)` and floored at `COUPLING_FLOOR_DB = -60`.** Six measurement ports make 15 pairs, and nested-loop `(a, b)` order carries no information about which of them matter. `|k|` alone is the wrong key: `|k| = 0.02` between two 2 nH coils and between a 2 nH and a 500 pH coil are different problems — same `M`, 4x the injection into the small one. `rank_coupling_pairs` is pure and mutation-checked, and **magnitude appears there and nowhere else** — every printed cell stays signed. Three rules are load-bearing: `_pair_strength` is computed **linearly**, not from the `*_dB` fields (`_ratio_db(0)` is NaN, and a pair with `M = 0` is the weakest there is, not an undefined one); a pair with an **undefined** ratio sorts last and is **never** folded away (NaN is a missing measurement, not a small number); and the **strongest** pair is never folded away either, or a block can consist of nothing but "3 pairs were too weak to list". The `(see Export CSV)` pointer is true because `_write_coupling_csv` enumerates every unordered pair straight off the Z matrix and has no floor — do not give it one.
 - **`compute_z` is a thin wrapper returning `Zmat[:, 0, 0]`** — the self impedance of the FIRST measurement port, and a strided **view**, not a fresh contiguous array. Copy before writing into it or before handing it to code that assumes C-contiguity (the GUI does `np.ascontiguousarray`).
 - **`tests/fixtures/golden_legacy.npz` is the guard for all of the above.** It pins `parse_touchstone -> s_to_y -> compute_z` bit-for-bit for every fixture and for representative Mode 1/2/3/4/5 cases. If it fails, the reduction path changed: fix the change, do not regenerate the reference to make the test pass.
-- **The Mode 5 DSL and its helpers live in `pkg_rlc_core.py`** (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`) — terminations belong to core. `pkg_rlc_gui.py` re-imports them so `from pkg_rlc_gui import parse_si` and friends keep resolving; keep that re-export list intact.
+- **The Mode 5 DSL and its helpers live in `pkg_rlc_spec.py`** (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`) — terminations belong to the declaration model, and `pkg_rlc_core` re-exports all four so `from pkg_rlc_core import parse_si` keeps resolving. `pkg_rlc_gui.py` re-imports them so `from pkg_rlc_gui import parse_si` and friends keep resolving; keep that re-export list intact.
 - **DSL signal syntax is `<port> signal <groupname> [+|-]`.** Group names are arbitrary strings; the sign is a **separate whitespace token** defaulting to `+`, and anything other than exactly `+` or `-` raises. A name whose `.upper()` is `A` or `B` is upper-cased so legacy `signal a` / `signal b` keep working. There is deliberately **no** "signal group must be A or B" validation any more, in either `compute_z_matrix` or the DSL — don't reintroduce it.
 
 ### Port attribution (`pkg_rlc_attrib.py`)
@@ -2450,7 +2452,8 @@ mutation-checked.
   other message core raises at that boundary is 1-based. Measured: `EM.2` (global 2)
   shorted to `PKG.3` (global 5) reports `Ports [1, 4]`. `_COMPOSE_MERGED_RE` translates it
   with its own offset — translating it as 1-based would name two real, innocent ports with
-  total confidence. **This is a defect in `pkg_rlc_core` and it is NOT fixed**: the fix
+  total confidence. **This is a defect in `pkg_rlc_solve` (`merge_terms`, nested
+  inside `compute_z_matrix`) and it is NOT fixed**: the fix
   moves a message other tests pin, and the CLI's translation depends on the current
   offset. Fix both halves together or neither.
 - **The correspondence is the USER's; the tool may PROPOSE and only the user may COMMIT.**
@@ -3562,7 +3565,8 @@ mutation-checked.
 `tests/test_port_roles.py` is the guard, and every claim below was
 mutation-checked.
 
-- **`port_roles` in `pkg_rlc_core` is the ONE classifier.** The port-overview
+- **`port_roles` in `pkg_rlc_spec` (re-exported by `pkg_rlc_core`) is the ONE
+  classifier.** The port-overview
   strip, the footer summary and the window all count off the same records —
   `_port_bucket` no longer exists in the GUI. A role is finer than a bucket
   (`probe +` / `probe −` collapse into one `probe` count via `ROLE_TO_BUCKET`)
@@ -3952,7 +3956,7 @@ recorded here rather than in a commit message nobody will find.
   tied, and the tied answer agrees with a network rebuilt with those pins as one
   node from the start to **1.4e-16**. `T` is real, so the merge is a congruence
   and cannot break passivity — `check_passivity` needed nothing. Two matmuls, not
-  `np.add.at`: that rule is `pkg_rlc_core`'s because `golden_legacy.npz` pins the
+  `np.add.at`: that rule is `pkg_rlc_solve`'s because `golden_legacy.npz` pins the
   summation order bit-for-bit, and nothing pins this path — it is new.
 - **`SHORT` / `SHORTED` are REFUSED, naming both routes.** They used to be GND
   aliases, and `SHORT` is the word a user reaches for to say "tie these pins to
