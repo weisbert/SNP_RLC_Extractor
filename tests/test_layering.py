@@ -59,8 +59,8 @@ sys.path.insert(0, str(REPO_ROOT))
 # --------------------------------------------------------------------------
 
 L0_NUMERICS = 0      # arrays and physics.  No Tk, no App, no widgets.
-L1_MODEL = 1         # the shared data model every layer above passes around.
-L2_SERVICES = 2      # validation, the session file, the run record.
+L1_MODEL = 1         # the shared data model, and the spec logic over it.
+L2_SERVICES = 2      # the session file and the run record.
 L3_PRESENTATION = 3  # turning a result into text: reports, CSV, help prose.
 L4_WIDGETS = 4       # generic Tk widgets that know nothing about this app.
 L5_PANELS = 5        # app-specific windows and panels.
@@ -76,8 +76,30 @@ LAYERS = {
     "pkg_rlc_attrib": L0_NUMERICS,
     # L1 -- model
     "pkg_rlc_model": L1_MODEL,
+    # `pkg_rlc_validate` was declared L2 when this map was written, before
+    # `pkg_rlc_model` existed.  IT MOVED DOWN, and the reason is a real edge
+    # rather than a tidier name: `TraceConfig.port_descriptor()` is one line
+    # (`return _port_descriptor(self)`), `info_str()` counts the file set
+    # through `trace_file_labels`, all three legacy migrations call into it
+    # (`_union_port_specs`, `_mport_more_lines`, `_import_dsl_text`) and
+    # `_config_signature` ends on `trace_file_scope`.  So the model imports
+    # validate, and validate therefore has to sit at or below the model.
+    #
+    # It sits there honestly rather than by fiat: `pkg_rlc_validate` imports
+    # `pkg_rlc_core` and `pkg_rlc_compose` and NOTHING ELSE, and it is
+    # duck-typed over the trace -- it never imports `TraceConfig`, it just
+    # reads attributes off whatever it is handed.  That is what keeps the edge
+    # ONE-DIRECTIONAL, and it makes this the same case the docstring above
+    # names for `pkg_rlc_attrib` -> `pkg_rlc_core`: two peers in one layer,
+    # legal because the one being imported imports nothing back.
+    #
+    # What L1 means now is "the shared data model, and the pure spec logic
+    # duck-typed over it" -- what a spec SAYS, DOES and gets WRONG, which is
+    # knowledge about the model and not a service built on top of it.  The
+    # session file and the run record, which really are services over the
+    # model, stay at L2.
+    "pkg_rlc_validate": L1_MODEL,
     # L2 -- services
-    "pkg_rlc_validate": L2_SERVICES,
     "pkg_rlc_session": L2_SERVICES,
     "pkg_rlc_run": L2_SERVICES,
     # L3 -- presentation
