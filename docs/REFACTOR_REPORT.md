@@ -7,6 +7,75 @@ started. HEAD is `8a1896b`.
 
 ---
 
+## 0. Addendum — the third run (F1 restore, then F2), 02:20 → 05:0x
+
+Written by the run after the one that produced everything below. **Read §1–§6
+as the account of runs one and two; this section is what changed afterwards,
+and it supersedes them where they disagree.**
+
+**The revert was undone and the model phase is in.** `pkg_rlc_model` (L1) now
+carries `TraceConfig`, `FileEntry`, `SolveNetwork`, the signature helpers, the
+frequency snap and the whole run record. Nine of the ten lazy back-imports are
+gone; the one that remains (`pkg_rlc_extractor` → `App`, deferred for a
+measured 251 ms of tkinter+matplotlib) is a justified deferral, not a dodge.
+
+**Two more modules landed after it, both L2:**
+
+| module | lines | what it is |
+|---|---|---|
+| `pkg_rlc_session.py` | 465 | Save Config / Load Config / autosave, as a pure dict ↔ model round trip. A verbatim move; there was never any Tk in it. |
+| `pkg_rlc_run.py` | 439 | What a Calculate RUNS: the network a trace is solved against, the spec it is solved with, the reference-node check, the coupling reduction. `log` / `files` / `cache` injected. |
+
+`pkg_rlc_gui.py` is **3206 lines**, from 10 953 at the start of the night.
+
+**Three symbol groups moved down, each because the layering gate refused the
+alternative** — and each is written up in `CLAUDE.md`:
+
+* `FreqSnap` + `snap_to_grid` + `combine_freq_snaps` + `freq_grid_step` →
+  `pkg_rlc_model`. Where a measurement landed is a fact about the measurement.
+  `marker_freq_text` stayed in `pkg_rlc_report`: it takes a format string and
+  returns a sentence.
+* `VIEW_DETAIL` / `VIEW_SUMMARY` / `VIEW_COMPARE` / `RESULTS_VIEWS` →
+  `pkg_rlc_model`. `results_view` is a SAVED setting, so the session file (L2)
+  has to validate it while the renderer (L3) acts on it; a vocabulary shared
+  between a format and a renderer belongs at or below the lower of the two.
+* `LOG_INFO` / `LOG_WARN` / `LOG_ERROR` → `pkg_rlc_model`. A severity is a
+  property of the MESSAGE, not of the pane — which is the repo's own rule,
+  already written in those words. `LOG_BADGE_CAP` and `log_tab_label` stayed.
+
+**What did NOT land, and it is one thing: `_on_calculate`'s own body.** The
+brief asked for `calculate(traces, files, controls, log, cache, only)`. The
+solve underneath it moved (that is `pkg_rlc_run`); the orchestration did not,
+and the reason is measured rather than asserted. After the solve came out, the
+body's remaining couplings above L2 are exactly five, and every one is
+presentation or an App action: `marker_freq_text` (L3), `describe_run_change`
+(L3), `reference_provenance` (L5, via the snapshot wrappers),
+`UNFREEZE_MENU_LABEL` (L5) and `_migrate_trace` (logs, and refreshes the Traces
+list). A `calculate()` at L2 would therefore take **three injected callables
+and one injected string, and hand the header line and the run-to-run diff back
+to its caller** — i.e. the report's ORDER split across two modules, which is
+the "two things that can come to disagree" failure this repo names everywhere
+else, arriving inside the fix for it. The split that IS honest is named in
+`CLAUDE.md`: `pkg_rlc_run` answers *what is the number*, `_on_calculate`
+answers *what does the reader see, in what order, at what severity*.
+
+**Measured after the last commit of this run:** full suite **2531 tests, 453
+shards, 357.9 s, exit 0**; `--fast` 1044 tests, 4.5 s, OK. `golden_legacy.npz`,
+`render_reference.json`, `cli_reference` and `attrib_reference` **all
+untouched** — `git diff --name-only` over this run's five commits lists five
+`.py` files and `CLAUDE.md`, and **no test file at all**. The GUI was driven
+end to end: opened, file added through `_on_add_file`, Calculate, session saved
+and reloaded, closed cleanly.
+
+**One behaviour difference was found and restored rather than shipped.**
+`run._build_termination` deliberately does not migrate a legacy spec (migrating
+logs a line and refreshes the Traces list, so it is an App action), and
+`_calculate_coupling_trace` builds its own termination when the caller passes
+none — so on that one rarely-taken path a mode-4 trace would have been read
+unmigrated, silently. `App._calculate_coupling_trace` migrates first on exactly
+that condition. Commit `a92d360`.
+---
+
 ## 1. Verdict
 
 **The tool works and the suite is green.** Full run measured on this box after
