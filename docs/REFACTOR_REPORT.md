@@ -2,33 +2,42 @@
 
 One account of the whole refactor, rewritten in place rather than appended to.
 It covers four sequential agent runs overnight, 2026-08-13 20:03 →
-2026-08-14 04:54, and one more the following morning that moved every module
-into a package (§2.0). Every before/after below is measured against `3ae2dfd`
-("Show the whole trace name…"), the last commit before the refactor started,
-and describes the tree at `d8e9a7f`, which is HEAD as this was last rewritten.
+2026-08-14 04:54; one more the following morning that moved every module into a
+package (§2.0); and one after that which closed the five CLI/GUI divergences
+the earlier runs had found and deliberately left for the user (§4.3–§4.7).
+Every before/after below is measured against `3ae2dfd` ("Show the whole trace
+name…"), the last commit before the refactor started, and describes the tree at
+HEAD.
 
-**EVERY NUMBER IN THIS FILE WAS RE-TAKEN AT `d8e9a7f`.** None is carried
-forward from an earlier draft, and where the morning's move overtook a
+**EVERY NUMBER IN THIS FILE WAS RE-TAKEN AT HEAD.** None is carried forward
+from an earlier draft, and where a later run overtook an earlier
 recommendation the paragraph says so on the spot rather than being left
 standing. `CLAUDE.md` is the live description of the tree; this file is the
 account of how it got that shape.
 
 **Three things are worse than they were before the refactor started, and they
 are the price of the rest.** There is more Python in the tree, not less:
-**+2 591 lines** outside `pkg_rlc/present/help.py`, **+7.4%**. There are **25
-modules** to navigate instead of 10 — though they are now in seven folders
-rather than flat in the repo root, which is what §2.0 is about. `CLAUDE.md` is
-**1 063 lines** longer. The win is in where the code sits, not in how much of
-it there is, and §2 states both halves with the measurements.
+**+2 814 lines** outside `pkg_rlc/present/help.py`, **+8.0%** (it was +2 591 /
++7.4% before the divergence work; that added the CLI's ranking, verdict and
+grammar code and one new test module). There are **25 modules** to navigate
+instead of 10 — though they are now in seven folders rather than flat in the
+repo root, which is what §2.0 is about. `CLAUDE.md` is **1 169 lines** longer.
+The win is in where the code sits, not in how much of it there is, and §2
+states both halves with the measurements.
 
 ---
 
 ## 1. Verdict
 
-**The tool works and the suite is green.** Re-measured on this box at
-`d8e9a7f`, after the move into the package: `python tests/run_parallel.py -j 4`
-→ **2 542 tests, 454 shards, 366.2 s, exit 0, and 0 skips**; `--fast` →
-**1 044 tests, 4.7 s, OK**. The skip count is asserted rather than assumed:
+**The tool works and the suite is green.** Re-measured on this box at HEAD,
+after the move into the package AND after the five divergence closures of
+§4.3–§4.7: `python tests/run_parallel.py -j 4` → **2 569 tests, 459 shards,
+355.6 s, exit 0, and 0 skips**; `--fast` → **1 048 tests, 4.7 s, OK**. (At
+`d8e9a7f`, before those five, the same two runs were 2 542 / 454 / 366.2 s and
+1 044 / 4.7 s — so the five closures added **27 tests and 5 shards**. The full
+number tracks CONTENTION more than anything else: the same `--fast` run
+measured 5.5 s while the full suite was still going. Read the exit code, not
+the clock.) The skip count is asserted rather than assumed:
 every Tk module guards itself with `@skipUnless(TK_OK, …)`, `unittest` counts a
 skipped test in its `Ran N tests` line, and it still prints `OK` — so a total
 failure to reach Tk looks exactly like a clean pass with a matching count.
@@ -40,34 +49,43 @@ and the GUI is driven end to end by `test_attrib_gui_integration` (a real
 `App`, file added through `_on_add_file`, Calculate, the Attribution window,
 session saved and reloaded), which is in the green run above.
 
-**ALL FOUR GOLDEN REFERENCES ARE BYTE-IDENTICAL ACROSS THE MOVE, AND THAT IS
-THE PROOF THE MOVE CHANGED NOTHING.** `git log 9a629f5..HEAD` — the pre-move
-commit to HEAD — lists **0 commits** against `golden_legacy.npz`,
-`render_reference.json`, `cli_reference/` (144 cases) or `attrib_reference/`
-(60 cases). Two of the four were never touched by the night either:
-`golden_legacy.npz` and `render_reference.json` are at **0 commits since
-`3ae2dfd`**.
+**THE TWO REFERENCES THAT PIN NUMBERS HAVE NOT MOVED SINCE BEFORE THE REFACTOR
+STARTED, AND THAT IS THE PROOF NOTHING CHANGED AN ARITHMETIC RESULT.**
+`golden_legacy.npz` (the reduction path, bit-for-bit) and
+`render_reference.json` (the GUI results pane) are at **0 commits since
+`3ae2dfd`** — through the refactor, through the move into `pkg_rlc/`, and
+through all seven divergence closures. The two that pin CLI and window TEXT did
+move, deliberately and only where a decision required it: `cli_reference/`
+(144 cases) is at 4 commits since `3ae2dfd` and `attrib_reference/` (60 cases)
+at 3, every one of them a regeneration in its own commit, each accounted for
+line by line in §4. Across the **move into `pkg_rlc/`** alone (`9a629f5..HEAD`
+minus the divergence work) all four are untouched.
 
-**One shipped surface changed behaviour: the CLI's frequency line.** It printed
-a frequency that does not exist in the file (`@ 0.101 GHz` for a point at
-100 990 000 Hz) with no snap note anywhere on the coupling path. That was a
-real defect, it was fixed, and it is the first thing to look at — §4.1.
+**ALL SEVEN CLI/GUI DIVERGENCES ARE NOW CLOSED — §4.** Two on the night of the
+refactor (the CLI printed a frequency that does not exist in the file; the
+Attribution window ranked an unmeasurable row above the strongest real effect),
+five on 2026-08-14 once the user supplied the position the repo was missing.
+That position is `deploy/doctor.sh`'s own exit rule — a CLI-only install is a
+SUCCESSFUL install — and the rule it yields is stated once at the top of §4:
+**the CLI may be terser than the pane, but it must never omit a diagnostic or a
+decisive number.**
 
-**One shipped surface had a real ordering bug and it is also fixed.** The
-Attribution window sorted a row that could not be measured **above** the
-strongest real effect in the sensitivity table, contradicting the CLI, core's
-own rule and the same file twelve hundred lines up — §4.2.
+**Six shipped surfaces changed behaviour and five of the six are the CLI's.**
+The frequency line (§4.1); the coupling pair list, which is now ranked and
+prints its rank key (§4.3); reciprocity, which now leads with a verdict and
+keeps everything it had (§4.4); the `|k|>1` prompt, which reached this surface
+for the first time (§4.5); and the attribution CSVs, which gained six digits of
+precision on values that are otherwise identical (§4.6). The sixth is the
+candidate grammar (§4.7), which changed on **both** surfaces so that a spelling
+that works in one place stops failing in the other. The GUI's own change is the
+sensitivity ordering (§4.2).
 
-> ### ⚠ FIVE DECISIONS ARE WAITING FOR YOU — they are in **§4.3**
->
-> Five places where the CLI and the GUI tell you something different about the
-> same data. None has a documented position anywhere in the repo, so by the
-> rule in §4 they are product choices and **none of them was decided without
-> you**. They are numbered 2, 3, 4, 6 and 7 (1 and 5 were the two defects
-> above, and both are fixed). §4.3 has the detail and a recommendation for
-> each; §5.1 has them as a one-line-apiece checklist. **The move into
-> `pkg_rlc/` did not touch any of them** — it corrected their module paths and
-> nothing else.
+**Not one of the seven moved an arithmetic result** — which is why the two
+references that pin numbers are at 0 commits. There is exactly one *value*
+correction in the set and it is a bug fix, not a divergence: at DC the CLI read
+a series capacitor as a perfect SHORT where the window read it, correctly, as
+an OPEN, and it was found only because §4.7 forced the two expressions to be
+measured against each other.
 
 **The structural work is in, including the piece that was reverted at 01:38.**
 `pkg_rlc.model.trace` (L1) exists and carries the data model; `pkg_rlc.services.session` and
@@ -306,14 +324,18 @@ and is the only test in the repo whose *content* the move changed.
 |---|---:|---:|---|
 | `tests/fixtures/golden_legacy.npz` | **0** | **0** | Never moved, by anything. |
 | `tests/fixtures/render_reference.json` | **0** | **0** | Never moved, by anything. |
-| `tests/fixtures/cli_reference/` (144 cases) | **2** | **0** | Created; then modified once by the frequency fix — 55 files, verified in §4.1. |
-| `tests/fixtures/attrib_reference/` (60 cases) | **2** | **0** | Created; then modified once by the sensitivity fix — one case ADDED, verified in §4.2. |
+| `tests/fixtures/cli_reference/` (144 cases) | **4** | **2** | Created; the frequency fix (55 files, §4.1); the coupling-report fixes (53 files, §4.3–§4.5); the CSV precision and the candidate grammar (§4.6, §4.7). |
+| `tests/fixtures/attrib_reference/` (60 cases) | **3** | **1** | Created; the sensitivity fix (one case ADDED, §4.2); the candidate grammar (one case of 60 reworded, §4.7). |
 
 **The right-hand column is the proof that the move into `pkg_rlc/` changed
-nothing.** Two of these four pin numbers and two pin rendered text, between
-them covering the reduction path bit-for-bit, the GUI results pane, 143 CLI
-invocations and 56 Attribution-window renders. A move that had altered any
-behaviour would have had to move at least one of them.
+nothing.** It read **0** for all four at the moment the move landed; the two
+non-zero entries above are the divergence closures of §4.3–§4.7, which came
+after it and each of which regenerated its reference in its own commit, with
+the diff accounted for line by line there. Two of these four pin numbers and
+two pin rendered text, between them covering the reduction path bit-for-bit,
+the GUI results pane, 143 CLI invocations and 56 Attribution-window renders. A
+move that had altered any behaviour would have had to move at least one of
+them — and **the two that pin NUMBERS have never moved at all.**
 
 ### "Keep in sync" comments
 
@@ -465,16 +487,75 @@ tonight the CLI's output existed only as `print` calls to fd 1 with no way to
 capture it; `pkg_rlc.present.attrib_report` returning `list[str]` and
 `tests/fixtures/cli_reference/` are what made the comparison possible at all.
 
-Seven divergences were found. **Two are fixed and five are open**, and the
-rule that decided which is which is now in `CLAUDE.md`:
+Seven divergences were found. **All seven are now closed** — two on the night
+of the refactor, the other five on 2026-08-14.
+
+**THE GOVERNING REASON, AND IT IS THE MOST USEFUL THING IN THIS FILE FOR
+WHOEVER CHANGES THE CLI NEXT.** The user said they basically do not use the
+CLI. That did NOT make the CLI free to churn — `deploy/doctor.sh` defines
+tier 2 as "CLI extraction" and treats a deployment as successful when only
+tier 2 is reachable:
+
+```sh
+# deploy/doctor.sh
+#   tier 1  reduce_snp.py     port reduction on a sim server   needs numpy
+#   tier 2  CLI extraction    R/L/C/Q -> CSV                   needs numpy
+#   tier 3  GUI               Tkinter + Matplotlib             needs both + X11
+# Exit code: 0 if at least one interpreter reaches tier 2, else 1.
+```
+
+So on a headless red-zone box with `$DISPLAY` unset the CLI is the **ONLY**
+surface and its reader has no GUI to cross-check against. The rule applied was
+therefore:
+
+> **The CLI may be TERSER than the pane, but it must never omit a diagnostic or
+> a decisive number.** Where the CLI was missing something it was added; where
+> it merely said more than the pane's measured 144-column budget allowed, the
+> length was **left alone**. Convergence for tidiness is not a reason to touch
+> this surface.
+
+That rule is why three of the seven fixes are **not symmetrical**: §4.4 and
+§4.5 leave the CLI a SUPERSET of the pane rather than a copy of it, and §4.7's
+list level is left different on purpose because the window cannot follow.
+
+Two of the seven were settled earlier and on a different rule, which is worth
+keeping because it is the one to reach for first:
 
 > Where the two surfaces disagree **and the repo already has a documented
 > position** (a `CLAUDE.md` entry, a test file's stated purpose,
 > `docs/theory.md`), the surface matching that position wins and the other is
-> fixed. Where there is no documented position, it is a genuine product choice
-> and it is left for the user.
+> fixed.
 
-### 4.1 FIXED — the CLI printed a frequency that is not in the file
+Those two are §4.1 and §4.2. The other five had no such position anywhere in
+the repo, which is exactly why they were left for the user rather than decided
+by a refactor; `deploy/doctor.sh`'s exit rule is the position the user
+supplied, and it decided all five.
+
+**None of the seven moved an arithmetic result.** `golden_legacy.npz` and
+`render_reference.json` are at **0 commits since `3ae2dfd`** — the last commit
+before the refactor started — and that is the shape all seven had to have. The
+one *value* that is different is a correction rather than a move: §4.7's DC
+capacitor, which the CLI read as a perfect short and now reads as an open, the
+window's answer and the right one.
+
+| § | # | divergence | closed by | fixture that moved |
+|---|---|---|---|---|
+| 4.1 | 1 | the CLI printed a frequency that is not in the file | `b7f1ddd` | `cli_reference`, 55 files |
+| 4.2 | 5 | the Attribution window ranked an unmeasurable row first | `8d98ba9` | `attrib_reference`, one case ADDED |
+| 4.3 | 2 | the CLI's coupling pair list was unranked and never printed the rank key | `5b4bdfc` | `cli_reference`, 53 files |
+| 4.4 | 3 | reciprocity was a metric on the CLI and a verdict in the pane | `5b4bdfc` | (same 53) |
+| 4.5 | 4 | the `\|k\|>1` prompt existed on no CLI surface | `5b4bdfc` | (same 53) |
+| 4.6 | 6 | two `_e`, at two precisions, into two CSVs | `fc501f9` | `cli_reference`, 2 CSV artifacts |
+| 4.7 | 7 | two candidate grammars | `eec4a58` | `cli_reference` ×2 + `attrib_reference` ×1 |
+
+**2, 3 and 4 share one commit, against the brief's one-commit-per-decision
+rule, and the reason is that they share one function and one regeneration.**
+All three are `_print_coupling_report`, all three land in the same 53 reference
+cases, and a revert of any one alone would have had to re-capture the other
+two. They are separated in the commit message instead, one titled paragraph
+each. 6 and 7 are one commit apiece as asked.
+
+### 4.1 FIXED (divergence 1) — the CLI printed a frequency that is not in the file
 
 The two spellings, which had sat side by side unnoticed:
 
@@ -533,7 +614,7 @@ historical `{:.4g}`. `marker_freq_text` widens *both* numbers itself the moment
 there are two to tell apart, so a marker that **is** a data point renders
 byte-for-byte what it always did at both sites.
 
-### 4.2 FIXED — the Attribution window ranked an unmeasurable row first
+### 4.2 FIXED (divergence 5) — the Attribution window ranked an unmeasurable row first
 
 `pkg_rlc.panels.attrib_gui.sensitivity_table` and the CLI's
 `_attr_print_sensitivity` sort the same list of `SensitivityResult` and sorted
@@ -598,56 +679,275 @@ from 12 passed to **1 failure** and `TestSensitivityRanking` from 5 passed to
 order it demands. Restored from a copy; `git status` clean and all 17 green
 again.
 
-### 4.3 The five that are open
+### 4.3 FIXED (divergence 2) — the CLI's coupling pair list was unranked, and never printed the rank key
 
-> **RULED ON, 2026-08-14 — divergences 2, 3 and 4 are CLOSED.** The position
-> the repo was missing is `deploy/doctor.sh`'s own exit rule: a CLI-only
-> install is a SUCCESSFUL install (tier 2), so on a headless box the CLI is the
-> ONLY surface. Hence *the CLI may be terser than the pane, but it must never
-> omit a diagnostic or a decisive number* — which makes #2 and #4 defects (a
-> missing rank key, a missing `|k|>1` prompt) and makes #3 a SUPERSET rather
-> than a swap: the CLI leads with the verdict and KEEPS the metric and the
-> paragraph the pane dropped to its 144-column budget. See CLAUDE.md, "One
-> formatter, two spellings". The table below is left as it was written; it is
-> the account of the night, not a live list.
+Before, the whole of the pair loop:
 
-None of these five has a documented position in the repo, so by the rule above
-they are product choices and were left for you. Each keeps its recommendation.
+```python
+# CLI   _print_coupling_report
+print("\nMutual coupling (per unordered pair):")
+for pr in res.pairs:                       # nested-loop (a, b) order
+    print(f"\n  {na} <-> {nb}")            # no rank key, no flag
+```
 
-**Between the CLI report and the results pane:**
+against a pane that has called `rank_coupling_pairs` since the results-views
+slimming. Six measurement ports make **15** pairs and index order says nothing
+about which of them anybody has to do something about.
 
-| # | divergence | recommendation |
-|---|---|---|
-| 2 | **The CLI does not rank or floor the coupling pair list.** Still `for pr in res.pairs:` — nested-loop `(a,b)` order, every pair, no `rank_coupling_pairs`, no `COUPLING_FLOOR_DB`, and `worst M/L` (the rank key itself) is not printed at all. | *Move the CLI to the pane's answer.* The reason the pane was changed applies verbatim — six measurement ports make 15 pairs and index order says nothing about which matter. **This is the one of the five I would actually change.** |
-| 3 | **Reciprocity is a METRIC on the CLI and a VERDICT in the pane.** CLI: `Reciprocity error = 5.76e-15  (max\|Z_ab − Z_ba\| / max\|Z_ab\| …)` plus a paragraph. Pane: `✓ reciprocal (5.76e-15)`. | *Leave.* Defensible as-is — a terminal has no 144-column budget, and the pane's slimming was driven by that budget. But they are now different products. |
-| 4 | **The CLI's legend is per-block, differently worded, and has no `\|k\|>1` prompt.** `_pair_flag` is pane-only, so a CLI user whose `\|k\|` exceeds 1 gets no "check the port setup" prompt. The pane emits `COUPLING_LEGEND_LINES` once per run; the CLI repeats its own wording under every block. | *Port `_pair_flag` to the CLI.* The missing `\|k\|>1` prompt is a real loss of a diagnostic, unlike the wording and the repetition. |
+**The part that mattered was not the order.** It was that `worst M/L` — which
+IS the rank key, and is the quantity a spur / pulling budget is written
+against — was printed **nowhere at all** on this surface. A headless reader
+could not obtain it: not from the report, and not by sorting the report by eye,
+because the number it would have to sort on was not on the page.
 
-**Between the CLI attribution report and the Attribution window:**
+Now:
 
-> **RULED ON, 2026-08-14 — divergence 6 is CLOSED.** Both surfaces now write
-> the CSV float through ONE `_e`, at `%.12e`: the window's precision won
-> because a CSV is written to be read back by something else, so the CLI's
-> `--attribute-csv` / `--cold-start-csv` gained six digits and nothing else
-> moved. The window imports it and there is no second definition. See
-> CLAUDE.md, "The two attribution reports".
->
-> **RULED ON, 2026-08-14 — divergence 7 is CLOSED.** Both surfaces take both
-> separators inside one candidate and the same words for a perfect short, off
-> one `_FIELD_SEP` / `_IDEAL_WORDS` the window imports; the `R=5 m` refusal
-> survived the widening on both, which cost the CLI a spelling that used to
-> mean 5 mΩ. The two expressions were MEASURED rather than assumed to agree:
-> 2.461e-16 worst (one ulp) over 14 specs x DC + 41 points, 1 MHz to 10 GHz —
-> and at DC they did not agree at all, the CLI reading a series capacitor as a
-> perfect SHORT instead of an open, which is fixed. What remains is the LIST
-> level (repeated flag vs one comma-separated field) and it is not fixable
-> from the window's side; it is documented on the hint the field carries.
+```
+BEFORE   Mutual coupling (per unordered pair):
+           p1 <-> p2
+AFTER    Mutual coupling (per unordered pair, strongest first by worst-case M/L):
+           p1 <-> p3   worst M/L = 0.04299 dB   [cap]
+```
 
-| # | divergence | recommendation |
-|---|---|---|
-| 6 | **Two `_e`, at two precisions.** `pkg_rlc.present.attrib_report._e` writes `%.6e`; `pkg_rlc.panels.attrib_gui._e` writes `%.12e`. Both put a float from the same decomposition into a CSV. | *Pick one, probably `%.12e`* — a CSV is for re-use and 6 digits is lossy. Low urgency. |
-| 7 | **Two candidate grammars.** `--attribute-alt` splits on **comma** (`R=0.5,L=1n`, via `y_series_rlc`); the window's Candidates field splits on **whitespace** (`R=0.5 L=1n`, building `R + jwL + 1/(jwC)` directly). Both refuse a token with no `=` for the same measured `R=5 m` reason, but the two expressions are not obliged to agree at `omega == 0`. | *Accept both separators on both sides.* This is a user-facing trap — the spelling that works in one place silently fails in the other. |
+`_print_coupling_report` **calls** `pkg_rlc.present.report.rank_coupling_pairs`
+rather than reimplementing the key, because that function's three rules are
+exactly the ones a second copy gets subtly wrong: the strength computed
+**linearly** and not from the `*_dB` fields (`_ratio_db(0)` is NaN, and a pair
+with `M = 0` is the weakest there is, not an undefined one); an **undefined**
+ratio sorting LAST and never folded away; and the **strongest** pair never
+folded away either, or a block can consist of nothing but *"3 pairs were too
+weak to list"*. `COUPLING_FLOOR_DB = -60` applies, the folded count is printed,
+and it points at `--csv` — a pointer that is true only because
+`_write_coupling_csv` enumerates every unordered pair straight off the Z matrix
+and has no floor. **Do not give it one.**
 
-### 4.4 Duplication that was removed before it could diverge
+Two deliberate details. The rank key goes on the pair's **HEADLINE**, not into
+the body: a fifteen-pair report is scanned by its headlines, and the pane
+learned that the hard way when the same number was moved off its headline
+during the slimming and a test caught it inside the hour. And the heading says
+`strongest first by worst-case M/L` **only when there is more than one pair** —
+ranking one pair means nothing, which is the same omission the pane makes.
+
+**Commits.** `5b4bdfc` (the code, shared with §4.4 and §4.5, plus
+`tests/test_cli_coupling_report.py`), `4952151` (the reference).
+
+**The reference diff, measured rather than taken on trust.** 53 of the 144
+cases moved, +321 / −268 lines, no exit code and no written artifact among
+them. All **53** pair headlines gained the rank key, flagged `ind` ×47 and
+`cap` ×5. **But only ONE case's pair ORDER actually changed**, and the
+histogram says why: of the 53, **2 have no pair at all, 50 have exactly one,
+and one — `coupling_three_mports` — has three.** A single pair cannot be
+reordered, and **no case in the reference folds a pair at all**, because no
+shipped fixture has a pair below −60 dB alongside a stronger one.
+
+**That is precisely why `tests/test_cli_coupling_report.py` exists** (19 tests,
+5 classes, no tkinter, every guard mutation-checked). The three behaviours that
+143 real invocations cannot reach are the floor and its two exceptions, an
+undefined rank key that must sort last and never fold, and — §4.5 — a `|k|`
+above 1. A golden reference proves only what its captures can express; that
+lesson is §4.2's and it was applied here before it could bite a second time.
+
+`render_reference.json` and `golden_legacy.npz` did not move, and no number,
+exit code or CSV cell moved in `cli_reference` either.
+
+### 4.4 FIXED (divergence 3) — reciprocity was a METRIC on the CLI and a VERDICT in the pane
+
+```
+BEFORE (CLI)   Reciprocity error = 1.38e-16   (max|Z_ab - Z_ba| / max|Z_ab| over the finite off-diagonal entries)
+                 (data looks reciprocal; the alarm threshold is 0.001. ...)
+BEFORE (pane)  ✓ reciprocal (1.38e-16)
+```
+
+The CLI printed the number and the definition and **never said the word**. A
+reader scanning for "is this file all right" had to know the threshold, apply
+it, and reach the verdict themselves — on the one surface that is sometimes the
+only surface.
+
+```
+AFTER (CLI)    Reciprocity: OK -- reciprocal (1.38e-16)
+                 error = 1.38e-16   (max|Z_ab - Z_ba| / max|Z_ab| over the finite off-diagonal entries)
+                 (data looks reciprocal; the alarm threshold is 0.001. ...)
+```
+
+**This is the clearest case of the governing rule, because the tempting fix was
+the wrong one.** Making the CLI match the pane means deleting the metric line
+and the paragraph — and the pane only dropped them to a measured 144-column
+budget that a terminal does not have. A headless reader has no other source for
+what the metric means or where the threshold is. So the CLI is a **SUPERSET**:
+the verdict leads, and everything it had before stays underneath it, unchanged.
+
+`reciprocity_verdict` in `pkg_rlc/present/report.py` is the ONE classifier both
+surfaces call, so which of the three readings — `OK` / `WARN` / `NOT CHECKED` —
+a given number gets cannot differ between them. **No tick glyph**: nothing in
+the 143 pinned CLI cases uses one (the non-ASCII in that reference is
+`Ω Δ ω Σ √` and nothing else), the CLI already says `WARN:` in words, and `✓`
+is 12 px against 7 in the pane's own font, which is why the pane confines it to
+standalone sentences. The alarm keeps its whole sentence on both surfaces,
+because there the sentence IS the reading.
+
+**Commits.** `5b4bdfc`, `4952151`.
+
+**The reference diff.** In the same 53 cases: the verdict headline is new
+(`Reciprocity: OK` ×50, `Reciprocity: NOT CHECKED` ×1), the metric line lost
+its leading word and gained two spaces of indent under it, and **the paragraph
+text is byte-identical in every one of the 53 — 0 cases where it changed.**
+The `WARN` path appears in no captured case and is guarded by
+`TestTheReciprocityVerdict` instead.
+
+### 4.5 FIXED (divergence 4) — the `|k|>1` prompt existed on no CLI surface
+
+`_pair_flag` was pane-only. `|k| > 1` means the port setup is probably wrong;
+core's rule is that it **adds a note rather than clamping**, so the note is the
+entire mechanism by which the user is told. With the flag pane-only, a CLI user
+whose `|k|` exceeded 1 was told **nowhere**.
+
+```
+BEFORE   lines in tests/fixtures/cli_reference/ mentioning |k|>1 :   0
+AFTER                                                            :  51
+```
+
+The pane's own `_pair_flag` is called, and its `[ind]` / `[cap]` / `[|k|>1]`
+goes on the pair headline beside the rank key. The legend was two fragments in
+two places — the sign key under the self table, the M/L caveat under the
+pairs — and is now **one block at the foot of the report**, the shape the pane
+settled on with `COUPLING_LEGEND_LINES`.
+
+**It is not that constant and must not become it.** The CLI keeps its own
+longer wording, because length is not a defect on a surface with no column
+budget — the governing rule's second half. The M/L caveat is one of the six
+homes of that sentence, and **stripped of indent it is byte-identical before
+and after** (checked; only its position and its 2 → 10 spaces of indent moved).
+The `Ω Δ ω Σ √` census above is exact and was re-taken for this paragraph:
+those five are the complete non-ASCII inventory of all 144 captured cases, and
+U+2713 / U+2714 / U+2705 appear zero times.
+
+**Commits.** `5b4bdfc`, `4952151`.
+
+**The reference diff.** The `|k|>1` clause on the legend line in 51 cases; no
+captured case actually FLAGS a pair (the flags seen are `ind` ×47 and `cap`
+×5), so the flag itself is guarded by `TestTheFlagReachesThisSurface` against a
+hand-built pair — the same "the reference can only prove what it captures"
+argument as §4.3.
+
+### 4.6 FIXED (divergence 6) — two `_e`, at two precisions, into two CSVs
+
+```python
+# pkg_rlc.present.attrib_report._e   -> "%.6e"
+# pkg_rlc.panels.attrib_gui._e       -> "%.12e"
+```
+
+Both put a float from the **same** decomposition into a CSV, so the CLI's
+`--attribute-csv` / `--cold-start-csv` and the window's CSV export disagreed in their last digits
+about identical numbers.
+
+**`%.12e` won, and the reason is what a CSV is for.** It is written to be read
+back by something else — a spreadsheet, a script, a second tool — and six
+significant figures is lossy for no benefit, so the CLI moved to the window's
+precision rather than the other way round. This is the governing rule in its
+mildest form: the CLI was not missing a diagnostic, it was rounding a number a
+reader may need whole.
+
+```
+BEFORE  term,5.000500e+00,vic,agg,Z,Ohm,,bare EM coupling,,3.756903e-10,7.893682e+00,...
+AFTER   term,5.000500000000e+00,vic,agg,Z,Ohm,,bare EM coupling,,3.756903344344e-10,7.893682431821e+00,...
+```
+
+The window now imports it (`from pkg_rlc.present.attrib_report import _e as
+_attr_e`, bound to the local name `_e`, so every call site and
+`pkg_rlc.panels.attrib_gui._e` are unchanged) and there is **no second
+definition**. The old note said the two "cannot share a module under one name";
+that was true of the NAME and never of the precision — L5 importing L3 is the
+ordinary direction, and the local binding keeps the name.
+`test_attrib_window.TestCsvRecords.test_it_IS_the_CLI_writer_and_not_a_copy_of_it`
+asserts the two are the same OBJECT, following the `parse_ground_model`
+precedent. `CSV_FIELDS` / `csv_records` stay the window's, because the two
+files have different COLUMNS — it was only ever the float that was duplicated.
+
+**Commits.** `fc501f9` (the code), `96090db` (the reference, shared with §4.7).
+
+**The reference diff, and it was checked cell by cell rather than eyeballed.**
+Two artifacts moved — `attr_csv` and `cold_csv` — 31 differing lines, **165
+numeric cells**. Every one was parsed on both sides (splitting the compound
+`k=v;k=v` cells too) and re-rounded: **the number of cells whose new `%.12e`
+value does not round back to the old `%.6e` value is 0.** No arithmetic moved;
+the same numbers are printed to more digits. `golden_legacy.npz`,
+`render_reference.json` and `attrib_reference` are untouched by this one.
+
+### 4.7 FIXED (divergence 7) — two candidate grammars, and the only one of the seven that was a TRAP
+
+```
+--attribute-alt "R=0.5,L=1n"      worked on the CLI, refused in the window
+Candidates:      R=0.5 L=1n       worked in the window, refused on the CLI
+```
+
+Every other divergence in this section is a presentation choice one surface
+made and the other did not. This one is a **user-facing trap**: the spelling a
+user had just got working failed where they took it next, and the failure was a
+refusal message about a grammar nobody had told them there were two of.
+
+Both now split on `[,\s]+` between the fields of ONE candidate, through
+`_FIELD_SEP`, and both take every word for a perfect short through
+`_IDEAL_WORDS` (`gnd` / `ground` were CLI-only, `0` was window-only). Both
+constants live in `pkg_rlc.present.attrib_report` and the window IMPORTS them,
+so *"the two accept the same tokens"* is one object and not two claims that can
+drift.
+
+**Three things this turned up that closing it on the grammar alone would have
+missed.**
+
+1. **The refusal had to survive the widening, and it did.** A token with no `=`
+   is still refused on either separator, because `parse_kv_rlc_params` DROPS
+   it — core's `_rlc_tokens` trap through a different door. **Note what that
+   costs the CLI and why it is right:** with comma-only splitting `R=5 m` was
+   ONE field and `parse_si` tolerates the space, so the flag quietly meant
+   **5 mΩ** while the window refused the identical string by name. Now both
+   refuse it, and `attr_alt_bad_spacing` moves from a 227-line report at exit 0
+   to a 35-line refusal at **exit 2** — the one captured case whose exit code
+   moved in this whole run. The case was NAMED for a trap it did not actually
+   have.
+2. **The two impedance expressions were MEASURED, not assumed to agree.** The
+   CLI goes through `y_series_rlc` and the window builds `R + jωL + 1/(jωC)`
+   directly, and converging the grammar over expressions that disagree would
+   have removed the symptom and left the defect. Over 14 specs × DC + 41 points
+   from 1 MHz to 10 GHz the worst relative difference is **2.461e-16 — one
+   ulp** —
+   so they are two spellings of one formula and were left as two.
+3. **EXCEPT AT DC, where they did not agree and the CLI was wrong.**
+   `1/(1j*0*C)` is `inf`, so `Z` was `nan`, `y` was `nan`, and the non-finite
+   branch returned a **perfect SHORT** where a series capacitor at DC is an
+   **OPEN**. Every composed sweep keeps its 0 Hz point, so `--freq 0` with a
+   `C=` candidate reached it. Fixed to the window's answer. This is the only
+   place in the five where a *value* the CLI produced was wrong rather than
+   merely differently presented — and it was found only because the grammar
+   change forced the comparison.
+
+**WHAT IS STILL NOT SHARED IS THE LIST LEVEL, and it cannot be.**
+`--attribute-alt` is repeated once per candidate; the Candidates field holds
+the whole list in one string with the comma between entries. So `R=0.5,L=1n` is
+ONE candidate on the command line and TWO in that field. It is not fixable from
+the window's side: the shipped default value of that field is `"open, ideal"`,
+so a comma that stopped separating candidates would break it and every saved
+session. What the reader gets instead is the READING — one Sensitivity row per
+candidate, labelled with what parsed — and `CANDIDATE_HINT`, which now spends
+its middle on `comma between candidates, space inside one (R=0.5 L=1n)`. It is
+also said in the `--help` text, in Help → Mode 6 and in the README.
+
+**Commits.** `eec4a58` (the code, 7 new guards across `test_attrib_cli` and
+`test_attrib_window`, of which
+`test_the_two_impedance_expressions_agree_across_the_band` re-measures the
+whole sweep rather than trusting the commit message), `96090db` (the
+references), `69ec9ca` (a comment that quoted the bound rounded down —
+`2.22e-16` where the measurement is `2.461e-16`; a comment that rounds a
+measured bound is one the next reader cannot check).
+
+**The reference diff.** `cli_reference`: `attr_alt_bad_spacing` becomes the
+refusal above, and `help.json` moves by 19 lines because the flag's own help
+text now names both separators. `attrib_reference`: **1 case of 60** —
+`candidate_parsing`, whose refusal sentence gained *"separated by spaces or
+commas"* — and **not one of the other 59 changed: no `sha256`, no `chars`, no
+`lines`.** `golden_legacy.npz` and `render_reference.json` untouched.
+
+### 4.8 Duplication that was removed before it could diverge
 
 Not user-visible today, but each was two implementations of one answer, i.e.
 two things that can come to disagree about a number:
@@ -677,40 +977,59 @@ two things that can come to disagree about a number:
 
 ## 5. What a human should check first
 
-1. **Rule on the five open divergences (§4.3).** They are the only items in
-   this whole night genuinely waiting on you: each is a product choice with no
-   documented position in the repo, so none was decided without you.
-   * **#2, the unranked CLI coupling list** — the one I would change.
-   * **#7, the two candidate grammars** — a user-facing trap; the spelling that
-     works in one place silently fails in the other.
-   * **#4, the missing `|k|>1` prompt on the CLI** — a lost diagnostic, worth
-     porting even if the wording stays different.
-   * **#6, `%.6e` vs `%.12e` in two CSV writers** — low urgency, pick one.
-   * **#3, reciprocity metric vs verdict** — recommend leaving it, but the two
-     surfaces are now different products and you should know that.
-2. **Sanity-check the CLI frequency line against your own data.** Run a
-   coupling extraction at a marker that is *not* a grid point and confirm the
-   `(requested …; nearest point, grid step …)` note reads correctly, then run
-   one at an exact grid point and confirm it renders exactly as it used to.
-   This and the sensitivity ordering are the only shipped behaviour changes of
-   the night.
-3. **Open the GUI and do one real extraction end to end** — load a file,
+**Nothing here is waiting on a decision from you any more.** The five that
+were are closed (§4.3–§4.7); what is left is verification of things a test
+suite cannot verify, in descending order of what a wrong answer would cost.
+
+1. **READ THE GOVERNING RULE AT THE TOP OF §4, and say if you disagree with
+   it.** It is the one thing here that will still be deciding changes in six
+   months: *the CLI may be terser than the pane, but it must never omit a
+   diagnostic or a decisive number*, because `deploy/doctor.sh` calls a
+   CLI-only install a successful install. Every one of the five closures took
+   its shape from that sentence, and two of them left the CLI **more verbose**
+   than the pane on purpose. **If the rule is wrong, it is wrong five times
+   over and this is the cheapest moment to say so** — each closure is one
+   commit and reverts on its own (bar 2/3/4, which share `5b4bdfc`; §4 says
+   why).
+2. **Run one coupling extraction on YOUR data and read the whole block.**
+   Three of the five closures land in it (§4.3–§4.5) and the frequency fix
+   (§4.1) landed there earlier; between them they moved the pair order, added a
+   number to every pair headline, added a verdict word, and moved the legend to
+   the foot. Specifically: is `worst M/L` the number you would have wanted
+   ranked on (§4.3), and does the `... +N pairs below -60 dB` fold — which no
+   shipped fixture exercises, so only a hand-built guard has seen it — hide
+   anything you needed? Then check the frequency line at a marker that is *not*
+   a grid point, and again at one that is: the second must render exactly as it
+   always did (§4.1).
+3. **Diff one attribution CSV against a copy from before.** It gained six
+   digits per float (§4.6). Every one of the 165 numeric cells in the reference
+   was checked to round back to its old value, so nothing should have *changed*
+   — but if anything downstream parses those files by column width rather than
+   by comma, it will notice.
+4. **Open the GUI and do one real extraction end to end** — load a file,
    Calculate, read the results pane, Export CSV, open the Attribution window
    and look at the sensitivity table's ordering. The suite drives all of this,
    but 87% of it is Tk geometry and none of it is you looking at the screen.
-4. **Open the folder you complained about and see whether it reads better
+   **Of the five later closures, only §4.7 changed anything the GUI
+   RENDERS** — the Candidates field now also accepts a comma inside one
+   candidate and the words `0` / `gnd` / `ground`, and its refusal sentence
+   gained *"separated by spaces or commas"*. §4.6 rebound the window's `_e` to
+   the CLI's without changing its precision, and §4.3–§4.5 are CLI-only. So
+   this step is mostly a check that the move into `pkg_rlc/` is invisible, not
+   that a decision was right.
+5. **Open the folder you complained about and see whether it reads better
    now** (§2.0). Seven folders under `pkg_rlc/`, one per layer, and the repo
    root is down to `pkg_rlc/`, the 41-line `pkg_rlc_extractor.py` entry point,
    `reduce_snp.py`, `deploy/`, `docs/`, `tests/` and the markdown. If a folder
    name is wrong — `present` and `services` are the two I would expect to
    argue about — renaming one is a one-line change to `LAYER_OF_FOLDER` plus a
    `git mv`, and it is much cheaper now than in a month.
-5. **Read the new sections of `CLAUDE.md`** — the layering gate, the four
+6. **Read the new sections of `CLAUDE.md`** — the layering gate, the four
    panels, the two attribution reports, the one-formatter-two-spellings
    section, the model / session / run modules, and the undefined-sorts-last
    rule. If any of them describes something you did not agree to, this is the
    cheapest moment to say so.
-6. **Decide whether the phase-gate lesson in §3.2 is worth encoding** before the
+7. **Decide whether the phase-gate lesson in §3.2 is worth encoding** before the
    next long unattended run. It cost an hour that night and it will cost more
    than that eventually.
 
@@ -719,7 +1038,32 @@ two things that can come to disagree about a number:
 ## 6. What is still owed
 
 **In the tree and finished:** `pkg_rlc.model.trace` (L1), `pkg_rlc.services.session` (L2),
-`pkg_rlc.services.run` (L2). Nothing from the plan is now blocked on a missing module.
+`pkg_rlc.services.run` (L2). Nothing from the plan is now blocked on a missing
+module, and **no CLI/GUI divergence is waiting on a decision** — all seven are
+closed (§4).
+
+**SETTLED, NOT OWED — the entry-point shim's star import.** This was left open
+by the package move and re-checked at HEAD. `pkg_rlc_extractor.py` ends on
+`from pkg_rlc.frontend.cli import *`, and a star import skips underscore names,
+so **`pkg_rlc_extractor._attr_zt`, `._attr_ground_model`, `._make_arg_parser`,
+`._emit` and `._attr_series_impedance` genuinely do not resolve** — measured,
+all five `False`, against **59** public names that do. That is not a gap,
+because **nothing depends on it**: every call site that reaches a private name
+imports `pkg_rlc.frontend.cli` directly (`tests/test_attrib_cli.py`,
+`test_cli_golden.py` and `test_compose_cli.py` as `ex`;
+`test_attrib_window.test_it_IS_the_CLI_parser_and_not_a_copy` as `cli`), which
+is where those names live. The shim's own docstring states the decision — a
+private name belongs to `pkg_rlc.frontend.cli`, and listing forty of them here
+would be a second copy of the CLI's surface that could come to disagree with
+it — and `main` is re-exported BY NAME because `tests/_cli_capture.py` drives
+it in-process over 143 invocations. What was owed was the two places
+`CLAUDE.md` still described the old behaviour, and both are corrected in the
+same commit as this paragraph: the module map's *"`pkg_rlc_extractor`
+re-exports every symbol it lost"* (it is `pkg_rlc.frontend.cli` that does), and
+the attribution section's claim that the parser-identity test compares against
+`pkg_rlc_extractor._attr_ground_model` (it compares against
+`pkg_rlc.frontend.cli._attr_ground_model`, and against the shim it would raise
+`AttributeError`).
 
 **Not done, in descending order of how much it would buy:**
 
@@ -751,13 +1095,16 @@ two things that can come to disagree about a number:
   their IntVars, `_suppress_editor_sync`, `_ed_*`. Deliberate: those are
   reassigned at runtime and read straight off `app` by the tests, so moving
   them needs forwarding properties — two places one value can be read from.
-* **NEW, AND OWED BY THE MOVE: ~598 mentions of the old flat module names
-  survive in comments and docstrings**, across 62 files (the count excludes the
-  deliberate `as pkg_rlc_gui` aliases and `tests/_repackage.py`, which is about
-  them). `tests/_repackage.py` rewrote the import statements and the docs and
-  deliberately did not touch prose, because a 598-line diff with no test behind
+* **OWED BY THE MOVE: 642 mentions of the old flat module names survive in
+  comments and docstrings**, across 66 files (the count excludes the deliberate
+  `as pkg_rlc_gui` aliases and `tests/_repackage.py`, which is about them). It
+  was 598 across 62 files at `d8e9a7f` and has GROWN, which is the point: the
+  divergence work of §4.3–§4.7 added a test module and several paragraphs of
+  `CLAUDE.md` prose that reach for the old names because the surrounding text
+  does. `tests/_repackage.py` rewrote the import statements and the docs and
+  deliberately did not touch prose, because a 600-line diff with no test behind
   it is a poor trade inside a move whose whole claim is that it changed
-  nothing — the imports are checked by the interpreter and by 2 542 tests, and
+  nothing — the imports are checked by the interpreter and by 2 569 tests, and
   the prose is checked by nobody. The names are still unambiguous (there is
   exactly one `pkg_rlc_core` and everyone knows where it went), so this is
   staleness rather than a defect, but it will read worse every month. It is a
