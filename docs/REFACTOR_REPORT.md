@@ -624,6 +624,13 @@ they are product choices and were left for you. Each keeps its recommendation.
 
 **Between the CLI attribution report and the Attribution window:**
 
+> **RULED ON, 2026-08-14 — divergence 6 is CLOSED.** Both surfaces now write
+> the CSV float through ONE `_e`, at `%.12e`: the window's precision won
+> because a CSV is written to be read back by something else, so the CLI's
+> `--attribute-csv` / `--cold-start-csv` gained six digits and nothing else
+> moved. The window imports it and there is no second definition. See
+> CLAUDE.md, "The two attribution reports".
+
 | # | divergence | recommendation |
 |---|---|---|
 | 6 | **Two `_e`, at two precisions.** `pkg_rlc.present.attrib_report._e` writes `%.6e`; `pkg_rlc.panels.attrib_gui._e` writes `%.12e`. Both put a float from the same decomposition into a CSV. | *Pick one, probably `%.12e`* — a CSV is for re-use and 6 digits is lossy. Low urgency. |

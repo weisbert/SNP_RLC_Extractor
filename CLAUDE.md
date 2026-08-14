@@ -2079,11 +2079,25 @@ and `tests/fixtures/attrib_reference/` pins the window's, both byte for byte.
   precisely this case and comments on why. Fix it from the window's side with
   `attrib_reference` regenerated in the same commit; do not "align" the CLI,
   whose spelling is the documented one.
-- **KNOWN, NOT FIXED — two `_e`, at two precisions.**
-  `pkg_rlc.present.attrib_report._e` writes `%.6e` and `pkg_rlc.panels.attrib_gui._e` writes
-  `%.12e`, both putting a float from the same decomposition into a CSV. They
-  cannot share a module under one name, which is why the window's `_e` /
-  `CSV_FIELDS` / `csv_records` stayed in `pkg_rlc.panels.attrib_gui`.
+- **FIXED — there was one `_e` per surface, at two precisions, and now there is
+  ONE.** `pkg_rlc.present.attrib_report._e` wrote `%.6e` and
+  `pkg_rlc.panels.attrib_gui._e` wrote `%.12e`, both putting a float from the
+  SAME decomposition into a CSV — two files disagreeing in their last digits
+  about identical numbers. **`%.12e` won**: a CSV is written to be read back by
+  something else and six significant figures is lossy for no benefit, so the
+  CLI moved to the window's precision and not the other way round. The window
+  now imports it (`from pkg_rlc.present.attrib_report import _e as _attr_e`,
+  bound to the local name `_e`, so every call site and
+  `pkg_rlc.panels.attrib_gui._e` are unchanged) and there is no second
+  definition. The old note said the two "cannot share a module under one name":
+  that was true of the NAME and never of the precision — L5 importing L3 is the
+  ordinary direction, and the local binding keeps the name.
+  `test_attrib_window.TestCsvRecords.test_it_IS_the_CLI_writer_and_not_a_copy_of_it`
+  asserts the two are the same OBJECT, the `parse_ground_model` precedent.
+  Only the CLI's CSV moved (`--attribute-csv` / `--cold-start-csv`, six digits
+  to twelve); `CSV_FIELDS` / `csv_records` are still the window's, because the
+  two files have different COLUMNS — it was only ever the float that was
+  duplicated.
 - **KNOWN, NOT FIXED — two candidate grammars.** `--attribute-alt` splits on
   COMMA (`R=0.5,L=1n`, via `_attr_series_impedance` and `y_series_rlc`); the
   window's Candidates field splits on WHITESPACE (`R=0.5 L=1n`, via

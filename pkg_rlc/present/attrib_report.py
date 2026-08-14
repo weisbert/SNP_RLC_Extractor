@@ -332,14 +332,35 @@ _ATTR_CSV_FIELDS = [
 ]
 
 
-def _e(x: float) -> str:
-    """A float for the CSV: %.6e, and nan/inf spelled out rather than blank."""
-    v = float(x)
+def _e(x) -> str:
+    """
+    THE float for an attribution CSV, on BOTH surfaces.  Full double
+    precision, never a display rounding: a CSV is data, written to be read
+    back by something else.
+
+    `pkg_rlc.panels.attrib_gui` imports this under its own `_e` and there is
+    no second definition.  There were two -- %.6e here and %.12e there --
+    putting floats from the SAME decomposition into two files that disagreed
+    in their last digits about identical numbers, which is the failure this
+    repo names everywhere else.  Six significant figures is lossy for no
+    benefit, so the window's precision is the one that survived.
+
+    NaN and +-inf are written as 'nan' / 'inf' / '-inf' rather than blanked:
+    they are readings, not missing cells, and numpy, pandas and every
+    spreadsheet read those three tokens back.  Blanking an infinity would turn
+    "this probe has no return path" into "we did not measure it".  Anything
+    that is not a number at all comes back as an empty cell -- the window's
+    tolerance, kept because a CSV writer must never be the thing that raises.
+    """
+    try:
+        v = float(x)
+    except (TypeError, ValueError):                      # pragma: no cover
+        return ""
     if math.isnan(v):
         return "nan"
     if math.isinf(v):
         return "inf" if v > 0 else "-inf"
-    return f"{v:.6e}"
+    return f"{v:.12e}"
 
 
 def _attr_row(section: str, **kw) -> dict:

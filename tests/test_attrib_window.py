@@ -894,6 +894,25 @@ class TestCsvRecords(unittest.TestCase):
         self.assertEqual(ag._e(float("-inf")), "-inf")
         self.assertEqual(ag._e(float("inf")), "inf")
 
+    def test_it_IS_the_CLI_writer_and_not_a_copy_of_it(self):
+        """One CSV float for both surfaces, at full double precision.
+
+        There were two: %.12e here and %.6e in the CLI's report, both writing
+        floats out of the SAME decomposition, so the window's CSV and
+        `--attribute-csv` disagreed in their last digits about identical
+        numbers.  Six significant figures is lossy and a CSV is written to be
+        read back by something else, so the CLI moved to this one.
+
+        Mutation: give either module its own `_e` again -- the identity
+        assertion dies immediately, and narrowing the format to %.6e kills
+        the digit count on both surfaces at once, which is the point.
+        """
+        self.assertIs(ag._e, ar._e)
+        self.assertEqual(ag._e(1.0 / 3.0), "3.333333333333e-01")
+        # 12 digits after the point == 13 significant figures, not 7: the
+        # mantissa is '3.' plus twelve digits.
+        self.assertEqual(len(ag._e(1.0 / 3.0).split("e")[0]), 14)
+
     def test_the_residual_is_not_smuggled_into_a_numeric_column(self):
         recs = ag.csv_records(fake_prov(), fake_dec([]))
         total = [r for r in recs if r["element"] == "(sum of terms)"][0]

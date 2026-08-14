@@ -222,6 +222,7 @@ from pkg_rlc.present.attrib_report import (
     _attr_zt,
     rank_map,
 )
+from pkg_rlc.present.attrib_report import _e as _attr_e
 from pkg_rlc.physics.core import (
     ROLE_ELEMENT,
     ROLE_GROUND,
@@ -2200,24 +2201,15 @@ CSV_FIELDS = ("kind", "victim", "aggressor", "quantity", "unit", "element",
               "transz_im", "note")
 
 
-def _e(v) -> str:
-    """
-    Full double precision, never a display rounding.  A CSV is data.
-
-    NaN and +-inf are written as 'nan' / 'inf' / '-inf' rather than blanked:
-    they are readings, not missing cells, and numpy, pandas and every
-    spreadsheet read those three tokens back.  Blanking an infinity would turn
-    "this probe has no return path" into "we did not measure it".
-    """
-    try:
-        f = float(v)
-    except (TypeError, ValueError):                      # pragma: no cover
-        return ""
-    if math.isnan(f):
-        return "nan"
-    if math.isinf(f):
-        return "inf" if f > 0 else "-inf"
-    return f"{f:.12e}"
+#: The CSV float, and it is `pkg_rlc.present.attrib_report`'s -- imported at
+#: the top of this file, bound here under the name every call site below
+#: already used.  NOT a second definition: this window and the CLI put floats
+#: from the SAME decomposition into two CSVs, and while there were two
+#: spellings (%.12e here, %.6e there) those two files disagreed in their last
+#: digits about identical numbers.  Full double precision won, because a CSV
+#: is written to be read back by something else.  See `_attr_e`'s docstring
+#: for the nan / inf / not-a-number rules, which are unchanged here.
+_e = _attr_e
 
 
 def csv_records(prov: Provenance, dec, sens: Sequence = ()) -> list[dict]:
