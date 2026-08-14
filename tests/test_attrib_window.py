@@ -866,6 +866,67 @@ class TestCandidates(unittest.TestCase):
         """This tool will not guess a package value -- the CLI's rule."""
         self.assertEqual(ag.STRUCTURAL_CANDIDATES, ("open", "ideal"))
 
+    def test_a_comma_inside_ONE_candidate_parses_as_the_CLI_reads_it(self):
+        """The command line's spelling has to work here too.
+
+        `--attribute-alt` split on the comma and this field split on
+        whitespace, so a spelling that worked on one surface failed on the
+        other.  Both take both now -- inside ONE candidate.  (The FIELD's
+        comma is still the list separator, which `candidate_list` owns and
+        which cannot change: the shipped default is "open, ideal".)
+
+        Mutation: put `tok.split()` back and 'R=0.5,L=1n' is refused for
+        carrying a token with no '='.
+        """
+        alt = ag.parse_candidate("R=0.5,L=1n", self.OMEGA)
+        want = ag.parse_candidate("R=0.5 L=1n", self.OMEGA)
+        self.assertAlmostEqual(abs(alt.z - want.z), 0.0, places=15)
+
+    def test_the_token_rules_ARE_the_CLI_report_s_and_not_a_copy(self):
+        # One separator rule and one set of words for a perfect short, both
+        # imported.  A second spelling is how the two come to accept
+        # different candidates again.
+        self.assertIs(ag._FIELD_SEP, ar._FIELD_SEP)
+        self.assertIs(ag._IDEAL_WORDS, ar._IDEAL_WORDS)
+        for word in ("gnd", "ground", "ideal", "short", "0"):
+            with self.subTest(word):
+                self.assertTrue(ag.parse_candidate(word, self.OMEGA).is_ideal)
+                self.assertEqual(
+                    ar._attr_series_impedance(word, self.OMEGA), (0j, "ideal"))
+
+    def test_the_two_impedance_expressions_agree_across_the_band(self):
+        """Grammar convergence is not value convergence, so this measures it.
+
+        The CLI goes through `y_series_rlc` (Z = R + jwL + 1/(jwC), then
+        1/Z, then 1/y) and this window builds Z directly, so the two are two
+        expressions of one formula and are entitled to disagree in the last
+        ulp -- but nowhere else.  Measured over 14 specs x DC + 41 points
+        from 1 MHz to 10 GHz: worst relative difference 2.461e-16, about one
+        ulp, and every open / short verdict identical INCLUDING at DC, where
+        a series capacitor used to read as a perfect short on the CLI.
+
+        Mutation: revert the omega == 0 guard in `_attr_series_impedance` and
+        the 'C=' specs fail at f = 0 with one side None and the other 0j.
+        """
+        specs = ("R=50", "L=0.3n", "C=100p", "R=0.5,L=1n", "R=0.5,C=100p",
+                 "L=1n,C=1p", "R=0.5,L=1n,C=100p", "R=1m,L=50p,C=2p",
+                 "R=0", "L=0", "C=0", "R=0,L=0", "ideal", "open")
+        freqs = [0.0] + list(np.logspace(6, 10, 41))
+        worst = 0.0
+        for spec in specs:
+            for f in freqs:
+                om = 2 * math.pi * f
+                z_cli, _label = ar._attr_series_impedance(spec, om)
+                z_gui = ag.parse_candidate(spec, om).z
+                with self.subTest(spec=spec, f=f):
+                    self.assertEqual(z_cli is None, z_gui is None)
+                if z_cli is None:
+                    continue
+                scale = max(abs(z_cli), abs(z_gui))
+                if scale:
+                    worst = max(worst, abs(z_cli - z_gui) / scale)
+        self.assertLess(worst, 1e-15, f"worst relative difference {worst:.3e}")
+
 
 # ============================================================================
 # PURE: CSV

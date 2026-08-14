@@ -217,6 +217,8 @@ import pkg_rlc.panels.files_gui as files_gui
 # separate on purpose: this window's strips clip at a measured 48 characters
 # at 150% DPI against the CLI's 95, so neither can be the other.
 from pkg_rlc.present.attrib_report import (
+    _FIELD_SEP,
+    _IDEAL_WORDS,
     _attr_ground_model,
     _attr_snap,
     _attr_zt,
@@ -618,9 +620,14 @@ def sign_strip_text(ground_label: str = "") -> str:
 #: Same rule and same wording as the CLI's `--attribute-alt`.
 STRUCTURAL_CANDIDATES = ("open", "ideal")
 
+#: The Entry is packed BEFORE this hint and the hint has `wraplength=0`, so it
+#: CLIPS from the tail — which is why the accepted values lead and the caveat
+#: goes last.  The separator rule earns its place in the middle: a comma here
+#: starts a NEW candidate, so the command line's 'R=0.5,L=1n' (one series R+L)
+#: reads in this field as two, and the field is the only place that says so.
 CANDIDATE_HINT = (
-    "Candidates: open, ideal, or R=…/L=…/C=… (comma-separated). "
-    "This tool will not guess a package value."
+    "Candidates: open, ideal, or R=…/L=…/C=… — comma between candidates, "
+    "space inside one (R=0.5 L=1n). This tool will not guess a package value."
 )
 
 
@@ -2269,12 +2276,29 @@ def parse_candidate(text: str, omega: float):
     """
     'open' / 'ideal' / 'R=0.1 L=1n' -> an `attrib.Alternative`.
 
-    EVERY whitespace token must carry an '=' and it raises otherwise, which is
-    the same rule `_rlc_tokens` enforces on an editor cell and for the same
-    measured reason: `parse_kv_rlc_params` silently DROPS a token without one,
-    so 'R=5 m' computed 5 ohm where 5 milliohm was typed and 'C=1 uF' computed
-    one farad.  There is no way to quote a value here either, so refusing is
-    the only answer that cannot be quietly wrong.
+    EITHER SEPARATOR, and the same token set as `--attribute-alt`: the comma
+    and the space both separate the R/L/C fields of one candidate, and
+    `_FIELD_SEP` / `_IDEAL_WORDS` are imported from
+    `pkg_rlc.present.attrib_report` rather than spelled again here, so the two
+    surfaces cannot come to accept different words.  Before this the flag took
+    'R=0.5,L=1n' and this field took 'R=0.5 L=1n', each refusing the other's
+    spelling, and each knew two words for a perfect short that the other did
+    not ('gnd' / 'ground' there, '0' here).
+
+    WHAT IS STILL NOT SHARED IS THE LIST, and it cannot be: `--attribute-alt`
+    is repeated once per candidate, while this field holds the whole list in
+    one string with the comma between entries (`candidate_list`).  So
+    'R=0.5,L=1n' is ONE candidate on the command line and TWO in this field —
+    and the reading is on screen either way, one Sensitivity row per candidate,
+    labelled with what it parsed.
+
+    EVERY token must carry an '=' and it raises otherwise, which is the same
+    rule `_rlc_tokens` enforces on an editor cell and for the same measured
+    reason: `parse_kv_rlc_params` silently DROPS a token without one, so
+    'R=5 m' computed 5 ohm where 5 milliohm was typed and 'C=1 uF' computed one
+    farad.  There is no way to quote a value here either, so refusing is the
+    only answer that cannot be quietly wrong — and splitting on the comma as
+    well must not rescue it into 'R=5' plus a discarded 'm'.
     """
     tok = (text or "").strip()
     if not tok:
@@ -2282,15 +2306,15 @@ def parse_candidate(text: str, omega: float):
     low = tok.lower()
     if low == "open":
         return attrib.alt_open()
-    if low in ("ideal", "short", "0"):
+    if low in _IDEAL_WORDS:
         return attrib.alt_ideal()
-    parts = tok.split()
+    parts = [p for p in _FIELD_SEP.split(tok) if p]
     bad = [p for p in parts if "=" not in p]
     if bad:
         raise ValueError(
             f"'{tok}': '{bad[0]}' has no '='. A candidate is 'open', 'ideal', "
-            "or R=…/L=…/C=… with no spaces inside a value — "
-            "'R=5 m' would silently mean 5 Ω, not 5 mΩ")
+            "or R=…/L=…/C=… separated by spaces or commas, with no spaces "
+            "inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ")
     p = parse_kv_rlc_params(parts)
     z = complex(p["R"], 0.0) + 1j * omega * p["L"]
     if math.isfinite(p["C"]) and p["C"] != 0.0:
@@ -2303,6 +2327,16 @@ def parse_candidate(text: str, omega: float):
 def candidate_list(text: str, omega: float) -> tuple[list, list[str]]:
     """
     (alternatives, problems) from a comma-separated field.
+
+    THE COMMA IS THE LIST SEPARATOR HERE and inside one candidate it is a
+    field separator (`parse_candidate`), which is the one thing this grammar
+    and `--attribute-alt`'s still do not share -- there the list is the
+    repeated flag, so nothing has to carry two meanings.  It is not fixable
+    from this side: the default value of the field is "open, ideal", so a
+    comma that stopped separating candidates would break every saved session
+    and the shipped default with it.  What the reader gets instead is the
+    reading itself -- one Sensitivity row per candidate, labelled with what
+    was parsed -- plus `CANDIDATE_HINT` saying which separator does which.
 
     A bad entry costs ITS OWN entry and never the whole field -- the session
     file's rule, and for the same reason: this is free text a user types under

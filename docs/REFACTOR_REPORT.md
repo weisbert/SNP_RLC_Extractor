@@ -630,6 +630,17 @@ they are product choices and were left for you. Each keeps its recommendation.
 > `--attribute-csv` / `--cold-start-csv` gained six digits and nothing else
 > moved. The window imports it and there is no second definition. See
 > CLAUDE.md, "The two attribution reports".
+>
+> **RULED ON, 2026-08-14 — divergence 7 is CLOSED.** Both surfaces take both
+> separators inside one candidate and the same words for a perfect short, off
+> one `_FIELD_SEP` / `_IDEAL_WORDS` the window imports; the `R=5 m` refusal
+> survived the widening on both, which cost the CLI a spelling that used to
+> mean 5 mΩ. The two expressions were MEASURED rather than assumed to agree:
+> 2.461e-16 worst (one ulp) over 14 specs x DC + 41 points, 1 MHz to 10 GHz —
+> and at DC they did not agree at all, the CLI reading a series capacitor as a
+> perfect SHORT instead of an open, which is fixed. What remains is the LIST
+> level (repeated flag vs one comma-separated field) and it is not fixable
+> from the window's side; it is documented on the hint the field carries.
 
 | # | divergence | recommendation |
 |---|---|---|

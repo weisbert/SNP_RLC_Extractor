@@ -927,7 +927,12 @@ Five more flags, all inert without --attribute:
       A candidate termination for the sensitivity scan;
       repeatable. "open", "ideal", or a series R/L/C in the same
       spelling the connections table uses -- R=50, L=0.3n,
-      "R=0.5,L=1n", C=100p. With none given the scan is limited
+      "R=0.5,L=1n", C=100p. A comma or a space separates the
+      fields of ONE candidate, so "R=0.5,L=1n" and "R=0.5 L=1n"
+      are the same thing here and in the Attribution window's
+      Candidates field; there is no space inside a VALUE, and
+      "R=5 m" is refused because it would silently mean 5 ohm.
+      With none given the scan is limited
       to "open" and "ideal", the two STRUCTURAL candidates that
       need no judgement about your package. The tool will not
       guess your ball's lead inductance for you.

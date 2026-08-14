@@ -53,6 +53,7 @@ that property.
 from __future__ import annotations
 
 import math
+import re
 import textwrap
 
 import numpy as np
@@ -181,6 +182,21 @@ def _attr_wrap(text: str, indent: str = "  ", width: int = 78,
                          break_on_hyphens=False) or [indent.rstrip()]
 
 
+#: THE candidate grammar's two token rules, shared with the Attribution
+#: window's Candidates field (`pkg_rlc.panels.attrib_gui.parse_candidate`
+#: imports both) so that "the two accept the same tokens" is a fact rather
+#: than a claim two files make separately.
+#:
+#: `_FIELD_SEP`: a comma, whitespace, or any run of the two separates the
+#: R/L/C fields of ONE candidate. The two surfaces had one separator each and
+#: a user moving a working spelling between them hit a wall.
+#: `_IDEAL_WORDS`: every spelling of "a perfect short to the reference". The
+#: union of what the two accepted -- this flag had 'gnd' / 'ground' and the
+#: window had '0', so each refused two words the other took.
+_FIELD_SEP = re.compile(r"[,\s]+")
+_IDEAL_WORDS = ("gnd", "ground", "ideal", "short", "0")
+
+
 def _attr_series_impedance(spec: str, omega: float) -> tuple[complex | None, str]:
     """
     'R=0.5,L=1n' -> (its series impedance at `omega`, a label).  None is OPEN.
@@ -194,13 +210,29 @@ def _attr_series_impedance(spec: str, omega: float) -> tuple[complex | None, str
     removes the element from the network entirely, which is a different -- and
     exact -- thing from stamping 1e12 ohms.
 
-    A comma-separated field with no '=' is REFUSED.  `parse_kv_rlc_params`
-    silently DROPS such a token, so 'R=5,m' would compute 5 ohm where 5
-    milliohm was meant: the same factor-of-1000 trap core's `_rlc_tokens`
-    refuses, arriving here through a different door.  A bare number is refused
+    EITHER SEPARATOR: 'R=0.5,L=1n' and 'R=0.5 L=1n' are the same candidate.
+    They had to be.  This flag split on the comma and the Attribution window's
+    Candidates field splits on whitespace, so the spelling a user had just got
+    working on one surface failed on the other -- the only one of the two
+    grammars' differences that was a trap rather than a presentation choice.
+    `pkg_rlc.panels.attrib_gui.parse_candidate` accepts exactly the same set
+    of tokens; what the two still do NOT share is the list level, and cannot:
+    a candidate list is repeated `--attribute-alt` flags here and one
+    comma-separated field there, so a comma inside ONE candidate is spellable
+    here and is a list separator there.
+
+    A field with no '=' is REFUSED, on either separator.  `parse_kv_rlc_params`
+    silently DROPS such a token, so 'R=5,m' -- and now 'R=5 m' -- would compute
+    5 ohm where 5 milliohm was meant: the same factor-of-1000 trap core's
+    `_rlc_tokens` refuses, arriving here through a different door.  Note what
+    that costs and why it is right: before whitespace was a separator, 'R=5 m'
+    reached `parse_si('5 m')`, which tolerates the space, and quietly meant
+    5 milliohm here while the window refused it by name.  One grammar means one
+    answer, and the refusal is the documented one.  A bare number is refused
     for the neighbouring reason -- '50' does not say whether it is ohms,
     henries or farads, and guessing would be silently wrong rather than loudly
-    wrong.
+    wrong.  '0' is not that case and is accepted as 'ideal', the window's rule:
+    a zero impedance is a perfect short whatever the unit would have been.
     """
     raw = (spec or "").strip()
     if not raw:
@@ -208,16 +240,18 @@ def _attr_series_impedance(spec: str, omega: float) -> tuple[complex | None, str
     low = raw.lower()
     if low == "open":
         return None, "open"
-    if low in ("gnd", "ground", "ideal", "short"):
+    if low in _IDEAL_WORDS:
         return 0j, "ideal"
-    fields = [t.strip() for t in raw.split(",") if t.strip()]
+    fields = [t for t in _FIELD_SEP.split(raw) if t]
     bad = [t for t in fields if "=" not in t]
     if bad:
         raise ValueError(
             f"'{raw}': field(s) {', '.join(repr(b) for b in bad)} carry no "
             "'='. A candidate termination is 'open', 'ideal', or R=/L=/C= "
-            "fields separated by commas -- 'R=50', 'L=0.3n', 'R=0.5,L=1n', "
-            "'C=100p'. A bare number is refused because it does not say "
+            "fields separated by commas or spaces -- 'R=50', 'L=0.3n', "
+            "'R=0.5,L=1n', 'R=0.5 L=1n', 'C=100p'. There must be no space "
+            "INSIDE a value: 'R=5 m' would silently mean 5 Ohm, not 5 mOhm. "
+            "A bare number is refused because it does not say "
             "whether it means ohms, henries or farads")
     try:
         params = parse_kv_rlc_params(fields)
@@ -225,6 +259,18 @@ def _attr_series_impedance(spec: str, omega: float) -> tuple[complex | None, str
         # parse_kv_rlc_params names the offending KEY but not the spec it came
         # from, and a repeatable flag can carry six of them.
         raise ValueError(f"'{raw}': {e}") from None
+    if omega == 0.0 and math.isfinite(params["C"]) and params["C"] != 0.0:
+        # A SERIES CAPACITOR AT DC IS AN OPEN, and this is the one place the
+        # two surfaces disagreed about a number rather than about a spelling.
+        # `y_series_rlc` computes 1/(1j*omega*C) = inf here, so Z is nan and y
+        # is nan -- which fell into the non-finite branch below and came back
+        # as a PERFECT SHORT, i.e. 0 ohms where the answer is infinite, the
+        # widest a wrong answer can be. The window has always returned an open
+        # for this (`parse_candidate`'s `omega == 0.0` branch) and it is right.
+        # Reachable: every composed sweep keeps its 0 Hz point, so `--freq 0`
+        # with a 'C=' candidate lands here. Elsewhere the two expressions agree
+        # to 2.22e-16 -- see CLAUDE.md, "The two attribution reports".
+        return None, ",".join(fields)
     with np.errstate(divide="ignore", invalid="ignore"):
         y = complex(np.asarray(y_series_rlc(**params)(np.array([omega])))[0])
     label = ",".join(fields)

@@ -701,6 +701,80 @@ class TestAlternatives(unittest.TestCase):
                 else:
                     self.assertAlmostEqual(abs(alt.z - want), 0.0, places=12)
 
+    def test_a_space_separates_fields_exactly_as_a_comma_does(self):
+        """The window's spelling has to work here, and mean the same thing.
+
+        This flag split on the comma and the Attribution window's Candidates
+        field splits on whitespace, so a spelling a user had just got working
+        on one surface failed on the other -- the only one of the refactor's
+        seven CLI/GUI divergences that was a trap rather than a presentation
+        choice.
+
+        Mutation: put `raw.split(",")` back and 'R=0.5 L=1n' dies inside
+        parse_si with "could not convert string to float: '0.5 L=1'".
+        """
+        om = engine_context().omega
+        want = ex._attr_series_impedance("R=0.5,L=1n", om)
+        for spelling in ("R=0.5 L=1n", "R=0.5, L=1n", "R=0.5   L=1n"):
+            with self.subTest(spelling):
+                self.assertEqual(ex._attr_series_impedance(spelling, om), want)
+        # The LABEL is normalised to this surface's own spelling, which is
+        # what keeps every pre-existing comma spec byte-identical in the
+        # report and in the CSV.
+        self.assertEqual(want[1], "R=0.5,L=1n")
+
+    def test_a_space_inside_a_VALUE_is_still_refused_on_either_separator(self):
+        """Splitting on both must not rescue 'R=5 m' into 'R=5' + a dropped 'm'.
+
+        That is core's factor-of-1000 trap: `parse_kv_rlc_params` DROPS a
+        token with no '=', so the answer would be 5 ohm where 5 milliohm was
+        typed.  It is also the one thing this flag got quietly WRONG before
+        whitespace was a separator: `parse_si` tolerates 'R=5 m' as one field
+        and read it as 5 milliohm, while the window refused the identical
+        string by name.  One grammar, one answer, and the answer is the
+        documented refusal.
+
+        Mutation: drop the no-'=' check, or attach a suffix token to the field
+        in front of it -- either turns a loud refusal into a silent reading.
+        """
+        om = engine_context().omega
+        for spec in ("R=5 m", "R=5,m", "C=1 uF"):
+            with self.subTest(spec):
+                with self.assertRaises(ValueError) as cm:
+                    ex._attr_series_impedance(spec, om)
+                self.assertIn("no '='", str(cm.exception))
+
+    def test_every_word_for_a_perfect_short_is_taken_on_both_surfaces(self):
+        # 'gnd' / 'ground' were CLI-only and '0' was window-only, so each
+        # refused two words the other took.  `_IDEAL_WORDS` is one tuple and
+        # both import it.
+        om = engine_context().omega
+        for word in ("gnd", "ground", "ideal", "short", "0", "IDEAL"):
+            with self.subTest(word):
+                self.assertEqual(ex._attr_series_impedance(word, om),
+                                 (0j, "ideal"))
+
+    def test_a_series_capacitor_at_DC_is_an_OPEN_and_not_a_perfect_short(self):
+        """0 ohms where the answer is infinite -- the widest a value can be wrong.
+
+        `y_series_rlc` evaluates 1/(1j*0*C) as inf, so Z is nan, y is nan, and
+        the non-finite branch read that as a PERFECT SHORT.  Reachable: every
+        composed sweep keeps its 0 Hz point, so `--freq 0` with a 'C='
+        candidate lands here.  The window has always answered 'open'.
+
+        Mutation: remove the omega == 0 guard and the assertion below reads
+        0j -- a candidate that removes the element becoming one that shorts it.
+        """
+        for spec in ("C=100p", "R=0.5,C=100p", "R=0.5,L=1n,C=100p"):
+            with self.subTest(spec):
+                z, _label = ex._attr_series_impedance(spec, 0.0)
+                self.assertIsNone(z)
+        # No capacitor: DC is still an ordinary evaluation, and R=L=0 is still
+        # the perfect short it always was.
+        self.assertEqual(ex._attr_series_impedance("R=0.5,L=1n", 0.0)[0],
+                         complex(0.5, 0.0))
+        self.assertEqual(ex._attr_series_impedance("R=0,L=0", 0.0)[0], 0j)
+
     def test_the_SI_suffix_M_is_Mega_here_too(self):
         # A repo-wide invariant: 'M' is Mega, 'm' is milli.  The CLI reaches it
         # through core's parse_si, so this pins that it did not grow a private

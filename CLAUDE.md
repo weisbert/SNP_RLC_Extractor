@@ -2098,12 +2098,51 @@ and `tests/fixtures/attrib_reference/` pins the window's, both byte for byte.
   to twelve); `CSV_FIELDS` / `csv_records` are still the window's, because the
   two files have different COLUMNS — it was only ever the float that was
   duplicated.
-- **KNOWN, NOT FIXED — two candidate grammars.** `--attribute-alt` splits on
-  COMMA (`R=0.5,L=1n`, via `_attr_series_impedance` and `y_series_rlc`); the
-  window's Candidates field splits on WHITESPACE (`R=0.5 L=1n`, via
-  `parse_candidate`, building `R + jwL + 1/(jwC)` directly). Both refuse a
-  token with no `=` for the same measured `R=5 m` reason, and the two
-  expressions are not obliged to agree at `omega == 0`.
+- **FIXED — ONE CANDIDATE GRAMMAR: both separators, both word sets, on both
+  sides.** `--attribute-alt` split on COMMA (`R=0.5,L=1n`) and the window's
+  Candidates field split on WHITESPACE (`R=0.5 L=1n`), so a spelling a user
+  had just got working on one surface failed on the other — the only one of
+  the seven divergences that was a TRAP rather than a presentation choice.
+  Both now take `[,\s]+` between the fields of one candidate, through
+  `_FIELD_SEP`, and both take every word for a perfect short through
+  `_IDEAL_WORDS` (`gnd` / `ground` were CLI-only, `0` was window-only). Both
+  constants live in `pkg_rlc.present.attrib_report` and the window IMPORTS
+  them, so "the two accept the same tokens" is one object and not two claims.
+- **The refusal survived the widening, and that was the risk.** A token with
+  no `=` is still refused on either separator, because `parse_kv_rlc_params`
+  DROPS it — `R=5 m` would mean 5 Ω where 5 mΩ was typed, core's `_rlc_tokens`
+  trap through a different door. **Note what that cost the CLI and why it is
+  right:** with comma-only splitting, `R=5 m` was ONE field and `parse_si`
+  tolerates the space, so the flag quietly meant 5 mΩ while the window refused
+  the identical string by name. Now both refuse it. That is the one spelling
+  this change takes away, and `tests/fixtures/cli_reference/attr_alt_bad_spacing`
+  moved from a full report to a refusal because of it — the case was NAMED for
+  a trap it did not actually have.
+- **WHAT IS STILL NOT SHARED IS THE LIST LEVEL, and it cannot be.**
+  `--attribute-alt` is repeated once per candidate; the Candidates field holds
+  the whole list in one string with the comma between entries. So
+  `R=0.5,L=1n` is ONE candidate on the command line and TWO in that field.
+  It is not fixable from the window's side: the shipped default value of the
+  field is `"open, ideal"`, so a comma that stopped separating candidates
+  would break that and every saved session. What the reader gets instead is
+  the READING — one Sensitivity row per candidate, labelled with what was
+  parsed — and `CANDIDATE_HINT`, which now spends its middle on
+  `comma between candidates, space inside one (R=0.5 L=1n)`.
+- **The two expressions were MEASURED, because a converged grammar over
+  divergent values would be the worse fix.** The CLI goes through
+  `y_series_rlc` (`Z = R + jwL + 1/(jwC)`, then `1/Z`, then `1/y`) and the
+  window builds `Z` directly. Over 14 specs x DC + 41 points from 1 MHz to
+  10 GHz the worst relative difference is **2.461e-16 — about one ulp** — and
+  every open/short verdict is identical, so they are two spellings of one
+  formula and were left as two. **Except at DC, where they did not agree and
+  the CLI was wrong**: `1/(1j*0*C)` is `inf`, so `Z` was `nan`, `y` was `nan`,
+  and the non-finite branch returned a PERFECT SHORT — 0 Ω where a series
+  capacitor at DC is an OPEN, the widest a value can be wrong. Reachable:
+  every composed sweep keeps its 0 Hz point, so `--freq 0` with a `C=`
+  candidate landed there. `_attr_series_impedance` now returns OPEN for it,
+  which is what `parse_candidate` always did.
+  `test_attrib_window.TestCandidates.test_the_two_impedance_expressions_agree_across_the_band`
+  re-measures the whole sweep and is the guard on both halves.
 - **The window's own formatters could not move here, and matplotlib is why.**
   `sweep_picture` / `si_tick` / `_si_formatter` / `sweep_caption` need
   `matplotlib.ticker`, and this module is on the CLI's import path — moving
