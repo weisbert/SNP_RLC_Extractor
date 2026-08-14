@@ -599,7 +599,7 @@ above 1e-3        the alarm threshold: non-reciprocal or non-passive EM data, an
                   setup that is unphysical (see the end of section 8.4)
 ```
 
-`1e-3` is `pkg_rlc_core.RECIPROCITY_WARN`, imported by both the GUI results pane and the
+`1e-3` is `pkg_rlc.physics.core.RECIPROCITY_WARN`, imported by both the GUI results pane and the
 `--cli` report so the same file cannot get two different verdicts.
 
 Caveat: the normalisation is a single global `max abs(Z_off)`, so with `G >= 3` a strongly
@@ -843,8 +843,8 @@ section is about taking that number apart: of the `Z_ab` that came out, how much
 and how much is the grounding you assumed? And what would it have been under a different
 assumption?
 
-The implementation is `pkg_rlc_attrib.py`, which imports `pkg_rlc_core` and nothing else from
-the repo — the same acyclic relationship `pkg_rlc_plot` has — driven from the CLI by
+The implementation is `pkg_rlc/physics/attrib.py`, which imports `pkg_rlc.physics.core` and nothing else from
+the repo — the same acyclic relationship `pkg_rlc.widgets.plot` has — driven from the CLI by
 `--attribute VICTIM,AGGRESSOR` and its flag group (`--mode coupling` only; there is no GUI
 surface). The engineering rationale, the measurements behind every design rule, and what was
 deliberately left out are in `docs/design_port_attribution.md`. This section is the
@@ -1637,7 +1637,7 @@ a port changes `Y` itself and needs a new EM solve.
 
 ## 14. Composition — several files as one network
 
-This section is the maths behind `--compose` (`pkg_rlc_compose.py`). It is short, because
+This section is the maths behind `--compose` (`pkg_rlc/physics/compose.py`). It is short, because
 almost all of it is the existing pipeline; the parts that are *not* short are the two places
 where the obvious construction is silently wrong.
 

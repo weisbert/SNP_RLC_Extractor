@@ -15,9 +15,9 @@ pkg_rlc_extractor/
 ├── CLAUDE.md                  # Project conventions for Claude Code
 ├── README.md                  # User documentation with theory & usage
 ├── requirements.txt           # matplotlib, numpy
-├── pkg_rlc_core.py            # Touchstone parser, S→Y, Z computation, RLC+Q extraction
-├── pkg_rlc_plot.py            # Matplotlib plot panel with interactive features
-├── pkg_rlc_gui.py             # Main Tkinter GUI with trace/file management
+├── pkg_rlc/physics/core.py            # Touchstone parser, S→Y, Z computation, RLC+Q extraction
+├── pkg_rlc/widgets/plot.py            # Matplotlib plot panel with interactive features
+├── pkg_rlc/frontend/app.py             # Main Tkinter GUI with trace/file management
 ├── pkg_rlc_extractor.py       # Entry point (GUI + CLI modes)
 ├── tests/
 │   ├── test_core.py           # Unit tests for parser, S→Y, Schur, RLC
@@ -614,4 +614,4 @@ Why:     Measure driving-point impedance with realistic source/load termination.
   - `pandas` just to write a CSV — not acceptable
   - `scikit-rf` just to parse Touchstone — not acceptable (we need custom control)
 
-Build this project file by file, starting with `pkg_rlc_core.py`, then `pkg_rlc_plot.py`, then `pkg_rlc_gui.py`, then `pkg_rlc_extractor.py`, then tests, then documentation.
+Build this project file by file, starting with `pkg_rlc/physics/core.py`, then `pkg_rlc/widgets/plot.py`, then `pkg_rlc/frontend/app.py`, then `pkg_rlc_extractor.py`, then tests, then documentation.

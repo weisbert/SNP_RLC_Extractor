@@ -305,8 +305,8 @@ Beside the modes there is one **post-processing layer**, which is not a mode and
 
 | Layer | Module | Surface | What it answers |
 |-------|--------|---------|-----------------|
-| Port attribution | `pkg_rlc_attrib.py` | **Analyze → Attribution…** (`pkg_rlc_attrib_gui.py`), or `--attribute` | Of the `Z_ab` a mode just produced, how much is the bare EM coupling and how much is each termination you declared — and what the answer would be if any of them were different. Exact both ways. See [Port attribution](#port-attribution-where-a-coupling-number-comes-from). |
-| Cold-start port screen | `pkg_rlc_attrib.py` | `--cold-start` (CLI only) | Which ports matter *before* a spec exists. A bracket, a two-column ranking of every undeclared port, a pair scan, and a greedy cumulative curve — all from **all-open**, all exact. See [Cold start](#cold-start-which-ports-matter-before-you-have-a-spec). |
+| Port attribution | `pkg_rlc/physics/attrib.py` | **Analyze → Attribution…** (`pkg_rlc/panels/attrib_gui.py`), or `--attribute` | Of the `Z_ab` a mode just produced, how much is the bare EM coupling and how much is each termination you declared — and what the answer would be if any of them were different. Exact both ways. See [Port attribution](#port-attribution-where-a-coupling-number-comes-from). |
+| Cold-start port screen | `pkg_rlc/physics/attrib.py` | `--cold-start` (CLI only) | Which ports matter *before* a spec exists. A bracket, a two-column ranking of every undeclared port, a pair scan, and a greedy cumulative curve — all from **all-open**, all exact. See [Cold start](#cold-start-which-ports-matter-before-you-have-a-spec). |
 
 ### Mode 4 is retired: VDD ports go into the GND field
 
@@ -438,7 +438,7 @@ at 1 GHz. At the tank frequency — where the budget lives — they agree.
 The loop above assumes the extracted `M` is a property of the layout. It is not, entirely.
 The same two coils out of the same EM solve, extracted twice, gave `|M| = 1.71 pH` and
 `|M| = 3.44 pH` — **6.07 dB apart**, both runs correct. What differed was the grounding
-assumption, and nothing on screen said so. `pkg_rlc_attrib.py` is the layer that says so.
+assumption, and nothing on screen said so. `pkg_rlc/physics/attrib.py` is the layer that says so.
 
 It answers three questions about **one frequency of one spec**. They are numbered in the order
 they were built, not the order you ask them — on an unfamiliar file **Q0 is first**:
@@ -697,15 +697,15 @@ Measured on a 153-port package export at one frequency, 151 candidates:
 
 ### Running it — from Python
 
-`pkg_rlc_attrib.py` imports `pkg_rlc_core` and nothing else, so it is usable directly against
+`pkg_rlc/physics/attrib.py` imports `pkg_rlc.physics.core` and nothing else, so it is usable directly against
 any `TerminationSet` from any mode — `build_terminations_coupling`, `build_terminations_rows`
 (the Mode 5 tables) or `parse_custom_termination_text` (the DSL). From the repo root:
 
 ```python
 import numpy as np
-from pkg_rlc_core import (parse_touchstone, s_to_y, parse_mport_spec,
+from pkg_rlc.physics.core import (parse_touchstone, s_to_y, parse_mport_spec,
                           build_terminations_coupling)
-from pkg_rlc_attrib import build_context, decompose, format_decomposition
+from pkg_rlc.physics.attrib import build_context, decompose, format_decomposition
 
 d = parse_touchstone("tests/fixtures/diff_pair_4port.s4p")
 Y = s_to_y(d.s, d.z0)
@@ -875,7 +875,7 @@ give bit-identical answers. The set is one node by then, so it does not matter w
 it carries the inductor. In the connection table that is one `short` row with the whole
 ground range in its single **Port** cell and the name in **Net**, plus one `rlc_gnd` row.)
 Verified against `compute_z_matrix` with no attribution code in the path, and separately
-against `pkg_rlc_attrib`'s dense `termination_impedance_shared_return` builder, agreeing to
+against `pkg_rlc.physics.attrib`'s dense `termination_impedance_shared_return` builder, agreeing to
 `3.2e-13` relative.
 
 What you must **not** write is `3,4 lumped_to_gnd L=1n` after the short. Once those ports are
@@ -1072,28 +1072,55 @@ SNP_RLC_Extractor/
   CLAUDE_CODE_PROMPT.md      Authoritative spec
   requirements.txt           numpy (hard), matplotlib (GUI only)
   VERSION                    Commit stamp, filled in by the red-zone packer
-  pkg_rlc_core.py            Touchstone parser, S->Y, termination model + DSL, Schur,
-                             compute_z / compute_z_matrix, RLC + coupling extraction, fits
-  pkg_rlc_attrib.py          Port attribution: splits one Z_ab into the bare EM coupling
-                             plus one term per declared termination, answers the
-                             exact what-if, and carries the four-step cold-start port
-                             screen. Imports pkg_rlc_core only (acyclic)
-  pkg_rlc_attrib_gui.py      The Attribution window (Analyze -> Attribution...): a
-                             modeless Toplevel over pkg_rlc_attrib. pkg_rlc_gui holds
-                             only the menu / right-click / refresh hooks
-  pkg_rlc_compose.py         Several .sNp files as ONE network: block-diagonal stack,
-                             common frequency axis, cross-file links, the mandatory
-                             reference-node check, pre-reduction and export.
-                             Imports pkg_rlc_core only (acyclic)
-  pkg_rlc_plot.py            Matplotlib plot panel with M / V / Delete / drag features
-                             (R, L, C, |Z|, Re, Im, Q, k subplots)
-  pkg_rlc_gui.py             Tkinter GUI with file/trace management, and the
-                             JSON session format (Save / Load / Restore Config)
-  pkg_rlc_help.py            In-app Help window (one tab per mode + syntax + examples)
-  pkg_rlc_extractor.py       Entry point (GUI + CLI), incl. the --attribute and
-                             --cold-start reports
+  pkg_rlc_extractor.py       Entry point (GUI + CLI). A 44-line shim; the command
+                             line itself is pkg_rlc/frontend/cli.py
   reduce_snp.py              Standalone CLI: shrink a big .sNp to a few ports
   deploy.sh                  Red-zone update entry point (top level by design)
+  pkg_rlc/                   ONE SUBPACKAGE PER LAYER. A module may import from its
+                             own layer or a lower one; upward is the failure, and
+                             tests/test_layering.py is the gate that says so
+    physics/                 L0  arrays and physics. No Tk, no App, no widgets
+      touchstone.py          Reading a file, and saying what is wrong with it
+      spec.py                What the user DECLARED: terminations, rows, roles, DSL
+      solve.py               The arithmetic: S<->Y, Schur, extraction, fitting
+      core.py                A FACADE over the three above, and the module to keep
+                             importing from unless you are inside one of them
+      compose.py             Several .sNp files as ONE network: block-diagonal stack,
+                             common frequency axis, cross-file links, the mandatory
+                             reference-node check, pre-reduction and export
+      attrib.py              Port attribution: splits one Z_ab into the bare EM
+                             coupling plus one term per declared termination, answers
+                             the exact what-if, and carries the four-step cold-start
+                             port screen. Imports core only (acyclic)
+    model/                   L1  the shared data model, and the spec logic over it
+      trace.py               TraceConfig / FileEntry / SolveNetwork, the signatures,
+                             the frequency snap and the whole run record
+      validate.py            What a spec SAYS, what it will DO, what is wrong with it
+    services/                L2  services over the model
+      session.py             The JSON session file, as a pure dict <-> model trip
+      run.py                 What a Calculate actually RUNS
+    present/                 L3  turning a result into text
+      report.py              The three results views and every formatter under them
+      csv.py                 The CSV export blocks
+      attrib_report.py       The attribution report as text, for both front ends
+      conntable.py           The connections table's shape and column budget
+      help.py                In-app Help window (prose lives in docs/help/*.md)
+    widgets/                 L4  generic Tk widgets that know nothing about this app
+      widgets.py             PlaceholderEntry, RowTable, ReflowRow, the palette
+      plot.py                Matplotlib plot panel with M / V / Delete / drag
+                             (R, L, C, |Z|, Re, Im, Q, k subplots)
+    panels/                  L5  app-specific windows and panels
+      panels_files.py        The Loaded Files section
+      panels_traces.py       The Traces section
+      panels_results.py      The Results pane
+      panels_editor.py       The editor
+      files_gui.py           The "Files in this trace..." window
+      attrib_gui.py          The Attribution window (Analyze -> Attribution...):
+                             a modeless Toplevel over physics/attrib.py
+    frontend/                L6  the App itself and the argv entry point
+      app.py                 Tkinter GUI: file / trace management, Calculate, menus
+      cli.py                 The argparser, the refusals, the CSV writers, the
+                             report drivers, incl. --attribute and --cold-start
   tests/
     test_core.py
     test_coupling.py         Mode 6: probe pairs, Z matrix, M / k / C_c / M-over-L
@@ -1115,7 +1142,7 @@ SNP_RLC_Extractor/
                              the frequency plan, the pre-reduction, the export
     test_compose_cli.py      The composition command line end to end, incl. the
                              composed-network attribution baseline
-    test_attrib_composed.py  The composed-network gauge inside pkg_rlc_attrib
+    test_attrib_composed.py  The composed-network gauge inside pkg_rlc.physics.attrib
     test_golden_regression.py  Bit-exact replay of the pre-coupling behaviour
     test_port_parser.py
     test_content_sniffer.py
@@ -1125,7 +1152,7 @@ SNP_RLC_Extractor/
     _golden_capture.py       Script (not a test) that (re)builds the golden .npz
   docs/
     theory.md                Math, circuit diagrams, mode derivations, attribution
-    design_port_attribution.md  Why pkg_rlc_attrib.py is shaped the way it is
+    design_port_attribution.md  Why pkg_rlc/physics/attrib.py is shaped the way it is
   deploy/
     pack.ps1                 Windows: build the red-zone package
     doctor.sh                Red zone: what can this box actually run?

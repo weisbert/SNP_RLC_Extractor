@@ -1,4 +1,4 @@
-# Design note — port attribution (`pkg_rlc_attrib.py`)
+# Design note — port attribution (`pkg_rlc/physics/attrib.py`)
 
 Status: **all five stages shipped** — the engine, the sensitivity and Möbius
 layer, the CLI report, the `Toplevel` (§13), and the cold-start screen (§14).
@@ -10,8 +10,8 @@ history. Every number quoted below was reproduced in this repo against
 `tests/fixtures/` unless it is explicitly attributed to the user's own
 (not-in-repo) package file.
 
-The module imports `pkg_rlc_core` and nothing else from the repo — the same
-acyclic relationship `pkg_rlc_plot` has (`pkg_rlc_plot.py` imports
+The module imports `pkg_rlc.physics.core` and nothing else from the repo — the same
+acyclic relationship `pkg_rlc.widgets.plot` has (`pkg_rlc/widgets/plot.py` imports
 `format_si` from core; core imports nothing back, and the comment above that
 import says so).
 
@@ -50,7 +50,7 @@ the answer by 6 dB is the reduction assumption: `compute_z_matrix` returns the
 grounded is left **open**, and that convention is stated once in
 `docs/theory.md` §8.5 and nowhere on the screen. The results pane prints a
 coupling block headed `M`, `k`, `C_c`, `M/L_a`, `M/L_b`
-(`pkg_rlc_gui.py::_format_coupling_block`) with no field anywhere in it that
+(`pkg_rlc/frontend/app.py::_format_coupling_block`) with no field anywhere in it that
 names the assumption — no indication that a different, equally defensible
 spelling of the ground balls would have printed 3.44 pH instead of 1.71 pH.
 Today the only way to discover the sensitivity is to type a different spec and
@@ -69,7 +69,7 @@ Two questions follow, and they need one piece of algebra between them:
 
 One extra layer, sitting beside `compute_z_matrix`, not inside it.
 
-`pkg_rlc_core.py::compute_z_matrix` stays untouched: it is pinned bit-for-bit
+`pkg_rlc/physics/core.py::compute_z_matrix` stays untouched: it is pinned bit-for-bit
 by `tests/fixtures/golden_legacy.npz`, its two `G == 1` branches in step 5f
 keep the historical floating-point expressions character-for-character, and it
 is the *authoritative* value of `Z_ab` in everything below. The attribution
@@ -87,7 +87,7 @@ Naming first, because one collision here is a real bug source.
 
 > **The baseline impedance matrix is `Zbase`, never `Z0`.** `Z0` already means
 > the Touchstone reference impedance throughout this repo —
-> `pkg_rlc_core.DEFAULT_Z0`, `TouchstoneData.z0`, `s_to_y(s, z0)`. A second
+> `pkg_rlc.physics.core.DEFAULT_Z0`, `TouchstoneData.z0`, `s_to_y(s, z0)`. A second
 > meaning for the same symbol, in a module whose whole job is impedance
 > arithmetic, is a defect waiting to happen.
 
@@ -237,7 +237,7 @@ The user's real package file has reciprocity error **3.41e-10** —
 about 1000x the residual this feature advertises (§5.5), and well above the
 `1e-16 … 1e-13` "healthy" band `docs/theory.md` §8.10 documents. The tool
 already treats reciprocity as a measured health check with its own threshold
-(`pkg_rlc_core.RECIPROCITY_WARN = 1e-3`, imported by both the GUI
+(`pkg_rlc.physics.core.RECIPROCITY_WARN = 1e-3`, imported by both the GUI
 and the CLI so one file cannot get two verdicts). A new layer that *silently
 assumes* the property the tool elsewhere *measures and reports* would
 contradict its own product.
@@ -334,8 +334,8 @@ at first.
 
 The fallback is automatic and introduces **no new user concept**: SVD `Ybase`,
 partition the elements by whether `u_e` lies in `range(Ybase)` using core's
-existing `pkg_rlc_core.PROBE_RANGE_TOL` (`= sqrt(PINV_RCOND)` — the same test
-`pkg_rlc_core.py::_probe_impedance` already applies to probe vectors), fold
+existing `pkg_rlc.physics.core.PROBE_RANGE_TOL` (`= sqrt(PINV_RCOND)` — the same test
+`pkg_rlc/physics/core.py::_probe_impedance` already applies to probe vectors), fold
 the **out-of-range** elements INTO the baseline so `Ybase'` is nonsingular,
 Woodbury the rest, and **report by name**:
 
@@ -384,15 +384,15 @@ plausible sentence, it is wrong, and it sends the user to look at their
 layout instead of at row 7 of their table.
 
 So: test **structurally on integer port-index sets first** — the elements are
-built from `pkg_rlc_core.py::parse_port_range` output, so duplicate and
+built from `pkg_rlc/physics/core.py::parse_port_range` output, so duplicate and
 subset relationships are exact integer facts, not floating-point ones. Name
-the offending elements, using the provenance `pkg_rlc_core.py::row_sources`
+the offending elements, using the provenance `pkg_rlc/physics/core.py::row_sources`
 already produces for the Ports & Roles window. Then, and only then, look at
 `cond(G)`.
 
 Also drop elements whose `u` is the **zero vector** after probe-side merging.
 These are already inert and core already knows the class:
-`pkg_rlc_core.py::inert_lumped_messages` reports exactly this — a
+`pkg_rlc/physics/core.py::inert_lumped_messages` reports exactly this — a
 `lumped_between` whose two ports land on the same merged node has its
 `+y, +y, -y, -y` block summed to zero, measured at `5e-12` relative (i.e.
 roundoff) between `R = 20` and `R = 2000`. An element that contributes
@@ -538,7 +538,7 @@ Three orders of magnitude and the wrong sign, from a formula that is *correct*
 for the total.
 
 `C_c` is a first-class output of this tool and is the right reading whenever
-`Im(Z_ab) < 0` (`docs/theory.md` §8.7; `pkg_rlc_core.py::extract_coupling_at_freq`
+`Im(Z_ab) < 0` (`docs/theory.md` §8.7; `pkg_rlc/physics/core.py::extract_coupling_at_freq`
 always computes both). It must therefore still be shown — **as a total only,
 never per term.** The API must **refuse a
 per-term request for a non-decomposable quantity, by name**, in the style of
@@ -576,7 +576,7 @@ bordered-Schur or Sherman–Morrison off the already-factored `H`.
 
 **(b) Group-level joint effect**: a whole connection-table row changed at
 once, as a rank-`|S|` Woodbury update. **The rows already define the groups.**
-`6:1:14 ground` is one `pkg_rlc_core.ConnectionRow` holding nine ports, and
+`6:1:14 ground` is one `pkg_rlc.physics.core.ConnectionRow` holding nine ports, and
 `row_sources` already maps ports back to the row that wrote them. This is
 free.
 
@@ -690,15 +690,15 @@ including the parts that are inconsistent between modes on purpose:
   `compute_z_matrix`'s inner `merge_terms` (signal groups are collected
   first, then `if any(isinstance(t, (Ground, Vdd)) ...) return Ground()`), and
   it is pinned by `tests/test_core.py::TestTerminationPrecedence`.
-- `pkg_rlc_core.py::build_terminations_coupling` **raises** on the same
+- `pkg_rlc/physics/core.py::build_terminations_coupling` **raises** on the same
   overlap, because a probe side is tied together and grounding one of its
   ports grounds the whole side.
-- The DSL is **last-assignment-wins**, and `pkg_rlc_core.py::rows_to_dsl_text`
+- The DSL is **last-assignment-wins**, and `pkg_rlc/physics/core.py::rows_to_dsl_text`
   emits measurement ports **before** connections so that a later `ground` row
   wins — which is what makes a table reproduce a named mode.
 
 Build the baseline's node space by resolving the `TerminationSet` through the
-same path (`pkg_rlc_core.py::resolve_meas_ports`, including the legacy `"B"`
+same path (`pkg_rlc/physics/core.py::resolve_meas_ports`, including the legacy `"B"`
 alias applied by `_normalize_signal`), then classify what is left as elements.
 Do **not** re-derive "which ports are probes" from the row tables.
 
@@ -916,7 +916,7 @@ so, and CLAUDE.md records all three because each was already paid for once.
 scrolls: in the 575 px pane a strip clips from **13 tabs at 100 % font
 scaling and 9 tabs at 150 %**, and the tab that vanishes is the last one. The
 run history already spends that budget deliberately, with two hard caps
-(`pkg_rlc_gui.RUN_TABS_DEFAULT = 8`, `RUN_TABS_HARD_CAP = 12`) chosen for
+(`pkg_rlc.frontend.app.RUN_TABS_DEFAULT = 8`, `RUN_TABS_HARD_CAP = 12`) chosen for
 legibility. An attribution page is not a run — it is a different *question*
 about one run — so it would either consume the run budget or need a second
 axis of tabs inside a strip that has no room for the first.
@@ -925,7 +925,7 @@ axis of tabs inside a strip that has no room for the first.
 was measured at **918 px of controls into a 575 px pane**, and `pack` unmaps
 from the end — so `Im(Z)`, `Q`, `k`, the fullscreen-quantity combobox and the
 `Fullscreen` button were simply not on screen, with no scrollbar and no
-chevron. `pkg_rlc_plot.py::reflow_rows` / `ReflowRow` now wrap instead of
+chevron. `pkg_rlc/widgets/plot.py::reflow_rows` / `ReflowRow` now wrap instead of
 losing the tail, and a wrap costs plot height (29 px at one line, 58 px at
 two). CLAUDE.md's rule on that strip is explicit: *re-measure before
 adding a fourteenth control.* This feature needs a table, not a control.
@@ -939,7 +939,7 @@ focus, so switching tabs either steals focus from the plot or silently breaks
 those keys.
 
 **So: a modeless `Toplevel`, modelled on `PortRolesWindow`**
-(`pkg_rlc_gui.py::PortRolesWindow`, opened by `_on_show_ports`). That window
+(`pkg_rlc/frontend/app.py::PortRolesWindow`, opened by `_on_show_ports`). That window
 already solved the same set of problems and its solutions transfer directly:
 
 - **No `grab_set`.** A modal `Toplevel` that outlives its opener blocks event
@@ -993,11 +993,11 @@ wrong rule is worse than no row.
 | Stage | Content | Verifiable without a human? | Status |
 |---|---|---|---|
 | 0 | This note. Fixture-level verification of §5.1, §5.3, §5.5, §5.9, §5.10 by script | **Yes** | **done** |
-| 1 | `pkg_rlc_attrib.py` core: baseline, elements, `decompose`, reconciliation, return budget, diagnostics (§5.1–5.8, 5.11, 5.12) | **Yes** — round trip against `compute_z_matrix` | **done** |
+| 1 | `pkg_rlc/physics/attrib.py` core: baseline, elements, `decompose`, reconciliation, return budget, diagnostics (§5.1–5.8, 5.11, 5.12) | **Yes** — round trip against `compute_z_matrix` | **done** |
 | 2 | Sensitivity (§5.9) and the Möbius sweep (§5.10), each verified against an honest recompute | **Yes** | **done** |
 | 3 | CLI report — the whole feature is usable headless before any Tk exists | **Yes** | **done** |
-| 4 | The `Toplevel` (§9) | Code yes, look-and-feel no | **done** — `pkg_rlc_attrib_gui.py`, with `tests/test_attrib_window.py` (127, the window in isolation) and `tests/test_attrib_gui_integration.py` (end to end through the real app). What it became, and where it departed from §9, is §13 |
-| 5 | The cold-start screen — which ports matter *before* a spec exists | **Yes** — same closed-form-vs-honest-recompute contract as stage 2 | **done** — in `pkg_rlc_attrib.py`, `tests/test_attrib_coldstart.py` (49) + `tests/test_attrib_cli_coldstart.py` (70). §14 |
+| 4 | The `Toplevel` (§9) | Code yes, look-and-feel no | **done** — `pkg_rlc/panels/attrib_gui.py`, with `tests/test_attrib_window.py` (127, the window in isolation) and `tests/test_attrib_gui_integration.py` (end to end through the real app). What it became, and where it departed from §9, is §13 |
+| 5 | The cold-start screen — which ports matter *before* a spec exists | **Yes** — same closed-form-vs-honest-recompute contract as stage 2 | **done** — in `pkg_rlc/physics/attrib.py`, `tests/test_attrib_coldstart.py` (49) + `tests/test_attrib_cli_coldstart.py` (70). §14 |
 
 Stage 1 must not start before stage 0's script is green on every fixture,
 because §5.3 says the repo's flagship Mode 6 example breaks a naive
@@ -1013,7 +1013,7 @@ say every pixel in the GUI is already spoken for.
 1. **Frequency sweeps of the attribution.** One frequency at a time. The
    decomposition is `O(m^3)` per frequency and the output is a table, not a
    curve; a swept attribution needs a display design this note does not have.
-   (`Trace.aux` and `pkg_rlc_plot.AUX_PLOT_TYPES` are how a swept derived
+   (`Trace.aux` and `pkg_rlc.widgets.plot.AUX_PLOT_TYPES` are how a swept derived
    quantity would reach the plot if that ever changes.)
 2. **Attributing the diagonal.** `Z_aa` decomposes by the identical algebra
    (`a == b`), and it is probably useful, but every worked example and every
@@ -1059,12 +1059,12 @@ say every pixel in the GUI is already spoken for.
 
 ## 13. Stage 4, as built: what the `Toplevel` actually became
 
-`pkg_rlc_attrib_gui.py`, opened from **Analyze → Attribution…** and from the
-Traces right-click. `pkg_rlc_gui.py` holds only hooks — the two menu entries,
+`pkg_rlc/panels/attrib_gui.py`, opened from **Analyze → Attribution…** and from the
+Traces right-click. `pkg_rlc/frontend/app.py` holds only hooks — the two menu entries,
 one line under the coupling block in the Results pane, and the refresh calls of
-§13.6. The module is separate because `pkg_rlc_gui.py` was already 7000+ lines
+§13.6. The module is separate because `pkg_rlc/frontend/app.py` was already 7000+ lines
 and because a separate module let the window and its hooks be written at the
-same time by different hands. `pkg_rlc_gui` imports it; it imports `pkg_rlc_gui`
+same time by different hands. `pkg_rlc.frontend.app` imports it; it imports `pkg_rlc.frontend.app`
 back only from **inside functions**, so the cycle never exists at import time.
 
 §9 argued for a modeless `Toplevel` modelled on `PortRolesWindow` and that is
@@ -1101,7 +1101,7 @@ consequences are worth stating positively, because they are what the table
 actually does:
 
 - Columns are sized from the widest cell **or the header**, whichever is wider
-  — the cursor-readout rule (§ of `pkg_rlc_plot`), because sizing on the values
+  — the cursor-readout rule (§ of `pkg_rlc.widgets.plot`), because sizing on the values
   alone puts a 7-character value under a 5-character heading and throws every
   heading one place off the numbers it names.
 - Only the two **text** columns are capped, and they ellipsise with U+2026. No
@@ -1205,7 +1205,7 @@ report.*
 
 ### 13.9 The sweep canvas: two deliberate departures from the shipped precedent
 
-`pkg_rlc_plot.FullscreenPlotWindow` is the precedent for a second
+`pkg_rlc.widgets.plot.FullscreenPlotWindow` is the precedent for a second
 `FigureCanvasTkAgg` in a `Toplevel`, and it is followed — `Figure()`, never
 `pyplot.figure()`, so no global registry keeps the figure alive after the
 window is destroyed. Two things are done differently:
@@ -1337,7 +1337,7 @@ The rule that came out of it, in the order it matters:
 
 1. **x stays log.**
 2. **y becomes symlog**, per the repo's own sign-crossing convention — but
-   `linthresh` comes from the **endpoint scale**, not from `pkg_rlc_plot`'s
+   `linthresh` comes from the **endpoint scale**, not from `pkg_rlc.widgets.plot`'s
    `1e-6`. These are henries: 1 µH is a thousand times the whole curve above,
    so a fixed `1e-6` puts every sample inside the linear band and symlog
    degenerates into the linear axis it exists to replace.

@@ -8,7 +8,7 @@ name…"), the last commit before the refactor started, and describes the tree a
 
 **Three things are worse this morning than they were last night, and they are
 the price of the rest.** There is more Python in the tree, not less: **+2 524
-lines** outside `pkg_rlc_help.py`, **+7.2%**. There are **26 modules** to
+lines** outside `pkg_rlc/present/help.py`, **+7.2%**. There are **26 modules** to
 navigate instead of 10. `CLAUDE.md` is **937 lines** longer. The win is in
 where the code sits, not in how much of it there is, and §2 states both halves
 with the measurements.
@@ -42,9 +42,9 @@ strongest real effect in the sensitivity table, contradicting the CLI, core's
 own rule and the same file twelve hundred lines up — §4.2.
 
 **The structural work is in, including the piece that was reverted at 01:38.**
-`pkg_rlc_model` (L1) exists and carries the data model; `pkg_rlc_session` and
-`pkg_rlc_run` (L2) landed on top of it; nine of the ten function-level
-back-imports into `pkg_rlc_gui` are gone. §3 says what that cost and what it
+`pkg_rlc.model.trace` (L1) exists and carries the data model; `pkg_rlc.services.session` and
+`pkg_rlc.services.run` (L2) landed on top of it; nine of the ten function-level
+back-imports into `pkg_rlc.frontend.app` are gone. §3 says what that cost and what it
 still does not cover.
 
 ---
@@ -58,43 +58,43 @@ writing this section, not carried forward from an earlier draft.
 
 | module | before | after | note |
 |---|---:|---:|---|
-| `pkg_rlc_gui.py` | 10 954 | **3 220** | **−71%.** Twelve commits took code out of it: four panels (`files`, `traces`, `results`, `editor`) and eight libraries (`conntable`, `report`, `csv`, `widgets`, `validate`, `model`, `session`, `run`). |
-| `pkg_rlc_core.py` | 4 726 | **169** | Now a re-export facade over touchstone / spec / solve. |
+| `pkg_rlc/frontend/app.py` | 10 954 | **3 220** | **−71%.** Twelve commits took code out of it: four panels (`files`, `traces`, `results`, `editor`) and eight libraries (`conntable`, `report`, `csv`, `widgets`, `validate`, `model`, `session`, `run`). |
+| `pkg_rlc/physics/core.py` | 4 726 | **169** | Now a re-export facade over touchstone / spec / solve. |
 | `pkg_rlc_extractor.py` | 4 377 | **3 060** | 13 report sections + 6 duplicated formatters left. |
-| `pkg_rlc_help.py` | 2 745 | **133** | Prose moved to `docs/help/*.md` (10 files, 2 648 lines). |
-| `pkg_rlc_plot.py` | 1 194 | **1 028** | Generic widgets (incl. `ReflowRow`) went to `pkg_rlc_widgets`. |
-| `pkg_rlc_attrib_gui.py` | 4 439 | **4 479** | **+40.** Grew: the ground-model import, and the sensitivity fix with its docstring. |
-| `pkg_rlc_files_gui.py` | 1 487 | **1 501** | **+14.** Grew: eight lazy imports became top-level ones, with the reason written beside them. |
-| `pkg_rlc_attrib.py` | 4 767 | **4 767** | Untouched all night. |
-| `pkg_rlc_compose.py` | 1 861 | **1 861** | Untouched. |
+| `pkg_rlc/present/help.py` | 2 745 | **133** | Prose moved to `docs/help/*.md` (10 files, 2 648 lines). |
+| `pkg_rlc/widgets/plot.py` | 1 194 | **1 028** | Generic widgets (incl. `ReflowRow`) went to `pkg_rlc.widgets.widgets`. |
+| `pkg_rlc/panels/attrib_gui.py` | 4 439 | **4 479** | **+40.** Grew: the ground-model import, and the sensitivity fix with its docstring. |
+| `pkg_rlc/panels/files_gui.py` | 1 487 | **1 501** | **+14.** Grew: eight lazy imports became top-level ones, with the reason written beside them. |
+| `pkg_rlc/physics/attrib.py` | 4 767 | **4 767** | Untouched all night. |
+| `pkg_rlc/physics/compose.py` | 1 861 | **1 861** | Untouched. |
 | `reduce_snp.py` | 1 224 | **1 224** | Untouched (standalone by design). |
 
 New modules, none of which existed at 20:03:
 
 | new module | lines | layer | what it is |
 |---|---:|---|---|
-| `pkg_rlc_spec.py` | 2 050 | L0 | The declaration model and the Mode 5 DSL. |
-| `pkg_rlc_report.py` | 1 596 | L3 | Turning a run into text. |
-| `pkg_rlc_panels_editor.py` | 1 644 | L5 | The editor panel + `StylePicker`. |
-| `pkg_rlc_touchstone.py` | 1 563 | L0 | The parser and its diagnostics. |
-| `pkg_rlc_attrib_report.py` | 1 557 | L3 | The CLI attribution report, as `list[str]`. |
-| `pkg_rlc_validate.py` | 1 351 | L1 | What a spec says, does and gets wrong. |
-| `pkg_rlc_solve.py` | 1 218 | L0 | `compute_z_matrix` and the reduction. |
-| `pkg_rlc_panels_results.py` | 1 115 | L5 | The Results notebook and the run pages. |
-| `pkg_rlc_widgets.py` | 992 | L4 | Generic Tk widgets + the palette. |
-| **`pkg_rlc_model.py`** | **975** | **L1** | **The shared data model — §3.1.** |
-| `pkg_rlc_conntable.py` | 505 | L3 | The connections-table layout vocabulary. |
-| `pkg_rlc_session.py` | 465 | L2 | Save / Load / autosave, as a dict ↔ model round trip. |
-| `pkg_rlc_run.py` | 439 | L2 | The arithmetic half of Calculate. |
-| `pkg_rlc_panels_traces.py` | 388 | L5 | The Traces section + the freeze entries. |
-| `pkg_rlc_panels_files.py` | 273 | L5 | The Files section. |
-| `pkg_rlc_csv.py` | 113 | L3 | The CSV blocks. |
+| `pkg_rlc/physics/spec.py` | 2 050 | L0 | The declaration model and the Mode 5 DSL. |
+| `pkg_rlc/present/report.py` | 1 596 | L3 | Turning a run into text. |
+| `pkg_rlc/panels/panels_editor.py` | 1 644 | L5 | The editor panel + `StylePicker`. |
+| `pkg_rlc/physics/touchstone.py` | 1 563 | L0 | The parser and its diagnostics. |
+| `pkg_rlc/present/attrib_report.py` | 1 557 | L3 | The CLI attribution report, as `list[str]`. |
+| `pkg_rlc/model/validate.py` | 1 351 | L1 | What a spec says, does and gets wrong. |
+| `pkg_rlc/physics/solve.py` | 1 218 | L0 | `compute_z_matrix` and the reduction. |
+| `pkg_rlc/panels/panels_results.py` | 1 115 | L5 | The Results notebook and the run pages. |
+| `pkg_rlc/widgets/widgets.py` | 992 | L4 | Generic Tk widgets + the palette. |
+| **`pkg_rlc/model/trace.py`** | **975** | **L1** | **The shared data model — §3.1.** |
+| `pkg_rlc/present/conntable.py` | 505 | L3 | The connections-table layout vocabulary. |
+| `pkg_rlc/services/session.py` | 465 | L2 | Save / Load / autosave, as a dict ↔ model round trip. |
+| `pkg_rlc/services/run.py` | 439 | L2 | The arithmetic half of Calculate. |
+| `pkg_rlc/panels/panels_traces.py` | 388 | L5 | The Traces section + the freeze entries. |
+| `pkg_rlc/panels/panels_files.py` | 273 | L5 | The Files section. |
+| `pkg_rlc/present/csv.py` | 113 | L3 | The CSV blocks. |
 
 **Totals: 10 modules / 37 774 lines → 26 modules / 37 686 lines**, counting the
 standalone `reduce_snp.py` on both sides.
 
 That headline near-parity is entirely the Help prose leaving Python. Excluding
-`pkg_rlc_help.py` the Python grew: **35 029 → 37 553, i.e. +2 524 lines
+`pkg_rlc/present/help.py` the Python grew: **35 029 → 37 553, i.e. +2 524 lines
 (+7.2%)**. Module docstrings, imports and the re-export blocks rule 2 requires
 are what that buys. `CLAUDE.md` went **3 498 → 4 435 (+937)**.
 
@@ -102,14 +102,14 @@ are what that buys. `CLAUDE.md` went **3 498 → 4 435 (+937)**.
 
 | | at 20:03 | at HEAD |
 |---|---:|---:|
-| function-level `import pkg_rlc_gui` dodges | **10** | **1** |
+| function-level `import pkg_rlc.frontend.app` dodges | **10** | **1** |
 | modules named in `test_layering.LAYERS` that do not exist | 3 (from 00:37) | **0** |
 | `pkg_rlc_*.py` on disk not declared in the layer map | 0 | **0** |
 
 The one remaining back-import is `pkg_rlc_extractor` → `App`, deferred so that
 `--cli` does not pay the tkinter + matplotlib import. Re-measured for this
 rewrite over three fresh processes: `import pkg_rlc_extractor` is 98 / 109 /
-104 ms, and `import pkg_rlc_gui` on top of it adds **245 / 250 / 247 ms**. That
+104 ms, and `import pkg_rlc.frontend.app` on top of it adds **245 / 250 / 247 ms**. That
 is a justified deferral, not a dodge, and `tests/test_layering.py` pins it in
 both directions: adding an eleventh fails, and removing this one fails too
 until `KNOWN_BACK_IMPORTS` moves in the same commit.
@@ -173,9 +173,9 @@ went **up**, because the new modules document their own boundaries.
 
 ## 3. What landed below the frontend, and the lesson of how it nearly did not
 
-### 3.1 `pkg_rlc_model` — what is actually on disk
+### 3.1 `pkg_rlc.model.trace` — what is actually on disk
 
-`pkg_rlc_model.py` is in the tree, **975 lines**, at L1. It carries:
+`pkg_rlc/model/trace.py` is in the tree, **975 lines**, at L1. It carries:
 
 * `FileEntry`, `TraceConfig`, `SolveNetwork` and `_composed_solve_network`;
 * the signature family — `_duplicate_trace_config`, `_config_signature`,
@@ -187,7 +187,7 @@ went **up**, because the new modules document their own boundaries.
 * the whole run record — `RowSnapshot`, `CouplingSnapshot`, `FitSnapshot`,
   `RunSnapshot` and the `_snapshot_*` builders.
 
-It imports `pkg_rlc_core` and `pkg_rlc_validate` and nothing else. No Tk, no
+It imports `pkg_rlc.physics.core` and `pkg_rlc.model.validate` and nothing else. No Tk, no
 matplotlib, no `App`.
 
 ### 3.2 It was built, tested, and thrown away by the orchestration script
@@ -235,7 +235,7 @@ adding an exception:
    (R3-5: two copies of one verdict are two things that can come to disagree),
    so the call could not simply be deleted. Settled by **injection**
    (`fe0ff58`): `_snapshot_reference(tc, *, provenance=None)`, with a
-   three-line wrapper in `pkg_rlc_gui` supplying `reference_provenance`. The
+   three-line wrapper in `pkg_rlc.frontend.app` supplying `reference_provenance`. The
    render stays at L5, the model stores text it was handed, nothing at L1 names
    an L5 module, and **no call site and no test moved**. With no renderer
    supplied the three fields are empty — the same answer a single-file trace
@@ -253,7 +253,7 @@ of the pane, which is the repo's own rule already written in those words.
 ### 3.4 What the model does NOT carry, and it is not an oversight yet
 
 The **freeze family** — `FREEZE_STAMP_FMT`, `freeze_label`, `_freeze_stamp_of`,
-`freeze_refusal`, `_freeze_trace_config` — is still in `pkg_rlc_gui` at L6,
+`freeze_refusal`, `_freeze_trace_config` — is still in `pkg_rlc.frontend.app` at L6,
 even though every one of those is a pure function over a `TraceConfig` with no
 Tk in it. It is reachable by panels only through the `App` alias block, which
 is the same shape the model phase exists to remove. §6 carries it as owed work.
@@ -262,11 +262,11 @@ is the same shape the model phase exists to remove. §6 carries it as owed work.
 
 | module | lines | what landed |
 |---|---:|---|
-| `pkg_rlc_session.py` | 465 | Save Config / Load Config / autosave as a pure dict ↔ model round trip: `session_to_dict`, `session_from_dict`, `trace_to_dict`, `trace_from_dict`, `resolve_session_file`, `SessionError`, `LoadedSession`. A verbatim move; there was never any Tk in it. `pkg_rlc_gui` keeps the file dialogs, reading the widgets into a `controls` dict, and applying a `LoadedSession` onto live traces. |
-| `pkg_rlc_run.py` | 439 | What a Calculate RUNS: `_trace_network`, `_cached_trace_network`, `_trace_namespace`, `_build_termination`, `_collect_mports`, `_reference_checks`, `_calculate_coupling_trace`, `_trace_plot_freqs`, `_empty_run`. `log` / `files` / `cache` are injected rather than reached for. |
+| `pkg_rlc/services/session.py` | 465 | Save Config / Load Config / autosave as a pure dict ↔ model round trip: `session_to_dict`, `session_from_dict`, `trace_to_dict`, `trace_from_dict`, `resolve_session_file`, `SessionError`, `LoadedSession`. A verbatim move; there was never any Tk in it. `pkg_rlc.frontend.app` keeps the file dialogs, reading the widgets into a `controls` dict, and applying a `LoadedSession` onto live traces. |
+| `pkg_rlc/services/run.py` | 439 | What a Calculate RUNS: `_trace_network`, `_cached_trace_network`, `_trace_namespace`, `_build_termination`, `_collect_mports`, `_reference_checks`, `_calculate_coupling_trace`, `_trace_plot_freqs`, `_empty_run`. `log` / `files` / `cache` are injected rather than reached for. |
 
 **What did not land, and it is one thing: `_on_calculate`'s own body** (386
-lines, still in `pkg_rlc_gui`). The plan asked for
+lines, still in `pkg_rlc.frontend.app`). The plan asked for
 `calculate(traces, files, controls, log, cache, only)`. The solve underneath it
 moved; the orchestration did not, and the reason is measured rather than
 asserted. After the solve came out, the body's remaining couplings above L2 are
@@ -278,7 +278,7 @@ therefore take **three injected callables and one injected string, and hand the
 header line and the run-to-run diff back to its caller** — i.e. the report's
 ORDER split across two modules, which is the "two things that can come to
 disagree" failure this repo names everywhere else, arriving inside the fix for
-it. The split that IS honest is now named in `CLAUDE.md`: `pkg_rlc_run` answers
+it. The split that IS honest is now named in `CLAUDE.md`: `pkg_rlc.services.run` answers
 *what is the number*, `_on_calculate` answers *what does the reader see, in
 what order, at what severity*.
 
@@ -298,7 +298,7 @@ These are not refactor mechanics. They are places where the CLI and the GUI
 have been telling users different things about the same data. Comparing the two
 surfaces side by side is something nobody had done before, because until
 tonight the CLI's output existed only as `print` calls to fd 1 with no way to
-capture it; `pkg_rlc_attrib_report` returning `list[str]` and
+capture it; `pkg_rlc.present.attrib_report` returning `list[str]` and
 `tests/fixtures/cli_reference/` are what made the comparison possible at all.
 
 Seven divergences were found. **Two are fixed and five are open**, and the
@@ -371,7 +371,7 @@ byte-for-byte what it always did at both sites.
 
 ### 4.2 FIXED — the Attribution window ranked an unmeasurable row first
 
-`pkg_rlc_attrib_gui.sensitivity_table` and the CLI's
+`pkg_rlc.panels.attrib_gui.sensitivity_table` and the CLI's
 `_attr_print_sensitivity` sort the same list of `SensitivityResult` and sorted
 an UNDEFINED delta to **opposite ends of the table**:
 
@@ -451,7 +451,7 @@ they are product choices and were left for you. Each keeps its recommendation.
 
 | # | divergence | recommendation |
 |---|---|---|
-| 6 | **Two `_e`, at two precisions.** `pkg_rlc_attrib_report._e` writes `%.6e`; `pkg_rlc_attrib_gui._e` writes `%.12e`. Both put a float from the same decomposition into a CSV. | *Pick one, probably `%.12e`* — a CSV is for re-use and 6 digits is lossy. Low urgency. |
+| 6 | **Two `_e`, at two precisions.** `pkg_rlc.present.attrib_report._e` writes `%.6e`; `pkg_rlc.panels.attrib_gui._e` writes `%.12e`. Both put a float from the same decomposition into a CSV. | *Pick one, probably `%.12e`* — a CSV is for re-use and 6 digits is lossy. Low urgency. |
 | 7 | **Two candidate grammars.** `--attribute-alt` splits on **comma** (`R=0.5,L=1n`, via `y_series_rlc`); the window's Candidates field splits on **whitespace** (`R=0.5 L=1n`, building `R + jwL + 1/(jwC)` directly). Both refuse a token with no `=` for the same measured `R=5 m` reason, but the two expressions are not obliged to agree at `omega == 0`. | *Accept both separators on both sides.* This is a user-facing trap — the spelling that works in one place silently fails in the other. |
 
 ### 4.4 Duplication that was removed before it could diverge
@@ -518,8 +518,8 @@ two things that can come to disagree about a number:
 
 ## 6. What is still owed
 
-**In the tree and finished:** `pkg_rlc_model` (L1), `pkg_rlc_session` (L2),
-`pkg_rlc_run` (L2). Nothing from the plan is now blocked on a missing module.
+**In the tree and finished:** `pkg_rlc.model.trace` (L1), `pkg_rlc.services.session` (L2),
+`pkg_rlc.services.run` (L2). Nothing from the plan is now blocked on a missing module.
 
 **Not done, in descending order of how much it would buy:**
 
@@ -536,12 +536,12 @@ two things that can come to disagree about a number:
   `_config_signature`, `_draw_signature`) is still there, and **its comment is
   now stale**: it says these "cannot go there until [the model types] do", and
   they have. **Three of the seven** — `_duplicate_trace_config`,
-  `_config_signature`, `_draw_signature` — are already in `pkg_rlc_model` and
+  `_config_signature`, `_draw_signature` — are already in `pkg_rlc.model.trace` and
   could be imported directly by the panels today. `_snapshot_row` /
   `_snapshot_block` must stay wrappers here (they are what supply
   `provenance=`), and `freeze_refusal` / `_freeze_trace_config` need the freeze
   family to move first.
-* **`pkg_rlc_panels_results.RunTab.run: "RunSnapshot"` is still an unresolvable
+* **`pkg_rlc.panels.panels_results.RunTab.run: "RunSnapshot"` is still an unresolvable
   annotation**, and its module docstring still says `RunSnapshot` "could not
   follow… still L6". `RunSnapshot` is at L1 now. Measured: `get_type_hints` on
   `RunTab` raises `NameError`; the other three panels are clean. One import

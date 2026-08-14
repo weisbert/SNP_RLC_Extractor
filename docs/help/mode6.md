@@ -430,7 +430,7 @@ gave |M| = 1.71 pH and |M| = 3.44 pH. Both runs were correct. What
 differed was the grounding assumption -- and nothing on the screen
 said so.
 
-`pkg_rlc_attrib.py` answers three questions about ONE frequency of
+`pkg_rlc/physics/attrib.py` answers three questions about ONE frequency of
 ONE spec. They are numbered in the order they were built, not the
 order you ask them -- Q0 is where a new job starts:
 

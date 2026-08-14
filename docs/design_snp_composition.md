@@ -6,8 +6,8 @@
 > | 提交 | 内容 |
 > |---|---|
 > | `5f3573e` | 连接表按 Kind 变行形、网络名、合并节点并联印记的拒绝、页脚变路由 |
-> | `f940c78` | `pkg_rlc_compose.py`：多文件组装、频率对齐、参考节点自检、跨文件连接进归因基线、CLI |
-> | `bfb3881` | 双文件 GUI：`TraceConfig` 多文件 schema、默认作用域 + `F1`/`F2` 别名、`pkg_rlc_files_gui.py` |
+> | `f940c78` | `pkg_rlc/physics/compose.py`：多文件组装、频率对齐、参考节点自检、跨文件连接进归因基线、CLI |
+> | `bfb3881` | 双文件 GUI：`TraceConfig` 多文件 schema、默认作用域 + `F1`/`F2` 别名、`pkg_rlc/panels/files_gui.py` |
 >
 > **仍未做**（按价值排序）：
 > 1. 扫描图的 x 量程仍扫到 100 µH，对封装地引线不现实——极点落在 96.5 nH，
@@ -41,7 +41,7 @@
 
 用户用网表（节点 + 器件）说话，不是"逐端口端接清单"。本体论以前者为准。
 
-排期：等 attribution-window-polish 落地后开工（它正在改 `pkg_rlc_gui.py` / `CLAUDE.md` / `docs/`，现在动会冲突）。
+排期：等 attribution-window-polish 落地后开工（它正在改 `pkg_rlc/frontend/app.py` / `CLAUDE.md` / `docs/`，现在动会冲突）。
 
 ---
 

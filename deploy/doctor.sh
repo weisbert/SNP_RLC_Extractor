@@ -140,9 +140,9 @@ for py in "${CANDIDATES[@]}"; do
     printf '        NOTE: this is a virtualenv, not a system interpreter.\n'
   fi
 
-  printf '     %s import pkg_rlc_core\n' "$(mark "$(getval IMP_pkg_rlc_core "$out")")"
+  printf '     %s import pkg_rlc.physics.core\n' "$(mark "$(getval IMP_pkg_rlc_core "$out")")"
   printf '     %s import reduce_snp\n'   "$(mark "$(getval IMP_reduce_snp "$out")")"
-  printf '     %s import pkg_rlc_plot\n' "$(mark "$(getval IMP_pkg_rlc_plot "$out")")"
+  printf '     %s import pkg_rlc.widgets.plot\n' "$(mark "$(getval IMP_pkg_rlc_plot "$out")")"
   for k in IMP_pkg_rlc_core IMP_reduce_snp; do
     if [[ "$(getval "$k" "$out")" == "FAIL" ]]; then
       printf '        why: %s\n' "$(getval "${k}_detail" "$out")"
