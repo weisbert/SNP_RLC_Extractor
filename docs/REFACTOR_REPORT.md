@@ -1,45 +1,52 @@
 # The overnight refactor — morning report
 
-One account of the night, rewritten in place rather than appended to. It covers
-four sequential agent runs, 2026-08-13 20:03 → 2026-08-14 04:54. Every
-before/after below is measured against `3ae2dfd` ("Show the whole trace
-name…"), the last commit before the refactor started, and describes the tree at
-`849decb`, which is HEAD as this was written.
+One account of the whole refactor, rewritten in place rather than appended to.
+It covers four sequential agent runs overnight, 2026-08-13 20:03 →
+2026-08-14 04:54, and one more the following morning that moved every module
+into a package (§2.0). Every before/after below is measured against `3ae2dfd`
+("Show the whole trace name…"), the last commit before the refactor started,
+and describes the tree at `d8e9a7f`, which is HEAD as this was last rewritten.
 
-**SINCE THIS WAS WRITTEN (2026-08-14 morning), the 25 modules moved off the
-repo root into a `pkg_rlc/` package whose FOLDER IS THE LAYER, and
-`tests/test_layering.py` now reads each module's layer off its path instead of
-out of a `LAYERS` table.** Every path below has been rewritten to the new
-spelling so the file can still be followed, and `pkg_rlc_extractor.py` is now a
-41-line shim over `pkg_rlc/frontend/cli.py`. **No measurement in this file was
-re-taken for that move** — the numbers are the night's, which is what this
-document is for. `CLAUDE.md` is the live description of the tree; the two
-places where the move overtook a recommendation here say so on the spot.
+**EVERY NUMBER IN THIS FILE WAS RE-TAKEN AT `d8e9a7f`.** None is carried
+forward from an earlier draft, and where the morning's move overtook a
+recommendation the paragraph says so on the spot rather than being left
+standing. `CLAUDE.md` is the live description of the tree; this file is the
+account of how it got that shape.
 
-**Three things are worse this morning than they were last night, and they are
-the price of the rest.** There is more Python in the tree, not less: **+2 524
-lines** outside `pkg_rlc/present/help.py`, **+7.2%**. There are **26 modules** to
-navigate instead of 10. `CLAUDE.md` is **937 lines** longer. The win is in
-where the code sits, not in how much of it there is, and §2 states both halves
-with the measurements.
+**Three things are worse than they were before the refactor started, and they
+are the price of the rest.** There is more Python in the tree, not less:
+**+2 591 lines** outside `pkg_rlc/present/help.py`, **+7.4%**. There are **25
+modules** to navigate instead of 10 — though they are now in seven folders
+rather than flat in the repo root, which is what §2.0 is about. `CLAUDE.md` is
+**1 063 lines** longer. The win is in where the code sits, not in how much of
+it there is, and §2 states both halves with the measurements.
 
 ---
 
 ## 1. Verdict
 
-**The tool works and the suite is green.** Measured on this box at HEAD:
-`python tests/run_parallel.py -j 4` → **2 536 tests, 454 shards, 363.1 s, exit
-0**; `--fast` → **1 044 tests, 4.5 s, OK**. All 25 `pkg_rlc_*` modules import.
-The CLI was run end to end on the coupling path and its output was read (it is
-the `@ 0.10099 GHz  (requested 0.11 GHz; nearest point, grid step 25 MHz)` line
-quoted in §4.1, confirmed on the real fixture rather than from a test). The GUI
-was driven end to end — file added through `_on_add_file`, Calculate, session
-saved and reloaded, closed cleanly — by run three, an hour before this
-rewrite; nothing has touched a `.py` file since.
+**The tool works and the suite is green.** Re-measured on this box at
+`d8e9a7f`, after the move into the package: `python tests/run_parallel.py -j 4`
+→ **2 542 tests, 454 shards, 366.2 s, exit 0, and 0 skips**; `--fast` →
+**1 044 tests, 4.7 s, OK**. The skip count is asserted rather than assumed:
+every Tk module guards itself with `@skipUnless(TK_OK, …)`, `unittest` counts a
+skipped test in its `Ran N tests` line, and it still prints `OK` — so a total
+failure to reach Tk looks exactly like a clean pass with a matching count.
 
-**`golden_legacy.npz` and `render_reference.json` were not touched at any point
-in any of the four runs** — `git log 3ae2dfd..HEAD` lists **0 commits** against
-either.
+All 25 package modules import. The CLI was run end to end through the shipped
+entry point — `python pkg_rlc_extractor.py --cli …` on
+`coupled_2port_gndref.s2p`, which returned the fixture's analytic **2 nH** —
+and the GUI is driven end to end by `test_attrib_gui_integration` (a real
+`App`, file added through `_on_add_file`, Calculate, the Attribution window,
+session saved and reloaded), which is in the green run above.
+
+**ALL FOUR GOLDEN REFERENCES ARE BYTE-IDENTICAL ACROSS THE MOVE, AND THAT IS
+THE PROOF THE MOVE CHANGED NOTHING.** `git log 9a629f5..HEAD` — the pre-move
+commit to HEAD — lists **0 commits** against `golden_legacy.npz`,
+`render_reference.json`, `cli_reference/` (144 cases) or `attrib_reference/`
+(60 cases). Two of the four were never touched by the night either:
+`golden_legacy.npz` and `render_reference.json` are at **0 commits since
+`3ae2dfd`**.
 
 **One shipped surface changed behaviour: the CLI's frequency line.** It printed
 a frequency that does not exist in the file (`@ 0.101 GHz` for a point at
@@ -51,6 +58,17 @@ Attribution window sorted a row that could not be measured **above** the
 strongest real effect in the sensitivity table, contradicting the CLI, core's
 own rule and the same file twelve hundred lines up — §4.2.
 
+> ### ⚠ FIVE DECISIONS ARE WAITING FOR YOU — they are in **§4.3**
+>
+> Five places where the CLI and the GUI tell you something different about the
+> same data. None has a documented position anywhere in the repo, so by the
+> rule in §4 they are product choices and **none of them was decided without
+> you**. They are numbered 2, 3, 4, 6 and 7 (1 and 5 were the two defects
+> above, and both are fixed). §4.3 has the detail and a recommendation for
+> each; §5.1 has them as a one-line-apiece checklist. **The move into
+> `pkg_rlc/` did not touch any of them** — it corrected their module paths and
+> nothing else.
+
 **The structural work is in, including the piece that was reverted at 01:38.**
 `pkg_rlc.model.trace` (L1) exists and carries the data model; `pkg_rlc.services.session` and
 `pkg_rlc.services.run` (L2) landed on top of it; nine of the ten function-level
@@ -61,109 +79,241 @@ still does not cover.
 
 ## 2. What changed
 
+### 2.0 The move into `pkg_rlc/` — the folders ARE the layers
+
+The night left **26 `.py` files flat in the repo root**, 25 of them
+`pkg_rlc_*`. The user opened the directory, said
+*"很多py文件哎，不用分文件夹吗"*, and this is what that became. It is a move and
+a rename of import paths and **nothing else**: not one expression of behaviour
+changed, which is what §1's four byte-identical golden references say from the
+other side.
+
+**Why folders, and neither reason is cosmetic.** First, every one of those 25
+files began with the same nine characters, so the distinguishing part of a name
+started at character 10 — the prefix was already doing a package's job, badly.
+Second, and the one that matters: **the layer structure was real and
+invisible.** `tests/test_layering.py` enforced a one-directional L0…L6
+dependency map out of a `LAYERS` table declared as data, and nothing in the
+filesystem showed it. Making the folders BE the layers gives that map one home
+instead of two.
+
+The layout:
+
+| folder | layer | modules |
+|---|---|---|
+| `pkg_rlc/physics/` | L0 | `touchstone` `spec` `solve` `core` (the facade) `compose` `attrib` |
+| `pkg_rlc/model/` | L1 | `trace` `validate` |
+| `pkg_rlc/services/` | L2 | `session` `run` |
+| `pkg_rlc/present/` | L3 | `report` `csv` `attrib_report` `conntable` `help` |
+| `pkg_rlc/widgets/` | L4 | `widgets` `plot` |
+| `pkg_rlc/panels/` | L5 | `panels_files` `panels_traces` `panels_results` `panels_editor` `files_gui` `attrib_gui` |
+| `pkg_rlc/frontend/` | L6 | `app` (was `pkg_rlc_gui`) `cli` (was `pkg_rlc_extractor`) |
+
+`pkg_rlc_validate` went to **`model/`, not `services/`**, because that is the
+layer it was already at: `TraceConfig.port_descriptor()` is one call into it
+and `_config_signature` ends on it, so the model imports it and it therefore
+has to sit at or below the model. Putting it in its own one-module folder would
+have been a folder that is not a layer, which is the whole thing this move is
+against.
+
+**THE LAYER IS NOW READ OFF THE PATH, and the second list is deleted.**
+`tests/test_layering.py` has no `LAYERS` table and no `LAYER_PREFIXES`: it has
+a seven-line `LAYER_OF_FOLDER` saying what the seven folder names mean, and
+`layer_of()` is `LAYER_OF_FOLDER.get(path.parts[1])`. A module in a folder
+nobody has declared **FAILS** rather than defaulting to anything, and a module
+loose in the package root fails too. The file went 21 tests → **27**, 0.27 s,
+still pure `ast` with no repo import, and `TestTheGateHasTeeth` still
+mutation-checks the gate against synthetic trees in a temp dir — including two
+new mutations for this shape: that the FOLDER and not the file name decides the
+layer, and that a deeper folder inside a layer stays in that layer.
+
+**Two things stayed at the root on purpose.** `reduce_snp.py` is standalone by
+design — it is copied to simulation servers on its own and imports nothing from
+this repo, which `test_layering` asserts rather than assumes. And
+`pkg_rlc_extractor.py` survives as a **41-line shim** over
+`pkg_rlc.frontend.cli`: that name is the published way to run the tool (the
+README, every Help tab, the CLI's own `--help` examples, `deploy/doctor.sh`'s
+closing advice), it is the sentinel `deploy.sh` and `deploy/pack.ps1` both
+check to confirm they are pointing at an install root, and
+`tests/_cli_capture.py` drives `pkg_rlc_extractor.main(argv)` **in-process**
+over 143 invocations. It re-exports `main` by name and the rest by star import.
+
+**THE REWRITE WAS DONE BY A COMMITTED SCRIPT, `tests/_repackage.py`** (294
+lines, leading underscore so `unittest discover` and
+`run_parallel.discover_shards` both skip it — the `_golden_capture.py`
+convention). ~370 references were at stake: 100 import statements in the
+modules, 140 in `tests/`, and every path mention in the docs. By hand that is
+370 chances to typo one, and a typo in an import is a module that silently
+resolves to something else. As a script it is reproducible, reviewable as a
+diff, and it reports its substitution count per file. It uses `git mv`, so
+`git log --follow` survives all 25 moves — git recorded every one as `R100`, a
+100%-similarity rename.
+
+**The one place the rule bends is an alias.** `import pkg_rlc_gui` became
+`import pkg_rlc.frontend.app as pkg_rlc_gui`, and likewise for the other three
+bare-`import` modules. That keeps **233** attribute references
+(`pkg_rlc_gui.TraceConfig`, `pkg_rlc_core.MAX_SNIFF_NPORTS`, …) resolving
+untouched, and — the reason that matters rather than the line count — it is
+what keeps `mock.patch.object(pkg_rlc_core, …)` working, because an alias is
+the same module object. `tests/_repackage.py`'s own docstring estimates that
+saving at "~1000 lines"; the measured figure is 233, and the estimate should be
+read as the argument it is rather than as a measurement.
+
+**The four things that could have broken silently were each checked by
+measurement, not by reasoning:**
+
+* **`pkg_rlc.physics.core`'s write-through survived.** It is a
+  `types.ModuleType` SUBCLASS whose `__setattr__`/`__delattr__` forward to
+  whichever split module owns the name, and five tests
+  `mock.patch.object(pkg_rlc_core, "MAX_SNIFF_NPORTS" / "SNIFF_HARD_CAP" /
+  "_check_s_values", …)` and then call a parser that reads its OWN module
+  global. Verified through the new path: patching `core.MAX_SNIFF_NPORTS` to 7
+  is visible as `pkg_rlc.physics.touchstone.MAX_SNIFF_NPORTS == 7` and restores
+  to 256; `_check_s_values` writes through as the same object; and
+  `__name__` does not, which is the dunder exclusion still working.
+* **`touchstone.py` kept its bytes.** It is CRLF and contains a literal U+2029,
+  and anything slicing it by line number must split raw bytes on `b"\r\n"`
+  because `str.splitlines()` breaks on U+2029 too. The blob hash is unchanged
+  (`7dd943d7…` at both ends, `R100`), the worktree copy is 1 562 CRLF line
+  endings with **zero** bare LF, and the U+2029 is still in it.
+* **The red-zone package still ships everything.** `.gitattributes` is an
+  `export-ignore` BLACKLIST, so folders ship by default — but this was verified
+  rather than assumed, because getting it wrong ships a broken tool to an
+  offline machine where nobody can fix it. `git archive HEAD | tar -t` lists
+  **344 entries, 41 of them under `pkg_rlc/`**, and every tracked package file,
+  the shim and `reduce_snp.py` are present.
+* **The entry point behaves.** `python pkg_rlc_extractor.py --cli …` runs, and
+  argparse still reports its prog as `pkg_rlc_extractor` rather than as `cli`.
+  That one survived by luck rather than by care: `_make_arg_parser` pins
+  `prog="pkg_rlc_extractor"` as a literal, so it was never derived from the
+  file name. Had it been, **4 of the 144 `cli_reference/` cases** — the ones
+  that print a usage block — would have gone red on the move. All 144 pass.
+
 ### Modules
 
-Every number in this section was measured at HEAD and at `3ae2dfd` while
-writing this section, not carried forward from an earlier draft.
+Every number in this section was re-measured at `d8e9a7f` and at `3ae2dfd`,
+counting newlines in the file as git stores it. The **old flat name is kept
+beside every new path**, because that is the name every commit message, every
+review comment and every earlier draft of this document uses.
 
-| module | before | after | note |
-|---|---:|---:|---|
-| `pkg_rlc/frontend/app.py` | 10 954 | **3 220** | **−71%.** Twelve commits took code out of it: four panels (`files`, `traces`, `results`, `editor`) and eight libraries (`conntable`, `report`, `csv`, `widgets`, `validate`, `model`, `session`, `run`). |
-| `pkg_rlc/physics/core.py` | 4 726 | **169** | Now a re-export facade over touchstone / spec / solve. |
-| `pkg_rlc_extractor.py` | 4 377 | **3 060** | 13 report sections + 6 duplicated formatters left. |
-| `pkg_rlc/present/help.py` | 2 745 | **133** | Prose moved to `docs/help/*.md` (10 files, 2 648 lines). |
-| `pkg_rlc/widgets/plot.py` | 1 194 | **1 028** | Generic widgets (incl. `ReflowRow`) went to `pkg_rlc.widgets.widgets`. |
-| `pkg_rlc/panels/attrib_gui.py` | 4 439 | **4 479** | **+40.** Grew: the ground-model import, and the sensitivity fix with its docstring. |
-| `pkg_rlc/panels/files_gui.py` | 1 487 | **1 501** | **+14.** Grew: eight lazy imports became top-level ones, with the reason written beside them. |
-| `pkg_rlc/physics/attrib.py` | 4 767 | **4 767** | Untouched all night. |
-| `pkg_rlc/physics/compose.py` | 1 861 | **1 861** | Untouched. |
-| `reduce_snp.py` | 1 224 | **1 224** | Untouched (standalone by design). |
+The ten modules that existed at 20:03:
+
+| module today | was | before | after | note |
+|---|---|---:|---:|---|
+| `pkg_rlc/frontend/app.py` | `pkg_rlc_gui.py` | 10 954 | **3 220** | **−71%.** Twelve commits took code out of it: four panels (`files`, `traces`, `results`, `editor`) and eight libraries (`conntable`, `report`, `csv`, `widgets`, `validate`, `model`, `session`, `run`). |
+| `pkg_rlc/physics/core.py` | `pkg_rlc_core.py` | 4 725 | **169** | Now a re-export facade over touchstone / spec / solve. |
+| `pkg_rlc/frontend/cli.py` | `pkg_rlc_extractor.py` | 4 377 | **3 060** | 13 report sections + 6 duplicated formatters left. The *name* `pkg_rlc_extractor.py` survives at the root as a **41-line shim** (§2.0). |
+| `pkg_rlc/present/help.py` | `pkg_rlc_help.py` | 2 745 | **140** | Prose moved to `docs/help/*.md` (10 files, 2 648 lines). |
+| `pkg_rlc/widgets/plot.py` | `pkg_rlc_plot.py` | 1 194 | **1 028** | Generic widgets (incl. `ReflowRow`) went to `pkg_rlc.widgets.widgets`. |
+| `pkg_rlc/panels/attrib_gui.py` | `pkg_rlc_attrib_gui.py` | 4 439 | **4 479** | **+40.** Grew: the ground-model import, and the sensitivity fix with its docstring. |
+| `pkg_rlc/panels/files_gui.py` | `pkg_rlc_files_gui.py` | 1 487 | **1 501** | **+14.** Grew: eight lazy imports became top-level ones, with the reason written beside them. |
+| `pkg_rlc/physics/attrib.py` | `pkg_rlc_attrib.py` | 4 767 | **4 767** | Untouched all night, and untouched by the move. |
+| `pkg_rlc/physics/compose.py` | `pkg_rlc_compose.py` | 1 861 | **1 861** | Untouched. |
+| `reduce_snp.py` | — | 1 224 | **1 224** | Never moved, never changed: standalone by design. |
 
 New modules, none of which existed at 20:03:
 
-| new module | lines | layer | what it is |
-|---|---:|---|---|
-| `pkg_rlc/physics/spec.py` | 2 050 | L0 | The declaration model and the Mode 5 DSL. |
-| `pkg_rlc/present/report.py` | 1 596 | L3 | Turning a run into text. |
-| `pkg_rlc/panels/panels_editor.py` | 1 644 | L5 | The editor panel + `StylePicker`. |
-| `pkg_rlc/physics/touchstone.py` | 1 563 | L0 | The parser and its diagnostics. |
-| `pkg_rlc/present/attrib_report.py` | 1 557 | L3 | The CLI attribution report, as `list[str]`. |
-| `pkg_rlc/model/validate.py` | 1 351 | L1 | What a spec says, does and gets wrong. |
-| `pkg_rlc/physics/solve.py` | 1 218 | L0 | `compute_z_matrix` and the reduction. |
-| `pkg_rlc/panels/panels_results.py` | 1 115 | L5 | The Results notebook and the run pages. |
-| `pkg_rlc/widgets/widgets.py` | 992 | L4 | Generic Tk widgets + the palette. |
-| **`pkg_rlc/model/trace.py`** | **975** | **L1** | **The shared data model — §3.1.** |
-| `pkg_rlc/present/conntable.py` | 505 | L3 | The connections-table layout vocabulary. |
-| `pkg_rlc/services/session.py` | 465 | L2 | Save / Load / autosave, as a dict ↔ model round trip. |
-| `pkg_rlc/services/run.py` | 439 | L2 | The arithmetic half of Calculate. |
-| `pkg_rlc/panels/panels_traces.py` | 388 | L5 | The Traces section + the freeze entries. |
-| `pkg_rlc/panels/panels_files.py` | 273 | L5 | The Files section. |
-| `pkg_rlc/present/csv.py` | 113 | L3 | The CSV blocks. |
+| new module | was | lines | layer | what it is |
+|---|---|---:|---|---|
+| `pkg_rlc/physics/spec.py` | `pkg_rlc_spec.py` | 2 050 | L0 | The declaration model and the Mode 5 DSL. |
+| `pkg_rlc/panels/panels_editor.py` | `pkg_rlc_panels_editor.py` | 1 644 | L5 | The editor panel + `StylePicker`. |
+| `pkg_rlc/present/report.py` | `pkg_rlc_report.py` | 1 596 | L3 | Turning a run into text. |
+| `pkg_rlc/physics/touchstone.py` | `pkg_rlc_touchstone.py` | 1 562 | L0 | The parser and its diagnostics. |
+| `pkg_rlc/present/attrib_report.py` | `pkg_rlc_attrib_report.py` | 1 557 | L3 | The CLI attribution report, as `list[str]`. |
+| `pkg_rlc/model/validate.py` | `pkg_rlc_validate.py` | 1 351 | L1 | What a spec says, does and gets wrong. |
+| `pkg_rlc/physics/solve.py` | `pkg_rlc_solve.py` | 1 218 | L0 | `compute_z_matrix` and the reduction. |
+| `pkg_rlc/panels/panels_results.py` | `pkg_rlc_panels_results.py` | 1 115 | L5 | The Results notebook and the run pages. |
+| `pkg_rlc/widgets/widgets.py` | `pkg_rlc_widgets.py` | 992 | L4 | Generic Tk widgets + the palette. |
+| **`pkg_rlc/model/trace.py`** | **`pkg_rlc_model.py`** | **975** | **L1** | **The shared data model — §3.1.** |
+| `pkg_rlc/present/conntable.py` | `pkg_rlc_conntable.py` | 505 | L3 | The connections-table layout vocabulary. |
+| `pkg_rlc/services/session.py` | `pkg_rlc_session.py` | 465 | L2 | Save / Load / autosave, as a dict ↔ model round trip. |
+| `pkg_rlc/services/run.py` | `pkg_rlc_run.py` | 439 | L2 | The arithmetic half of Calculate. |
+| `pkg_rlc/panels/panels_traces.py` | `pkg_rlc_panels_traces.py` | 388 | L5 | The Traces section + the freeze entries. |
+| `pkg_rlc/panels/panels_files.py` | `pkg_rlc_panels_files.py` | 273 | L5 | The Files section. |
+| `pkg_rlc/present/csv.py` | `pkg_rlc_csv.py` | 113 | L3 | The CSV blocks. |
 
-**Totals: 10 modules / 37 774 lines → 26 modules / 37 686 lines**, counting the
-standalone `reduce_snp.py` on both sides.
+**Totals: 10 modules / 37 773 lines → 25 modules / 37 759 lines**, counting the
+standalone `reduce_snp.py` and the 41-line root shim on both sides, plus **8
+`__init__.py` files totalling 26 lines** that the package needed and the flat
+tree did not.
 
 That headline near-parity is entirely the Help prose leaving Python. Excluding
-`pkg_rlc/present/help.py` the Python grew: **35 029 → 37 553, i.e. +2 524 lines
-(+7.2%)**. Module docstrings, imports and the re-export blocks rule 2 requires
-are what that buys. `CLAUDE.md` went **3 498 → 4 435 (+937)**.
+`pkg_rlc/present/help.py` the Python grew: **35 028 → 37 619, i.e. +2 591 lines
+(+7.4%)**. Module docstrings, imports and the re-export blocks rule 2 requires
+are what that buys. `CLAUDE.md` went **3 498 → 4 561 (+1 063)**.
 
 ### The import layering
 
 | | at 20:03 | at HEAD |
 |---|---:|---:|
 | function-level `import pkg_rlc.frontend.app` dodges | **10** | **1** |
-| modules named in `test_layering.LAYERS` that do not exist | 3 (from 00:37) | **0** |
-| `pkg_rlc_*.py` on disk not declared in the layer map | 0 | **0** |
+| where a module's layer is declared | a `LAYERS` table in the test | **its folder** |
+| lists that can disagree about a module's layer | 2 | **1** |
 
-(Both rows are about a `LAYERS` table that no longer exists — see the note at
-the top of this file. The layer is the folder now, so neither quantity is
-measurable and neither can go wrong in that way again.)
+The last two rows are §2.0. The night's version of this table counted
+"modules named in `LAYERS` that do not exist" (3 at 00:37, 0 by dawn) and
+"`pkg_rlc_*.py` on disk not declared in the map" (0 at both ends). Neither
+quantity exists any more: there is no `LAYERS` table to disagree with the disk,
+so a module that exists is in a layer by construction and a module in an
+undeclared folder fails outright. That hole is shut by **removing the second
+list**, not by asserting the two agree.
 
-The one remaining back-import is `pkg_rlc_extractor` → `App`, deferred so that
-`--cli` does not pay the tkinter + matplotlib import. Re-measured for this
-rewrite over three fresh processes: `import pkg_rlc_extractor` is 98 / 109 /
-104 ms, and `import pkg_rlc.frontend.app` on top of it adds **245 / 250 / 247 ms**. That
+The one remaining back-import is `pkg_rlc.frontend.cli` → `App`, deferred so
+that `--cli` does not pay the tkinter + matplotlib import. Re-measured at
+`d8e9a7f` over three fresh processes: `import pkg_rlc_extractor` (the shim,
+which pulls in the whole CLI) is **111 / 109 / 120 ms**, and `import
+pkg_rlc.frontend.app` on top of it adds a further **270 / 268 / 264 ms**. That
 is a justified deferral, not a dodge, and `tests/test_layering.py` pins it in
-both directions: adding an eleventh fails, and removing this one fails too
-until `KNOWN_BACK_IMPORTS` moves in the same commit.
+both directions: adding a second fails, and removing this one fails too until
+`KNOWN_BACK_IMPORTS` moves in the same commit.
 
 ### Tests
 
 | | before | after |
 |---|---:|---:|
-| `def test_` methods, counted statically | **2 444** (41 modules) | **2 536** (44 modules) |
-| full suite, run | — | **2 536 / 454 shards / 363.1 s** at `-j 4`, exit 0 |
-| `--fast` | 976 / 5.5 s (recorded in `CLAUDE.md`) | **1 044 / 4.5 s** (measured) |
-| test modules touched | — | **8 of 44**, of which **3 are new** |
+| `def test_` methods, counted statically | **2 444** (41 modules) | **2 542** (44 modules) |
+| full suite, run | — | **2 542 / 454 shards / 366.2 s** at `-j 4`, exit 0, **0 skips** |
+| `--fast` | 976 / 5.5 s (recorded in `CLAUDE.md`) | **1 044 / 4.7 s** (measured) |
+| test modules touched, for their CONTENT | — | **9 of 44**, of which **3 are new** |
 
 The 2 444 figure is the same static count applied at the base commit, so the
 two ends are comparable, and the runner's own count agrees with it exactly at
 HEAD. `CLAUDE.md`'s recorded baseline of "2045" was already stale before the
 night started.
 
-**+92 tests over the night, and every one of them is accounted for.** The three
-NEW modules are `test_cli_golden` 37, `test_layering` 21, `test_attrib_golden`
-12 — **70**. The five MODIFIED ones are `test_freq_label` 64 → 73 (guards for
-the CLI frequency fix), `test_run_parallel` 57 → 65 (the runner's own priority
-work), `test_attrib_window` 212 → 217 (the sensitivity fix), and then
-`test_attrib_gui_integration` and `test_multifile_table`, both unchanged in
-count at 70 and 100 — the second of those was opened only to move a
-`mock.patch` target onto the edge it is testing, because the lazy import it
-used to patch through no longer exists. `70 + 9 + 8 + 5 = 92`.
+**+98 tests, and every one of them is accounted for.** **+92 over the night:**
+the three NEW modules are `test_cli_golden` 37, `test_layering` 21,
+`test_attrib_golden` 12 — **70**; the five MODIFIED ones are `test_freq_label`
+64 → 73 (guards for the CLI frequency fix), `test_run_parallel` 57 → 65 (the
+runner's own priority work), `test_attrib_window` 212 → 217 (the sensitivity
+fix), and then `test_attrib_gui_integration` and `test_multifile_table`, both
+unchanged in count at 70 and 100 — the second of those was opened only to move
+a `mock.patch` target onto the edge it is testing, because the lazy import it
+used to patch through no longer exists. `70 + 9 + 8 + 5 = 92`. **+6 from the
+move:** `test_layering` 21 → **27**, the gate rewritten to read the layer off
+the folder (§2.0).
 
-**36 of 44 test modules were never opened**, which is the re-export rule
-(rule 2) working and the best single piece of evidence that the moves were
-pure.
+**35 of 44 test modules were never opened for their content**, which is the
+re-export rule (rule 2) working and the best single piece of evidence that the
+moves were pure. The move itself touched **42** of the 44 — but every one of
+those except `test_layering` is a symmetric import rewrite, N lines added and
+the same N removed, and the largest is **10**. `test_layering` is 352+/157−
+and is the only test in the repo whose *content* the move changed.
 
 ### Golden references
 
-| reference | commits since `3ae2dfd` | detail |
-|---|---:|---|
-| `tests/fixtures/golden_legacy.npz` | **0** | Never moved. |
-| `tests/fixtures/render_reference.json` | **0** | Never moved. |
-| `tests/fixtures/cli_reference/` (144 cases) | **2** | Created; then modified once by the frequency fix — 55 files, verified in §4.1. |
-| `tests/fixtures/attrib_reference/` (60 cases) | **2** | Created; then modified once by the sensitivity fix — one case ADDED, verified in §4.2. |
+| reference | commits since `3ae2dfd` | commits since `9a629f5` (pre-move) | detail |
+|---|---:|---:|---|
+| `tests/fixtures/golden_legacy.npz` | **0** | **0** | Never moved, by anything. |
+| `tests/fixtures/render_reference.json` | **0** | **0** | Never moved, by anything. |
+| `tests/fixtures/cli_reference/` (144 cases) | **2** | **0** | Created; then modified once by the frequency fix — 55 files, verified in §4.1. |
+| `tests/fixtures/attrib_reference/` (60 cases) | **2** | **0** | Created; then modified once by the sensitivity fix — one case ADDED, verified in §4.2. |
+
+**The right-hand column is the proof that the move into `pkg_rlc/` changed
+nothing.** Two of these four pin numbers and two pin rendered text, between
+them covering the reduction path bit-for-bit, the GUI results pane, 143 CLI
+invocations and 56 Attribution-window renders. A move that had altered any
+behaviour would have had to move at least one of them.
 
 ### "Keep in sync" comments
 
@@ -224,7 +374,7 @@ before writing this report's first draft, rebuilding a detached worktree at
 `cf7d832` and measuring `--fast` 1 044 OK and the five most-affected Tk modules
 (`layering`, `session`, `freeze_trace`, `run_snapshot`, `multifile*`) 391 OK.
 The full suite at HEAD, with that work restored and two more modules built on
-top of it, is the 2 536 in §1.
+top of it, is the 2 542 in §1.
 
 Recovery cost three `git revert`s (`75cee65`, `811f514`, `91be95d` at 02:49).
 **A phase gate that reverts on a missing deliverable needs a second question:
@@ -519,14 +669,21 @@ two things that can come to disagree about a number:
    Calculate, read the results pane, Export CSV, open the Attribution window
    and look at the sensitivity table's ordering. The suite drives all of this,
    but 87% of it is Tk geometry and none of it is you looking at the screen.
-4. **Read the new sections of `CLAUDE.md`** — the layering gate, the four
+4. **Open the folder you complained about and see whether it reads better
+   now** (§2.0). Seven folders under `pkg_rlc/`, one per layer, and the repo
+   root is down to `pkg_rlc/`, the 41-line `pkg_rlc_extractor.py` entry point,
+   `reduce_snp.py`, `deploy/`, `docs/`, `tests/` and the markdown. If a folder
+   name is wrong — `present` and `services` are the two I would expect to
+   argue about — renaming one is a one-line change to `LAYER_OF_FOLDER` plus a
+   `git mv`, and it is much cheaper now than in a month.
+5. **Read the new sections of `CLAUDE.md`** — the layering gate, the four
    panels, the two attribution reports, the one-formatter-two-spellings
    section, the model / session / run modules, and the undefined-sorts-last
    rule. If any of them describes something you did not agree to, this is the
    cheapest moment to say so.
-5. **Decide whether the phase-gate lesson in §3.2 is worth encoding** before the
-   next long unattended run. It cost an hour tonight and it will cost more than
-   that eventually.
+6. **Decide whether the phase-gate lesson in §3.2 is worth encoding** before the
+   next long unattended run. It cost an hour that night and it will cost more
+   than that eventually.
 
 ---
 
@@ -565,19 +722,32 @@ two things that can come to disagree about a number:
   their IntVars, `_suppress_editor_sync`, `_ed_*`. Deliberate: those are
   reassigned at runtime and read straight off `app` by the tests, so moving
   them needs forwarding properties — two places one value can be read from.
+* **NEW, AND OWED BY THE MOVE: ~598 mentions of the old flat module names
+  survive in comments and docstrings**, across 62 files (the count excludes the
+  deliberate `as pkg_rlc_gui` aliases and `tests/_repackage.py`, which is about
+  them). `tests/_repackage.py` rewrote the import statements and the docs and
+  deliberately did not touch prose, because a 598-line diff with no test behind
+  it is a poor trade inside a move whose whole claim is that it changed
+  nothing — the imports are checked by the interpreter and by 2 542 tests, and
+  the prose is checked by nobody. The names are still unambiguous (there is
+  exactly one `pkg_rlc_core` and everyone knows where it went), so this is
+  staleness rather than a defect, but it will read worse every month. It is a
+  mechanical follow-up, best done as its own commit with its own script and
+  nothing else in it. One is in `reduce_snp.py`, which may not be edited for
+  this reason alone.
 
-**Process, and it is the one thing this night actually broke.** The phase gate
+**Process, and it is the one thing the night actually broke.** The phase gate
 reverts a phase on a missing deliverable and cannot distinguish "produced
-nothing" from "produced most of it and documented the rest" — §3.2. The layer-map
-hole that let run 1's silent failure through is closed by accident rather than
-by design: `tests/test_layering.py` still silently SKIPS a module named in
-`LAYERS` that does not exist, and today all 21 exist, so nothing is skipped. A
-one-line assertion that every name in `LAYERS` resolves to a file would make
-that a property instead of a coincidence. **CLOSED SINCE, and not the way this
-paragraph proposed:** there is no `LAYERS` list any more. The layer is read off
-the folder, so a module that exists is in a layer by construction and a module
-in a folder nobody has declared FAILS — the hole is shut by removing the second
-list rather than by asserting the two agree.
+nothing" from "produced most of it and documented the rest" — §3.2. That one
+is still owed.
+
+**The layer-map hole that let run 1's silent failure through IS CLOSED, and not
+the way the night's draft of this section proposed.** It proposed asserting
+that every name in the `LAYERS` table resolves to a file, which would have made
+the two lists agree. The move deleted the second list instead: the layer is
+read off the folder, so a module that exists is in a layer by construction, and
+a module in a folder nobody has declared fails outright. Two lists that must
+agree is a weaker guarantee than one list.
 
 **The failure mode the panel split has**, unchanged and worth re-reading before
 anything else moves into a panel: **a bare `self` where the app was meant**.
