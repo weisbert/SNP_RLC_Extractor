@@ -1072,13 +1072,15 @@ SNP_RLC_Extractor/
   CLAUDE_CODE_PROMPT.md      Authoritative spec
   requirements.txt           numpy (hard), matplotlib (GUI only)
   VERSION                    Commit stamp, filled in by the red-zone packer
-  pkg_rlc_extractor.py       Entry point (GUI + CLI). A 44-line shim; the command
+  pkg_rlc_extractor.py       Entry point (GUI + CLI). A 41-line shim; the command
                              line itself is pkg_rlc/frontend/cli.py
   reduce_snp.py              Standalone CLI: shrink a big .sNp to a few ports
   deploy.sh                  Red-zone update entry point (top level by design)
-  pkg_rlc/                   ONE SUBPACKAGE PER LAYER. A module may import from its
-                             own layer or a lower one; upward is the failure, and
-                             tests/test_layering.py is the gate that says so
+  pkg_rlc/                   ONE SUBPACKAGE PER LAYER -- the folder IS the layer.
+                             A module may import from its own layer or a lower one;
+                             upward is the failure, and tests/test_layering.py is
+                             the gate that says so, reading each module's layer off
+                             its folder rather than off a list it keeps separately
     physics/                 L0  arrays and physics. No Tk, no App, no widgets
       touchstone.py          Reading a file, and saying what is wrong with it
       spec.py                What the user DECLARED: terminations, rows, roles, DSL

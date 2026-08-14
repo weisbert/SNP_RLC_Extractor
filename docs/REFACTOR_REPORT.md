@@ -6,6 +6,16 @@ before/after below is measured against `3ae2dfd` ("Show the whole trace
 name…"), the last commit before the refactor started, and describes the tree at
 `849decb`, which is HEAD as this was written.
 
+**SINCE THIS WAS WRITTEN (2026-08-14 morning), the 25 modules moved off the
+repo root into a `pkg_rlc/` package whose FOLDER IS THE LAYER, and
+`tests/test_layering.py` now reads each module's layer off its path instead of
+out of a `LAYERS` table.** Every path below has been rewritten to the new
+spelling so the file can still be followed, and `pkg_rlc_extractor.py` is now a
+41-line shim over `pkg_rlc/frontend/cli.py`. **No measurement in this file was
+re-taken for that move** — the numbers are the night's, which is what this
+document is for. `CLAUDE.md` is the live description of the tree; the two
+places where the move overtook a recommendation here say so on the spot.
+
 **Three things are worse this morning than they were last night, and they are
 the price of the rest.** There is more Python in the tree, not less: **+2 524
 lines** outside `pkg_rlc/present/help.py`, **+7.2%**. There are **26 modules** to
@@ -105,6 +115,10 @@ are what that buys. `CLAUDE.md` went **3 498 → 4 435 (+937)**.
 | function-level `import pkg_rlc.frontend.app` dodges | **10** | **1** |
 | modules named in `test_layering.LAYERS` that do not exist | 3 (from 00:37) | **0** |
 | `pkg_rlc_*.py` on disk not declared in the layer map | 0 | **0** |
+
+(Both rows are about a `LAYERS` table that no longer exists — see the note at
+the top of this file. The layer is the folder now, so neither quantity is
+measurable and neither can go wrong in that way again.)
 
 The one remaining back-import is `pkg_rlc_extractor` → `App`, deferred so that
 `--cli` does not pay the tkinter + matplotlib import. Re-measured for this
@@ -559,7 +573,11 @@ hole that let run 1's silent failure through is closed by accident rather than
 by design: `tests/test_layering.py` still silently SKIPS a module named in
 `LAYERS` that does not exist, and today all 21 exist, so nothing is skipped. A
 one-line assertion that every name in `LAYERS` resolves to a file would make
-that a property instead of a coincidence.
+that a property instead of a coincidence. **CLOSED SINCE, and not the way this
+paragraph proposed:** there is no `LAYERS` list any more. The layer is read off
+the folder, so a module that exists is in a layer by construction and a module
+in a folder nobody has declared FAILS — the hole is shut by removing the second
+list rather than by asserting the two agree.
 
 **The failure mode the panel split has**, unchanged and worth re-reading before
 anything else moves into a panel: **a bare `self` where the app was meant**.
