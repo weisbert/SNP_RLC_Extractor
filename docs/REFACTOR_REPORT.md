@@ -600,6 +600,17 @@ again.
 
 ### 4.3 The five that are open
 
+> **RULED ON, 2026-08-14 — divergences 2, 3 and 4 are CLOSED.** The position
+> the repo was missing is `deploy/doctor.sh`'s own exit rule: a CLI-only
+> install is a SUCCESSFUL install (tier 2), so on a headless box the CLI is the
+> ONLY surface. Hence *the CLI may be terser than the pane, but it must never
+> omit a diagnostic or a decisive number* — which makes #2 and #4 defects (a
+> missing rank key, a missing `|k|>1` prompt) and makes #3 a SUPERSET rather
+> than a swap: the CLI leads with the verdict and KEEPS the metric and the
+> paragraph the pane dropped to its 144-column budget. See CLAUDE.md, "One
+> formatter, two spellings". The table below is left as it was written; it is
+> the account of the night, not a live list.
+
 None of these five has a documented position in the repo, so by the rule above
 they are product choices and were left for you. Each keeps its recommendation.
 

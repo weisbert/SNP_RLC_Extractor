@@ -140,9 +140,16 @@ from pkg_rlc.physics.core import (
 )
 from pkg_rlc.present.csv import write_coupling_table
 from pkg_rlc.present.report import (
+    COUPLING_FLOOR_DB,
+    RECIP_OK,
+    RECIP_UNCHECKABLE,
     _format_z_matrix,
+    _pair_flag,
+    _pair_strength_db,
     _sign_flag,
     marker_freq_text,
+    rank_coupling_pairs,
+    reciprocity_verdict,
     snap_to_grid,
 )
 # The attribution and cold-start REPORT.  Every one of these was defined in
@@ -618,6 +625,29 @@ def _cli_marker(freqs, requested_hz: float, actual_hz: float):
     return snap
 
 
+def _coupling_legend_lines(has_pairs: bool) -> list[str]:
+    """The coupling report's legend, in the CLI's own wording, in ONE place.
+
+    The counterpart of `pkg_rlc.present.report.COUPLING_LEGEND_LINES`, which
+    the results pane emits once per RUN rather than once per block.  It is not
+    that constant: the pane's is cut to a measured 144-column budget and this
+    one is not, and the M/L sentence here is the long form the terminal has
+    always printed -- one of the six homes of that caveat that have to agree,
+    kept verbatim across the move.  `|k|>1` is the entry that was missing.
+    """
+    lines = ["  legend: ind = Im(Z)>0 (inductive) | "
+             "cap = Im(Z)<0 (capacitive; past SRF for an inductor) | "
+             "R<0 = non-passive"
+             + (" | |k|>1 = check the port setup" if has_pairs else "")]
+    if has_pairs:
+        lines.append(
+            "          M/L_x is the first-order Norton injection ratio into "
+            "x -- frequency-independent, and the number a spur / pulling "
+            "budget is written against. It is not the exact current-transfer "
+            "ratio |Z_ab/Z_aa|, which it matches only where omega*L_x >> R_x.")
+    return lines
+
+
 def _print_coupling_report(res, freq=None) -> None:
     """Print the Z matrix, the self table, every pair, and the reciprocity check.
 
@@ -657,20 +687,42 @@ def _print_coupling_report(res, freq=None) -> None:
         ])
     _print_table(["Port", "R", "L", "C", "Q", "Sign"], rows,
                  ["<", ">", ">", ">", ">", "<"])
-    print("  legend: ind = Im(Z)>0 (inductive) | "
-          "cap = Im(Z)<0 (capacitive; past SRF for an inductor) | "
-          "R<0 = non-passive")
 
     # --- 3. Pairwise coupling --------------------------------------------
     if not res.pairs:
         print("\nOnly one measurement port defined; no mutual terms. "
               "Add a second --mport to get M / k.")
     else:
-        print("\nMutual coupling (per unordered pair):")
-        for pr in res.pairs:
+        # RANKED AND FLOORED, THROUGH THE PANE'S OWN FUNCTION.  This list used
+        # to be `for pr in res.pairs:` -- nested-loop (a, b) index order, every
+        # pair, and `worst M/L` (the rank key itself) printed nowhere at all.
+        # Six measurement ports make fifteen pairs and index order says nothing
+        # about which of them anybody has to do something about; the reason the
+        # pane was ranked applies verbatim here, and MORE so, because a
+        # headless red-zone box (deploy/doctor.sh calls tier 2 a successful
+        # install) has no results pane to get the ordering from.
+        # `rank_coupling_pairs` is CALLED rather than reimplemented: its three
+        # rules -- the key computed linearly, an UNDEFINED ratio sorting last
+        # and never folded, the strongest pair never folded -- are exactly the
+        # ones a second copy would get subtly wrong.
+        shown_pairs, weak_pairs = rank_coupling_pairs(list(res.pairs))
+        head = "\nMutual coupling (per unordered pair"
+        if len(shown_pairs) + len(weak_pairs) > 1:
+            head += ", strongest first by worst-case M/L"
+        print(head + "):")
+        for pr in shown_pairs:
             na = _trunc(pr.name_a, _NAME_W)
             nb = _trunc(pr.name_b, _NAME_W)
-            print(f"\n  {na} <-> {nb}")
+            # THE RANK KEY GOES ON THE HEADLINE, beside the flag, because the
+            # headline is what a fifteen-pair report is scanned by.  It was
+            # once moved off the pane's headline while that view was being
+            # slimmed and a test caught it inside the hour, for this reason.
+            # The flag is `_pair_flag`, the pane's, whose '|k|>1' half was
+            # missing from this surface entirely.
+            flag = _pair_flag(pr)
+            print(f"\n  {na} <-> {nb}"
+                  f"   worst M/L = {_fmt_db(_pair_strength_db(pr))}"
+                  + (f"   [{flag}]" if flag else ""))
 
             m_note = ("negative: sign kept -- opposite probe polarity, or "
                       "capacitive coupling (see note)"
@@ -702,29 +754,67 @@ def _print_coupling_report(res, freq=None) -> None:
                 print(f"    {label:<{lw}} = {value:<{vw}}{tail}".rstrip())
             for note in pr.notes:
                 print(f"    note: {note}")
-        print("\n  M/L_x is the first-order Norton injection ratio into x -- "
-              "frequency-independent, and the number a spur / pulling budget "
-              "is written against. It is not the exact current-transfer ratio "
-              "|Z_ab/Z_aa|, which it matches only where omega*L_x >> R_x.")
+        if weak_pairs:
+            # The pointer has to be TRUE, and it is: `_write_coupling_csv`
+            # enumerates every unordered pair straight off the Z matrix and has
+            # no floor.  Do not give it one.
+            noun = "pair" if len(weak_pairs) == 1 else "pairs"
+            print(f"\n  ... +{len(weak_pairs)} {noun} below "
+                  f"{COUPLING_FLOOR_DB:g} dB, not listed "
+                  "(--csv writes every pair, with no floor)")
 
     # --- 4. Reciprocity ---------------------------------------------------
-    if not res.pairs:
-        return          # nothing off-diagonal to check
-    print(f"\nReciprocity error = {res.reciprocity_error:.3g}   "
-          "(max|Z_ab - Z_ba| / max|Z_ab| over the finite off-diagonal entries)")
-    if not any(math.isfinite(p.Z_ab.real) and math.isfinite(p.Z_ab.imag)
-               for p in res.pairs):
-        print("  (nothing to check -- every mutual term is undefined; fix the "
-              "port setup first)")
-    elif res.reciprocity_error > RECIPROCITY_WARN:
-        print(f"  WARN: above {RECIPROCITY_WARN:g}. Z_ab and Z_ba disagree; "
-              "the input S-parameters are suspect (non-reciprocal or "
-              "under-converged EM solve) -- suspect the EM/de-embedding "
-              "setup, not this tool.")
-    else:
-        print(f"  (data looks reciprocal; the alarm threshold is "
-              f"{RECIPROCITY_WARN:g}. A clean EM solve lands at 1e-16..1e-9, "
-              "so a few 1e-9s here are normal, not a defect.)")
+    #
+    # A SUPERSET OF THE PANE, NOT A REPLACEMENT.  The verdict word is the
+    # headline -- it is what the reader is scanning for, and it was the one
+    # thing this surface did not say -- and `reciprocity_verdict` is the pane's
+    # own classifier, so the two can never disagree about WHICH reading a
+    # number gets.  The metric and the paragraph stay underneath it, unchanged:
+    # the pane dropped them to a measured 144-column budget that a terminal
+    # does not have, and a headless reader has no other source for what the
+    # metric means.  No tick glyph: nothing in this report's 143 pinned cases
+    # uses one, and the CLI already says WARN in words.
+    if res.pairs:
+        verdict = reciprocity_verdict(res.pairs, res.reciprocity_error)
+        if verdict == RECIP_UNCHECKABLE:
+            print("\nReciprocity: NOT CHECKED -- every mutual term is "
+                  "undefined")
+        elif verdict == RECIP_OK:
+            print(f"\nReciprocity: OK -- reciprocal "
+                  f"({res.reciprocity_error:.3g})")
+        else:
+            print(f"\nReciprocity: WARN -- Z_ab and Z_ba disagree "
+                  f"({res.reciprocity_error:.3g})")
+        print(f"  error = {res.reciprocity_error:.3g}   "
+              "(max|Z_ab - Z_ba| / max|Z_ab| over the finite off-diagonal "
+              "entries)")
+        if verdict == RECIP_UNCHECKABLE:
+            print("  (nothing to check -- every mutual term is undefined; fix "
+                  "the port setup first)")
+        elif verdict == RECIP_OK:
+            print(f"  (data looks reciprocal; the alarm threshold is "
+                  f"{RECIPROCITY_WARN:g}. A clean EM solve lands at "
+                  "1e-16..1e-9, so a few 1e-9s here are normal, not a "
+                  "defect.)")
+        else:
+            print(f"  WARN: above {RECIPROCITY_WARN:g}. Z_ab and Z_ba "
+                  "disagree; the input S-parameters are suspect "
+                  "(non-reciprocal or under-converged EM solve) -- suspect "
+                  "the EM/de-embedding setup, not this tool.")
+
+    # --- 5. The legend, ONCE ----------------------------------------------
+    #
+    # It used to be two fragments in two places -- the sign key under the self
+    # table and the M/L caveat under the pairs -- and the sign key had no
+    # '|k|>1' entry at all, so a user whose |k| exceeds 1 was told nothing
+    # anywhere.  One legend, at the foot of the report, is the shape the pane
+    # settled on (`COUPLING_LEGEND_LINES`, emitted once per run by
+    # `_run_report_segments`).  The WORDING stays this surface's own: it is
+    # longer than the pane's because a terminal has no column budget, and
+    # length is not a defect.
+    print()
+    for line in _coupling_legend_lines(bool(res.pairs)):
+        print(line)
 
 
 def _print_fit(which: str, fit) -> None:

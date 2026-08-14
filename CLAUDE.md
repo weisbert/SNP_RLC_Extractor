@@ -197,6 +197,7 @@ row changes.
 | `tests/test_golden_regression.py` | Replays `tests/fixtures/golden_legacy.npz` through the current API and asserts `assert_array_equal`. This is the guard on every "stays bit-identical" claim below. |
 | `tests/_golden_capture.py` | Script + case registry that (re)generates `golden_legacy.npz`. NOT auto-discovered (leading underscore). Regenerate ONLY in the same commit that justifies moving the reference. |
 | `tests/_cli_capture.py` | **Script + case registry for the CLI's own output**, the `_golden_capture.py` shape (leading underscore, NOT auto-discovered). Drives the real `pkg_rlc_extractor.main(argv)` in-process over 143 invocations and records stdout, stderr, the exit code and the full text of every file the case writes, into `tests/fixtures/cli_reference/` (one JSON per case + `index.json`, 144 files, 780 KiB, 11 084 output lines). Regenerate ONLY in the same commit that justifies moving the reference. |
+| `tests/test_cli_coupling_report.py` | **The three cases in the CLI's coupling report that no shipped `.sNp` produces** (19 tests, 0.002 s, no Tk, qualifies for `FAST_MODULES` on that one property). `cli_reference/` pins this surface byte for byte over 143 real invocations and cannot reach any of them: a pair whose `|k|` exceeds 1 (the prompt that used to be pane-only, and is said NOWHERE on a headless box without it); a pair whose rank key is UNDEFINED, which must sort LAST and must never be folded (the only fixture that produces one produces nothing else, so the ordering is invisible in the reference); and the reciprocity ALARM, which no fixture trips. Also pins that the CLI holds the pane's own `rank_coupling_pairs` / `_pair_flag` / `reciprocity_verdict` OBJECTS rather than copies — a second implementation of the key is the whole failure closed here. Builds a `CouplingResult` by hand and captures stdout; every guard mutation-checked. |
 | `tests/test_cli_golden.py` | Replays it (37 tests, 1.8 s, no Tk). Byte compare per case with a unified diff naming the case and its argv; the exit codes asserted separately so a changed one is not one line of a 300-line diff; the refusal-shape rules; the normaliser's own unit tests; and `TestTheMatrixCoversTheFlags`, which walks `_make_arg_parser()._actions` and fails if any flag the parser defines has no case. |
 | `tests/_attrib_capture.py` | Script + case registry that (re)generates `tests/fixtures/attrib_reference/`, and the ONE place that knows the Attribution window's pure-formatter signatures. NOT auto-discovered (leading underscore). Regenerate ONLY in the same commit that justifies moving the reference. |
 | `tests/test_attrib_golden.py` | The Attribution window's TEXT, pinned byte for byte (12 tests, 0.33 s). Written for the report-unification phase, whose whole acceptance criterion is "the window's text did not move" and which is unverifiable without a BEFORE. 56 cases chosen for breadth of output SHAPE: every decomposable quantity (including `Z`, the only two-value-column one) and every one refused BY NAME; the reconciliation's three verdicts plus the WITHHELD clause; the declared / diagonal / shared-return ground models on the spec measured at **1.0120 nH independent against 2.0259 nH shared**; a composed network with and without the `BaselineLinks` gauge (the far file's ground ball is **exactly 0** without it and **+254 pH** with it); a sweep with the documented **505 nH** pole and `decap`'s exactly-constant one with none; the singular baseline naming what it folded; a NaN, a signed infinity and an exact zero in one table; and both units modes. |
@@ -622,15 +623,26 @@ own SPELLING of each, handed to the shared formatter as an argument, because
   two spellings of one file format are two things that can come to disagree
   about a number.
 
-**THE FIRST OF FOUR DIVERGENCES IS NOW FIXED; the other three survive, because
-they are content and not layout.** The three below are pre-existing, are
-preserved byte for byte, and each is a place the two front ends tell a user
-something different about the same data. Only the first was fixed, and only
-because the repo had already taken a written position on it — the rule applied
-was: *where the two surfaces disagree AND the repo has a documented position (a
-CLAUDE.md entry, a test file's stated purpose, `docs/theory.md`), the surface
+**ALL FOUR DIVERGENCES ARE NOW CLOSED, and the rule that decided the last three
+is not "make the two surfaces the same".** The first was fixed on the older
+rule — *where the two surfaces disagree AND the repo has a documented position
+(a CLAUDE.md entry, a test file's stated purpose, `docs/theory.md`), the surface
 matching that position wins and the other is fixed; where there is none, it is
-a product choice and is listed rather than decided.*
+a product choice and is listed rather than decided.* The other three had no
+such position, and the user supplied one: **`deploy/doctor.sh` exits 0 when at
+least one interpreter reaches TIER 2, i.e. a CLI-only install is a SUCCESSFUL
+install.** On a headless red-zone box with `$DISPLAY` unset the CLI is the ONLY
+surface and its reader has no pane to cross-check against, so:
+
+> **The CLI may be TERSER than the pane, but it must never omit a diagnostic or
+> a decisive number.** Where the CLI was MISSING something, it was added. Where
+> it merely says something at greater LENGTH than the pane's measured
+> 144-column budget allowed, the length was LEFT ALONE — a headless reader
+> benefits from it. Convergence for tidiness is not a reason to touch this
+> surface.
+
+That is why the three fixes below are not symmetrical: two of them make the CLI
+a SUPERSET of the pane rather than a copy of it.
 
 - **FIXED — the CLI's frequency provenance line used to ROUND, and to carry no
   snap note at all.** `_print_coupling_report` printed
@@ -659,27 +671,68 @@ a product choice and is listed rather than decided.*
   marker line** — no number, no table, no exit code and no CSV cell — and
   `render_reference.json` and `golden_legacy.npz` did not move at all, which is
   the shape the change had to have: the GUI was already right.
-- **The CLI does not rank or floor the pair list.** It is still
-  `for pr in res.pairs:` — nested-loop `(a, b)` order, every pair, no
-  `rank_coupling_pairs`, no `COUPLING_FLOOR_DB`, and `worst M/L` (the rank key)
-  is not printed at all. The reason the pane was changed applies to it verbatim:
-  six measurement ports make 15 pairs and index order says nothing about which
-  of them matter.
-- **Reciprocity is a METRIC on the CLI and a VERDICT in the pane.** The CLI
-  prints `Reciprocity error = 5.76e-15   (max|Z_ab - Z_ba| / max|Z_ab| …)` plus
-  a paragraph; the pane prints `✓ reciprocal (5.76e-15)`. Defensible — a
-  terminal has no 144-column budget — but they are now different products.
-- **The CLI's legend is per block, differently worded, and has no `|k|>1`.**
-  `_pair_flag` is pane-only, so a CLI user whose `|k|` exceeds 1 gets no "check
-  the port setup" prompt, and the pane's `COUPLING_LEGEND_LINES` is emitted once
-  per RUN where the CLI repeats its own wording under every block.
+- **FIXED — the CLI's pair list is RANKED and FLOORED, and it prints the rank
+  key.** It was `for pr in res.pairs:` — nested-loop `(a, b)` order, every pair,
+  and `worst M/L`, which IS the rank key, printed **nowhere at all**. That last
+  part was the real defect: six measurement ports make 15 pairs, index order
+  says nothing about which of them matter, and `worst M/L` is the quantity a
+  spur / pulling budget is written against, so on a headless box there was no
+  way to get it. `_print_coupling_report` now CALLS
+  `pkg_rlc.present.report.rank_coupling_pairs` — not a second implementation of
+  the key, because its three rules are exactly the ones a copy gets subtly
+  wrong: the strength computed **linearly** (`_ratio_db(0)` is NaN and a pair
+  with `M = 0` is the weakest there is, not an undefined one), an **undefined**
+  ratio sorting LAST and never folded away, and the **strongest** pair never
+  folded away either. `COUPLING_FLOOR_DB = -60` applies, the folded count is
+  printed, and it points at `--csv` — a pointer that stays TRUE only because
+  `_write_coupling_csv` enumerates every unordered pair straight off the Z
+  matrix and has no floor. **Do not give it one.** `worst M/L` goes on the
+  pair's HEADLINE, beside the flag, because a fifteen-pair report is scanned by
+  its headlines; the pane learned that the hard way when the same number was
+  moved off its headline during the results-views slimming and a test caught it
+  inside the hour. The heading says `strongest first by worst-case M/L` only
+  when there is more than one pair — ranking one pair means nothing, the same
+  omission the pane makes.
+- **FIXED — reciprocity now leads with the VERDICT on the CLI too, and keeps
+  the metric and the paragraph UNDER it.** The pane prints
+  `✓ reciprocal (5.76e-15)` and nothing else; the CLI printed
+  `Reciprocity error = 5.76e-15   (max|Z_ab − Z_ba| / max|Z_ab| …)` plus a
+  paragraph and **never said the word**. It is a SUPERSET now, not a copy:
+  `Reciprocity: OK -- reciprocal (…)` / `Reciprocity: WARN -- Z_ab and Z_ba
+  disagree (…)` / `Reciprocity: NOT CHECKED -- every mutual term is undefined`
+  as the headline, then the metric line and the paragraph exactly as before.
+  **The paragraph was NOT deleted**: the pane dropped it to a measured
+  144-column budget a terminal does not have, and a headless reader has no
+  other source for what the metric means. **No tick glyph** — nothing in the
+  143 pinned CLI cases uses one (the non-ASCII in that reference is `Ω Δ ω Σ √`
+  and nothing else), the CLI already says `WARN:` in words, and `✓` is 12 px
+  against 7 in the pane's own font, which is why the pane confines it to
+  standalone sentences. `reciprocity_verdict` in `pkg_rlc/present/report.py` is
+  the ONE classifier both surfaces call, so which of the three readings a given
+  number gets cannot differ between them; the alarm keeps its whole sentence on
+  both, because there the sentence IS the reading.
+- **FIXED — `_pair_flag` reaches the CLI, and the legend is ONE block at the
+  foot of the report.** The missing `|k|>1` prompt was the loss that mattered:
+  `|k| > 1` means the port setup is probably wrong, core's rule is that it adds
+  a note rather than clamping, and with `_pair_flag` pane-only a CLI user was
+  told **nowhere**. The pane's own `_pair_flag` is called and its `[ind]` /
+  `[cap]` / `[|k|>1]` goes on the pair headline. The legend was two fragments
+  in two places — the sign key under the self table, the M/L caveat under the
+  pairs — and is now one block printed once at the foot, the shape the pane
+  settled on with `COUPLING_LEGEND_LINES`. It is **not** that constant and must
+  not become it: the CLI keeps its own longer wording, because length is not a
+  defect on a surface with no column budget. The M/L caveat is one of the six
+  homes of that sentence and it moved POSITION, not a character.
 
-Merging `_print_coupling_report` into `_format_coupling_block` is therefore NOT
-a parameterisation job — it is four content decisions, and it also has to
-survive the pane's `G <= 2` matrix fold and the CLI's lack of a `units_mode`.
-Whoever takes it should move the CLI to the pane's answer deliberately, one
-divergence per commit, regenerating `cli_reference` in the same commit that
-justifies each — which is the documented escape and the only route.
+**What is left of `_print_coupling_report` is genuinely two products, and
+merging it into `_format_coupling_block` is still not a parameterisation job.**
+The CLI has no `units_mode`, does not do the pane's `G <= 2` matrix fold, and
+deliberately prints a metric, a definition and a paragraph the pane's
+144-column budget refuses. What the two now SHARE is the arithmetic and the
+classification — `rank_coupling_pairs`, `_pair_strength_db`, `_pair_flag`,
+`reciprocity_verdict`, `_format_z_matrix`, `_trunc_str`, `_render_columns` —
+which is the rule (share the computation, not the rendering) and the whole of
+what was ever at risk of disagreeing about a number.
 
 ### The run module (`pkg_rlc/services/run.py`) — the SOLVE landed, the ORCHESTRATION did not
 
@@ -912,7 +965,7 @@ they are the two places a later session will be tempted to undo it.
 - **`compute_z` warns when `G > 1`.** It returns only measurement port 1. Only Mode 5 can get there (the named builders always produce `G == 1`), and Mode 5 is exactly the free-text mode where `signal V` instead of `signal B` silently defines a second measurement port and changes the answer by 37%.
 - **`RECIPROCITY_WARN = 1e-3` lives in `pkg_rlc.physics.solve`** (re-exported by `pkg_rlc.physics.core`, so `pkg_rlc.physics.core.RECIPROCITY_WARN` still resolves) and is imported by both `pkg_rlc.frontend.app` and `pkg_rlc_extractor`. They used to disagree (1e-3 vs 1e-12), so the same file got opposite verdicts and the CLI cried wolf on every real EM file. The metric skips non-finite off-diagonal entries so one undefined measurement port cannot poison it.
 - **`M/L` is the Norton injection ratio, NOT the current-transfer ratio.** The exact ratio into a shorted port `a` is `I_a/I_b = -Z_ab/Z_aa`; `M/L_a` equals its magnitude only where `w*L_a >> R_a` (1098% apart at 10 MHz for `L=2n, R=1.5`). The label is "coupling ratio" in six places — `pkg_rlc.physics.solve`'s docstring (it moved there with the arithmetic), the CLI report, Help, README, theory.md, and `pkg_rlc.physics.attrib`'s `DECOMPOSABLE` entry. Keep the six in sync. **The GUI legend is deliberately NOT one of them any more**: the results-views slimming replaced the per-block legend with `COUPLING_LEGEND_LINES` in `pkg_rlc.present.report`, printed once per run, and it spells the quantity `M/L = Norton injection ratio, NOT the exact current ratio |Z_ab/Z_aa| (equal only where wL >> R)` — the whole caveat rather than the short label. That is the more precise wording, so the seventh site is not a drift to repair; it is why this bullet says six and not seven. `pkg_rlc.physics.attrib.transfer_ratio` is where the EXACT ratio is available as a number rather than as a caveat.
-- **The GUI's pair list is RANKED by `max(|M/L_a|, |M/L_b|)` and floored at `COUPLING_FLOOR_DB = -60`.** Six measurement ports make 15 pairs, and nested-loop `(a, b)` order carries no information about which of them matter. `|k|` alone is the wrong key: `|k| = 0.02` between two 2 nH coils and between a 2 nH and a 500 pH coil are different problems — same `M`, 4x the injection into the small one. `rank_coupling_pairs` is pure and mutation-checked, and **magnitude appears there and nowhere else** — every printed cell stays signed. Three rules are load-bearing: `_pair_strength` is computed **linearly**, not from the `*_dB` fields (`_ratio_db(0)` is NaN, and a pair with `M = 0` is the weakest there is, not an undefined one); a pair with an **undefined** ratio sorts last and is **never** folded away (NaN is a missing measurement, not a small number); and the **strongest** pair is never folded away either, or a block can consist of nothing but "3 pairs were too weak to list". The `(see Export CSV)` pointer is true because `_write_coupling_csv` enumerates every unordered pair straight off the Z matrix and has no floor — do not give it one.
+- **BOTH surfaces' pair lists are RANKED by `max(|M/L_a|, |M/L_b|)` and floored at `COUPLING_FLOOR_DB = -60`, through the one `rank_coupling_pairs`** (the CLI joined the GUI here when divergence 2 was closed — see "One formatter, two spellings"; the CLI's fold pointer names `--csv` rather than Export CSV and is true for the same reason). Six measurement ports make 15 pairs, and nested-loop `(a, b)` order carries no information about which of them matter. `|k|` alone is the wrong key: `|k| = 0.02` between two 2 nH coils and between a 2 nH and a 500 pH coil are different problems — same `M`, 4x the injection into the small one. `rank_coupling_pairs` is pure and mutation-checked, and **magnitude appears there and nowhere else** — every printed cell stays signed. Three rules are load-bearing: `_pair_strength` is computed **linearly**, not from the `*_dB` fields (`_ratio_db(0)` is NaN, and a pair with `M = 0` is the weakest there is, not an undefined one); a pair with an **undefined** ratio sorts last and is **never** folded away (NaN is a missing measurement, not a small number); and the **strongest** pair is never folded away either, or a block can consist of nothing but "3 pairs were too weak to list". The `(see Export CSV)` pointer is true because `_write_coupling_csv` enumerates every unordered pair straight off the Z matrix and has no floor — do not give it one.
 - **`compute_z` is a thin wrapper returning `Zmat[:, 0, 0]`** — the self impedance of the FIRST measurement port, and a strided **view**, not a fresh contiguous array. Copy before writing into it or before handing it to code that assumes C-contiguity (the GUI does `np.ascontiguousarray`).
 - **`tests/fixtures/golden_legacy.npz` is the guard for all of the above.** It pins `parse_touchstone -> s_to_y -> compute_z` bit-for-bit for every fixture and for representative Mode 1/2/3/4/5 cases. If it fails, the reduction path changed: fix the change, do not regenerate the reference to make the test pass.
 - **The Mode 5 DSL and its helpers live in `pkg_rlc/physics/spec.py`** (`parse_custom_termination_text`, `parse_si`, `parse_kv_rlc_params`, `SI_SUFFIXES`) — terminations belong to the declaration model, and `pkg_rlc.physics.core` re-exports all four so `from pkg_rlc.physics.core import parse_si` keeps resolving. `pkg_rlc/frontend/app.py` re-imports them so `from pkg_rlc.frontend.app import parse_si` and friends keep resolving; keep that re-export list intact.

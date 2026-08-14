@@ -895,7 +895,14 @@ def rank_coupling_pairs(pairs, floor_db: Optional[float] = COUPLING_FLOOR_DB):
 
 
 def _pair_flag(pair) -> str:
-    """Compact sign flag for a pair, mirroring _sign_flag on the diagonal."""
+    """Compact sign flag for a pair, mirroring _sign_flag on the diagonal.
+
+    BOTH surfaces print this.  `|k|>1` is the load-bearing half: it means the
+    port setup is probably wrong, and core's rule is that it adds a note rather
+    than clamping -- so a reader with no other surface (the CLI on a headless
+    red-zone box, where `deploy/doctor.sh` calls tier 2 a successful install)
+    has to be told here or nowhere.
+    """
     flags = []
     im = pair.Z_ab.imag
     if math.isfinite(im):
@@ -906,6 +913,33 @@ def _pair_flag(pair) -> str:
     if math.isfinite(pair.k) and abs(pair.k) > 1.0:
         flags.append("|k|>1")
     return ",".join(flags)
+
+
+#: The three readings of the reciprocity self-check.
+RECIP_UNCHECKABLE = "uncheckable"
+RECIP_OK = "ok"
+RECIP_WARN = "warn"
+
+
+def reciprocity_verdict(pairs, reciprocity_error: float) -> str:
+    """Which of the three things the reciprocity number says.
+
+    ONE classifier, two renderings.  The pane prints the verdict and the number
+    and nothing else -- what the metric IS costs 100 of that line's 140 columns
+    for something the reader is scanning for a tick or a cross.  The CLI prints
+    the same verdict as its headline and then KEEPS the metric and the
+    paragraph underneath, because a terminal has no 144-column budget and a
+    headless box has no pane to read the definition off.
+
+    What must never differ is WHICH of the three readings a given number gets,
+    so the "is there anything off-diagonal to check at all" test and the
+    threshold comparison live here and both surfaces call in.
+    """
+    checkable = any(math.isfinite(p.Z_ab.real) and math.isfinite(p.Z_ab.imag)
+                    for p in pairs)
+    if not checkable:
+        return RECIP_UNCHECKABLE
+    return RECIP_OK if reciprocity_error <= RECIPROCITY_WARN else RECIP_WARN
 
 
 def _pane_z_name(n) -> str:
@@ -1134,8 +1168,7 @@ def _format_coupling_block(block: CouplingSnapshot, units_mode: str) -> str:
 
     # --- health check -----------------------------------------------------
     recip = cres.reciprocity_error
-    checkable = any(math.isfinite(p.Z_ab.real) and math.isfinite(p.Z_ab.imag)
-                    for p in pairs)
+    verdict = reciprocity_verdict(pairs, recip)
     # VERDICT AND NUMBER, and nothing else on the line.  What the metric IS
     # (max|Z_ab-Z_ba| / max|Z_ab| over the finite off-diagonal entries, alarm
     # above RECIPROCITY_WARN) is a definition, not a reading: it is the same
@@ -1143,10 +1176,10 @@ def _format_coupling_block(block: CouplingSnapshot, units_mode: str) -> str:
     # putting it here cost 100 of this line's 140 columns for a number the
     # reader is scanning for a tick or a cross.  The one case that keeps its
     # sentence is the alarm, because there the sentence IS the reading.
-    if not checkable:
+    if verdict == RECIP_UNCHECKABLE:
         lines.append("      · reciprocity: nothing to check — every mutual "
                      "term is undefined")
-    elif recip <= RECIPROCITY_WARN:
+    elif verdict == RECIP_OK:
         lines.append(f"      ✓ reciprocal ({recip:.3g})")
     else:
         lines.append(f"      ⚠ RECIPROCITY {recip:.3g} — Z_ab and Z_ba "
