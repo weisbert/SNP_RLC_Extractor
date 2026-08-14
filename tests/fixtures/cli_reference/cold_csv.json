@@ -236,14 +236,14 @@
    "# grounding (shorting the two ends to each other, with no ground anywhere, gives the identical",
    "# -870.268 pH). A three-terminal version of the same structure would be invisible to every step here.",
    "section,freq_GHz,victim,aggressor,quantity,unit,port,port_j,port_name,declared,k,z_ap_re,z_ap_im,z_pb_re,z_pb_im,z_pp_re,z_pp_im,value_re,value_im,delta_re,delta_im,delta_dB,threshold,flagged,defined,extra",
-   "bracket,5.000500e+00,vic,agg,M,H,,,,,,,,,,,,2.512386e-10,0.000000e+00,7.587076e-10,0.000000e+00,1.208424e+01,,,,grounded_re=1.009946e-09;grounded_im=0.000000e+00;n_candidates=2;n_screenable=2;reconciliation_rel=6.253050e-13;baseline_grounded=",
-   "screen,5.000500e+00,vic,agg,M,H,3,,out_p,open,,-3.908097e-04,-1.595328e+04,-3.048072e-10,-7.893682e+00,-3.908084e-04,-1.587453e+04,5.037235e-10,0.000000e+00,2.524849e-10,0.000000e+00,6.042118e+00,,,True,",
-   "screen,5.000500e+00,vic,agg,M,H,4,,out_n,open,,-3.059557e-10,-7.893682e+00,-3.908095e-04,-1.595328e+04,-3.908083e-04,-1.587453e+04,5.037235e-10,0.000000e+00,2.524849e-10,0.000000e+00,6.042118e+00,,,True,",
-   "pair,5.000500e+00,vic,agg,M,H,3,4,out_p,,,,,,,,,7.587076e-10,0.000000e+00,2.537377e-10,0.000000e+00,,1.262425e-10,True,,name_j=out_n;delta_i=(2.524849275039812e-10+0j);delta_j=(2.524849275033331e-10+0j);ratio=3.004962e+00;sign_flip=False",
-   "mirror,5.000500e+00,vic,agg,M,H,3,,out_p,,,,,,,,,5.037235e-10,0.000000e+00,-5.062226e-10,0.000000e+00,-6.042120e+00,,,,element=ground port 3;baseline_re=1.009946e-09;baseline_im=0.000000e+00",
-   "mirror,5.000500e+00,vic,agg,M,H,4,,out_n,,,,,,,,,5.037235e-10,0.000000e+00,-5.062226e-10,0.000000e+00,-6.042120e+00,,,,element=ground port 4;baseline_re=1.009946e-09;baseline_im=0.000000e+00",
-   "cumulative,5.000500e+00,vic,agg,M,H,3,,out_p,,1,,,,,,,5.037235e-10,0.000000e+00,2.524849e-10,0.000000e+00,,,,,sum_individual=(2.524849275039812e-10+0j);non_additivity=0j;saturation_k=2;saturation_tol=1.000000e-01;alternative=ideal ground (from all-open)",
-   "cumulative,5.000500e+00,vic,agg,M,H,4,,out_n,,2,,,,,,,1.009946e-09,0.000000e+00,7.587076e-10,0.000000e+00,,,,,sum_individual=(5.049698550073143e-10+0j);non_additivity=(2.5373769573045804e-10+0j);saturation_k=2;saturation_tol=1.000000e-01;alternative=ideal ground (from all-open)",
+   "bracket,5.000500000000e+00,vic,agg,M,H,,,,,,,,,,,,2.512385917852e-10,0.000000000000e+00,7.587075507378e-10,0.000000000000e+00,1.208423728530e+01,,,,grounded_re=1.009946e-09;grounded_im=0.000000e+00;n_candidates=2;n_screenable=2;reconciliation_rel=6.253050e-13;baseline_grounded=",
+   "screen,5.000500000000e+00,vic,agg,M,H,3,,out_p,open,,-3.908096718736e-04,-1.595327761678e+04,-3.048072064768e-10,-7.893682431710e+00,-3.908084098233e-04,-1.587452780792e+04,5.037235192892e-10,0.000000000000e+00,2.524849275040e-10,0.000000000000e+00,6.042117568775e+00,,,True,",
+   "screen,5.000500000000e+00,vic,agg,M,H,4,,out_n,open,,-3.059557301850e-10,-7.893682431690e+00,-3.908095309110e-04,-1.595327761678e+04,-3.908082680537e-04,-1.587452780792e+04,5.037235192886e-10,0.000000000000e+00,2.524849275033e-10,0.000000000000e+00,6.042117568764e+00,,,True,",
+   "pair,5.000500000000e+00,vic,agg,M,H,3,4,out_p,,,,,,,,,7.587075507378e-10,0.000000000000e+00,2.537376957305e-10,0.000000000000e+00,,1.262424637520e-10,True,,name_j=out_n;delta_i=(2.524849275039812e-10+0j);delta_j=(2.524849275033331e-10+0j);ratio=3.004962e+00;sign_flip=False",
+   "mirror,5.000500000000e+00,vic,agg,M,H,3,,out_p,,,,,,,,,5.037235192886e-10,0.000000000000e+00,-5.062226232344e-10,0.000000000000e+00,-6.042119716534e+00,,,,element=ground port 3;baseline_re=1.009946e-09;baseline_im=0.000000e+00",
+   "mirror,5.000500000000e+00,vic,agg,M,H,4,,out_n,,,,,,,,,5.037235192892e-10,0.000000000000e+00,-5.062226232338e-10,0.000000000000e+00,-6.042119716522e+00,,,,element=ground port 4;baseline_re=1.009946e-09;baseline_im=0.000000e+00",
+   "cumulative,5.000500000000e+00,vic,agg,M,H,3,,out_p,,1,,,,,,,5.037235192892e-10,0.000000000000e+00,2.524849275040e-10,0.000000000000e+00,,,,,sum_individual=(2.524849275039812e-10+0j);non_additivity=0j;saturation_k=2;saturation_tol=1.000000e-01;alternative=ideal ground (from all-open)",
+   "cumulative,5.000500000000e+00,vic,agg,M,H,4,,out_n,,2,,,,,,,1.009946142523e-09,0.000000000000e+00,7.587075507378e-10,0.000000000000e+00,,,,,sum_individual=(5.049698550073143e-10+0j);non_additivity=(2.5373769573045804e-10+0j);saturation_k=2;saturation_tol=1.000000e-01;alternative=ideal ground (from all-open)",
    ""
   ]
  }

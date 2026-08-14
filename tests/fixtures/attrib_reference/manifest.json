@@ -22,8 +22,8 @@
   {
    "name": "candidate_parsing",
    "describe": "parse_candidate / candidate_list: what is accepted, and every refusal message a typed field can produce",
-   "sha256": "2c7fee6c5b7e5e5cf9364907cad370040af15075285cc382b853b256bfc14211",
-   "chars": 2008,
+   "sha256": "80a9c5e4e6544a4cf77226764510d156d3b00adec659e8a9078cd83fbc769482",
+   "chars": 2225,
    "lines": 26
   },
   {

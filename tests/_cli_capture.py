@@ -427,7 +427,13 @@ CASES: list[CliCase] = [
        "--mport", "agg = 2", "--gnd", "3,4", "--freq", "5.0",
        "--attribute", "vic,agg", "--attribute-alt", "open",
        "--attribute-alt", "ideal"),
-    _c("attr_alt_bad_spacing", "'R=5 m' would silently mean 5 ohm",
+    # REFUSED since the candidate grammar was unified: a space separates
+    # fields on this flag now, so 'm' is a token with no '=' and is the
+    # factor-of-1000 trap core's _rlc_tokens refuses.  Before that it was one
+    # field, parse_si tolerated the space, and the flag quietly meant 5 mOhm
+    # while the Attribution window refused the identical string.
+    _c("attr_alt_bad_spacing", "'R=5 m' is REFUSED -- it would silently mean "
+       "5 ohm, and the window has always said so",
        "--cli", DIFF, "--mode", "coupling", "--mport", "vic = 1",
        "--mport", "agg = 2", "--gnd", "3,4", "--freq", "5.0",
        "--attribute", "vic,agg", "--attribute-alt", "R=5 m"),

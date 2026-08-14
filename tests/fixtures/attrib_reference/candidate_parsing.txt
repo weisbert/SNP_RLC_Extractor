@@ -12,15 +12,15 @@ accepted:
 refused, one message each:
                     '' -> ValueError: empty candidate
                  '   ' -> ValueError: empty candidate
-               'R=5 m' -> ValueError: 'R=5 m': 'm' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
-                  '50' -> ValueError: '50': '50' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
-                   'R' -> ValueError: 'R': 'R' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
-              'banana' -> ValueError: 'banana': 'banana' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
-          'R=5 L=1n C' -> ValueError: 'R=5 L=1n C': 'C' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
+               'R=5 m' -> ValueError: 'R=5 m': 'm' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… separated by spaces or commas, with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
+                  '50' -> ValueError: '50': '50' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… separated by spaces or commas, with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
+                   'R' -> ValueError: 'R': 'R' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… separated by spaces or commas, with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
+              'banana' -> ValueError: 'banana': 'banana' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… separated by spaces or commas, with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
+          'R=5 L=1n C' -> ValueError: 'R=5 L=1n C': 'C' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… separated by spaces or commas, with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
 
 candidate_list('open, R=5 m, ideal, banana'):
   alternatives: ['open', 'ideal']
-  problem: 'R=5 m': 'm' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
-  problem: 'banana': 'banana' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
+  problem: 'R=5 m': 'm' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… separated by spaces or commas, with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
+  problem: 'banana': 'banana' has no '='. A candidate is 'open', 'ideal', or R=…/L=…/C=… separated by spaces or commas, with no spaces inside a value — 'R=5 m' would silently mean 5 Ω, not 5 mΩ
 
 candidate_list('') -> ([], [])
