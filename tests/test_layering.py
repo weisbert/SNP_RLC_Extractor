@@ -1,26 +1,37 @@
 """The import layering gate.
 
 This file is a FENCE, not a measurement.  It exists because the repo's import
-graph is currently held together by ten `import pkg_rlc_gui` statements
-hidden inside function bodies, whose only purpose is to dodge a cycle: a shared
-data model (`TraceConfig`) and a handful of colour constants live in the same
-module as the Tk `App`, so every panel that needs either has to reach UP into
-the frontend, and it can only do that after import time.  A later phase splits
-those out.  This file is what stops the dodge coming back afterwards, and what
-stops an ELEVENTH one being added in the meantime.
+graph was once held together by ten `import pkg_rlc_gui` statements hidden
+inside function bodies, whose only purpose was to dodge a cycle: a shared data
+model (`TraceConfig`) and a handful of colour constants lived in the same
+module as the Tk `App`, so every panel that needed either had to reach UP into
+the frontend, and it could only do that after import time.  Later phases split
+those out.  This file is what stops the dodge coming back, and what stops an
+ELEVENTH one being added.
+
+THE LAYER OF A MODULE IS ITS FOLDER, AND THAT IS THE POINT.  There is no
+hand-written module-to-layer table here any more: `pkg_rlc/present/report.py`
+is L3 because it is in `present/`, and the only declaration left is the
+seven-line `LAYER_OF_FOLDER` below, which says what the seven subpackage names
+MEAN.  While the modules were flat at the repo root the map had to be written
+out module by module, and the tree and the table were two things that could
+come to disagree -- a file moved without its entry being updated kept its old
+layer, silently.  Now moving a file IS moving its layer, and there is nothing
+to keep in step.
 
 Three properties are asserted:
 
-  1. THE LAYER MAP HOLDS.  `LAYERS` below is the target architecture, declared
-     as data.  A module may import from its own layer or a LOWER one; importing
-     UPWARD is the failure.  Same-layer is allowed on purpose -- a layer is a
-     bag of peers, and the order INSIDE it is pinned by property 2 rather than
-     by inventing sub-layers (`pkg_rlc_attrib` -> `pkg_rlc_core` is the case:
-     both are L0 numerics, and what makes it legal is that core imports nothing
-     back).  Modules named in `LAYERS` that do not exist yet are simply skipped,
-     so this test is valid TODAY and after the refactor lands.  A pkg_rlc_*.py
-     that exists and is NOT in the map fails too, or a new module could slip in
-     unlayered and unchecked.
+  1. THE LAYER MAP HOLDS.  A module may import from its own layer or a LOWER
+     one; importing UPWARD is the failure.  Same-layer is allowed on purpose --
+     a layer is a bag of peers, and the order INSIDE it is pinned by property 2
+     rather than by inventing sub-layers (`pkg_rlc.physics.attrib` ->
+     `pkg_rlc.physics.core` is the case: both are L0 numerics, and what makes
+     it legal is that core imports nothing back).  A module under `pkg_rlc/`
+     whose folder is NOT in `LAYER_OF_FOLDER` FAILS rather than defaulting to
+     anything -- an unlayered module is checked by no rule in this file, which
+     is exactly what it exists to prevent.  A folder named here that does not
+     exist yet is fine: that is how the next split declares its target before
+     writing it.
 
   2. THE GRAPH IS ACYCLIC, counting module-level imports only, with the cycle
      printed if one exists.
@@ -32,15 +43,16 @@ Three properties are asserted:
      that claims to have removed them to prove it here.
 
 It is built with `ast` and never imports the modules it checks.  Importing
-`pkg_rlc_gui` costs ~548 ms and pulls in tkinter; this file parses ten source
-files, needs no display, and runs in milliseconds.
+`pkg_rlc.frontend.app` costs ~548 ms and pulls in tkinter; this file parses the
+package's source files, needs no display, and runs in milliseconds.
 
-MUTATION-CHECKED: adding a module-level `import pkg_rlc_gui` to
-`pkg_rlc_core.py` turns `test_no_module_imports_from_a_higher_layer`,
+MUTATION-CHECKED: adding a module-level `import pkg_rlc.frontend.app` to
+`pkg_rlc/physics/core.py` turns `test_no_module_imports_from_a_higher_layer`,
 `test_the_module_import_graph_is_acyclic` and (for a function-level one)
 `test_the_function_level_back_imports_are_exactly_the_known_set` red, and
-`TestTheGateHasTeeth` pins that permanently against synthetic sources so the
-proof does not depend on anybody re-running the experiment.
+`TestTheGateHasTeeth` pins that permanently against synthetic sources -- built
+in the SHAPE OF THE REAL TREE, since the shape is now what carries the rule --
+so the proof does not depend on anybody re-running the experiment.
 """
 from __future__ import annotations
 
@@ -55,7 +67,36 @@ sys.path.insert(0, str(REPO_ROOT))
 
 
 # --------------------------------------------------------------------------
-# The layer map.  Data, deliberately: a rule you can read in one screen.
+# The layer map.  SEVEN FOLDER NAMES, and nothing else.
+#
+# Everything below the package root derives its layer from the folder it is
+# in, so this table is the whole declaration: `pkg_rlc/model/validate.py` is
+# L1 because `model` is L1 here, and moving that file into `services/` moves
+# it to L2 with no edit to this file at all.  That is the property the
+# subpackages were created for -- the previous version of this map named all
+# 25 modules one by one, and a module that moved without its entry moving kept
+# its old layer in silence.
+#
+# WHY `validate` IS IN `model/` AND NOT IN `services/`, since it is the one
+# placement that looks wrong: it is L1 and it has to be.
+# `TraceConfig.port_descriptor()` is one line (`return _port_descriptor(self)`),
+# `info_str()` counts the file set through `trace_file_labels`, all three
+# legacy migrations call into it (`_union_port_specs`, `_mport_more_lines`,
+# `_import_dsl_text`) and `_config_signature` ends on `trace_file_scope`.  So
+# the model imports validate, and validate therefore has to sit at or below the
+# model.  It sits there honestly rather than by fiat: it imports
+# `pkg_rlc.physics.core` and `pkg_rlc.physics.compose` and NOTHING ELSE, and it
+# is duck-typed over the trace -- it never imports `TraceConfig`, it just reads
+# attributes off whatever it is handed.  That is what keeps the edge
+# ONE-DIRECTIONAL, and it makes this the same case the docstring above names
+# for `pkg_rlc.physics.attrib` -> `pkg_rlc.physics.core`: two peers in one
+# layer, legal because the one being imported imports nothing back.  So L1
+# means "the shared data model, and the pure spec logic duck-typed over it" --
+# what a spec SAYS, DOES and gets WRONG, which is knowledge about the model and
+# not a service built on top of it.  The session file and the run record, which
+# really are services over the model, are L2.  Filing `validate.py` beside them
+# would make the tree say L2 where the import graph says L1, and the tree is
+# now the thing this gate reads.
 # --------------------------------------------------------------------------
 
 L0_NUMERICS = 0      # arrays and physics.  No Tk, no App, no widgets.
@@ -66,103 +107,29 @@ L4_WIDGETS = 4       # generic Tk widgets that know nothing about this app.
 L5_PANELS = 5        # app-specific windows and panels.
 L6_FRONTEND = 6      # the App itself and the argv entry point.
 
-LAYERS = {
-    # L0 -- numerics
-    "pkg_rlc.physics.core": L0_NUMERICS,
-    "pkg_rlc.physics.touchstone": L0_NUMERICS,
-    "pkg_rlc.physics.spec": L0_NUMERICS,
-    "pkg_rlc.physics.solve": L0_NUMERICS,
-    "pkg_rlc.physics.compose": L0_NUMERICS,
-    "pkg_rlc.physics.attrib": L0_NUMERICS,
-    # L1 -- model
-    "pkg_rlc.model.trace": L1_MODEL,
-    # `pkg_rlc_validate` was declared L2 when this map was written, before
-    # `pkg_rlc_model` existed.  IT MOVED DOWN, and the reason is a real edge
-    # rather than a tidier name: `TraceConfig.port_descriptor()` is one line
-    # (`return _port_descriptor(self)`), `info_str()` counts the file set
-    # through `trace_file_labels`, all three legacy migrations call into it
-    # (`_union_port_specs`, `_mport_more_lines`, `_import_dsl_text`) and
-    # `_config_signature` ends on `trace_file_scope`.  So the model imports
-    # validate, and validate therefore has to sit at or below the model.
-    #
-    # It sits there honestly rather than by fiat: `pkg_rlc_validate` imports
-    # `pkg_rlc_core` and `pkg_rlc_compose` and NOTHING ELSE, and it is
-    # duck-typed over the trace -- it never imports `TraceConfig`, it just
-    # reads attributes off whatever it is handed.  That is what keeps the edge
-    # ONE-DIRECTIONAL, and it makes this the same case the docstring above
-    # names for `pkg_rlc_attrib` -> `pkg_rlc_core`: two peers in one layer,
-    # legal because the one being imported imports nothing back.
-    #
-    # What L1 means now is "the shared data model, and the pure spec logic
-    # duck-typed over it" -- what a spec SAYS, DOES and gets WRONG, which is
-    # knowledge about the model and not a service built on top of it.  The
-    # session file and the run record, which really are services over the
-    # model, stay at L2.
-    #
-    # AND THAT IS WHY IT SITS IN `pkg_rlc/model/`, NOT `pkg_rlc/services/`.
-    # Now that the folders ARE the layers, putting it beside the session file
-    # and the run record would make the tree say L2 while this map says L1 --
-    # and the map is the one the import graph obeys.
-    "pkg_rlc.model.validate": L1_MODEL,
-    # L2 -- services
-    "pkg_rlc.services.session": L2_SERVICES,
-    "pkg_rlc.services.run": L2_SERVICES,
-    # L3 -- presentation
-    "pkg_rlc.present.report": L3_PRESENTATION,
-    "pkg_rlc.present.csv": L3_PRESENTATION,
-    "pkg_rlc.present.attrib_report": L3_PRESENTATION,
-    "pkg_rlc.present.conntable": L3_PRESENTATION,
-    "pkg_rlc.present.help": L3_PRESENTATION,
-    # L4 -- widgets
-    "pkg_rlc.widgets.widgets": L4_WIDGETS,
-    "pkg_rlc.widgets.plot": L4_WIDGETS,
-    # L5 -- panels
-    "pkg_rlc.panels.files_gui": L5_PANELS,
-    "pkg_rlc.panels.attrib_gui": L5_PANELS,
-    # L6 -- frontend
-    "pkg_rlc.frontend.app": L6_FRONTEND,
-    "pkg_rlc.frontend.cli": L6_FRONTEND,
-    # The root shim.  `pkg_rlc_extractor.py` is the published entry point and
-    # stays where every README, Help tab, `doctor.sh` line and deploy SENTINEL
-    # expects it; all it does is import `pkg_rlc.frontend.cli`.
+PACKAGE = "pkg_rlc"
+
+LAYER_OF_FOLDER = {
+    "physics": L0_NUMERICS,
+    "model": L1_MODEL,
+    "services": L2_SERVICES,
+    "present": L3_PRESENTATION,
+    "widgets": L4_WIDGETS,
+    "panels": L5_PANELS,
+    "frontend": L6_FRONTEND,
+}
+
+# Modules that are NOT under `pkg_rlc/` and still need a layer.  There is
+# exactly one, and it is a name rather than a folder because its name is the
+# contract: `pkg_rlc_extractor.py` is the published entry point -- the README,
+# every Help tab, the CLI's own `--help` examples, `deploy/doctor.sh` and the
+# SENTINEL that `deploy.sh` and `pack.ps1` both check for -- so it stays at the
+# repo root, and all it does is import `pkg_rlc.frontend.cli`.  Any OTHER
+# `pkg_rlc_*.py` appearing at the root is unlayered and fails: it belongs in
+# the package, in the folder that is its layer.
+ROOT_MODULES = {
     "pkg_rlc_extractor": L6_FRONTEND,
 }
-
-# The flat spellings, for `TestTheGateHasTeeth` ONLY.  Those tests build
-# synthetic one-file-per-module trees in a temp dir to prove this gate can go
-# red, and writing them as packages would make them harder to read than the
-# rule they check.  M2 rewrites this file to derive the layer FROM THE PATH,
-# at which point this table and the duplicated LAYER_PREFIXES entry below go.
-_LEGACY_LAYERS = {
-    "pkg_rlc_core": L0_NUMERICS,
-    "pkg_rlc_touchstone": L0_NUMERICS,
-    "pkg_rlc_spec": L0_NUMERICS,
-    "pkg_rlc_solve": L0_NUMERICS,
-    "pkg_rlc_compose": L0_NUMERICS,
-    "pkg_rlc_attrib": L0_NUMERICS,
-    "pkg_rlc_model": L1_MODEL,
-    "pkg_rlc_validate": L1_MODEL,
-    "pkg_rlc_session": L2_SERVICES,
-    "pkg_rlc_run": L2_SERVICES,
-    "pkg_rlc_report": L3_PRESENTATION,
-    "pkg_rlc_csv": L3_PRESENTATION,
-    "pkg_rlc_attrib_report": L3_PRESENTATION,
-    "pkg_rlc_conntable": L3_PRESENTATION,
-    "pkg_rlc_help": L3_PRESENTATION,
-    "pkg_rlc_widgets": L4_WIDGETS,
-    "pkg_rlc_plot": L4_WIDGETS,
-    "pkg_rlc_files_gui": L5_PANELS,
-    "pkg_rlc_attrib_gui": L5_PANELS,
-    "pkg_rlc_gui": L6_FRONTEND,
-}
-
-# Every `pkg_rlc.panels.panels_*` module is L5.  A prefix rather than an
-# enumeration because that group is expected to grow one panel at a time.
-# The flat spelling is the synthetic trees' again.
-LAYER_PREFIXES = (
-    ("pkg_rlc.panels.panels_", L5_PANELS),
-    ("pkg_rlc_panels_", L5_PANELS),
-)
 
 LAYER_NAMES = {
     L0_NUMERICS: "L0 numerics",
@@ -356,10 +323,11 @@ def module_name_of(path: Path, root: Path) -> str:
 def scan_tree(root: Path) -> dict[str, ModuleImports]:
     """Parse the package under `pkg_rlc/`, plus the root scripts.
 
-    Two shapes, because two shapes exist.  The real tree is the package;
-    `TestTheGateHasTeeth` builds flat one-file trees in a temp dir, and
+    Two shapes, because two shapes exist.  The modules are the package;
     `reduce_snp.py` and the `pkg_rlc_extractor.py` entry-point shim are flat at
-    the root for reasons of their own.  `__init__.py` files are skipped: every
+    the root for reasons of their own.  `TestTheGateHasTeeth` builds synthetic
+    trees of the SAME two shapes in a temp dir -- it has to, now that the
+    folder is what carries the layer.  `__init__.py` files are skipped: every
     one of them is a docstring and nothing else, which is what keeps the
     packages out of the import graph entirely -- and
     `test_no_package_init_imports_anything` is what holds them to it.
@@ -392,13 +360,33 @@ def scan_tree(root: Path) -> dict[str, ModuleImports]:
 
 
 def layer_of(module: str) -> int | None:
-    """The declared layer of `module`, or None if it has none."""
-    if module in LAYERS:
-        return LAYERS[module]
-    for prefix, level in LAYER_PREFIXES:
-        if module.startswith(prefix):
-            return level
-    return _LEGACY_LAYERS.get(module)
+    """The layer of `module`, READ OFF ITS PATH, or None if it has none.
+
+    `pkg_rlc.present.report` -> L3, because the second component is `present`.
+    That is the whole rule, and it is why a new panel needs no declaration and
+    a moved file cannot keep a stale layer.
+
+    None means "this module is in no layer", which is a FAILURE reported by
+    `test_every_module_has_a_layer` -- a folder nobody has declared, a loose
+    module sitting directly in `pkg_rlc/`, or a `pkg_rlc_*.py` at the repo root
+    that is not the entry-point shim.  A DEEPER folder inside a layer
+    (`pkg_rlc/physics/parse/x.py`) is that layer: a subdivision of L0 is still
+    L0, and the rules here are all about crossing layers.
+    """
+    parts = module.split(".")
+    if parts[0] != PACKAGE:
+        return ROOT_MODULES.get(module)
+    if len(parts) < 3:
+        return None
+    return LAYER_OF_FOLDER.get(parts[1])
+
+
+def unlayered_modules(scanned: dict[str, ModuleImports]) -> list[str]:
+    """Scanned modules that `layer_of` cannot place, `reduce_snp` excepted."""
+    return sorted(
+        name for name in scanned
+        if name != STANDALONE and layer_of(name) is None
+    )
 
 
 def back_import_pairs(scanned: dict[str, ModuleImports]) -> set[tuple[str, str]]:
@@ -496,19 +484,21 @@ class TestTheLayerMapHolds(unittest.TestCase):
             "Upward import(s) found:\n  " + "\n  ".join(problems),
         )
 
-    def test_every_root_module_has_a_declared_layer(self):
-        """A new pkg_rlc_*.py must join the map, or it escapes every rule here."""
+    def test_every_module_has_a_layer(self):
+        """A module in an undeclared folder escapes every rule in this file."""
         scanned = scan_tree(REPO_ROOT)
-        unlayered = sorted(
-            name for name in scanned
-            if name != STANDALONE and layer_of(name) is None
-        )
+        unlayered = unlayered_modules(scanned)
         self.assertEqual(
             [], unlayered,
-            "These root modules exist but are not in LAYERS:\n  "
+            "These modules are in no layer:\n  "
             + "\n  ".join(unlayered)
-            + "\nAdd each to LAYERS in this file, at the LOWEST layer that can "
-              "hold it -- an unlayered module is checked by nothing.",
+            + "\nThe layer IS the folder. Put each of these in one of "
+            + ", ".join(f"pkg_rlc/{f}/" for f in LAYER_OF_FOLDER)
+            + " -- the LOWEST one that can hold it. If it genuinely needs a "
+              "new layer, add the folder name to LAYER_OF_FOLDER with its "
+              "number and say in the commit what the layer MEANS; defaulting "
+              "an unknown folder to some layer is what this assertion exists "
+              "to refuse, because an unlayered module is checked by nothing.",
         )
 
     def test_the_help_module_reaches_no_further_than_the_model(self):
@@ -664,86 +654,122 @@ class TestTheGateHasTeeth(unittest.TestCase):
     files into a temp dir rather than editing the real ones keeps this runnable
     in a shared working tree, and keeps the proof in the suite instead of in a
     commit message nobody will find.
+
+    THE SYNTHETIC TREES ARE PACKAGES, not flat files, and that is not cosmetic:
+    the layer is now READ OFF THE FOLDER, so a flat `pkg_rlc_core.py` in a temp
+    dir would be unlayered and every upward-import assertion here would pass
+    for the wrong reason -- or rather fail to fail.  Each one below therefore
+    puts its modules in the folder whose layer the case is about.
     """
 
     def _tree(self, files: dict[str, str]) -> Path:
+        """Write `{relative path: source}` into a fresh temp dir.
+
+        Paths use `/` and the parent folders are created, so a case reads as
+        the tree it is describing.  No `__init__.py` is written: `scan_tree`
+        skips them anyway, and leaving them out keeps each case to the files
+        the rule is about.
+        """
         tmp = Path(tempfile.mkdtemp(prefix="layering_"))
         self.addCleanup(lambda: _SCAN_CACHE.pop(tmp, None))
         for name, body in files.items():
-            (tmp / name).write_text(body, encoding="utf-8")
+            path = tmp.joinpath(*name.split("/"))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
         return tmp
 
     def test_an_upward_module_import_is_caught(self):
         root = self._tree({
-            "pkg_rlc_core.py": "import pkg_rlc_gui\n",
-            "pkg_rlc_gui.py": "import pkg_rlc_core\n",
+            "pkg_rlc/physics/core.py": "import pkg_rlc.frontend.app\n",
+            "pkg_rlc/frontend/app.py": "import pkg_rlc.physics.core\n",
         })
         problems = upward_imports(scan_tree(root))
         self.assertTrue(problems)
-        self.assertIn("pkg_rlc_core", problems[0])
-        self.assertIn("pkg_rlc_gui", problems[0])
+        self.assertIn("pkg_rlc.physics.core", problems[0])
+        self.assertIn("pkg_rlc.frontend.app", problems[0])
         self.assertIn("UPWARD", problems[0])
 
     def test_a_legal_downward_import_is_not_caught(self):
         root = self._tree({
-            "pkg_rlc_core.py": "import numpy as np\n",
-            "pkg_rlc_gui.py": "import pkg_rlc_core\n",
+            "pkg_rlc/physics/core.py": "import numpy as np\n",
+            "pkg_rlc/frontend/app.py": "import pkg_rlc.physics.core\n",
         })
         self.assertEqual([], upward_imports(scan_tree(root)))
 
     def test_a_same_layer_import_is_allowed(self):
-        """`pkg_rlc_attrib` -> `pkg_rlc_core` is the real instance of this."""
+        """`physics.attrib` -> `physics.core` is the real instance of this."""
         root = self._tree({
-            "pkg_rlc_core.py": "",
-            "pkg_rlc_attrib.py": "import pkg_rlc_core\n",
+            "pkg_rlc/physics/core.py": "",
+            "pkg_rlc/physics/attrib.py": "import pkg_rlc.physics.core\n",
         })
         self.assertEqual([], upward_imports(scan_tree(root)))
 
+    def test_the_FOLDER_decides_the_layer_and_not_the_file_name(self):
+        """The whole point of the move, stated as a case.
+
+        The same file name is a different layer in a different folder, and a
+        module that moves takes its layer with it -- there is no table left
+        that could go on saying where it used to be.
+        """
+        self.assertEqual(L3_PRESENTATION, layer_of("pkg_rlc.present.report"))
+        self.assertEqual(L0_NUMERICS, layer_of("pkg_rlc.physics.report"))
+        root = self._tree({
+            # `report.py` filed under physics/ may not import the model, even
+            # though the very same source at present/report.py may.
+            "pkg_rlc/physics/report.py": "import pkg_rlc.model.trace\n",
+            "pkg_rlc/model/trace.py": "",
+        })
+        self.assertTrue(upward_imports(scan_tree(root)))
+
     def test_a_cycle_is_found_and_named(self):
         root = self._tree({
-            "pkg_rlc_core.py": "import pkg_rlc_plot\n",
-            "pkg_rlc_plot.py": "import pkg_rlc_core\n",
+            "pkg_rlc/physics/core.py": "import pkg_rlc.widgets.plot\n",
+            "pkg_rlc/widgets/plot.py": "import pkg_rlc.physics.core\n",
         })
         cycle = find_cycle(scan_tree(root))
         self.assertIsNotNone(cycle)
-        self.assertIn("pkg_rlc_core", cycle)
-        self.assertIn("pkg_rlc_plot", cycle)
+        self.assertIn("pkg_rlc.physics.core", cycle)
+        self.assertIn("pkg_rlc.widgets.plot", cycle)
 
     def test_an_acyclic_tree_reports_no_cycle(self):
         root = self._tree({
-            "pkg_rlc_core.py": "",
-            "pkg_rlc_plot.py": "import pkg_rlc_core\n",
-            "pkg_rlc_gui.py": "import pkg_rlc_core\nimport pkg_rlc_plot\n",
+            "pkg_rlc/physics/core.py": "",
+            "pkg_rlc/widgets/plot.py": "import pkg_rlc.physics.core\n",
+            "pkg_rlc/frontend/app.py": (
+                "import pkg_rlc.physics.core\n"
+                "import pkg_rlc.widgets.plot\n"
+            ),
         })
         self.assertIsNone(find_cycle(scan_tree(root)))
 
     def test_a_function_level_import_is_not_counted_in_the_module_graph(self):
         """The dodge's whole mechanism: deferred, so the interpreter is happy."""
         root = self._tree({
-            "pkg_rlc_core.py": "",
-            "pkg_rlc_gui.py": "import pkg_rlc_core\n",
-            "pkg_rlc_plot.py": (
-                "import pkg_rlc_core\n"
+            "pkg_rlc/physics/core.py": "",
+            "pkg_rlc/frontend/app.py": "import pkg_rlc.physics.core\n",
+            "pkg_rlc/widgets/plot.py": (
+                "import pkg_rlc.physics.core\n"
                 "def _gui():\n"
-                "    import pkg_rlc_gui\n"
-                "    return pkg_rlc_gui\n"
+                "    import pkg_rlc.frontend.app\n"
+                "    return pkg_rlc.frontend.app\n"
             ),
         })
         scanned = scan_tree(root)
         self.assertIsNone(find_cycle(scanned))
         self.assertEqual([], upward_imports(scanned))
         self.assertEqual(
-            {("pkg_rlc_plot", "pkg_rlc_gui")}, back_import_pairs(scanned)
+            {("pkg_rlc.widgets.plot", "pkg_rlc.frontend.app")},
+            back_import_pairs(scanned),
         )
 
     def test_a_class_body_import_counts_as_module_level(self):
         """It runs at import time, so it is part of the real graph."""
         root = self._tree({
-            "pkg_rlc_core.py": "",
-            "pkg_rlc_gui.py": "import pkg_rlc_core\n",
-            "pkg_rlc_plot.py": (
+            "pkg_rlc/physics/core.py": "",
+            "pkg_rlc/frontend/app.py": "import pkg_rlc.physics.core\n",
+            "pkg_rlc/widgets/plot.py": (
                 "class Thing:\n"
-                "    import pkg_rlc_gui\n"
+                "    import pkg_rlc.frontend.app\n"
             ),
         })
         scanned = scan_tree(root)
@@ -752,41 +778,64 @@ class TestTheGateHasTeeth(unittest.TestCase):
 
     def test_a_method_body_import_counts_as_function_level(self):
         root = self._tree({
-            "pkg_rlc_core.py": "",
-            "pkg_rlc_gui.py": "",
-            "pkg_rlc_plot.py": (
+            "pkg_rlc/physics/core.py": "",
+            "pkg_rlc/frontend/app.py": "",
+            "pkg_rlc/widgets/plot.py": (
                 "class Thing:\n"
                 "    def go(self):\n"
-                "        import pkg_rlc_gui\n"
+                "        import pkg_rlc.frontend.app\n"
             ),
         })
         scanned = scan_tree(root)
         self.assertEqual(
-            {("pkg_rlc_plot", "pkg_rlc_gui")}, back_import_pairs(scanned)
+            {("pkg_rlc.widgets.plot", "pkg_rlc.frontend.app")},
+            back_import_pairs(scanned),
         )
         self.assertEqual(
-            {("pkg_rlc_plot", "pkg_rlc_gui"): 1}, back_import_counts(scanned)
+            {("pkg_rlc.widgets.plot", "pkg_rlc.frontend.app"): 1},
+            back_import_counts(scanned),
         )
         self.assertEqual([], upward_imports(scanned))
 
     def test_from_imports_count_too(self):
         root = self._tree({
-            "pkg_rlc_core.py": "from pkg_rlc_gui import App\n",
-            "pkg_rlc_gui.py": "",
+            "pkg_rlc/physics/core.py": "from pkg_rlc.frontend.app import App\n",
+            "pkg_rlc/frontend/app.py": "",
         })
         self.assertTrue(upward_imports(scan_tree(root)))
 
-    def test_a_repo_import_in_reduce_snp_is_caught(self):
+    def test_a_from_package_import_module_is_resolved_to_the_module(self):
+        """`from pkg_rlc.frontend import app` names the module in the ALIAS.
+
+        Nothing in this repo is written that way, but the package shape makes
+        the form natural, and a gate that cannot see a form is a gate with a
+        hole in it.
+        """
         root = self._tree({
-            "pkg_rlc_core.py": "",
-            "reduce_snp.py": "import pkg_rlc_core\n",
+            "pkg_rlc/physics/core.py": "from pkg_rlc.frontend import app\n",
+            "pkg_rlc/frontend/app.py": "",
         })
         scanned = scan_tree(root)
-        self.assertEqual(["pkg_rlc_core"], scanned["reduce_snp"].sorted_module_level())
+        self.assertEqual(
+            ["pkg_rlc.frontend.app"],
+            scanned["pkg_rlc.physics.core"].sorted_module_level(),
+        )
+        self.assertTrue(upward_imports(scanned))
+
+    def test_a_repo_import_in_reduce_snp_is_caught(self):
+        root = self._tree({
+            "pkg_rlc/physics/core.py": "",
+            "reduce_snp.py": "import pkg_rlc.physics.core\n",
+        })
+        scanned = scan_tree(root)
+        self.assertEqual(
+            ["pkg_rlc.physics.core"],
+            scanned["reduce_snp"].sorted_module_level(),
+        )
 
     def test_a_stdlib_or_numpy_import_is_never_a_finding(self):
         root = self._tree({
-            "pkg_rlc_core.py": (
+            "pkg_rlc/physics/core.py": (
                 "import math\n"
                 "import numpy as np\n"
                 "import tkinter as tk\n"
@@ -794,17 +843,49 @@ class TestTheGateHasTeeth(unittest.TestCase):
             ),
         })
         scanned = scan_tree(root)
-        self.assertEqual([], scanned["pkg_rlc_core"].sorted_module_level())
+        self.assertEqual(
+            [], scanned["pkg_rlc.physics.core"].sorted_module_level()
+        )
         self.assertEqual([], upward_imports(scanned))
 
-    def test_an_unlayered_module_is_reported(self):
-        root = self._tree({"pkg_rlc_brand_new.py": ""})
+    def test_a_module_in_an_UNDECLARED_FOLDER_is_reported(self):
+        """An unknown folder must fail, never default to a layer."""
+        root = self._tree({"pkg_rlc/brandnew/thing.py": ""})
         scanned = scan_tree(root)
-        self.assertIsNone(layer_of("pkg_rlc_brand_new"))
-        self.assertIn("pkg_rlc_brand_new", scanned)
+        self.assertIsNone(layer_of("pkg_rlc.brandnew.thing"))
+        self.assertEqual(["pkg_rlc.brandnew.thing"], unlayered_modules(scanned))
 
-    def test_a_panels_module_is_layered_by_its_prefix(self):
-        self.assertEqual(L5_PANELS, layer_of("pkg_rlc_panels_editor"))
+    def test_a_module_loose_in_the_package_root_is_reported(self):
+        """`pkg_rlc/thing.py` is in no folder, so it is in no layer."""
+        root = self._tree({"pkg_rlc/thing.py": ""})
+        scanned = scan_tree(root)
+        self.assertIsNone(layer_of("pkg_rlc.thing"))
+        self.assertEqual(["pkg_rlc.thing"], unlayered_modules(scanned))
+
+    def test_a_stray_root_module_is_reported_and_the_shim_is_not(self):
+        """The one name outside the package is the entry point, and only it."""
+        root = self._tree({
+            "pkg_rlc_extractor.py": "import pkg_rlc.frontend.cli\n",
+            "pkg_rlc_leftover.py": "",
+            "pkg_rlc/frontend/cli.py": "",
+        })
+        scanned = scan_tree(root)
+        self.assertEqual(L6_FRONTEND, layer_of("pkg_rlc_extractor"))
+        self.assertEqual(["pkg_rlc_leftover"], unlayered_modules(scanned))
+        self.assertEqual([], upward_imports(scanned))
+
+    def test_a_new_panel_needs_no_declaration(self):
+        """The group grows one panel at a time and the gate does not notice.
+
+        This replaces a `LAYER_PREFIXES` entry that existed only because the
+        flat map could not see a folder.
+        """
+        self.assertEqual(L5_PANELS, layer_of("pkg_rlc.panels.panels_editor"))
+        self.assertEqual(L5_PANELS, layer_of("pkg_rlc.panels.panels_brand_new"))
+
+    def test_a_deeper_folder_inside_a_layer_stays_in_that_layer(self):
+        """A subdivision of L0 is still L0; the rules are about crossings."""
+        self.assertEqual(L0_NUMERICS, layer_of("pkg_rlc.physics.parse.reader"))
 
 
 if __name__ == "__main__":
