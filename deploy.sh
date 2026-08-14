@@ -25,8 +25,14 @@
 # which one, plus which it ignored). Pass a path explicitly to override.
 #
 # Uploaded *.tar.gz / *.sha256 at the top level are treated as DELIVERIES, not as
-# install content: they are never backed up and never removed, so the file you
-# uploaded is still there afterwards and backups stay the size of the install.
+# install content: they are never backed up, so backups stay the size of the
+# install and the file you uploaded survives the swap.
+#
+# They ARE rotated, though -- see KEEP_PACKAGES. Deliveries used to accumulate
+# forever, and after a handful of updates the install dir was mostly tarballs
+# and the "(ignoring ...)" list above was longer than the output that mattered.
+# Rotation happens only AFTER a successful swap, so a failed or aborted deploy
+# never destroys a delivery you may still need.
 #
 # Invoke via `bash` (not ./deploy.sh): the red zone's login shell is often
 # tcsh/csh, and an upload channel may drop the exec bit. `bash` needs neither.
@@ -46,6 +52,17 @@
 set -euo pipefail
 
 KEEP_BACKUPS=3
+
+# How many uploaded *.tar.gz deliveries to keep at the top level, newest first,
+# counting the one just deployed. 2 = "what is installed, plus one step back".
+#
+# Not 3, to match KEEP_BACKUPS: these are the SECONDARY rollback route. The
+# primary one is .deploy/backups/<ts>/, which holds three whole installs and
+# needs no untarring. A delivery is only worth keeping so you can re-deploy an
+# older build without another transfer across the air gap, and one step back
+# covers that. Set to 0 to keep every delivery forever (the old behaviour).
+KEEP_PACKAGES=2
+
 SENTINEL="pkg_rlc_extractor.py"  # must exist at the install root -- guards against
                                  # running in the wrong dir or extracting a bad archive
 
@@ -275,6 +292,32 @@ while IFS= read -r _d; do
   if (( _i > KEEP_BACKUPS )); then rm -rf "$_d"; fi
 done < <(ls -1dt "$BACKUPS"/*/ 2>/dev/null || true)
 
+# --- rotate uploaded deliveries ----------------------------------------------
+# Only reached after the swap succeeded and the sentinel check passed, so a
+# failed deploy leaves every delivery exactly where it was. Ordered the same way
+# the picker orders them (ls -t, newest mtime first), so "kept" here means the
+# same thing as "would be chosen" up there. The tarball just deployed is newest
+# by that ordering and is therefore always kept; it is also compared by path as
+# a belt-and-braces guard, in case a transfer tool preserved an odd mtime.
+if (( KEEP_PACKAGES > 0 )); then
+  _doomed=(); _seen=0
+  while IFS= read -r _p; do
+    [[ -n "$_p" ]] || continue
+    _seen=$((_seen + 1))
+    (( _seen <= KEEP_PACKAGES )) && continue
+    [[ "$(readlink -f "$_p")" == "$TARBALL_SRC" ]] && continue
+    _doomed+=("$_p")
+  done < <(ls -1t "$TARGET"/*.tar.gz 2>/dev/null || true)
+
+  if (( ${#_doomed[@]} > 0 )); then
+    echo ">> rotating deliveries (keeping newest $KEEP_PACKAGES)..."
+    for _p in "${_doomed[@]}"; do
+      rm -f "$_p" "$_p.sha256"
+      echo "     removed $(basename "$_p")"
+    done
+  fi
+fi
+
 rm -rf "${STAGING:?}/"*
 
 # --- done --------------------------------------------------------------------
@@ -285,8 +328,14 @@ echo "    previous install backed up at: $BK"
 if (( ${#PRESERVE[@]} > 1 )); then
   echo "    preserved across swap: ${PRESERVE[*]}"
 fi
-echo "    $(basename "$TARBALL_SRC") left in place; delete it whenever you like"
-echo "      (a copy is kept in .deploy/incoming/)"
+if (( KEEP_PACKAGES > 0 )); then
+  echo "    $(basename "$TARBALL_SRC") left in place; the newest $KEEP_PACKAGES deliveries are"
+  echo "      kept here and older ones are removed on the next successful deploy"
+  echo "      (a copy of this one is also in .deploy/incoming/)"
+else
+  echo "    $(basename "$TARBALL_SRC") left in place; delete it whenever you like"
+  echo "      (a copy is kept in .deploy/incoming/)"
+fi
 echo
 echo "    NEXT -- check this box can actually run it (no network / no venv needed):"
 echo "       cd $TARGET && bash deploy/doctor.sh --test"

@@ -4496,6 +4496,32 @@ recorded here rather than in a commit message nobody will find.
 - **`deploy.sh` touches only the install dir**, never the parent. Preserves
   `.deploy/` plus anything in `.deploy/preserve.list`, and rolls back via an `ERR`
   trap if the swap fails halfway.
+- **`SENTINEL` is `pkg_rlc_extractor.py`, and that is why the root shim may never
+  be deleted.** The post-swap check `[[ -f "$TARGET/$SENTINEL" ]]` trips the
+  `ERR` trap and rolls the whole install back if it is missing. So the shim left
+  at the repo root by the package move is not only the entry point every doc
+  names — it is what tells `deploy.sh` the swap produced an install rather than
+  a pile of files. "Tidy up that pointless shim" would roll back every red-zone
+  deploy, on the far side, where nobody can debug it.
+- **Uploaded deliveries ROTATE: `KEEP_PACKAGES = 2`.** They used to accumulate
+  forever ("never removed"), and after a handful of updates the install dir was
+  mostly tarballs and the `(ignoring …)` list was longer than the output that
+  mattered. Three rules make it safe and all three are load-bearing: rotation
+  runs **only after the swap succeeded and the sentinel check passed**, so a
+  corrupt package or a failed swap destroys no delivery (measured: a bad
+  checksum leaves all four in place); the tarball being deployed is **never**
+  removed, checked by resolved path and not merely by being newest; and the
+  `.sha256` sidecar goes with its tarball. 2 rather than `KEEP_BACKUPS`' 3
+  because deliveries are the SECONDARY rollback route — `.deploy/backups/<ts>/`
+  holds three whole installs and needs no untarring, so a delivery only has to
+  cover "re-deploy one version back without another transfer across the air
+  gap". `KEEP_PACKAGES=0` restores the old keep-everything behaviour.
+- **THE `deploy.sh` THAT RUNS IS THE ONE ALREADY ON THE BOX, not the one in the
+  tarball** — the swap replaces the script mid-run and bash keeps reading the
+  old one through its open fd (there is a note in the file about why that is
+  safe). So any change to `deploy.sh` takes effect on the deploy AFTER the one
+  that delivers it. Worth saying out loud when a change to it is expected to fix
+  something the operator is seeing right now: it will not, on that run.
 - **Nothing may be written outside the install dir** — no `/tmp`, no `/opt`, no
   `mktemp`. All staging, backups and scratch go under `<install>/.deploy/`. This
   is an operator requirement, not a preference; `doctor.sh` uses `.deploy/tmp`.
