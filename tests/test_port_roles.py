@@ -32,7 +32,7 @@ import tkinter as tk  # noqa: E402
 from tkinter import ttk  # noqa: E402
 import tkinter.font as tkfont  # noqa: E402
 
-from pkg_rlc_core import (  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     ConnectionRow,
     MeasPortRow,
     OPEN_CLUSTER_MIN_FAMILY,
@@ -54,7 +54,7 @@ from pkg_rlc_core import (  # noqa: E402
     port_roles,
     row_sources,
 )
-from pkg_rlc_gui import (  # noqa: E402
+from pkg_rlc.frontend.app import (  # noqa: E402
     App,
     FileEntry,
     PORT_ROLES_STYLE,

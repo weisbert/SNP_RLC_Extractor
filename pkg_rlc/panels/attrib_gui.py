@@ -207,8 +207,8 @@ import matplotlib.ticker as mticker
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
-import pkg_rlc_attrib as attrib
-import pkg_rlc_files_gui as files_gui
+import pkg_rlc.physics.attrib as attrib
+import pkg_rlc.panels.files_gui as files_gui
 # What this window and the command line's report REALLY share, which is the
 # data-shaping and not the rendering: the ground-model grammar (one set of
 # error messages and one label format for `--attribute-ground-model` and for
@@ -216,13 +216,13 @@ import pkg_rlc_files_gui as files_gui
 # rank map behind the across-frequency badge.  The two RENDERINGS stay
 # separate on purpose: this window's strips clip at a measured 48 characters
 # at 150% DPI against the CLI's 95, so neither can be the other.
-from pkg_rlc_attrib_report import (
+from pkg_rlc.present.attrib_report import (
     _attr_ground_model,
     _attr_snap,
     _attr_zt,
     rank_map,
 )
-from pkg_rlc_core import (
+from pkg_rlc.physics.core import (
     ROLE_ELEMENT,
     ROLE_GROUND,
     ROLE_PROBE_PLUS,
@@ -236,7 +236,7 @@ from pkg_rlc_core import (
     row_sources,
     rows_to_dsl_text,
 )
-from pkg_rlc_plot import ReflowRow
+from pkg_rlc.widgets.plot import ReflowRow
 # The five things this window used to reach UP into `pkg_rlc_gui` for, now
 # imported at the top like anything else -- see the module docstring.  Each is
 # here for the same reason it was reached for lazily: there must be ONE
@@ -249,16 +249,16 @@ from pkg_rlc_plot import ReflowRow
 #       the same SI prefix the results pane would
 #   the palette          -- one set of colours for the application
 #   LOG_WARN             -- one severity vocabulary for the Results pane
-from pkg_rlc_model import _config_signature
-from pkg_rlc_report import LOG_WARN, _value_formatter
-from pkg_rlc_validate import (
+from pkg_rlc.model.trace import _config_signature
+from pkg_rlc.present.report import LOG_WARN, _value_formatter
+from pkg_rlc.model.validate import (
     _scope_conn_rows,
     _scope_dsl_text,
     _scope_mport_rows,
     _trace_role_rows,
     trace_is_composed,
 )
-from pkg_rlc_widgets import PLACEHOLDER_FG, PORT_ROLE_FG, WARN_FG
+from pkg_rlc.widgets.widgets import PLACEHOLDER_FG, PORT_ROLE_FG, WARN_FG
 
 __all__ = [
     "ATTRIB_MENU_LABEL",

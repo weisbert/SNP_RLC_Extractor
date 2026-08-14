@@ -35,8 +35,8 @@ from tkinter import ttk  # noqa: E402
 
 import numpy as np  # noqa: E402
 
-import pkg_rlc_gui  # noqa: E402
-from pkg_rlc_core import (  # noqa: E402
+import pkg_rlc.frontend.app as pkg_rlc_gui  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     ConnectionRow,
     MeasPortRow,
     build_terminations_rows,
@@ -44,7 +44,7 @@ from pkg_rlc_core import (  # noqa: E402
     resolve_meas_ports,
     rows_to_dsl_text,
 )
-from pkg_rlc_gui import (  # noqa: E402
+from pkg_rlc.frontend.app import (  # noqa: E402
     App,
     FileEntry,
     TraceConfig,
@@ -1165,7 +1165,7 @@ class TestGroundReferencedProbeThroughTheEditor(_EditorCase):
         self.app._on_calculate()
         self.assertIsNotNone(self.tc.Z, "trace did not compute")
 
-        from pkg_rlc_core import build_terminations_mode1, compute_z, s_to_y
+        from pkg_rlc.physics.core import build_terminations_mode1, compute_z, s_to_y
         Y = s_to_y(self.fe.ts.s, self.fe.ts.z0)
         want, _ = compute_z(Y, self.fe.ts.freqs,
                             build_terminations_mode1([1], [2, 3, 4]))
@@ -1227,7 +1227,7 @@ class TestGroundReferencedProbeThroughTheEditor(_EditorCase):
         what decides -- with everything else held fixed the answer must move
         to build_terminations_mode2's.
         """
-        from pkg_rlc_core import (build_terminations_mode2, compute_z, s_to_y)
+        from pkg_rlc.physics.core import (build_terminations_mode2, compute_z, s_to_y)
         Y = s_to_y(self.fe.ts.s, self.fe.ts.z0)
 
         self._fill(MeasPortRow("tank", "1", ""), [])

@@ -45,14 +45,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np  # noqa: E402
 
-import pkg_rlc_gui  # noqa: E402
-from pkg_rlc_core import (  # noqa: E402
+import pkg_rlc.frontend.app as pkg_rlc_gui  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     MeasPortRow,
     RLCResult,
     parse_si,
     parse_touchstone,
 )
-from pkg_rlc_gui import (  # noqa: E402
+from pkg_rlc.frontend.app import (  # noqa: E402
     FREQ_WIDE_FMT,
     App,
     FileEntry,
@@ -555,7 +555,7 @@ class TestTheCommandLineSaysItToo(unittest.TestCase):
         import contextlib
         import io
 
-        import pkg_rlc_extractor                    # noqa: WPS433
+        import pkg_rlc.frontend.cli as pkg_rlc_extractor                    # noqa: WPS433
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):

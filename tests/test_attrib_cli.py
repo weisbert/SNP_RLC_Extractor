@@ -42,9 +42,9 @@ sys.path.insert(0, str(_HERE))
 
 import numpy as np  # noqa: E402
 
-import pkg_rlc_attrib as attrib  # noqa: E402
-import pkg_rlc_extractor as ex  # noqa: E402
-from pkg_rlc_core import (  # noqa: E402
+import pkg_rlc.physics.attrib as attrib  # noqa: E402
+import pkg_rlc.frontend.cli as ex  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     build_terminations_coupling,
     parse_mport_spec,
     parse_touchstone,
@@ -1016,7 +1016,7 @@ class TestBigGroundGroup(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from generate_test_snp import write_touchstone
-        from pkg_rlc_core import y_to_s
+        from pkg_rlc.physics.core import y_to_s
 
         rng = np.random.default_rng(7)
         n, nf = 40, 20
@@ -1110,7 +1110,7 @@ class TestBigGroundGroup(unittest.TestCase):
                            cwd=str(_HERE.parent), timeout=300)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertNotIn("RuntimeWarning", p.stderr)
-        self.assertNotIn("pkg_rlc_attrib.py", p.stderr)
+        self.assertNotIn("attrib.py", p.stderr)
 
 
 class TestCrossFrequency(unittest.TestCase):

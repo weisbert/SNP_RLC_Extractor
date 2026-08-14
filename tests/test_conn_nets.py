@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np  # noqa: E402
 
-from pkg_rlc_core import (  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     CONN_KINDS_WITH_NET,
     NET_KEYWORD,
     NET_RESERVED_NAMES,
@@ -302,7 +302,7 @@ class TestParallelStampMessages(unittest.TestCase):
     def test_it_never_raises_on_a_set_built_in_code(self):
         # `params` is None on a hand-built TerminationSet (the golden capture,
         # the attribution tests).  The check must degrade, not explode.
-        from pkg_rlc_core import TerminationSet
+        from pkg_rlc.physics.core import TerminationSet
         y = y_series_rlc(R=50.0)
         ts = TerminationSet(per_port={0: LumpedToGnd(y), 1: LumpedToGnd(y)},
                             couplings=[ShortPair(0, 1)])

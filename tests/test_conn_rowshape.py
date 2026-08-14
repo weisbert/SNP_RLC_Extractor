@@ -46,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import tkinter as tk  # noqa: E402
 from tkinter import ttk  # noqa: E402
 
-from pkg_rlc_core import (  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     CONN_KINDS,
     ConnectionRow,
     MeasPortRow,
@@ -54,7 +54,7 @@ from pkg_rlc_core import (  # noqa: E402
     parse_touchstone,
     rows_to_dsl_text,
 )
-from pkg_rlc_gui import (  # noqa: E402
+from pkg_rlc.frontend.app import (  # noqa: E402
     CONN_NET_KEY,
     CONN_NET_SUPPORTED,
     CONN_OFF_GLYPH,

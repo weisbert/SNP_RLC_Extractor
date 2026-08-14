@@ -210,11 +210,15 @@ def _rewrite_py(text: str, old_name_for_alias: dict[str, str]) -> tuple[str, int
             # `import pkg_rlc.frontend.app` with no `as` would bind the name
             # `pkg_rlc`, not `pkg_rlc_gui`.  Restore the old spelling as an
             # alias so every `pkg_rlc_gui.X` in the file keeps resolving.
-            m = _BARE_IMPORT.match(new_code.rstrip())
+            stripped = new_code.rstrip()
+            m = _BARE_IMPORT.match(stripped)
             if m:
                 alias = old_name_for_alias.get(m.group(2))
                 if alias:
-                    tail = " " if sep else ""
+                    # Keep the run of spaces that lined the trailing `# noqa`
+                    # up.  This is a move; a reflowed comment column would be a
+                    # diff line that says nothing.
+                    tail = new_code[len(stripped):]
                     new_code = f"{m.group(1)}import {m.group(2)} as {alias}{tail}"
             n += hits
         out.append(new_code + sep + comment)

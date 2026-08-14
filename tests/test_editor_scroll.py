@@ -35,12 +35,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import tkinter as tk  # noqa: E402
 
-from pkg_rlc_core import (  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     ConnectionRow,
     MeasPortRow,
     parse_touchstone,
 )
-from pkg_rlc_gui import App, FileEntry, TraceConfig  # noqa: E402
+from pkg_rlc.frontend.app import App, FileEntry, TraceConfig  # noqa: E402
 
 FIX = Path(__file__).resolve().parent / "fixtures"
 FIXTURE = FIX / "diff_pair_4port.s4p"

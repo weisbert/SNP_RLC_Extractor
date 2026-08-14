@@ -51,12 +51,12 @@ import tkinter as tk  # noqa: E402
 import numpy as np  # noqa: E402
 
 import _render_capture as rc  # noqa: E402
-from pkg_rlc_core import (  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     extract_coupling_at_freq,
     extract_rlc_at_freq,
     parse_touchstone,
 )
-from pkg_rlc_gui import (  # noqa: E402
+from pkg_rlc.frontend.app import (  # noqa: E402
     App,
     CouplingSnapshot,
     FileEntry,

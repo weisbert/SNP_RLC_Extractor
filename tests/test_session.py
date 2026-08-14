@@ -39,9 +39,9 @@ import tkinter as tk  # noqa: E402
 
 import numpy as np  # noqa: E402
 
-import pkg_rlc_gui  # noqa: E402
-from pkg_rlc_core import ConnectionRow, MeasPortRow, parse_touchstone  # noqa: E402
-from pkg_rlc_gui import (  # noqa: E402
+import pkg_rlc.frontend.app as pkg_rlc_gui  # noqa: E402
+from pkg_rlc.physics.core import ConnectionRow, MeasPortRow, parse_touchstone  # noqa: E402
+from pkg_rlc.frontend.app import (  # noqa: E402
     App,
     FileEntry,
     LoadedSession,
@@ -802,7 +802,7 @@ class TestHelpTabsAllFit(unittest.TestCase):
     """
 
     def test_the_tab_strip_fits_the_help_window(self):
-        import pkg_rlc_help
+        import pkg_rlc.present.help as pkg_rlc_help
         from tkinter import ttk
 
         root = tk.Tk()
@@ -824,7 +824,7 @@ class TestHelpTabsAllFit(unittest.TestCase):
 
     def test_the_window_really_opens_at_that_width(self):
         """The measurement above only guards anything if it tracks reality."""
-        import pkg_rlc_help
+        import pkg_rlc.present.help as pkg_rlc_help
         root = tk.Tk()
         root.withdraw()
         try:

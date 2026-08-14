@@ -37,8 +37,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Sequence
 
-from pkg_rlc_core import ConnectionRow, MeasPortRow
-from pkg_rlc_model import RESULTS_VIEWS, TraceConfig
+from pkg_rlc.physics.core import ConnectionRow, MeasPortRow
+from pkg_rlc.model.trace import RESULTS_VIEWS, TraceConfig
 
 
 SESSION_FORMAT = "pkg_rlc_extractor_session"

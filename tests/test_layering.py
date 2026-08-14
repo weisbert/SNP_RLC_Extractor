@@ -68,14 +68,14 @@ L6_FRONTEND = 6      # the App itself and the argv entry point.
 
 LAYERS = {
     # L0 -- numerics
-    "pkg_rlc_core": L0_NUMERICS,
-    "pkg_rlc_touchstone": L0_NUMERICS,
-    "pkg_rlc_spec": L0_NUMERICS,
-    "pkg_rlc_solve": L0_NUMERICS,
-    "pkg_rlc_compose": L0_NUMERICS,
-    "pkg_rlc_attrib": L0_NUMERICS,
+    "pkg_rlc.physics.core": L0_NUMERICS,
+    "pkg_rlc.physics.touchstone": L0_NUMERICS,
+    "pkg_rlc.physics.spec": L0_NUMERICS,
+    "pkg_rlc.physics.solve": L0_NUMERICS,
+    "pkg_rlc.physics.compose": L0_NUMERICS,
+    "pkg_rlc.physics.attrib": L0_NUMERICS,
     # L1 -- model
-    "pkg_rlc_model": L1_MODEL,
+    "pkg_rlc.model.trace": L1_MODEL,
     # `pkg_rlc_validate` was declared L2 when this map was written, before
     # `pkg_rlc_model` existed.  IT MOVED DOWN, and the reason is a real edge
     # rather than a tidier name: `TraceConfig.port_descriptor()` is one line
@@ -98,30 +98,69 @@ LAYERS = {
     # knowledge about the model and not a service built on top of it.  The
     # session file and the run record, which really are services over the
     # model, stay at L2.
-    "pkg_rlc_validate": L1_MODEL,
+    #
+    # AND THAT IS WHY IT SITS IN `pkg_rlc/model/`, NOT `pkg_rlc/services/`.
+    # Now that the folders ARE the layers, putting it beside the session file
+    # and the run record would make the tree say L2 while this map says L1 --
+    # and the map is the one the import graph obeys.
+    "pkg_rlc.model.validate": L1_MODEL,
     # L2 -- services
+    "pkg_rlc.services.session": L2_SERVICES,
+    "pkg_rlc.services.run": L2_SERVICES,
+    # L3 -- presentation
+    "pkg_rlc.present.report": L3_PRESENTATION,
+    "pkg_rlc.present.csv": L3_PRESENTATION,
+    "pkg_rlc.present.attrib_report": L3_PRESENTATION,
+    "pkg_rlc.present.conntable": L3_PRESENTATION,
+    "pkg_rlc.present.help": L3_PRESENTATION,
+    # L4 -- widgets
+    "pkg_rlc.widgets.widgets": L4_WIDGETS,
+    "pkg_rlc.widgets.plot": L4_WIDGETS,
+    # L5 -- panels
+    "pkg_rlc.panels.files_gui": L5_PANELS,
+    "pkg_rlc.panels.attrib_gui": L5_PANELS,
+    # L6 -- frontend
+    "pkg_rlc.frontend.app": L6_FRONTEND,
+    "pkg_rlc.frontend.cli": L6_FRONTEND,
+    # The root shim.  `pkg_rlc_extractor.py` is the published entry point and
+    # stays where every README, Help tab, `doctor.sh` line and deploy SENTINEL
+    # expects it; all it does is import `pkg_rlc.frontend.cli`.
+    "pkg_rlc_extractor": L6_FRONTEND,
+}
+
+# The flat spellings, for `TestTheGateHasTeeth` ONLY.  Those tests build
+# synthetic one-file-per-module trees in a temp dir to prove this gate can go
+# red, and writing them as packages would make them harder to read than the
+# rule they check.  M2 rewrites this file to derive the layer FROM THE PATH,
+# at which point this table and the duplicated LAYER_PREFIXES entry below go.
+_LEGACY_LAYERS = {
+    "pkg_rlc_core": L0_NUMERICS,
+    "pkg_rlc_touchstone": L0_NUMERICS,
+    "pkg_rlc_spec": L0_NUMERICS,
+    "pkg_rlc_solve": L0_NUMERICS,
+    "pkg_rlc_compose": L0_NUMERICS,
+    "pkg_rlc_attrib": L0_NUMERICS,
+    "pkg_rlc_model": L1_MODEL,
+    "pkg_rlc_validate": L1_MODEL,
     "pkg_rlc_session": L2_SERVICES,
     "pkg_rlc_run": L2_SERVICES,
-    # L3 -- presentation
     "pkg_rlc_report": L3_PRESENTATION,
     "pkg_rlc_csv": L3_PRESENTATION,
     "pkg_rlc_attrib_report": L3_PRESENTATION,
     "pkg_rlc_conntable": L3_PRESENTATION,
     "pkg_rlc_help": L3_PRESENTATION,
-    # L4 -- widgets
     "pkg_rlc_widgets": L4_WIDGETS,
     "pkg_rlc_plot": L4_WIDGETS,
-    # L5 -- panels
     "pkg_rlc_files_gui": L5_PANELS,
     "pkg_rlc_attrib_gui": L5_PANELS,
-    # L6 -- frontend
     "pkg_rlc_gui": L6_FRONTEND,
-    "pkg_rlc_extractor": L6_FRONTEND,
 }
 
-# Every `pkg_rlc_panels_*` module is L5.  A prefix rather than an enumeration
-# because that group is expected to grow one panel at a time.
+# Every `pkg_rlc.panels.panels_*` module is L5.  A prefix rather than an
+# enumeration because that group is expected to grow one panel at a time.
+# The flat spelling is the synthetic trees' again.
 LAYER_PREFIXES = (
+    ("pkg_rlc.panels.panels_", L5_PANELS),
     ("pkg_rlc_panels_", L5_PANELS),
 )
 
@@ -145,7 +184,7 @@ STANDALONE = "reduce_snp"
 # import it, but it may not reach past the shared model: a Help tab that needs a
 # solver or a report formatter has turned into a second renderer of something
 # that is already rendered somewhere else.
-HELP_MODULE = "pkg_rlc_help"
+HELP_MODULE = "pkg_rlc.present.help"
 HELP_MAX_LAYER = L1_MODEL
 
 
@@ -191,7 +230,7 @@ HELP_MAX_LAYER = L1_MODEL
 # --------------------------------------------------------------------------
 
 KNOWN_BACK_IMPORTS = frozenset({
-    ("pkg_rlc_extractor", "pkg_rlc_gui"),
+    ("pkg_rlc.frontend.cli", "pkg_rlc.frontend.app"),
 })
 
 # How many statements per pair, so that removing SOME of a module's dodges is
@@ -199,7 +238,7 @@ KNOWN_BACK_IMPORTS = frozenset({
 # pair set above would not move -- which is exactly the half that made the
 # removal above provable.
 KNOWN_BACK_IMPORT_COUNTS = {
-    ("pkg_rlc_extractor", "pkg_rlc_gui"): 1,
+    ("pkg_rlc.frontend.cli", "pkg_rlc.frontend.app"): 1,
 }
 
 _FIX = (
@@ -262,45 +301,92 @@ class _ImportVisitor(ast.NodeVisitor):
             self._record_name(alias.name, node.lineno)
 
     def visit_ImportFrom(self, node):  # noqa: N802 (ast API)
-        if node.level:            # a relative import; this repo is flat
+        if node.level:            # a relative import; nothing here writes one
             return
-        if node.module:
-            self._record_name(node.module, node.lineno)
+        if not node.module:
+            return
+        # `from pkg_rlc.physics import core` names the module in the ALIAS, not
+        # in `node.module`.  Nothing in this repo is written that way, but a
+        # gate that cannot see a form is a gate with a hole in it.
+        for alias in node.names:
+            if self._resolve(node.module + "." + alias.name):
+                self._record_name(node.module + "." + alias.name, node.lineno)
+                return
+        self._record_name(node.module, node.lineno)
+
+    def _resolve(self, dotted: str) -> str | None:
+        """The repo module `dotted` names, or None.
+
+        A dotted import may name a module (`pkg_rlc.physics.core`) or an
+        attribute of one; walk up until something in the tree matches, so
+        `import pkg_rlc.physics.core` and `from pkg_rlc.physics.core import X`
+        both land on the same node of the graph.
+        """
+        parts = dotted.split(".")
+        while parts:
+            candidate = ".".join(parts)
+            if candidate in self._repo:
+                return candidate
+            parts.pop()
+        return None
 
     def _record_name(self, dotted: str, lineno: int) -> None:
-        head = dotted.split(".")[0]
-        if head not in self._repo or head == self._record.name:
+        target = self._resolve(dotted)
+        if target is None or target == self._record.name:
             return
         if self._fn_depth:
             self._record.function_level.append(
-                (head, ".".join(self._stack), lineno)
+                (target, ".".join(self._stack), lineno)
             )
         else:
-            self._record.module_level.add(head)
+            self._record.module_level.add(target)
 
 
 _SCAN_CACHE: dict[Path, dict[str, ModuleImports]] = {}
 
 
+def module_name_of(path: Path, root: Path) -> str:
+    """The importable name of a source file: flat stem, or dotted in `pkg_rlc/`."""
+    rel = path.relative_to(root)
+    if len(rel.parts) == 1:
+        return path.stem
+    return ".".join(rel.with_suffix("").parts)
+
+
 def scan_tree(root: Path) -> dict[str, ModuleImports]:
-    """Parse every `pkg_rlc_*.py` plus `reduce_snp.py` in `root`."""
+    """Parse the package under `pkg_rlc/`, plus the root scripts.
+
+    Two shapes, because two shapes exist.  The real tree is the package;
+    `TestTheGateHasTeeth` builds flat one-file trees in a temp dir, and
+    `reduce_snp.py` and the `pkg_rlc_extractor.py` entry-point shim are flat at
+    the root for reasons of their own.  `__init__.py` files are skipped: every
+    one of them is a docstring and nothing else, which is what keeps the
+    packages out of the import graph entirely -- and
+    `test_no_package_init_imports_anything` is what holds them to it.
+    """
     root = Path(root)
     cached = _SCAN_CACHE.get(root)
     if cached is not None:
         return cached
 
     paths = sorted(root.glob("pkg_rlc_*.py"))
+    paths += sorted(
+        p for p in (root / "pkg_rlc").rglob("*.py")
+        if p.name != "__init__.py"
+    )
     standalone = root / (STANDALONE + ".py")
     if standalone.exists():
         paths.append(standalone)
 
-    repo_modules = {p.stem for p in paths}
+    names = {p: module_name_of(p, root) for p in paths}
+    repo_modules = set(names.values())
     out: dict[str, ModuleImports] = {}
     for path in paths:
-        record = ModuleImports(path.stem, path)
+        name = names[path]
+        record = ModuleImports(name, path)
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         _ImportVisitor(record, repo_modules).visit(tree)
-        out[path.stem] = record
+        out[name] = record
     _SCAN_CACHE[root] = out
     return out
 
@@ -312,7 +398,7 @@ def layer_of(module: str) -> int | None:
     for prefix, level in LAYER_PREFIXES:
         if module.startswith(prefix):
             return level
-    return None
+    return _LEGACY_LAYERS.get(module)
 
 
 def back_import_pairs(scanned: dict[str, ModuleImports]) -> set[tuple[str, str]]:
@@ -442,6 +528,34 @@ class TestTheLayerMapHolds(unittest.TestCase):
             f"value, have the CALLER pass it in; a second renderer of "
             f"something already rendered elsewhere is two things that can come "
             f"to disagree.",
+        )
+
+    def test_no_package_init_imports_anything(self):
+        """`scan_tree` skips `__init__.py`; this is why that is safe.
+
+        A package `__init__` that imported its own modules would put an edge in
+        the real import graph that every rule in this file is blind to -- and
+        it would make `import pkg_rlc.physics.core` drag in tkinter through
+        `pkg_rlc/__init__.py`. Keep them prose-only.
+        """
+        pkg = REPO_ROOT / "pkg_rlc"
+        if not pkg.is_dir():
+            self.skipTest("pkg_rlc/ does not exist")
+        offenders: list[str] = []
+        for path in sorted(pkg.rglob("__init__.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    offenders.append(
+                        f"{path.relative_to(REPO_ROOT).as_posix()}:{node.lineno}"
+                    )
+        self.assertEqual(
+            [], offenders,
+            "These package __init__.py files contain an import:\n  "
+            + "\n  ".join(offenders)
+            + "\nEvery __init__.py in pkg_rlc/ is a docstring and nothing "
+              "else, on purpose: scan_tree() skips them, so an import written "
+              "there is an edge in the import graph that this gate cannot see.",
         )
 
     def test_reduce_snp_imports_nothing_from_this_repo(self):

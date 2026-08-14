@@ -54,8 +54,8 @@ sys.path.insert(0, str(_HERE))
 
 import numpy as np  # noqa: E402
 
-import pkg_rlc_attrib as at  # noqa: E402
-from pkg_rlc_core import (  # noqa: E402
+import pkg_rlc.physics.attrib as at  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     Ground,
     TerminationSet,
     compute_z_matrix,

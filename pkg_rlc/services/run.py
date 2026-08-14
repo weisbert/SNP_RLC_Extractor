@@ -43,9 +43,9 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-import pkg_rlc_compose as comp
-from pkg_rlc_compose import default_alias
-from pkg_rlc_core import (
+import pkg_rlc.physics.compose as comp
+from pkg_rlc.physics.compose import default_alias
+from pkg_rlc.physics.core import (
     TerminationSet,
     build_terminations_coupling,
     build_terminations_mode1,
@@ -58,7 +58,7 @@ from pkg_rlc_core import (
     parse_port_range,
     parse_short_pairs,
 )
-from pkg_rlc_model import (
+from pkg_rlc.model.trace import (
     FileEntry,
     LOG_ERROR,
     LOG_WARN,
@@ -67,7 +67,7 @@ from pkg_rlc_model import (
     TraceConfig,
     _composed_solve_network,
 )
-from pkg_rlc_validate import (
+from pkg_rlc.model.validate import (
     _check_bare_ports,
     _namespace_network,
     _scope_conn_rows,

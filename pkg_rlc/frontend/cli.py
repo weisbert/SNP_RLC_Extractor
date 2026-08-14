@@ -107,9 +107,9 @@ from pathlib import Path
 
 import numpy as np
 
-import pkg_rlc_attrib as attrib
-import pkg_rlc_compose as comp
-from pkg_rlc_core import (
+import pkg_rlc.physics.attrib as attrib
+import pkg_rlc.physics.compose as comp
+from pkg_rlc.physics.core import (
     DEFAULT_Z0,
     FAULT_NONE,
     RECIPROCITY_WARN,
@@ -138,8 +138,8 @@ from pkg_rlc_core import (
     s_to_y,
     y_series_rlc,
 )
-from pkg_rlc_csv import write_coupling_table
-from pkg_rlc_report import (
+from pkg_rlc.present.csv import write_coupling_table
+from pkg_rlc.present.report import (
     _format_z_matrix,
     _sign_flag,
     marker_freq_text,
@@ -151,7 +151,7 @@ from pkg_rlc_report import (
 # and for the three design notes that name these sections -- the same
 # re-export the DSL helpers get in `pkg_rlc_gui`.  The `_attr_print_*` /
 # `_cold_print_*` sections RETURN their lines now and `_emit` prints them.
-from pkg_rlc_attrib_report import (
+from pkg_rlc.present.attrib_report import (
     ATTR_GROUP_ROWS,
     ATTR_PAIR_POOL,
     ATTR_RANK_ROWS,
@@ -3050,7 +3050,7 @@ def main(argv: list[str] | None = None) -> int:
     # thing that cannot be moved down: it IS the frontend.  So this pair stays
     # pinned in KNOWN_BACK_IMPORTS at one statement, with this paragraph as
     # the reason.
-    from pkg_rlc_gui import App                              # noqa: PLC0415
+    from pkg_rlc.frontend.app import App                              # noqa: PLC0415
     app = App()
     app.mainloop()
     return 0

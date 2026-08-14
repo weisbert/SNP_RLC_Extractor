@@ -65,11 +65,11 @@ import tkinter as tk  # noqa: E402
 import tkinter.font as tkfont  # noqa: E402
 from tkinter import ttk  # noqa: E402
 
-import pkg_rlc_compose as comp  # noqa: E402
-import pkg_rlc_files_gui as fg  # noqa: E402
-from pkg_rlc_compose import ComposeInput, compose  # noqa: E402
-from pkg_rlc_core import ConnectionRow, parse_touchstone  # noqa: E402
-from pkg_rlc_gui import (  # noqa: E402
+import pkg_rlc.physics.compose as comp  # noqa: E402
+import pkg_rlc.panels.files_gui as fg  # noqa: E402
+from pkg_rlc.physics.compose import ComposeInput, compose  # noqa: E402
+from pkg_rlc.physics.core import ConnectionRow, parse_touchstone  # noqa: E402
+from pkg_rlc.frontend.app import (  # noqa: E402
     CONN_TABLE_COLUMNS,
     App,
     FileEntry,
@@ -880,7 +880,7 @@ class TestFileListsAgree(unittest.TestCase):
     )
 
     def test_the_two_definitions_answer_identically(self):
-        import pkg_rlc_gui as g
+        import pkg_rlc.frontend.app as g
         if not fg.trace_files_supported():                   # pragma: no cover
             self.skipTest("this build stores one file per trace")
         for home, extra in self.CASES:
@@ -900,7 +900,7 @@ class TestFileListsAgree(unittest.TestCase):
         delegation actually calls.  It used to patch `pkg_rlc_gui`'s re-export,
         which worked while `pkg_rlc_files_gui` reached the live definition by a
         lazy `import pkg_rlc_gui` and an attribute lookup on it.  That lazy
-        import is gone -- the live definition is `pkg_rlc_validate`'s and is
+        import is gone -- the live definition is `pkg_rlc.model.validate`'s and is
         bound at the top of the file -- so the OLD patch point no longer sits
         on the edge under test, and patching it would have made this test pass
         against a function that had stopped delegating entirely.  Same
@@ -919,7 +919,7 @@ class TestFileListsAgree(unittest.TestCase):
 
     def test_the_aliases_agree_too(self):
         """`trace_file_aliases` is the tag every other surface prints."""
-        import pkg_rlc_gui as g
+        import pkg_rlc.frontend.app as g
         if not fg.trace_files_supported():                   # pragma: no cover
             self.skipTest("this build stores one file per trace")
         if not hasattr(g, "trace_file_aliases"):             # pragma: no cover
@@ -1444,12 +1444,12 @@ class TestAttributionReferenceStrip(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         _ensure_fixtures()
-        import pkg_rlc_attrib_gui as ag
+        import pkg_rlc.panels.attrib_gui as ag
         cls.ag = ag
         cls.ts = parse_touchstone(FIXTURES / FIXTURE)
 
     def setUp(self):
-        from pkg_rlc_core import MeasPortRow
+        from pkg_rlc.physics.core import MeasPortRow
         self.app = App()
         self.app.withdraw()
         self.fe = FileEntry(self.ts)

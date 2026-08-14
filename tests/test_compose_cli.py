@@ -59,11 +59,11 @@ sys.path.insert(0, str(_HERE))
 
 import numpy as np  # noqa: E402
 
-import pkg_rlc_attrib as at  # noqa: E402
-import pkg_rlc_compose as pc  # noqa: E402
-import pkg_rlc_extractor as ex  # noqa: E402
+import pkg_rlc.physics.attrib as at  # noqa: E402
+import pkg_rlc.physics.compose as pc  # noqa: E402
+import pkg_rlc.frontend.cli as ex  # noqa: E402
 from generate_test_snp import write_touchstone  # noqa: E402
-from pkg_rlc_core import (  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     Ground,
     ShortPair,
     Signal,
@@ -328,7 +328,7 @@ class TestComposeRefusals(unittest.TestCase):
         rc, _out, err = run([EM_A, "--compose", f"PKG={PKG}"])
         self.assertEqual(rc, 2)
         self.assertIn("--compose needs --cli", err)
-        self.assertNotIn("pkg_rlc_gui", sys.modules)
+        self.assertNotIn("pkg_rlc.frontend.app", sys.modules)
 
     def test_diagnose_covers_EVERY_file_of_the_composition(self):
         """

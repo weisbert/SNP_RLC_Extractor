@@ -45,8 +45,8 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
 
-from pkg_rlc_plot import COLORS, ReflowRow
-from pkg_rlc_report import (
+from pkg_rlc.widgets.plot import COLORS, ReflowRow
+from pkg_rlc.present.report import (
     COUPLING_LEGEND_LINES,
     FreqSnap,
     LOG_ERROR,
@@ -77,7 +77,7 @@ from pkg_rlc_report import (
     run_stale_banner,
     run_tab_label,
 )
-from pkg_rlc_attrib_gui import ATTRIB_MENU_LABEL, refresh_attribution_windows
+from pkg_rlc.panels.attrib_gui import ATTRIB_MENU_LABEL, refresh_attribution_windows
 
 
 @dataclass

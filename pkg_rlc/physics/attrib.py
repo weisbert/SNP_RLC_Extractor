@@ -110,7 +110,7 @@ import numpy as np
 # "B == minus side of A" alias here is precisely how the two would drift apart,
 # and the symptom would be a reconciliation failure on the specs the
 # reconciliation exists to guard.  Everything else below is public API.
-from pkg_rlc_core import (  # noqa: F401  (Vdd/Signal used in isinstance checks)
+from pkg_rlc.physics.core import (  # noqa: F401  (Vdd/Signal used in isinstance checks)
     PINV_RCOND,
     PROBE_RANGE_TOL,
     Coupling,

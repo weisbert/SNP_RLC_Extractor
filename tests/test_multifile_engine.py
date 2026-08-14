@@ -46,15 +46,15 @@ import tkinter as tk  # noqa: E402
 
 import numpy as np  # noqa: E402
 
-import pkg_rlc_compose as comp  # noqa: E402
-import pkg_rlc_files_gui as files_gui  # noqa: E402
-import pkg_rlc_gui as G  # noqa: E402
-from pkg_rlc_core import (  # noqa: E402
+import pkg_rlc.physics.compose as comp  # noqa: E402
+import pkg_rlc.panels.files_gui as files_gui  # noqa: E402
+import pkg_rlc.frontend.app as G  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     ConnectionRow,
     MeasPortRow,
     parse_touchstone,
 )
-from pkg_rlc_gui import (  # noqa: E402
+from pkg_rlc.frontend.app import (  # noqa: E402
     App,
     ComposeSpecError,
     FileEntry,
@@ -67,7 +67,7 @@ from pkg_rlc_gui import (  # noqa: E402
     _scope_port_field,
     _trace_plot_freqs,
 )
-from pkg_rlc_plot import MAX_LABEL_LEN  # noqa: E402
+from pkg_rlc.widgets.plot import MAX_LABEL_LEN  # noqa: E402
 
 FIX = Path(__file__).resolve().parent / "fixtures"
 #: 4 ports, 401 points, 1 MHz - 10 GHz.
@@ -910,7 +910,7 @@ class TestAttributionOfAComposition(_AppCase):
         self._calc()
 
     def test_the_window_opens_and_the_baseline_carries_the_cross_file_link(self):
-        import pkg_rlc_attrib_gui as ag
+        import pkg_rlc.panels.attrib_gui as ag
         res = ag.compute_attribution(self.app, self.tc, self.die,
                                      "vic", "agg", "M", 5e9)
         self.assertTrue(res.ctx.baseline_note,
@@ -920,7 +920,7 @@ class TestAttributionOfAComposition(_AppCase):
 
     def test_a_single_file_attribution_still_has_NO_gauge(self):
         """Every field this round added is empty on the one-file case."""
-        import pkg_rlc_attrib_gui as ag
+        import pkg_rlc.panels.attrib_gui as ag
         solo = TraceConfig(id=2, file_label=self.die.label, mode=6,
                            label="solo", enabled=True)
         solo.mports = [MeasPortRow(name="vic", plus="1", minus="2"),
@@ -937,7 +937,7 @@ class TestAttributionOfAComposition(_AppCase):
         The measured failure, stated as the property that rules it out: with
         the files as islands the package's own resistor contributes EXACTLY 0.
         """
-        import pkg_rlc_attrib_gui as ag
+        import pkg_rlc.panels.attrib_gui as ag
         res = ag.compute_attribution(self.app, self.tc, self.die,
                                      "vic", "agg", "M", 5e9)
         terms = [t for t in res.dec.terms if t.element is not None]

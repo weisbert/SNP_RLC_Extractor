@@ -52,7 +52,7 @@ import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose, assert_array_equal  # noqa: E402
 
 import generate_test_snp as gen  # noqa: E402
-from pkg_rlc_core import (  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     RECIPROCITY_WARN,
     MeasPort,
     Signal,

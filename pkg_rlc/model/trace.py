@@ -36,12 +36,12 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-from pkg_rlc_core import (
+from pkg_rlc.physics.core import (
     MeasPortRow,
     TouchstoneData,
     s_to_y,
 )
-from pkg_rlc_validate import (
+from pkg_rlc.model.validate import (
     _import_dsl_text,
     _mport_more_lines,
     _port_descriptor,

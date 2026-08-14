@@ -41,7 +41,7 @@ from matplotlib.backends.backend_tkagg import (  # noqa: E402
 # repo already has exactly one implementation of that rule.  Duplicating it
 # here would give the plot and the results pane two ways to render the same
 # number.  pkg_rlc_core imports nothing from this module, so this is acyclic.
-from pkg_rlc_core import format_si                 # noqa: E402
+from pkg_rlc.physics.core import format_si                 # noqa: E402
 
 # `ReflowRow` / `reflow_rows` used to be defined here.  They are a GENERIC
 # layout widget that happened to live in the plot module: the control strip
@@ -50,7 +50,7 @@ from pkg_rlc_core import format_si                 # noqa: E402
 # import ReflowRow` keeps resolving for every existing caller and test.  No
 # cycle: pkg_rlc_widgets imports pkg_rlc_conntable and nothing else from this
 # repo, and neither of those imports this module.
-from pkg_rlc_widgets import ReflowRow, reflow_rows  # noqa: E402,F401
+from pkg_rlc.widgets.widgets import ReflowRow, reflow_rows  # noqa: E402,F401
 
 
 # ============================================================================

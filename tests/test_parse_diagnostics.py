@@ -34,8 +34,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np  # noqa: E402
 
-import pkg_rlc_core  # noqa: E402
-from pkg_rlc_core import (  # noqa: E402
+import pkg_rlc.physics.core as pkg_rlc_core  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     FAULT_ACCESS,
     FAULT_FILE,
     FAULT_INTERNAL,
@@ -463,7 +463,7 @@ TK_OK = _tk_available()
 class TestGuiFileChecking(_TmpFileCase):
     def setUp(self) -> None:
         super().setUp()
-        from pkg_rlc_gui import App
+        from pkg_rlc.frontend.app import App
         self.app = App()
         self.app.geometry("1040x600")        # the documented minsize
         self.app.deiconify()
@@ -494,7 +494,7 @@ class TestGuiFileChecking(_TmpFileCase):
         self.assertLessEqual(row.winfo_reqwidth(), row.winfo_width())
 
     def test_check_file_reports_on_the_selected_file(self) -> None:
-        from pkg_rlc_gui import FileEntry
+        from pkg_rlc.frontend.app import FileEntry
         fe = FileEntry(parse_touchstone(FIXTURE))
         self.app.files.append(fe)
         self.app._refresh_file_list()
@@ -505,13 +505,13 @@ class TestGuiFileChecking(_TmpFileCase):
         self.assertIn("CONSISTENT", text)
 
     def test_file_list_line_carries_the_frequency_span(self) -> None:
-        from pkg_rlc_gui import FileEntry
+        from pkg_rlc.frontend.app import FileEntry
         fe = FileEntry(parse_touchstone(FIXTURE))
         self.assertIn("1 MHz - 10 GHz", fe.info_str())
 
     def test_a_bad_file_reaches_a_dialog_not_a_traceback(self) -> None:
         p = self.write("bad.s2p", "\x00\x01\x02" * 100)
-        with mock.patch("pkg_rlc_gui.messagebox.showerror") as err:
+        with mock.patch("pkg_rlc.frontend.app.messagebox.showerror") as err:
             self.assertIsNone(self.app._load_one_file(str(p)))
         self.assertEqual(err.call_count, 1)
         self.assertIn("Verdict", err.call_args[0][1])
@@ -519,19 +519,19 @@ class TestGuiFileChecking(_TmpFileCase):
     def test_a_skippable_file_offers_the_lenient_retry(self) -> None:
         text = self.src.replace("2.599750000e+07", "2.599750000e+07 OOPS", 1)
         p = self.write("tok.s2p", text)
-        with mock.patch("pkg_rlc_gui.messagebox.askyesno",
+        with mock.patch("pkg_rlc.frontend.app.messagebox.askyesno",
                         return_value=True) as ask:
             ts = self.app._load_one_file(str(p))
         self.assertEqual(ask.call_count, 1)
         self.assertIsNotNone(ts)
         self.assertEqual(ts.nports, 2)
         # Declining leaves the file unloaded, with no exception.
-        with mock.patch("pkg_rlc_gui.messagebox.askyesno",
+        with mock.patch("pkg_rlc.frontend.app.messagebox.askyesno",
                         return_value=False):
             self.assertIsNone(self.app._load_one_file(str(p)))
 
     def test_loading_prints_the_summary_block(self) -> None:
-        with mock.patch("pkg_rlc_gui.filedialog.askopenfilenames",
+        with mock.patch("pkg_rlc.frontend.app.filedialog.askopenfilenames",
                         return_value=(str(FIXTURE),)):
             self.app._on_add_file()
         text = self._results()

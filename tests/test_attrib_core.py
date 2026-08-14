@@ -37,8 +37,8 @@ sys.path.insert(0, str(_HERE))
 
 import numpy as np  # noqa: E402
 
-import pkg_rlc_attrib as at  # noqa: E402
-from pkg_rlc_core import (  # noqa: E402
+import pkg_rlc.physics.attrib as at  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     Ground,
     LumpedBetween,
     LumpedToGnd,
@@ -877,7 +877,7 @@ class TestDecomposableQuantities(unittest.TestCase):
         must be the numbers the results pane already prints -- not a second,
         slightly different self inductance.
         """
-        from pkg_rlc_core import extract_coupling_at_freq
+        from pkg_rlc.physics.core import extract_coupling_at_freq
         d, Y = load(COUPLED_DIFF)
         Zm, names, _w = compute_z_matrix(Y, d.freqs, self.ts)
         cres = extract_coupling_at_freq(d.freqs, Zm, names, self.ctx.freq_hz)
@@ -1097,7 +1097,7 @@ class TestGroupAndCumulative(unittest.TestCase):
         output each row is its own group -- which is what makes "change this
         whole connection-table row at once" mean anything.
         """
-        from pkg_rlc_core import ConnectionRow, MeasPortRow, row_sources
+        from pkg_rlc.physics.core import ConnectionRow, MeasPortRow, row_sources
         mrows = [MeasPortRow("c1", "1", ""), MeasPortRow("c2", "2", "")]
         crows = [ConnectionRow(kind="ground", ports="3"),
                  ConnectionRow(kind="ground", ports="4")]

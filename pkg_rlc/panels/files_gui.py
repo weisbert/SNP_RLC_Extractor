@@ -132,9 +132,9 @@ from dataclasses import dataclass, fields
 from tkinter import ttk
 from typing import Optional, Sequence
 
-import pkg_rlc_compose as comp
-from pkg_rlc_compose import COMPOSE_TAG_SEP, ComposeError, default_alias
-from pkg_rlc_core import ROLE_PROBE_PLUS, collapse_ports
+import pkg_rlc.physics.compose as comp
+from pkg_rlc.physics.compose import COMPOSE_TAG_SEP, ComposeError, default_alias
+from pkg_rlc.physics.core import ROLE_PROBE_PLUS, collapse_ports
 # Eight `import pkg_rlc_gui` statements written inside function bodies used to
 # stand where these three lines do.  They were not a design; they were a dodge
 # around a cycle, and the cycle is gone: the shared data model is
@@ -143,13 +143,13 @@ from pkg_rlc_core import ROLE_PROBE_PLUS, collapse_ports
 # BELOW this file in tests/test_layering.py.  Nothing here reaches up any more,
 # so the imports are at the top where they can be read -- and a reader can now
 # see what this window depends on without opening eight function bodies.
-from pkg_rlc_model import TraceConfig
-from pkg_rlc_report import LOG_WARN
-from pkg_rlc_validate import compose_spec_problems
+from pkg_rlc.model.trace import TraceConfig
+from pkg_rlc.present.report import LOG_WARN
+from pkg_rlc.model.validate import compose_spec_problems
 # Aliased because this module exports a `trace_file_labels` of its OWN, which
 # delegates to this one and falls back to a local walk -- see it below.
-from pkg_rlc_validate import trace_file_labels as _live_trace_file_labels
-from pkg_rlc_widgets import (
+from pkg_rlc.model.validate import trace_file_labels as _live_trace_file_labels
+from pkg_rlc.widgets.widgets import (
     PLACEHOLDER_FG,
     PORT_ROLE_FG,
     WARN_FG,

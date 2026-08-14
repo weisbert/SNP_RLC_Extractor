@@ -19,14 +19,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import tkinter as tk  # noqa: E402
 
-from pkg_rlc_core import (  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     ConnectionRow,
     MeasPortRow,
     build_terminations_rows,
     parse_custom_termination_text,
     resolve_meas_ports,
 )
-from pkg_rlc_gui import (  # noqa: E402
+from pkg_rlc.frontend.app import (  # noqa: E402
     App,
     ColumnSpec,
     RowTable,

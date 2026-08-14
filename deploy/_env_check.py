@@ -93,7 +93,7 @@ def main():
     if root not in sys.path:
         sys.path.insert(0, root)
 
-    core_ok, core_detail = try_import("pkg_rlc_core")
+    core_ok, core_detail = try_import("pkg_rlc.physics.core")
     emit("IMP_pkg_rlc_core", "OK" if core_ok else "FAIL")
     emit("IMP_pkg_rlc_core_detail", core_detail)
 
@@ -106,7 +106,7 @@ def main():
     plot_ok = False
     plot_detail = "skipped (matplotlib or tkinter missing)"
     if mpl_ok and tk_ok:
-        plot_ok, plot_detail = try_import("pkg_rlc_plot")
+        plot_ok, plot_detail = try_import("pkg_rlc.widgets.plot")
     emit("IMP_pkg_rlc_plot", "OK" if plot_ok else "FAIL")
     emit("IMP_pkg_rlc_plot_detail", plot_detail)
 

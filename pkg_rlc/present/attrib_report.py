@@ -57,8 +57,8 @@ import textwrap
 
 import numpy as np
 
-import pkg_rlc_attrib as attrib
-from pkg_rlc_core import (
+import pkg_rlc.physics.attrib as attrib
+from pkg_rlc.physics.core import (
     RECIPROCITY_WARN,
     collapse_ports,
     format_freq,
@@ -66,7 +66,7 @@ from pkg_rlc_core import (
     parse_kv_rlc_params,
     y_series_rlc,
 )
-from pkg_rlc_report import (
+from pkg_rlc.present.report import (
     _fmt_plain,
     _render_columns,
     _trunc_str,

@@ -49,9 +49,9 @@ from __future__ import annotations
 import sys as _sys
 import types as _types
 
-import pkg_rlc_solve as _pkg_rlc_solve
-import pkg_rlc_spec as _pkg_rlc_spec
-import pkg_rlc_touchstone as _pkg_rlc_touchstone
+import pkg_rlc.physics.solve as _pkg_rlc_solve
+import pkg_rlc.physics.spec as _pkg_rlc_spec
+import pkg_rlc.physics.touchstone as _pkg_rlc_touchstone
 
 # ============================================================================
 # The re-exports
@@ -71,7 +71,7 @@ import pkg_rlc_touchstone as _pkg_rlc_touchstone
 # keeps resolving.
 # ----------------------------------------------------------------------------
 
-from pkg_rlc_touchstone import (        # noqa: F401  (re-export, not a use)
+from pkg_rlc.physics.touchstone import (        # noqa: F401  (re-export, not a use)
     DEFAULT_Z0, FREQ_UNIT_SCALE, MAX_SNIFF_NPORTS, SNIFF_HARD_CAP,
     COMPUTE_BATCH, COMPUTE_CHUNK_BYTES, _freq_batch, PARSE_FLUSH_VALUES,
     PARSE_WARN_CAP, ENCODING_SNIFF_BYTES, DIAGNOSE_MAX_LINES,
@@ -87,7 +87,7 @@ from pkg_rlc_touchstone import (        # noqa: F401  (re-export, not a use)
     _safe_diagnose, check_touchstone, diagnose_touchstone, _SI_PREFIXES,
     format_si, format_freq,
 )
-from pkg_rlc_spec import (              # noqa: F401  (re-export, not a use)
+from pkg_rlc.physics.spec import (              # noqa: F401  (re-export, not a use)
     LEGACY_GROUP_NAMES, SI_SUFFIXES, parse_port_range, parse_short_pairs,
     parse_mport_spec, parse_si, parse_kv_rlc_params, YFunc, y_resistor,
     y_inductor, y_capacitor, y_series_rlc, Open, Ground, Vdd, Signal,
@@ -112,7 +112,7 @@ from pkg_rlc_spec import (              # noqa: F401  (re-export, not a use)
     _TERMINATED_ROLES, name_prefix, OpenNameCluster, open_name_clusters,
     open_port_name_messages, _validate_port_indices,
 )
-from pkg_rlc_solve import (             # noqa: F401  (re-export, not a use)
+from pkg_rlc.physics.solve import (             # noqa: F401  (re-export, not a use)
     SCHUR_LSTSQ_RCOND, PINV_RCOND, PROBE_RANGE_TOL, SCHUR_COLLAPSE_TOL,
     RECIPROCITY_WARN, s_to_y, y_to_s, _rank_deficient_warning,
     _schur_collapse_warning, _open_probe_warning, _no_return_path_warning,

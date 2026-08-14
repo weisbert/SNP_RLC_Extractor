@@ -77,11 +77,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import tkinter as tk  # noqa: E402
 from tkinter import font as tkfont  # noqa: E402
 
-import pkg_rlc_attrib as at  # noqa: E402
-import pkg_rlc_attrib_gui as ag  # noqa: E402
-import pkg_rlc_gui  # noqa: E402
-from pkg_rlc_core import format_si, parse_touchstone  # noqa: E402
-from pkg_rlc_gui import App, TraceConfig, WARN_FG  # noqa: E402
+import pkg_rlc.physics.attrib as at  # noqa: E402
+import pkg_rlc.panels.attrib_gui as ag  # noqa: E402
+import pkg_rlc.frontend.app as pkg_rlc_gui  # noqa: E402
+from pkg_rlc.physics.core import format_si, parse_touchstone  # noqa: E402
+from pkg_rlc.frontend.app import App, TraceConfig, WARN_FG  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 

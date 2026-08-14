@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np  # noqa: E402
 
-from pkg_rlc_core import parse_touchstone  # noqa: E402
+from pkg_rlc.physics.core import parse_touchstone  # noqa: E402
 
 
 FIX = Path(__file__).resolve().parent / "fixtures"

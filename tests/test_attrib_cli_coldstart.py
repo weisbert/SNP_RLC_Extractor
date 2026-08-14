@@ -55,9 +55,9 @@ sys.path.insert(0, str(_HERE))
 
 import numpy as np  # noqa: E402
 
-import pkg_rlc_attrib as attrib  # noqa: E402
-import pkg_rlc_extractor as ex  # noqa: E402
-from pkg_rlc_core import (  # noqa: E402
+import pkg_rlc.physics.attrib as attrib  # noqa: E402
+import pkg_rlc.frontend.cli as ex  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     build_terminations_coupling,
     parse_mport_spec,
     parse_touchstone,
@@ -584,7 +584,7 @@ class TestNumbersAreTheEnginesNumbers(unittest.TestCase):
         # The report prints through format_si, so this compares the RENDERED
         # string against the engine value rendered the same way -- which is
         # what makes it a test of the wiring rather than of format_si.
-        from pkg_rlc_core import format_si
+        from pkg_rlc.physics.core import format_si
         br = self.want.bracket
         self.assertIn(format_si(br.value_open.real, br.unit), self.out)
         self.assertIn(format_si(br.value_grounded.real, br.unit), self.out)

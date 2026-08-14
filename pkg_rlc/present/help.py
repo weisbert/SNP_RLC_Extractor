@@ -30,7 +30,14 @@ from tkinter.scrolledtext import ScrolledText
 # Absolute, derived from this file rather than from the process's working
 # directory: the GUI is launched by double-click and from a shortcut, and
 # neither guarantees a cwd anywhere near the install.
-HELP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs", "help")
+#
+# THREE dirnames, not one: this module is `pkg_rlc/present/help.py`, so the
+# install root -- the directory `docs/help/` sits in -- is three levels up.
+# It was one level when the module was `pkg_rlc_help.py` at the root, and
+# getting this wrong ships a Help window with nothing in it.
+_INSTALL_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
+HELP_DIR = os.path.join(_INSTALL_ROOT, "docs", "help")
 
 
 def _help_text(slug: str) -> str:

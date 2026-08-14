@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import tkinter as tk  # noqa: E402
 from tkinter import ttk  # noqa: E402
 
-from pkg_rlc_plot import PlotPanel, ReflowRow, reflow_rows  # noqa: E402
+from pkg_rlc.widgets.plot import PlotPanel, ReflowRow, reflow_rows  # noqa: E402
 
 
 def _tk_available() -> bool:

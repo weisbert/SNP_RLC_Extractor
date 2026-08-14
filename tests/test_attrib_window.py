@@ -37,15 +37,15 @@ import tkinter.font as tkfont  # noqa: E402
 
 import numpy as np  # noqa: E402
 
-import pkg_rlc_attrib as at  # noqa: E402
-import pkg_rlc_attrib_gui as ag  # noqa: E402
-import pkg_rlc_attrib_report as ar  # noqa: E402
-from pkg_rlc_core import (  # noqa: E402
+import pkg_rlc.physics.attrib as at  # noqa: E402
+import pkg_rlc.panels.attrib_gui as ag  # noqa: E402
+import pkg_rlc.present.attrib_report as ar  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     MeasPortRow,
     ROLE_ELEMENT,
     parse_touchstone,
 )
-from pkg_rlc_gui import (  # noqa: E402
+from pkg_rlc.frontend.app import (  # noqa: E402
     App,
     FileEntry,
     PORT_ROLE_FG,
@@ -1483,7 +1483,7 @@ class TestGroundModelSpelling(unittest.TestCase):
         """Mutation: reimplement the grammar here.  Both then pass their own
         tests and `shared:0.3n` (no `R=`/`L=`) is refused by one and accepted
         by the other."""
-        import pkg_rlc_extractor as cli
+        import pkg_rlc.frontend.cli as cli
         for spec in ("diag", "diag:L=1n", "shared:R=0.5,L=1n"):
             with self.subTest(spec=spec):
                 self.assertEqual(ag.parse_ground_model(spec, self.OMEGA),

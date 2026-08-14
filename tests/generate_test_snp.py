@@ -21,7 +21,7 @@ import numpy as np
 
 # Make the package importable when running this file directly.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pkg_rlc_core import y_to_s, DEFAULT_Z0  # noqa: E402
+from pkg_rlc.physics.core import y_to_s, DEFAULT_Z0  # noqa: E402
 
 
 # ============================================================================

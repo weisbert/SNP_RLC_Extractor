@@ -101,7 +101,7 @@ from typing import Sequence
 
 import numpy as np
 
-from pkg_rlc_core import (
+from pkg_rlc.physics.core import (
     DEFAULT_Z0,
     Ground,
     LumpedBetween,

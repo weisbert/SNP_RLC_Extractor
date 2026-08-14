@@ -28,8 +28,8 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-from pkg_rlc_core import RECIPROCITY_WARN, format_si
-from pkg_rlc_model import (
+from pkg_rlc.physics.core import RECIPROCITY_WARN, format_si
+from pkg_rlc.model.trace import (
     FREQ_EXACT_FRAC,
     FREQ_EXACT_REL,
     FREQ_UNIFORM_TOL,

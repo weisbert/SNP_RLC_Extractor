@@ -62,7 +62,7 @@ for _p in (str(_ROOT), str(_HERE)):
 
 import numpy as np  # noqa: E402
 
-from pkg_rlc_core import (  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     CouplingResult,
     PairCoupling,
     PortRLC,
@@ -262,7 +262,7 @@ def _db(ratio: float) -> float:
 # exactly what makes "the page did not move" a testable statement.
 
 def render_case(case) -> str:
-    import pkg_rlc_gui as gui
+    import pkg_rlc.frontend.app as gui
 
     if case["kind"] == "table":
         rows = [gui.RowSnapshot(id=r["id"], label=r["label"],

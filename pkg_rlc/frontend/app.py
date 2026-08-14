@@ -39,7 +39,7 @@ from tkinter.scrolledtext import ScrolledText
 
 import numpy as np
 
-from pkg_rlc_core import (
+from pkg_rlc.physics.core import (
     CONN_KINDS,
     DEFAULT_Z0,
     RECIPROCITY_WARN,
@@ -102,18 +102,18 @@ from pkg_rlc_core import (
     format_si,
     TouchstoneParseError,
 )
-from pkg_rlc_plot import (
+from pkg_rlc.widgets.plot import (
     COLORS, LINESTYLES, MAX_LABEL_LEN, PlotPanel, ReflowRow,
     Trace as PlotTrace,
 )
-from pkg_rlc_help import HelpWindow
+from pkg_rlc.present.help import HelpWindow
 # The connections table's SHAPE, and the RowTable vocabulary it is spoken in,
 # now live in pkg_rlc_conntable (they are pure -- no Tk, no App -- and the
 # editor is not the only reader).  Imported by name and RE-EXPORTED here, the
 # same precedent as the Mode 5 DSL helpers below: `from pkg_rlc_gui import
 # conn_table_layout` and friends keep resolving for every existing caller and
 # every test.
-from pkg_rlc_conntable import (
+from pkg_rlc.present.conntable import (
     CONN_KIND_HINTS,
     CONN_NET_KEY,
     CONN_NET_SUPPORTED,
@@ -155,7 +155,7 @@ from pkg_rlc_conntable import (
 # it draws from COLORS and LINESTYLES, which live in pkg_rlc_plot, and
 # pkg_rlc_plot imports ReflowRow from pkg_rlc_widgets -- so reaching back for
 # the palettes would be a module-level cycle.
-from pkg_rlc_widgets import (
+from pkg_rlc.widgets.widgets import (
     PLACEHOLDER_FG,
     PORT_ROLE_FG,
     WARN_FG,
@@ -174,7 +174,7 @@ from pkg_rlc_widgets import (
 # tests/test_layering.py.  Re-exported here, the same rule as everything above:
 # `from pkg_rlc_gui import TraceConfig` and `pkg_rlc_gui.FileEntry` keep
 # resolving for every call site and every test.
-from pkg_rlc_model import (
+from pkg_rlc.model.trace import (
     CouplingSnapshot,
     FileEntry,
     FitSnapshot,
@@ -198,7 +198,7 @@ from pkg_rlc_model import (
 # the record.  See "Run snapshots" below.  `from pkg_rlc_gui import
 # _snapshot_row` therefore keeps resolving, and keeps resolving to the wrapper,
 # which is the version every caller in the repo has always had.
-from pkg_rlc_model import (
+from pkg_rlc.model.trace import (
     _snapshot_block as _model_snapshot_block,
     _snapshot_reference as _model_snapshot_reference,
     _snapshot_row as _model_snapshot_row,
@@ -212,7 +212,7 @@ from pkg_rlc_model import (
 # `_tag_swatch_rows` stayed in this file on purpose: it WRITES INTO A Tk Text
 # and is therefore not a formatter.  So did `trace_signature_fields` /
 # `run_signatures`, which read a live TraceConfig.
-from pkg_rlc_report import (
+from pkg_rlc.present.report import (
     COMPARE_STACK_LINES_MAX,
     COUPLING_FLOOR_DB,
     COUPLING_LEGEND_LINES,
@@ -280,7 +280,7 @@ from pkg_rlc_report import (
 )
 # The CSV export blocks.  A file format, not a rendering of the results pane,
 # so a module of its own beside pkg_rlc_report.  Re-exported, same rule again.
-from pkg_rlc_csv import _coupling_k_array, _write_coupling_csv
+from pkg_rlc.present.csv import _coupling_k_array, _write_coupling_csv
 # The session file -- Save Config, Load Config and the on-exit autosave, as a
 # pure dict <-> model round trip with no Tk in it.  Re-exported, same rule as
 # everything above: `from pkg_rlc_gui import session_from_dict` and
@@ -304,9 +304,9 @@ from pkg_rlc_csv import _coupling_k_array, _write_coupling_csv
 # making the two hard to tell apart at the call site.  The module functions are
 # ALSO re-exported below under their old names, because tests reach for
 # `pkg_rlc_gui._collect_mports` and `pkg_rlc_gui._trace_plot_freqs` directly.
-import pkg_rlc_run as run
-from pkg_rlc_run import _collect_mports, _trace_plot_freqs
-from pkg_rlc_session import (
+import pkg_rlc.services.run as run
+from pkg_rlc.services.run import _collect_mports, _trace_plot_freqs
+from pkg_rlc.services.session import (
     AUTOSAVE_DIRNAME,
     AUTOSAVE_FILENAME,
     LoadedSession,
@@ -345,7 +345,7 @@ from pkg_rlc_session import (
 # `WARN_FG` stayed in this file: it is a COLOUR the Ports & Roles window
 # paints with, not a verdict.  So did `SolveNetwork` / `_composed_solve_network`,
 # which carry the arrays a Calculate actually runs on.
-from pkg_rlc_validate import (
+from pkg_rlc.model.validate import (
     ComposeSpecError,
     FOOTER_STRIP_CHARS,
     VALIDATION_STRIP_LINES,
@@ -405,8 +405,8 @@ from pkg_rlc_validate import (
 # imports) warm: 3.0 / 2.9 / 8.3 ms in three fresh processes, against a
 # documented 349 / 352 / 364 ms for `import pkg_rlc_gui` itself.  No cycle:
 # pkg_rlc_compose imports pkg_rlc_core and numpy and nothing else.
-import pkg_rlc_compose as comp
-from pkg_rlc_compose import default_alias
+import pkg_rlc.physics.compose as comp
+from pkg_rlc.physics.compose import default_alias
 # `_collect_nets` is reached by name on purpose.  It is the ONE definition of
 # which tokens in a Mode 5 DSL block are NODE NAMES rather than port fields,
 # and `_scope_dsl_text` has to skip exactly those.  A second copy here would
@@ -414,7 +414,7 @@ from pkg_rlc_compose import default_alias
 # is the drift this repo has been bitten by (RECIPROCITY_WARN, and the two
 # definitions of "which files is this trace made of" that `trace_file_labels`
 # now has to keep mirrored).  It never raises for a malformed line.
-from pkg_rlc_core import _collect_nets
+from pkg_rlc.physics.core import _collect_nets
 # The Attribution window lives in its own module (pkg_rlc_attrib_gui);
 # this file carries only the hooks below.  It is imported at module
 # level, NOT lazily, for two measured reasons.
@@ -431,7 +431,7 @@ from pkg_rlc_core import _collect_nets
 #     needs the label at build time), and a menu path spelled in two places is
 #     exactly the drift the "Show Ports needed five pointers" history warns
 #     about.
-from pkg_rlc_attrib_gui import (
+from pkg_rlc.panels.attrib_gui import (
     ATTRIB_MENU_LABEL,
     apply_attribution_session_state,
     attribution_session_state,
@@ -454,7 +454,7 @@ from pkg_rlc_attrib_gui import (
 # it at module level for the reference-node strip.  Nothing on the CLI path
 # pays it at all: pkg_rlc_extractor imports pkg_rlc_gui only inside the
 # GUI-launch branch.
-from pkg_rlc_files_gui import (
+from pkg_rlc.panels.files_gui import (
     FILES_MENU_LABEL,
     FILES_TITLE,
     files_refusal,
@@ -474,11 +474,11 @@ from pkg_rlc_files_gui import (
 # They may not import this module back, at module level or inside a function:
 # they are L5 in tests/test_layering.py and this file is L6.  What they need
 # from here they get through the injected App.
-from pkg_rlc_panels_files import FilesPanel
+from pkg_rlc.panels.panels_files import FilesPanel
 # FREEZE_MENU_LABEL / UNFREEZE_MENU_LABEL moved WITH the menu they label and
 # are RE-EXPORTED here, the same rule as the DSL helpers and the connections
 # table: `from pkg_rlc_gui import FREEZE_MENU_LABEL` keeps resolving.
-from pkg_rlc_panels_traces import (
+from pkg_rlc.panels.panels_traces import (
     FREEZE_MENU_LABEL,
     TracesPanel,
     UNFREEZE_MENU_LABEL,
@@ -487,12 +487,12 @@ from pkg_rlc_panels_traces import (
 # are RE-EXPORTED here, the same rule again.  `_tag_swatch_rows` is the one
 # results-pane renderer that is NOT a formatter -- it WRITES INTO a Tk Text --
 # which is why it never went to pkg_rlc_report with the others.
-from pkg_rlc_panels_results import ResultsPanel, RunTab, _tag_swatch_rows
+from pkg_rlc.panels.panels_results import ResultsPanel, RunTab, _tag_swatch_rows
 # `StylePicker` and the editor's own constants moved WITH the form they belong
 # to, and are RE-EXPORTED here, the same rule again.  StylePicker in
 # particular could not stay: it draws from COLORS / LINESTYLES, which are
 # pkg_rlc_plot's, and it is a FIELD of this form and of nothing else.
-from pkg_rlc_panels_editor import (
+from pkg_rlc.panels.panels_editor import (
     EDITOR_FIELD_CHARS,
     EditorPanel,
     FROZEN_EDITOR_NOTE,

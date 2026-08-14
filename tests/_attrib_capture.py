@@ -85,8 +85,8 @@ for _p in (str(_ROOT), str(_HERE)):
 
 import numpy as np  # noqa: E402
 
-import pkg_rlc_attrib as at  # noqa: E402
-from pkg_rlc_core import (  # noqa: E402
+import pkg_rlc.physics.attrib as at  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     parse_custom_termination_text,
     parse_touchstone,
     row_sources,
@@ -138,7 +138,7 @@ def composed():
     interpolated and the composition adds no warning of its own -- which keeps
     this case about the attribution baseline and not about the frequency plan.
     """
-    import pkg_rlc_compose as comp
+    import pkg_rlc.physics.compose as comp
 
     d1, _ = load(DIFF_PAIR)
     d2, _ = load(PI_2PORT)
@@ -364,7 +364,7 @@ def sens(key: str, quantity: str = "M", candidates: str = ""):
     spec = SPEC_BY_KEY[key]
     ctx = context(key)
     if candidates:
-        import pkg_rlc_attrib_gui as ag
+        import pkg_rlc.panels.attrib_gui as ag
         alts, _problems = ag.candidate_list(candidates, ctx.omega)
     else:
         alts = at.default_alternatives(ctx.omega)
@@ -395,7 +395,7 @@ def prov(key: str, quantity: str = "M", units_mode: str = "smart", **kw):
     number, the trace id and the label are literals, exactly as
     `_render_capture` makes its snapshots plain data.
     """
-    import pkg_rlc_attrib_gui as ag
+    import pkg_rlc.panels.attrib_gui as ag
 
     spec = SPEC_BY_KEY[key]
     ctx = context(key)
@@ -558,7 +558,7 @@ def fake_complex_dec():
 
 
 def fake_prov(**kw):
-    import pkg_rlc_attrib_gui as ag
+    import pkg_rlc.panels.attrib_gui as ag
     base = dict(trace_id=3, trace_label="coil", file_label="pkg.s4p",
                 run_number=7, spec_matches_run=True, victim="vic",
                 aggressor="agg", quantity="M", requested_hz=5.6e9,
@@ -602,7 +602,7 @@ def _csv_text(records) -> str:
     and a reordered or renamed field has to be visible in the diff as a moved
     column, not as a moved dictionary key.
     """
-    import pkg_rlc_attrib_gui as ag
+    import pkg_rlc.panels.attrib_gui as ag
     out = [",".join(ag.CSV_FIELDS)]
     for rec in records:
         out.append(",".join(str(rec[k]) for k in ag.CSV_FIELDS))
@@ -620,7 +620,7 @@ def _refusal(fn) -> str:
 
 def build_cases() -> list[Case]:
     """The registry.  Built inside a function so the heavy imports are lazy."""
-    import pkg_rlc_attrib_gui as ag
+    import pkg_rlc.panels.attrib_gui as ag
 
     cases: list[Case] = []
 

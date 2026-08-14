@@ -35,7 +35,7 @@ from typing import Callable, Sequence, Union
 
 import numpy as np
 
-from pkg_rlc_touchstone import format_si
+from pkg_rlc.physics.touchstone import format_si
 
 # ============================================================================
 # Constants

@@ -58,7 +58,7 @@ for _p in (str(_HERE.parent), str(_HERE)):
         sys.path.insert(0, _p)
 
 import _cli_capture as cap                                        # noqa: E402
-import pkg_rlc_extractor as ex                                    # noqa: E402
+import pkg_rlc.frontend.cli as ex                                    # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -460,7 +460,7 @@ class TestTheCaptureRunsTheRealEntryPoint(unittest.TestCase):
         which is the property that lets it join FAST_MODULES.
         """
         captured()
-        self.assertNotIn("pkg_rlc_gui", sys.modules)
+        self.assertNotIn("pkg_rlc.frontend.app", sys.modules)
         self.assertNotIn("tkinter", sys.modules)
 
     def test_the_capture_would_notice_a_changed_line(self):

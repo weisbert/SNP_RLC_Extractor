@@ -31,9 +31,9 @@ import tkinter as tk  # noqa: E402
 
 import numpy as np  # noqa: E402
 
-import pkg_rlc_gui  # noqa: E402
-from pkg_rlc_core import ConnectionRow, MeasPortRow, parse_touchstone  # noqa: E402
-from pkg_rlc_gui import (  # noqa: E402
+import pkg_rlc.frontend.app as pkg_rlc_gui  # noqa: E402
+from pkg_rlc.physics.core import ConnectionRow, MeasPortRow, parse_touchstone  # noqa: E402
+from pkg_rlc.frontend.app import (  # noqa: E402
     ATTRIB_MENU_LABEL, COLORS, FREEZE_MENU_LABEL, FROZEN_EDITOR_NOTE,
     LINESTYLES, MAX_LABEL_LEN,
     UNFREEZE_MENU_LABEL, App, FileEntry, TraceConfig,

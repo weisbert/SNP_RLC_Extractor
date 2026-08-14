@@ -854,7 +854,7 @@ def cap_artifact(lines: list[str]) -> list[str]:
 
 def _invoke(argv: list[str]) -> tuple[int, str, str]:
     """`main(argv)` with stdout / stderr captured and SystemExit absorbed."""
-    import pkg_rlc_extractor as ex
+    import pkg_rlc.frontend.cli as ex
 
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):

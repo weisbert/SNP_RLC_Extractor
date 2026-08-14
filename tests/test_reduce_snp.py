@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np  # noqa: E402
 
 import reduce_snp as rs  # noqa: E402
-from pkg_rlc_core import parse_touchstone as core_parse  # noqa: E402
+from pkg_rlc.physics.core import parse_touchstone as core_parse  # noqa: E402
 
 Z0 = 50.0
 

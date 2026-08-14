@@ -32,7 +32,7 @@ from typing import Optional, Sequence
 import tkinter as tk
 from tkinter import ttk
 
-from pkg_rlc_conntable import (
+from pkg_rlc.present.conntable import (
     CONN_OFF_GLYPH,
     CONN_ON_GLYPH,
     ColumnSpec,
@@ -43,7 +43,7 @@ from pkg_rlc_conntable import (
 # The role names PORT_ROLE_FG is keyed on.  `port_roles` in pkg_rlc_core is the
 # ONE classifier; a second spelling of the keys here is how a bucket comes to
 # have no colour and be painted the default one in silence.
-from pkg_rlc_core import (
+from pkg_rlc.physics.core import (
     ROLE_ELEMENT,
     ROLE_GROUND,
     ROLE_OPEN,

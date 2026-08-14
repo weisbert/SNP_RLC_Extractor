@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
-from pkg_rlc_core import (
+from pkg_rlc.physics.core import (
     parse_touchstone, s_to_y, compute_z, extract_rlc_at_freq,
     fit_inductor, fit_capacitor, fit_auto,
     build_terminations_mode1, build_terminations_mode2,
@@ -125,7 +125,7 @@ assert which == "inductor"
 
 # ---------- Test 7: VDD == Ground equivalence ----------
 banner("VDD treated as Ground (mode 4)")
-from pkg_rlc_core import build_terminations_mode4, Vdd, Ground
+from pkg_rlc.physics.core import build_terminations_mode4, Vdd, Ground
 # Use diff_pair: pretend port 4 is VDD instead of part of differential
 ts = parse_touchstone(FIX / "diff_pair_4port.s4p")
 Y = s_to_y(ts.s, ts.z0)

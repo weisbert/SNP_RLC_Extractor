@@ -38,7 +38,7 @@ import numpy as np  # noqa: E402
 
 import _golden_capture as gc  # noqa: E402
 
-from pkg_rlc_core import compute_z, parse_touchstone, s_to_y  # noqa: E402
+from pkg_rlc.physics.core import compute_z, parse_touchstone, s_to_y  # noqa: E402
 
 
 _REGEN_HINT = ("Run `python tests/_golden_capture.py` from the repo root to "

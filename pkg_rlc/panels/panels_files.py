@@ -27,16 +27,16 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from pkg_rlc_core import (
+from pkg_rlc.physics.core import (
     TouchstoneData,
     TouchstoneParseError,
     diagnose_touchstone,
     parse_touchstone,
 )
-from pkg_rlc_report import LOG_INFO, LOG_WARN, _trunc_str
-from pkg_rlc_validate import trace_file_labels
-from pkg_rlc_attrib_gui import refresh_attribution_windows
-from pkg_rlc_files_gui import FILES_MENU_LABEL, refresh_files_windows
+from pkg_rlc.present.report import LOG_INFO, LOG_WARN, _trunc_str
+from pkg_rlc.model.validate import trace_file_labels
+from pkg_rlc.panels.attrib_gui import refresh_attribution_windows
+from pkg_rlc.panels.files_gui import FILES_MENU_LABEL, refresh_files_windows
 
 
 class FilesPanel:

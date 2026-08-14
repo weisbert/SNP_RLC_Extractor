@@ -42,8 +42,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np  # noqa: E402
 
-import pkg_rlc_compose as pc  # noqa: E402
-from pkg_rlc_compose import (  # noqa: E402
+import pkg_rlc.physics.compose as pc  # noqa: E402
+from pkg_rlc.physics.compose import (  # noqa: E402
     ComposeError,
     ComposeInput,
     REF_LIVE,
@@ -60,7 +60,7 @@ from pkg_rlc_compose import (  # noqa: E402
     solve_composed,
     write_composed_touchstone,
 )
-from pkg_rlc_core import (  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     Ground,
     ShortPair,
     Signal,
@@ -857,7 +857,7 @@ class TestPortNamespace(unittest.TestCase):
         a colon-tagged port collides with the one syntax every port field in
         this repo goes through.
         """
-        from pkg_rlc_core import parse_port_range
+        from pkg_rlc.physics.core import parse_port_range
         self.assertNotEqual(pc.COMPOSE_TAG_SEP, ":")
         with self.assertRaises(ValueError):
             parse_port_range("PKG:12")

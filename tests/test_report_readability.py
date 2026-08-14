@@ -41,8 +41,8 @@ import tkinter as tk  # noqa: E402
 
 import numpy as np  # noqa: E402
 
-import pkg_rlc_gui  # noqa: E402
-from pkg_rlc_core import (  # noqa: E402
+import pkg_rlc.frontend.app as pkg_rlc_gui  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     ConnectionRow,
     CouplingResult,
     MeasPortRow,
@@ -51,7 +51,7 @@ from pkg_rlc_core import (  # noqa: E402
     build_terminations_rows,
     parse_touchstone,
 )
-from pkg_rlc_gui import (  # noqa: E402
+from pkg_rlc.frontend.app import (  # noqa: E402
     COUPLING_FLOOR_DB,
     FOOTER_STRIP_CHARS,
     RESULTS_SWATCH,
@@ -66,7 +66,7 @@ from pkg_rlc_gui import (  # noqa: E402
     _write_coupling_csv,
     rank_coupling_pairs,
 )
-from pkg_rlc_plot import COLORS  # noqa: E402
+from pkg_rlc.widgets.plot import COLORS  # noqa: E402
 
 FIX = Path(__file__).resolve().parent / "fixtures"
 FIXTURE = FIX / "diff_pair_4port.s4p"

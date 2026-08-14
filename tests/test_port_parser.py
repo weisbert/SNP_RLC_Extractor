@@ -12,7 +12,7 @@ from pathlib import Path
 # Make pkg_rlc_core importable when running this file directly.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pkg_rlc_core import (  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     Ground,
     LumpedBetween,
     LumpedToGnd,
@@ -148,7 +148,7 @@ class TestShortGroupIntegration(unittest.TestCase):
     """Verify chained shorts merge into one group via Union-Find in compute_z."""
 
     def test_chain_equivalent_to_pairwise(self):
-        from pkg_rlc_core import (build_terminations_mode3, compute_z,
+        from pkg_rlc.physics.core import (build_terminations_mode3, compute_z,
                                   parse_touchstone, s_to_y)
         import numpy as np
         fix = (Path(__file__).resolve().parent

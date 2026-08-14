@@ -16,7 +16,7 @@ tests/test_freeze_trace.py.  So the panel exposes `bind_events()` and
 
 It may not import `pkg_rlc_gui` (L5 -> L6, tests/test_layering.py).  The two
 context-menu labels moved here WITH the menu they name and are re-exported
-from `pkg_rlc_gui`; the handful of pure model helpers this panel still needs
+from `pkg_rlc.frontend.app`; the handful of pure model helpers this panel still needs
 -- `_duplicate_trace_config`, `freeze_refusal`, `_freeze_trace_config`,
 `_snapshot_row`, `_snapshot_block` -- construct a `TraceConfig` or a
 `RunSnapshot` and so cannot come down until those types do.  Until then they
@@ -32,10 +32,10 @@ from dataclasses import replace
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from pkg_rlc_plot import COLORS
-from pkg_rlc_report import LOG_WARN
-from pkg_rlc_attrib_gui import ATTRIB_MENU_LABEL, refresh_attribution_windows
-from pkg_rlc_files_gui import FILES_MENU_LABEL, refresh_files_windows
+from pkg_rlc.widgets.plot import COLORS
+from pkg_rlc.present.report import LOG_WARN
+from pkg_rlc.panels.attrib_gui import ATTRIB_MENU_LABEL, refresh_attribution_windows
+from pkg_rlc.panels.files_gui import FILES_MENU_LABEL, refresh_files_windows
 
 # The two Traces-list context-menu entries.  Named constants because three
 # tests and one menu lookup key off them, and a menu entry nobody can find is

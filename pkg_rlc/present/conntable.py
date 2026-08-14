@@ -24,7 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 from typing import Sequence
 
-from pkg_rlc_core import (
+from pkg_rlc.physics.core import (
     CONN_KINDS,
     CONN_KINDS_WITH_NET,
     CONN_KINDS_WITH_RLC,

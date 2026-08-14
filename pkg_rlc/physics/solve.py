@@ -44,8 +44,8 @@ from typing import Sequence, Union
 
 import numpy as np
 
-from pkg_rlc_touchstone import DEFAULT_Z0, _freq_batch
-from pkg_rlc_spec import (
+from pkg_rlc.physics.touchstone import DEFAULT_Z0, _freq_batch
+from pkg_rlc.physics.spec import (
     Ground, LumpedBetween, LumpedToGnd, Open, PortTermination, ShortPair,
     Signal, TerminationSet, Vdd, _normalize_signal, _validate_port_indices,
     resolve_meas_ports,

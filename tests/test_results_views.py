@@ -42,7 +42,7 @@ import tkinter as tk  # noqa: E402
 
 import numpy as np  # noqa: E402
 
-from pkg_rlc_core import (  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     CouplingResult,
     MeasPortRow,
     PairCoupling,
@@ -50,7 +50,7 @@ from pkg_rlc_core import (  # noqa: E402
     RLCResult,
     parse_touchstone,
 )
-from pkg_rlc_gui import (  # noqa: E402
+from pkg_rlc.frontend.app import (  # noqa: E402
     COMPARE_STACK_LINES_MAX,
     COUPLING_LEGEND_LINES,
     RESULTS_PANE_COLS,
@@ -467,7 +467,7 @@ class TestTheFooterSaysEachThingOnce(unittest.TestCase):
     def test_a_collapsed_warning_keeps_its_WARN_severity(self):
         """The Log badge counts warnings, and a deduplicated warning is still
         a warning.  Mutation: emit LOG_INFO for the grouped line."""
-        import pkg_rlc_gui as gui
+        import pkg_rlc.frontend.app as gui
         run = _run([_two_port_block(1, "a", ref_strip="s", ref_warn=True,
                                     ref_lines=("d",)),
                     _two_port_block(4, "b", ref_strip="s", ref_warn=True,

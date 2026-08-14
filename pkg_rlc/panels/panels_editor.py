@@ -30,7 +30,7 @@ editor's LabelFrame was built, and `App._build_left_panel` still shows Global
 Controls being packed side=BOTTOM BEFORE it.
 
 WHAT MOVED WITH IT.  `StylePicker` (it is a field of this form, and it draws
-from pkg_rlc_plot's palettes, which is L4), and the editor's own constants:
+from pkg_rlc.widgets.plot's palettes, which is L4), and the editor's own constants:
 `MODE_PLACEHOLDERS`, `LABEL_PLACEHOLDER`, `EDITOR_FIELD_CHARS`,
 `FROZEN_EDITOR_NOTE`, `MP_TABLE_HINT` / `_SHORT`, `MUTUAL_CURVE_HINT` /
 `_SHORT` and `TEXT_DIALOG_NOTE`.  All are re-exported from `pkg_rlc_gui`,
@@ -59,7 +59,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import messagebox, ttk
 
-from pkg_rlc_core import (
+from pkg_rlc.physics.core import (
     ConnectionRow,
     MeasPortRow,
     build_terminations_rows,
@@ -67,8 +67,8 @@ from pkg_rlc_core import (
     resolve_meas_ports,
     rows_to_dsl_text,
 )
-from pkg_rlc_plot import COLORS, LINESTYLES
-from pkg_rlc_conntable import (
+from pkg_rlc.widgets.plot import COLORS, LINESTYLES
+from pkg_rlc.present.conntable import (
     CONN_TABLE_COLUMNS,
     CONN_TABLE_HINT,
     CONN_TABLE_HINT_SHORT,
@@ -78,7 +78,7 @@ from pkg_rlc_conntable import (
     conn_row_from_cells,
     conn_table_layout,
 )
-from pkg_rlc_widgets import (
+from pkg_rlc.widgets.widgets import (
     PLACEHOLDER_FG,
     PlaceholderEntry,
     RowTable,
@@ -86,7 +86,7 @@ from pkg_rlc_widgets import (
     _tk_dash,
     editor_scroll_fraction,
 )
-from pkg_rlc_validate import (
+from pkg_rlc.model.validate import (
     _extra_lines_indicator,
     _footer_strip_text,
     _import_dsl_text,
@@ -101,11 +101,11 @@ from pkg_rlc_validate import (
     scope_echo_messages,
     trace_is_composed,
 )
-from pkg_rlc_attrib_gui import (
+from pkg_rlc.panels.attrib_gui import (
     live_windows as attribution_windows,
     refresh_attribution_windows,
 )
-from pkg_rlc_files_gui import refresh_files_windows
+from pkg_rlc.panels.files_gui import refresh_files_windows
 
 
 # ============================================================================

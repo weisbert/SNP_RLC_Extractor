@@ -54,16 +54,16 @@ import tkinter as tk  # noqa: E402
 
 import numpy as np  # noqa: E402
 
-import pkg_rlc_files_gui  # noqa: E402
-import pkg_rlc_gui  # noqa: E402
-from pkg_rlc_core import (  # noqa: E402
+import pkg_rlc.panels.files_gui as pkg_rlc_files_gui  # noqa: E402
+import pkg_rlc.frontend.app as pkg_rlc_gui  # noqa: E402
+from pkg_rlc.physics.core import (  # noqa: E402
     ConnectionRow,
     CouplingResult,
     MeasPortRow,
     PortRLC,
     parse_touchstone,
 )
-from pkg_rlc_gui import (  # noqa: E402
+from pkg_rlc.frontend.app import (  # noqa: E402
     App,
     FileEntry,
     LoadedSession,

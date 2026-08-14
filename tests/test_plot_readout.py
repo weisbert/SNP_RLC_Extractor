@@ -31,7 +31,7 @@ try:
     from matplotlib.figure import Figure
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.text import Text
-    import pkg_rlc_plot as P
+    import pkg_rlc.widgets.plot as P
     _IMPORT_ERROR = None
 except Exception as exc:            # no tkinter / no matplotlib on this box
     _IMPORT_ERROR = exc

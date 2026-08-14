@@ -31,9 +31,9 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-import pkg_rlc_compose as comp
-from pkg_rlc_compose import default_alias
-from pkg_rlc_core import (
+import pkg_rlc.physics.compose as comp
+from pkg_rlc.physics.compose import default_alias
+from pkg_rlc.physics.core import (
     CONN_KINDS_WITH_PARTNER,
     CONN_KINDS_WITH_RLC,
     ConnectionRow,
@@ -66,7 +66,7 @@ from pkg_rlc_core import (
 # which tokens in a Mode 5 DSL block are NODE NAMES rather than port fields,
 # and `_scope_dsl_text` has to skip exactly those.  A second copy here would
 # let the field this module rewrites and the field core resolves disagree.
-from pkg_rlc_core import _collect_nets
+from pkg_rlc.physics.core import _collect_nets
 
 
 # ============================================================================
