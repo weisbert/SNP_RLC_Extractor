@@ -28,9 +28,10 @@
   "  Port       R     L         C      Q  Sign",
   "  ----  ------  ----  --------  -----  ----",
   "  vic   600 mΩ  2 nH  -1.27 nF  2.094  ind",
-  "  legend: ind = Im(Z)>0 (inductive) | cap = Im(Z)<0 (capacitive; past SRF for an inductor) | R<0 = non-passive",
   "",
   "Only one measurement port defined; no mutual terms. Add a second --mport to get M / k.",
+  "",
+  "  legend: ind = Im(Z)>0 (inductive) | cap = Im(Z)<0 (capacitive; past SRF for an inductor) | R<0 = non-passive",
   ""
  ],
  "stderr": [
