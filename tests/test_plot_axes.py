@@ -284,6 +284,130 @@ class TestTheAxisCarriesItsOwnUnit(unittest.TestCase):
 
 @unittest.skipIf(_IMPORT_ERROR is not None,
                  f"plot stack unavailable: {_IMPORT_ERROR}")
+class TestTheFrequencyAxisIsTightAndInUnits(unittest.TestCase):
+    """
+    Pad Y, never pad X.  Every surveyed tool that plots a swept measurement
+    does this -- Qucs 10%/0%, KiCad 3%/0% -- because the sweep endpoints ARE
+    the data and blank space past them reads as measurements nobody took.
+    matplotlib's 5%/5% is the outlier and is what this panel inherited: a
+    1 MHz .. 10 GHz sweep was drawn inside an axis running to 16 GHz.
+
+    Mutation check: drop the `set_xmargin(0.0)` and the first two go red;
+    drop the `_apply_x_axis` call and the unit tests go red;
+    `test_the_y_axis_still_keeps_its_margin` is the one that fails if the
+    margin is removed from BOTH axes instead of just x, which is the easy
+    over-correction.
+    """
+
+    def test_the_sweep_endpoints_are_the_axis_endpoints(self):
+        _f, ax = _axes_for("R(mOhm)", _F_AC, _Z_FLAT)
+        lo, hi = ax.get_xlim()
+        self.assertAlmostEqual(lo / _F_AC[0], 1.0, places=9)
+        self.assertAlmostEqual(hi / _F_AC[-1], 1.0, places=9)
+
+    def test_the_y_axis_still_keeps_its_margin(self):
+        # The asymmetry IS the rule.  A curve whose values span a real range
+        # must not touch the top and bottom spines.
+        z = 0.6 + 1j * 2 * np.pi * _F_AC * 2e-9
+        _f, ax = _axes_for("L(nH)", _F_AC, z)
+        y = P.trace_y_values(_F_AC, z, "L(nH)")
+        lo, hi = ax.get_ylim()
+        self.assertLess(lo, float(np.nanmin(y)))
+        self.assertGreater(hi, float(np.nanmax(y)))
+
+    def test_a_log_frequency_axis_reads_megahertz(self):
+        _f, ax = _axes_for("R(mOhm)", _F_AC, _Z_FLAT)
+        lo, hi = ax.get_xlim()
+        labs = [t.get_text() for t in ax.get_xticklabels()
+                if t.get_text()]
+        self.assertIn("1 MHz", labs, labs)
+        self.assertIn("1 GHz", labs, labs)
+        self.assertEqual(ax.get_xlabel(), "Freq")
+
+    def test_a_linear_frequency_axis_takes_one_prefix_on_the_label(self):
+        _f, ax = _axes_for("R(mOhm)", _F_AC, _Z_FLAT, x_log=False)
+        self.assertEqual(ax.get_xlabel(), "Freq (GHz)")
+        labs = [t.get_text().replace("−", "-")
+                for t in ax.get_xticklabels() if t.get_text()]
+        for t in labs:                     # bare numbers, no per-tick prefix
+            self.assertNotIn("Hz", t)
+
+    def test_the_marker_can_still_pull_the_axis_out_to_itself(self):
+        # No slack left on x, so this is worth pinning: a marker parked past
+        # the sweep must still be reachable rather than clipped away.
+        fig = Figure(figsize=(5, 3.5), dpi=110)
+        FigureCanvasAgg(fig)
+        view = P._PlotView(fig, _NullCanvas(), lambda: ["R(mOhm)"])
+        view.x_log = True
+        view.show_marker = True
+        view.marker_freq_hz = 5e10                     # 5x past the last point
+        view.set_traces([P.Trace(label="t", freqs=_F_AC, Z=_Z_FLAT)])
+        fig.canvas.draw()
+        self.assertGreaterEqual(fig.axes[0].get_xlim()[1], 5e10 * 0.999)
+
+    def test_both_axes_go_through_one_implementation(self):
+        # x and y must not come to disagree about what a prefix means.
+        self.assertTrue(hasattr(P._PlotView, "_label_si_axis"))
+        self.assertFalse(hasattr(P._PlotView, "_label_y_axis"))
+
+
+@unittest.skipIf(_IMPORT_ERROR is not None,
+                 f"plot stack unavailable: {_IMPORT_ERROR}")
+class TestZeroAlignmentNeedsNoCodeOfOurs(unittest.TestCase):
+    """
+    KiCad shifts its whole tick grid so a tick lands exactly on zero, and it
+    needs to: its own step search starts from a floored multiple and picks up
+    float offset.  matplotlib's MaxNLocator places ticks at integer multiples
+    of a nice step, so zero is already on the grid whenever it is in range --
+    MEASURED over the sign-crossing ranges R / L / C / M / k really produce,
+    9 of 9 with zero in range, on linear and on symlog.
+
+    So there is deliberately NO zero-alignment code in this panel, and this
+    class is what says so out loud.  It pins a property of the locator rather
+    than of our own code, which is the point: a later change that swaps the
+    locator (a percentile autoscale, say) has to notice that it just took
+    this away.
+    """
+
+    RANGES = [(-506e-12, 1.01e-9), (-3.2, 12.7), (-1.5e-9, 4.5e-9),
+              (-0.04322, 0.1126), (-2.5e5, 9.9e5), (-7.0, 7.0),
+              (-1e-12, 3e-9), (-42e-15, 508e-12), (-0.25, 0.75)]
+
+    def _ticks_in_range(self, lo, hi, **scale):
+        fig = Figure()
+        FigureCanvasAgg(fig)
+        ax = fig.add_subplot(1, 1, 1)
+        ax.plot([1.0, 2.0], [lo, hi])
+        if scale:
+            ax.set_yscale("symlog", **scale)
+        ax.set_ylim(lo, hi)
+        fig.canvas.draw()
+        return [t for t in ax.get_yticks() if lo <= t <= hi]
+
+    def test_a_tick_lands_on_zero_on_a_linear_axis(self):
+        for lo, hi in self.RANGES:
+            with self.subTest(ylim=(lo, hi)):
+                ticks = self._ticks_in_range(lo, hi)
+                self.assertTrue(any(t == 0.0 for t in ticks),
+                                f"no zero tick in {ticks}")
+
+    def test_a_tick_lands_on_zero_on_a_symlog_axis(self):
+        for lo, hi in self.RANGES:
+            with self.subTest(ylim=(lo, hi)):
+                ticks = self._ticks_in_range(lo, hi, linthresh=abs(hi) * 1e-3)
+                self.assertTrue(any(t == 0.0 for t in ticks),
+                                f"no zero tick in {ticks}")
+
+    def test_a_range_that_excludes_zero_has_nothing_to_align(self):
+        # The precondition: the rule is "whenever zero is IN RANGE", and this
+        # is the case that must NOT be expected to carry a zero tick.
+        ticks = self._ticks_in_range(-0.00025, -0.00022)
+        self.assertFalse(any(t == 0.0 for t in ticks))
+        self.assertTrue(ticks)
+
+
+@unittest.skipIf(_IMPORT_ERROR is not None,
+                 f"plot stack unavailable: {_IMPORT_ERROR}")
 class TestTheHelpersAreHonestOnTheirOwn(unittest.TestCase):
     """Pure, so the rules are checkable without drawing anything."""
 

@@ -4110,9 +4110,9 @@ mutation-checked.
   the README. If a dropdown ever carries names, those five and this window's
   role in them are one decision, not six.
 
-### The plot panel's y axis (what range it shows, what unit it says)
+### The plot panel's axes (what range they show, what unit they say)
 
-`tests/test_plot_axes.py` is the guard (28 tests, no display), and every claim
+`tests/test_plot_axes.py` is the guard (37 tests, no display), and every claim
 below was mutation-checked. Reported as one complaint — *"plotting R, the
 values are ~15.2 ohms but the y axis reads milliohms with 1e14, so the curve
 is a flat line at y=0"* — and it was two independent defects.
@@ -4186,9 +4186,37 @@ is a flat line at y=0"* — and it was two independent defects.
   `set_ylabel(plot_type)` with matplotlib's own autoscale. An axis that
   cannot be scaled is worth less than a curve that cannot be drawn — the same
   rule, and the same reason, as the Attribution window's sweep axis.
-- **KNOWN, NOT FIXED: the x axis still reads `10^6`, not `1 MHz`.** The
-  surveyed tools put a per-tick SI prefix on a decade-spanning frequency
-  axis; this change deliberately touched only the axis that was lying.
+- **PAD Y, NEVER PAD X.** Every surveyed tool that plots a swept measurement
+  does this — Qucs 10%/0%, KiCad 3%/0% — because the sweep endpoints ARE the
+  data and blank space past them reads as measurements nobody took.
+  matplotlib's 5%/5% is the outlier and is what this panel inherited: a
+  1 MHz .. 10 GHz sweep was drawn inside an axis running to 16 GHz. It is one
+  `ax.set_xmargin(0.0)`, and it must come BEFORE anything reads a limit —
+  `get_xlim()` is what forces the autoscale. **The asymmetry is the rule**;
+  stripping the margin from BOTH axes is the easy over-correction and
+  `test_the_y_axis_still_keeps_its_margin` is what catches it. The frequency
+  MARKER can still pull the axis out past the sweep (`axvline` joins the
+  autoscale), which is pre-existing and is what keeps a marker parked past
+  the end reachable rather than clipped away.
+- **`_label_si_axis` IS ONE IMPLEMENTATION FOR BOTH AXES.** x and y differ
+  only in which accessors it is handed, so the two cannot come to disagree
+  about what a prefix means. The frequency axis is `("Freq", "Hz", 1.0)`, so
+  log x — the shipped default — gets the per-tick form (`1 MHz`, `1 GHz`,
+  label `Freq`) and linear x gets one prefix on the label (`Freq (GHz)`,
+  bare ticks). There is deliberately no `_label_y_axis` any more; a test
+  asserts its absence, because a second implementation is exactly how the
+  two would drift.
+- **ZERO ALIGNMENT NEEDS NO CODE HERE, AND THAT IS MEASURED, NOT ASSUMED.**
+  KiCad shifts its whole tick grid so a tick lands exactly on zero, and it
+  has to: its own step search starts from a floored multiple and picks up
+  float offset. matplotlib's `MaxNLocator` places ticks at integer multiples
+  of a nice step, so **zero is already on the grid whenever it is in range**
+  — measured over the sign-crossing ranges R / L / C / M / k really produce,
+  9 of 9 with zero in range, on linear AND on symlog. So the port was
+  REFUSED rather than written. `TestZeroAlignmentNeedsNoCodeOfOurs` pins the
+  property anyway — it is a property of the LOCATOR, not of our code, and a
+  later change that swaps the locator (a percentile autoscale, say) has to
+  notice that it just took this away.
 
 ### The plot panel's control strip
 
@@ -4701,7 +4729,7 @@ python tests/run_parallel.py -m attrib coupling core    # substring on module na
 ```
 
 **Re-measured on this box after the package move and the layering-gate rewrite:
-2605 tests / 463 shards in 465.2 s at `-j 4` (the agreed budget while the user is on the
+2614 tests / 465 shards in 465.9 s at `-j 4` (the agreed budget while the user is on the
 box). `--fast` is unmoved at 1044 tests, and re-ran in 4.8 s against the 4.5 s recorded
 below — same eighteen modules, same count, wall-clock noise.** (The historical figures the runner's docstring
 opens with — 293 s serial against 108 s parallel over 906 tests — are what justified the

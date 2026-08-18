@@ -711,8 +711,10 @@ class _PlotView:
 
     def _draw_axes(self, ax, plot_type: str) -> None:
         ax.set_title(PLOT_TYPE_NAMES.get(plot_type, plot_type), fontsize=10)
-        ax.set_xlabel("Freq (Hz)", fontsize=8)
         ax.tick_params(labelsize=7)
+        # The sweep endpoints are the data; see `_apply_x_axis`.  Set before
+        # anything reads a limit -- `get_xlim()` is what forces the autoscale.
+        ax.set_xmargin(0.0)
         if self.x_log:
             ax.set_xscale("log")
         if self.y_log:
@@ -735,6 +737,7 @@ class _PlotView:
                 drawn.append((tr.fit_freqs, yf))
         ax.grid(True, which="both", alpha=0.3)
         self._apply_y_axis(ax, plot_type, drawn)
+        self._apply_x_axis(ax)
 
     def _apply_y_axis(self, ax, plot_type: str, drawn: Sequence[tuple]) -> None:
         """
@@ -777,37 +780,66 @@ class _PlotView:
                         f"not shown",
                         transform=ax.transAxes, ha="right", va="bottom",
                         fontsize=OFFSCALE_FONT_SIZE, alpha=0.65)
-            self._label_y_axis(ax, name, unit, to_si)
+            self._label_si_axis(ax, "y", name, unit, to_si, self.y_log)
         except Exception:                                    # pragma: no cover
             ax.set_ylabel(plot_type, fontsize=8)
 
-    def _label_y_axis(self, ax, name: str, unit: str, to_si: float) -> None:
-        """The unit half of `_apply_y_axis`; see its docstring for the rules."""
+    def _label_si_axis(self, ax, which: str, name: str, unit: str,
+                       to_si: float, log: bool) -> None:
+        """
+        One axis, in engineering units.  ONE implementation for x and y, so
+        the two cannot come to disagree about what a prefix means; `which` is
+        "x" or "y".  See `_apply_y_axis` for the rules, and the module
+        comment above `PLOT_TYPE_NAMES` for why the log branch is different.
+        """
+        axis = ax.xaxis if which == "x" else ax.yaxis
+        set_label = ax.set_xlabel if which == "x" else ax.set_ylabel
+        get_lim = ax.get_xlim if which == "x" else ax.get_ylim
+        get_ticks = ax.get_xticks if which == "x" else ax.get_yticks
         if not unit:                       # Q, k -- dimensionless, no prefix
-            ax.set_ylabel(name, fontsize=8)
+            set_label(name, fontsize=8)
             return
-        if self.y_log:
-            ax.yaxis.set_major_formatter(mticker.FuncFormatter(
+        if log:
+            # Decades apart: one shared prefix would be wrong for most of the
+            # ticks, and there is nothing for the labels to collide over.
+            axis.set_major_formatter(mticker.FuncFormatter(
                 lambda v, _p: format_si(v * to_si, unit)))
-            ax.set_ylabel(name, fontsize=8)
+            set_label(name, fontsize=8)
             return
-        ylo, yhi = ax.get_ylim()
-        exp, pfx = _si_prefix(max(abs(ylo), abs(yhi)) * to_si)
+        lo, hi = get_lim()
+        exp, pfx = _si_prefix(max(abs(lo), abs(hi)) * to_si)
         # raw -> displayed: value * to_si / 10**exp
         divisor = (10.0 ** exp) / to_si
-        sig = tick_label_sig([t for t in ax.get_yticks() if ylo <= t <= yhi],
-                             divisor)
+        sig = tick_label_sig([t for t in get_ticks() if lo <= t <= hi], divisor)
         if sig is None:
             # The labels collide at every precision we will spend.  Hand the
             # ticks back to matplotlib -- its exponent offset is the right
             # rendering of a narrow range around a large value -- and label
             # with the unit the stored values are ALREADY in, which is true
             # and is what the reader needs to read the offset.
-            ax.set_ylabel(f"{name} ({_si_prefix(to_si)[1]}{unit})", fontsize=8)
+            set_label(f"{name} ({_si_prefix(to_si)[1]}{unit})", fontsize=8)
             return
-        ax.yaxis.set_major_formatter(mticker.FuncFormatter(
+        axis.set_major_formatter(mticker.FuncFormatter(
             lambda v, _p, d=divisor, g=sig: f"{v / d:.{g}g}"))
-        ax.set_ylabel(f"{name} ({pfx}{unit})", fontsize=8)
+        set_label(f"{name} ({pfx}{unit})", fontsize=8)
+
+    def _apply_x_axis(self, ax) -> None:
+        """
+        The frequency axis: engineering units, and NO MARGIN.
+
+        Every surveyed tool that plots a swept measurement pads Y and leaves X
+        tight -- Qucs 10%/0%, KiCad 3%/0% -- because the sweep endpoints ARE
+        the data, and blank space past them reads as measurements that were
+        never taken.  matplotlib's 5%/5% is the outlier and is what this panel
+        inherited: a 1 MHz .. 10 GHz sweep was drawn inside an axis running to
+        16 GHz, a decade the file says nothing about.
+
+        Guarded like `_apply_y_axis`, and for the same reason.
+        """
+        try:
+            self._label_si_axis(ax, "x", "Freq", "Hz", 1.0, self.x_log)
+        except Exception:                                    # pragma: no cover
+            ax.set_xlabel("Freq (Hz)", fontsize=8)
 
     def _refresh_marker(self) -> None:
         self._capture_manual_locs()     # the legends below get replaced
