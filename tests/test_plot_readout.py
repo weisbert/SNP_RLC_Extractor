@@ -210,11 +210,13 @@ class TestReadoutContent(unittest.TestCase):
                          "the frequency is repeated in the rows")
 
     def test_values_use_engineering_units(self):
-        # 0.3 on an L(nH) axis is 300 pH, not "0.3 nH"; 1500 on an R(mOhm)
-        # axis is 1.5 Ohm, not the "1.5e+03 mOhm" that %.3g produced.
-        self.assertEqual(P._readout_value(0.3, "L(nH)"), "300 pH")
-        self.assertEqual(P._readout_value(1500.0, "R(mOhm)"), "1.5 Ω")
-        self.assertEqual(P._readout_value(-0.487, "C(pF)"), "-487 fF")
+        # `trace_y_values` is in SI, so these are henries, ohms and farads.
+        # The readout picks the prefix PER VALUE -- "300 pH", not "0.3 nH" --
+        # which is the half of the division of labour the axis does not do:
+        # the axis names the base unit and leaves the exponent to matplotlib.
+        self.assertEqual(P._readout_value(3e-10, "L(nH)"), "300 pH")
+        self.assertEqual(P._readout_value(1.5, "R(mOhm)"), "1.5 Ω")
+        self.assertEqual(P._readout_value(-4.87e-13, "C(pF)"), "-487 fF")
         self.assertEqual(P._readout_value(0.143, "k"), "0.143")
 
     def test_undefined_value_reads_as_a_dash(self):

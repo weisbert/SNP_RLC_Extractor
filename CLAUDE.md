@@ -4112,7 +4112,7 @@ mutation-checked.
 
 ### The plot panel's axes (what range they show, what unit they say)
 
-`tests/test_plot_axes.py` is the guard (37 tests, no display), and every claim
+`tests/test_plot_axes.py` is the guard (41 tests, no display), and every claim
 below was mutation-checked. Reported as one complaint — *"plotting R, the
 values are ~15.2 ohms but the y axis reads milliohms with 1e14, so the curve
 is a flat line at y=0"* — and it was two independent defects.
@@ -4144,22 +4144,50 @@ is a flat line at y=0"* — and it was two independent defects.
   `fontsize=6`, lower right). A point the reader can neither see nor infer is
   what caused this; removing its influence in silence would be the same
   defect facing the other way.
-- **ONE SI PREFIX PER LINEAR AXIS, IN THE LABEL, TICKS BARE.** The y values
-  are not in SI — `R(mOhm)` is milliohms, `L(nH)` nanohenries — and those
-  fixed prefixes were what the axis was LABELLED with, so 15.2 Ω was drawn
-  against an axis reading 15200 beside a cursor readout, on the same subplot,
-  saying `15.2 Ω`. Two notations for one quantity on one screen, and the axis
-  carried the one the reader has to do arithmetic on. The per-axis form is
-  what ngspice has done since 1990 and what KiCad's `LIN_SCALE` and
-  sparameterviewer arrived at independently. **Do not switch to a per-tick
-  prefix** (matplotlib's `EngFormatter`): it renders `[500 pH, 2 nH]` as
-  `500 pH, 750 pH, 1 nH, 1.25 nH` — mixed units down one column, the failure
-  the results pane's `aligned` mode exists to prevent.
-- **A LOG y axis takes the per-tick prefix instead, and that is not an
-  inconsistency.** Its ticks are decades apart, so one shared prefix would be
-  wrong for most of them and there is nothing for the labels to collide over.
-  KiCad's `LOG_SCALE` splits the same way.
-- **`tick_label_sig` IS WHAT MAKES THE RELABELLING SAFE, AND IT MUST BE
+- **`trace_y_values` RETURNS SI, AND THE PLOT TYPE NAME NO LONGER DESCRIBES
+  ITS UNITS.** `R(mOhm)` yields ohms, `L(nH)` henries, `C(pF)` farads. Those
+  names are a stored session field and are quoted in the editor's hints, the
+  README and `CLAUDE_CODE_PROMPT.md`, so they survive as IDENTIFIERS with a
+  historical parenthetical. One unit convention through the module is what
+  lets the axis, the cursor readout and the M marker read a value the same
+  way, with the prefix applied once where it is RENDERED — there is no
+  scale-to-SI factor left anywhere, so nothing has to remember to apply one.
+- **THE Y AXIS NAMES THE SI BASE UNIT AND LEAVES THE EXPONENT TO
+  MATPLOTLIB; THE READOUT AND THE M MARKER CARRY THE PREFIX.** `L (H)` with
+  `1e-9` in matplotlib's corner offset, not `L (nH)` with an auto-chosen
+  prefix. **This is the user's decision and it REVERSES an earlier one**: an
+  axis whose prefix follows the data changes meaning between one glance and
+  the next, so two subplots and two sessions stop being comparable. The
+  division of labour is the point — **the axis is for shape and magnitude,
+  the cursor readout and an M marker are for reading a value**, and both of
+  those go through `format_si` and print `2 nH` / `300 pH` / `15.2 Ω`.
+  Note the tension with the Attribution window's sweep-axis rule, which
+  bans the bare exponent: that rule was written for a plot whose axis read
+  `1e-10` while the table BESIDE it read `+413 pH` — a mismatch, not a
+  notation. Here the two surfaces agree about the quantity and differ only
+  in where the prefix is applied. **A perfectly flat curve renders its own
+  numerical noise as an additive offset** (`1e-21+2e-9` on a synthetic
+  fixture that is 2 nH to thirteen digits); that is matplotlib being honest
+  about a degenerate range, it is what the old rendering did too, and it is
+  not something to paper over.
+- **THE X AXIS KEEPS THE ENGINEERING FORM**, per tick on the log scale
+  (`1 MHz`, `1 GHz`). It is the same `_label_axis`, switched by
+  `engineering=`. **Do not use matplotlib's `EngFormatter` for it**: that
+  picks a prefix PER TICK on a linear axis too, rendering `[500 pH, 2 nH]`
+  as `500 pH, 750 pH, 1 nH, 1.25 nH` — mixed units down one column, the
+  failure the results pane's `aligned` mode exists to prevent.
+- **THE SYMLOG `linthresh` IS DERIVED FROM THE DATA, AND THE MOVE TO SI IS
+  WHY IT HAD TO BE.** The panel used a fixed `1e-6`, survivable only while
+  the values carried a prefix (2 nH was `2.0`); in henries it is `2e-9` and
+  every point falls inside the linear band, so symlog degenerates into the
+  linear axis it replaces — the defect CLAUDE.md already names for the
+  Attribution sweep, arriving here through the units change.
+  `symlog_linthresh` takes the smallest non-zero drawable magnitude, floored
+  at `SYMLOG_MAX_DECADES` below the largest so one stray near-zero sample
+  cannot open a hundred empty decades. **`set_yscale` therefore happens in
+  `_apply_y_axis`, after the curves are drawn and before `set_ylim`**, since
+  the band comes from the data and changing the scale resets the limits.
+- **`tick_label_sig` IS WHAT MAKES THE X RELABELLING SAFE, AND IT MUST BE
   ALLOWED TO GIVE UP.** It raises precision until no two rendered tick labels
   are equal (KiCad's `formatLabels` loop — it DETECTS the collision rather
   than predicting it), capped at `TICK_SIG_TRIES`. Past the cap the axis is
@@ -4729,7 +4757,7 @@ python tests/run_parallel.py -m attrib coupling core    # substring on module na
 ```
 
 **Re-measured on this box after the package move and the layering-gate rewrite:
-2614 tests / 465 shards in 465.9 s at `-j 4` (the agreed budget while the user is on the
+2618 tests / 465 shards in 442.2 s at `-j 4` (the agreed budget while the user is on the
 box). `--fast` is unmoved at 1044 tests, and re-ran in 4.8 s against the 4.5 s recorded
 below — same eighteen modules, same count, wall-clock noise.** (The historical figures the runner's docstring
 opens with — 293 s serial against 108 s parallel over 906 tests — are what justified the

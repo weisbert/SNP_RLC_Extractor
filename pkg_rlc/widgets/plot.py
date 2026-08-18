@@ -74,18 +74,19 @@ LINESTYLES = ["-", "--", "-.", ":"]
 MAX_LABEL_LEN = 30
 MARKER_PIXEL_TOLERANCE = 8
 
-# ---- cursor readout -------------------------------------------------------
-# The physical unit each plot type's y values are already expressed in, as
-# (unit, scale-to-SI).  R(mOhm) values are milliohms, so 1500 -> 1.5 Ohm.
-READOUT_UNITS: dict[str, tuple[str, float]] = {
-    "R(mOhm)": ("Ω", 1e-3),
-    "L(nH)": ("H", 1e-9),
-    "C(pF)": ("F", 1e-12),
-    "|Z|(Ohm)": ("Ω", 1.0),
-    "Re(Z)": ("Ω", 1.0),
-    "Im(Z)": ("Ω", 1.0),
-    "Q": ("", 1.0),
-    "k": ("", 1.0),
+# ---- units ----------------------------------------------------------------
+# The SI unit each plot type is measured in.  `trace_y_values` returns SI, so
+# there is no scale factor here any more and nothing has to remember to apply
+# one: an empty unit means DIMENSIONLESS (Q, k), which takes no prefix ever.
+PLOT_TYPE_UNITS: dict[str, str] = {
+    "R(mOhm)": "Ω",
+    "L(nH)": "H",
+    "C(pF)": "F",
+    "|Z|(Ohm)": "Ω",
+    "Re(Z)": "Ω",
+    "Im(Z)": "Ω",
+    "Q": "",
+    "k": "",
 }
 # ---- y axis: what it is labelled with, and what range it shows ------------
 # A plot type's y values are NOT in SI -- `R(mOhm)` is milliohms, `L(nH)`
@@ -125,6 +126,14 @@ Y_PAD_FRAC = 0.05
 # exponent-offset notation is the right rendering for exactly that case.
 TICK_SIG_TRIES = (4, 5, 6)
 OFFSCALE_FONT_SIZE = 6
+# symlog's linear band has to sit BELOW the curve or the scale degenerates
+# into the linear one it replaces.  The panel used a fixed 1e-6, which was
+# survivable only while the y values carried a prefix (2 nH was "2.0"); in SI
+# it is 2e-9 and every point falls inside the band.  CLAUDE.md names exactly
+# this trap for the Attribution sweep, whose linthresh is derived for the
+# same reason.  The floor stops one stray denormal opening a hundred empty
+# decades under the data.
+SYMLOG_MAX_DECADES = 12
 
 
 READOUT_MAX_ROWS = 10          # beyond this the box would eat the subplot
@@ -211,6 +220,15 @@ def trace_y_values(freqs: np.ndarray, Z: np.ndarray, plot_type: str,
     ``AUX_PLOT_TYPES`` (currently just "k", the coupling coefficient, which
     needs three curves at once and so cannot be derived from ``Z``).
 
+    **VALUES ARE IN SI BASE UNITS** -- ohms, henries, farads -- and the
+    `(mOhm)` / `(nH)` / `(pF)` in the plot type NAME does NOT describe them.
+    Those names are a stored session field (`view_state()["types"]`) and are
+    quoted in the editor's hints, the README and `CLAUDE_CODE_PROMPT.md`, so
+    they are kept as identifiers; the units they mention are historical.  One
+    unit convention through the whole module is what lets the axis, the
+    cursor readout and the M marker all read a value the same way, with the
+    prefix applied once at the point it is RENDERED.
+
     Values keep their physical sign -- nothing here clips or takes abs().
     """
     if plot_type == "k":
@@ -218,11 +236,11 @@ def trace_y_values(freqs: np.ndarray, Z: np.ndarray, plot_type: str,
     omega = 2.0 * np.pi * freqs
     with np.errstate(divide="ignore", invalid="ignore"):
         if plot_type == "R(mOhm)":
-            return Z.real * 1000.0
+            return Z.real
         if plot_type == "L(nH)":
-            return Z.imag / omega * 1e9
+            return Z.imag / omega
         if plot_type == "C(pF)":
-            return -1.0 / (omega * Z.imag) * 1e12
+            return -1.0 / (omega * Z.imag)
         if plot_type == "|Z|(Ohm)":
             return np.abs(Z)
         if plot_type == "Re(Z)":
@@ -297,6 +315,37 @@ def drawable_extent(series: Sequence[tuple], x_log: bool) -> tuple:
     return lo, hi, n_hidden
 
 
+def symlog_linthresh(series: Sequence[tuple], x_log: bool) -> Optional[float]:
+    """
+    Where symlog's linear band should end, taken from the DATA.
+
+    The smallest non-zero magnitude that can be drawn, floored at
+    `SYMLOG_MAX_DECADES` below the largest so a single near-zero sample
+    cannot open a hundred empty decades under the curve.  None when there is
+    nothing to measure, and the caller then leaves the scale alone.
+    """
+    mags = []
+    for freqs, y in series:
+        f = np.asarray(freqs, dtype=float).ravel()
+        v = np.asarray(y, dtype=float).ravel()
+        if f.shape != v.shape or v.size == 0:
+            continue
+        ok = np.isfinite(v) & np.isfinite(f)
+        if x_log:
+            ok &= (f > 0)
+        m = np.abs(v[ok])
+        m = m[m > 0.0]
+        if m.size:
+            mags.append(m)
+    if not mags:
+        return None
+    a = np.concatenate(mags)
+    lo, hi = float(a.min()), float(a.max())
+    if not (hi > 0.0):
+        return None
+    return max(lo, hi * (10.0 ** -SYMLOG_MAX_DECADES))
+
+
 def tick_label_sig(values: Sequence[float], divisor: float) -> Optional[int]:
     """
     The fewest significant digits at which no two of these tick labels render
@@ -324,20 +373,21 @@ def _readout_value(v: float, plot_type: str) -> str:
     """
     One cell of the cursor readout, in engineering units.
 
-    The axis is labelled in a fixed prefix (nH, pF, mOhm) because that keeps
-    the tick labels comparable; the readout is what the user actually reads a
-    number off, so it picks the prefix per value: "300 pH", not "0.3 nH", and
-    "1.5 Ω", not the "1.5e+03 mΩ" that a plain %.3g produced.
+    The AXIS is labelled in the SI base unit and leaves the exponent to
+    matplotlib; the READOUT is what a value is actually read off, so it picks
+    the prefix per value: "300 pH", not "0.3 nH", and "1.5 Ω", not
+    "1.5e+03 mΩ".  That division is deliberate -- an axis whose prefix
+    followed the data would change meaning between one glance and the next.
 
     Non-finite reads as "--": a self curve has no k, and a NaN there is the
     honest answer rather than a gap that shifts every row below it.
     """
     if not np.isfinite(v):
         return "--"
-    unit, scale = READOUT_UNITS.get(plot_type, ("", 1.0))
+    unit = PLOT_TYPE_UNITS.get(plot_type, "")
     if not unit:
         return f"{v:.3g}"
-    return format_si(v * scale, unit)
+    return format_si(v, unit)
 
 
 def _format_value(v: float, plot_type: str) -> str:
@@ -717,8 +767,6 @@ class _PlotView:
         ax.set_xmargin(0.0)
         if self.x_log:
             ax.set_xscale("log")
-        if self.y_log:
-            ax.set_yscale("symlog", linthresh=1e-6)
         drawn: list[tuple] = []
         for tr in self.traces:
             y = trace_y_values(tr.freqs, tr.Z, plot_type, tr.aux)
@@ -766,9 +814,15 @@ class _PlotView:
         rule, and the same reason, as the Attribution window's sweep axis.
         """
         name = PLOT_TYPE_NAMES.get(plot_type, plot_type)
-        unit, to_si = READOUT_UNITS.get(plot_type, ("", 1.0))
+        unit = PLOT_TYPE_UNITS.get(plot_type, "")
         try:
             lo, hi, n_hidden = drawable_extent(drawn, self.x_log)
+            if self.y_log:
+                # After the curves are drawn, because the band comes from
+                # them.  set_yscale resets the limits, so it goes FIRST.
+                lt = symlog_linthresh(drawn, self.x_log)
+                if lt is not None and lt > 0.0:
+                    ax.set_yscale("symlog", linthresh=lt)
             if n_hidden and lo is not None:
                 span = hi - lo
                 pad = Y_PAD_FRAC * span if span > 0 else abs(hi) * Y_PAD_FRAC
@@ -780,17 +834,29 @@ class _PlotView:
                         f"not shown",
                         transform=ax.transAxes, ha="right", va="bottom",
                         fontsize=OFFSCALE_FONT_SIZE, alpha=0.65)
-            self._label_si_axis(ax, "y", name, unit, to_si, self.y_log)
+            self._label_axis(ax, "y", name, unit, self.y_log,
+                             engineering=False)
         except Exception:                                    # pragma: no cover
             ax.set_ylabel(plot_type, fontsize=8)
 
-    def _label_si_axis(self, ax, which: str, name: str, unit: str,
-                       to_si: float, log: bool) -> None:
+    def _label_axis(self, ax, which: str, name: str, unit: str,
+                    log: bool, engineering: bool) -> None:
         """
-        One axis, in engineering units.  ONE implementation for x and y, so
-        the two cannot come to disagree about what a prefix means; `which` is
-        "x" or "y".  See `_apply_y_axis` for the rules, and the module
-        comment above `PLOT_TYPE_NAMES` for why the log branch is different.
+        One axis's unit.  ONE implementation for x and y, so the two cannot
+        come to disagree about what a prefix means; `which` is "x" or "y".
+
+        `engineering=False` -- what the Y AXIS uses -- names the SI BASE unit
+        in the label and leaves the ticks entirely to matplotlib, so the
+        common exponent goes in the corner where matplotlib puts it.  The
+        axis then means one fixed thing whatever the data does, which is what
+        makes two subplots and two sessions comparable at a glance; the VALUE
+        a reader wants is read off the cursor readout or an M marker, both of
+        which carry an engineering prefix per value.
+
+        `engineering=True` -- what the frequency axis uses -- puts the prefix
+        on the numbers: per tick on a log axis, one for the whole axis
+        otherwise.  A decade-spanning frequency axis reads `1 MHz, 1 GHz`,
+        which no exponent notation improves on.
         """
         axis = ax.xaxis if which == "x" else ax.yaxis
         set_label = ax.set_xlabel if which == "x" else ax.set_ylabel
@@ -799,25 +865,26 @@ class _PlotView:
         if not unit:                       # Q, k -- dimensionless, no prefix
             set_label(name, fontsize=8)
             return
+        if not engineering:
+            set_label(f"{name} ({unit})", fontsize=8)
+            return
         if log:
             # Decades apart: one shared prefix would be wrong for most of the
             # ticks, and there is nothing for the labels to collide over.
             axis.set_major_formatter(mticker.FuncFormatter(
-                lambda v, _p: format_si(v * to_si, unit)))
+                lambda v, _p: format_si(v, unit)))
             set_label(name, fontsize=8)
             return
         lo, hi = get_lim()
-        exp, pfx = _si_prefix(max(abs(lo), abs(hi)) * to_si)
-        # raw -> displayed: value * to_si / 10**exp
-        divisor = (10.0 ** exp) / to_si
+        exp, pfx = _si_prefix(max(abs(lo), abs(hi)))
+        divisor = 10.0 ** exp
         sig = tick_label_sig([t for t in get_ticks() if lo <= t <= hi], divisor)
         if sig is None:
             # The labels collide at every precision we will spend.  Hand the
             # ticks back to matplotlib -- its exponent offset is the right
-            # rendering of a narrow range around a large value -- and label
-            # with the unit the stored values are ALREADY in, which is true
-            # and is what the reader needs to read the offset.
-            set_label(f"{name} ({_si_prefix(to_si)[1]}{unit})", fontsize=8)
+            # rendering of a narrow range around a large value -- and name the
+            # base unit, which is what the reader needs to read the offset.
+            set_label(f"{name} ({unit})", fontsize=8)
             return
         axis.set_major_formatter(mticker.FuncFormatter(
             lambda v, _p, d=divisor, g=sig: f"{v / d:.{g}g}"))
@@ -837,7 +904,8 @@ class _PlotView:
         Guarded like `_apply_y_axis`, and for the same reason.
         """
         try:
-            self._label_si_axis(ax, "x", "Freq", "Hz", 1.0, self.x_log)
+            self._label_axis(ax, "x", "Freq", "Hz", self.x_log,
+                             engineering=True)
         except Exception:                                    # pragma: no cover
             ax.set_xlabel("Freq (Hz)", fontsize=8)
 

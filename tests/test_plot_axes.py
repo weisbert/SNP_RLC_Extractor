@@ -122,7 +122,7 @@ class TestAnUndrawablePointDoesNotOwnTheAxis(unittest.TestCase):
 
     def test_a_dc_row_no_longer_flattens_the_curve(self):
         _f, ax = _axes_for("R(mOhm)", _F_DC, _Z_DC)
-        frac = _height_fraction(ax, 15200.0)
+        frac = _height_fraction(ax, 15.2)
         # Before the fix this was 0.045.  The curve must be somewhere a
         # reader would call the middle, not pinned against the bottom edge.
         self.assertGreater(frac, 0.25, f"curve at {frac:.4f} up the axis")
@@ -161,7 +161,7 @@ class TestAnUndrawablePointDoesNotOwnTheAxis(unittest.TestCase):
         # would pass every other test in this class.
         z_inf = np.concatenate([[np.inf + 0j], _Z_FLAT])
         _f, ax = _axes_for("R(mOhm)", _F_DC, z_inf)
-        frac = _height_fraction(ax, 15200.0)
+        frac = _height_fraction(ax, 15.2)
         self.assertGreater(frac, 0.25)
         self.assertLess(frac, 0.75)
 
@@ -170,7 +170,7 @@ class TestAnUndrawablePointDoesNotOwnTheAxis(unittest.TestCase):
         # a DC row.  On a linear x axis it is on screen and owns the range,
         # which is correct -- it is a visible outlier there.
         _f, ax = _axes_for("R(mOhm)", _F_DC, _Z_DC, x_log=False)
-        self.assertGreater(ax.get_ylim()[1], 1e13)
+        self.assertGreater(ax.get_ylim()[1], 1e10)
 
     def test_what_is_not_drawn_is_named_on_the_axes(self):
         # A point the reader cannot see and cannot infer is what caused this
@@ -191,7 +191,7 @@ class TestAnUndrawablePointDoesNotOwnTheAxis(unittest.TestCase):
         fit_f = np.logspace(6, 10, 50)
         fit_z = np.full(50, 30.0 + 0j)          # 30 ohm, well above the curve
         _f, ax = _axes_for("R(mOhm)", _F_DC, _Z_DC, fit=(fit_f, fit_z))
-        self.assertGreaterEqual(ax.get_ylim()[1], 30000.0)
+        self.assertGreaterEqual(ax.get_ylim()[1], 30.0)
 
 
 @unittest.skipIf(_IMPORT_ERROR is not None,
@@ -207,20 +207,38 @@ class TestTheAxisCarriesItsOwnUnit(unittest.TestCase):
         _f, ax = _axes_for("R(mOhm)", _F_AC, _Z_FLAT)
         self.assertEqual(ax.get_ylabel(), "R (Ω)")
 
-    def test_the_ticks_read_the_value_the_readout_reads(self):
-        # The whole complaint in one assertion: the axis and the readout box
-        # sit on the same subplot and must not use two notations.  15.2 must
-        # be findable on the ticks, not 15200.
+    def test_the_axis_and_the_readout_are_the_same_quantity(self):
+        # The complaint in one assertion.  The two live on the same subplot
+        # and must agree: the axis says ohms and brackets 15.2 with its
+        # ticks, the readout says "15.2 Ω".  What they must NOT do is
+        # disagree by a factor of a thousand, which is what a hard-coded
+        # milliohm axis under a `format_si` readout did.
         _f, ax = _axes_for("R(mOhm)", _F_AC, _Z_FLAT)
-        ticks = _tick_texts(ax)
-        self.assertIn("15.2", ticks, f"ticks: {ticks}")
-        self.assertEqual(P._readout_value(15200.0, "R(mOhm)"), "15.2 Ω")
+        self.assertEqual(ax.get_ylabel(), "R (Ω)")
+        ticks = [float(t) for t in _tick_texts(ax)]
+        self.assertLessEqual(min(ticks), 15.2)
+        self.assertGreaterEqual(max(ticks), 15.2)
+        self.assertEqual(P._readout_value(15.2, "R(mOhm)"), "15.2 Ω")
 
-    def test_nanohenries_pick_their_own_prefix(self):
+    def test_the_M_marker_is_where_the_prefix_lives(self):
+        # The other half of the division of labour: an engineering value is
+        # read by MARKING a point, not off the axis.
+        self.assertEqual(P._format_value(2e-9, "L(nH)"), "2 nH")
+        self.assertEqual(P._format_value(15.2, "R(mOhm)"), "15.2 Ω")
+        self.assertEqual(P._format_value(1e-12, "C(pF)"), "1 pF")
+        self.assertEqual(P._format_value(-4.87e-13, "C(pF)"), "-487 fF")
+
+    def test_the_y_axis_names_the_BASE_unit_and_leaves_the_exponent_alone(self):
+        # Henries, not nanohenries: the axis means one fixed thing whatever
+        # the data does, so two subplots and two sessions stay comparable at
+        # a glance.  The scale goes in matplotlib's own corner offset, which
+        # is the notation the reader was asked to read.
         z = 0.6 + 1j * 2 * np.pi * _F_AC * 2e-9
         _f, ax = _axes_for("L(nH)", _F_AC, z)
-        self.assertEqual(ax.get_ylabel(), "L (nH)")
-        self.assertIn("2", _tick_texts(ax))
+        self.assertEqual(ax.get_ylabel(), "L (H)")
+        self.assertEqual(
+            ax.yaxis.get_offset_text().get_text().replace("−", "-"),
+            "1e-9")
 
     def test_a_narrow_range_does_not_collapse_to_one_repeated_label(self):
         # THE load-bearing one.  A per-tick `format_si` renders this range as
@@ -253,14 +271,39 @@ class TestTheAxisCarriesItsOwnUnit(unittest.TestCase):
         _f, ax = _axes_for("Q", _F_AC, z)
         self.assertEqual(ax.get_ylabel(), "Q")
 
-    def test_a_log_axis_prefixes_every_tick_instead(self):
-        # Ticks a decade apart cannot share one prefix, and cannot collide
-        # either -- so the log axis takes the per-tick form.
+    def test_a_log_y_axis_names_the_base_unit_too(self):
         z = 0.6 + 1j * 2 * np.pi * _F_AC * 2e-9
         _f, ax = _axes_for("|Z|(Ohm)", _F_AC, z, y_log=True)
-        ticks = _tick_texts(ax)
-        self.assertTrue(any(t.endswith("mΩ") for t in ticks), ticks)
-        self.assertTrue(any(t.endswith(" Ω") for t in ticks), ticks)
+        self.assertEqual(ax.get_ylabel(), "|Z| (Ω)")
+
+    def test_the_symlog_band_is_derived_and_not_the_old_fixed_one(self):
+        # THE TRAP the move to SI opens.  A 2 nH curve is 2e-9 in henries, so
+        # the panel's historical linthresh=1e-6 swallows every point and
+        # symlog degenerates into the linear axis it exists to replace --
+        # which is the defect CLAUDE.md already names for the Attribution
+        # sweep, arriving here through the units change.
+        z = 0.6 + 1j * 2 * np.pi * _F_AC * 2e-9
+        y = P.trace_y_values(_F_AC, z, "L(nH)")
+        lt = P.symlog_linthresh([(_F_AC, y)], True)
+        self.assertIsNotNone(lt)
+        self.assertLess(lt, 1e-6)
+        self.assertLessEqual(lt, float(np.nanmin(np.abs(y[y != 0]))) * 1.000001)
+
+    def test_the_symlog_band_is_floored_against_one_stray_sample(self):
+        # A single near-zero sample must not open a hundred empty decades
+        # under the curve.
+        y = np.array([1e-9, 2e-9, 1e-40])
+        f = np.array([1.0, 2.0, 3.0])
+        lt = P.symlog_linthresh([(f, y)], True)
+        # A RATIO, not assertAlmostEqual: at these magnitudes it compares to
+        # seven decimal places, where 1e-40 and 2e-21 are both zero and the
+        # assertion is vacuous.  Mutation-checked -- returning the raw
+        # minimum passes the naive form.
+        want = 2e-9 * 10.0 ** -P.SYMLOG_MAX_DECADES
+        self.assertAlmostEqual(lt / want, 1.0, places=6)
+
+    def test_symlog_linthresh_says_nothing_about_an_empty_series(self):
+        self.assertIsNone(P.symlog_linthresh([], True))
 
     def test_the_subplot_title_does_not_claim_a_unit_either(self):
         _f, ax = _axes_for("R(mOhm)", _F_AC, _Z_FLAT)
@@ -347,8 +390,9 @@ class TestTheFrequencyAxisIsTightAndInUnits(unittest.TestCase):
 
     def test_both_axes_go_through_one_implementation(self):
         # x and y must not come to disagree about what a prefix means.
-        self.assertTrue(hasattr(P._PlotView, "_label_si_axis"))
+        self.assertTrue(hasattr(P._PlotView, "_label_axis"))
         self.assertFalse(hasattr(P._PlotView, "_label_y_axis"))
+        self.assertFalse(hasattr(P._PlotView, "_label_si_axis"))
 
 
 @unittest.skipIf(_IMPORT_ERROR is not None,
