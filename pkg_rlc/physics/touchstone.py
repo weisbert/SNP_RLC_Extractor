@@ -1546,6 +1546,22 @@ def format_si(value: float, unit: str = "", sig: int = 3) -> str:
     scaled = value / (10 ** exp)
     # `sig` significant digits via %g, then strip a trailing '.' if any.
     text = f"{scaled:.{sig}g}"
+    # THE PREFIX IS PICKED FROM log10 BEFORE THE ROUNDING, so a mantissa
+    # just under the next decade rounds up THROUGH it and the number falls
+    # out of engineering notation altogether: 9.9996e-10 H rendered
+    # '1e+03 pH' where '1 nH' was meant, and 999999 Ohm rendered
+    # '1e+03 kOhm'.  Re-ask the question of the ROUNDED value -- if it has
+    # left the [1, 1000) window its prefix stands for, promote and
+    # re-render.  Checked on the rendered text rather than on `scaled`,
+    # because it is the rounding that moves it and `sig` is a parameter.
+    # One step is always enough: rounding can carry at most one decade.
+    # The top of the table has nothing to promote to and keeps the old
+    # rendering, which is the honest answer when the prefix runs out.
+    if abs(float(text)) >= 1000.0:
+        higher = next(((e, q) for e, q in _SI_PREFIXES if e > exp), None)
+        if higher is not None:
+            exp, pfx = higher
+            text = f"{value / (10 ** exp):.{sig}g}"
     suffix = pfx + unit
     return f"{text} {suffix}" if suffix else text
 

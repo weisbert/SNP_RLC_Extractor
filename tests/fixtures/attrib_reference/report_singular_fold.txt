@@ -27,4 +27,4 @@ Sensitivity: not run — switch the window to the Sensitivity view and export ag
 note: Port(s) 2,4 are IN THE BASELINE because the structure has no reference without them: with every non-probe port open the node admittance is singular, so port 2 -> gnd, port 4 -> gnd was folded in and has no term of its own.
 note: This is a decomposition of the DECLARATIONS in the spec, not a ranking of ports: an open port contributes no element and no term. It also depends on how the spec is spelled -- '6:1:14 ground' and '6 short_to 7:1:14' + '6 ground' are the same network and decompose differently.
 
-Return path: Return-path budget: the declared elements carry 100.00% of the aggressor's return current (1e+03 mA) and the EM model's own reference 0.00% (0.343 fA).
+Return path: Return-path budget: the declared elements carry 100.00% of the aggressor's return current (1 A) and the EM model's own reference 0.00% (0.343 fA).

@@ -2,6 +2,6 @@
   ───────────── ───────── ───────── ─────── ─────
 █ ground port 2 R=50 Ohm    +500 pH −500 pH −6.07
 █ ground port 4 L=1 nH        +1 nH +4.3 pH +0.05
-█ ground port 4 C=100 pF  +1e+03 pH  −42 fH −0.00
+█ ground port 4 C=100 pF      +1 nH  −42 fH −0.00
 █ ground port 2 open             --      --    --
 █ short 3-4     open             --      --    --

@@ -225,7 +225,7 @@
   {
    "name": "sensitivity_fake_undefined_delta",
    "describe": "two candidates that could not be measured among three that could: an undefined delta ranks LAST, never first (hand-built)",
-   "sha256": "19c21c74aec4e8d6151ccd5351c7de9f0e5a6d4dae7b4519b32961225f6e0be9",
+   "sha256": "e9aed39577c6c5115820031e222b46eb2a28573ca52e0fc94211e63786abdd5d",
    "chars": 349,
    "lines": 7
   },
@@ -253,8 +253,8 @@
   {
    "name": "detail_element_with_group_and_candidates",
    "describe": "the same, plus the multi-member group paragraph and the candidate rows underneath",
-   "sha256": "eb3e953b30c63e9ce3b32453a23504e220904255ded6237f1a86bc35a2b0590f",
-   "chars": 1102,
+   "sha256": "c314f61f6683cfe275a02c5f4b8d3810bb9b1f8b2e422a2d0df5c09d996d8a61",
+   "chars": 1098,
    "lines": 23
   },
   {
@@ -393,15 +393,15 @@
   {
    "name": "report_singular_fold",
    "describe": "report_text on the singular baseline: the folded elements are named in the notes, which is the half of the auto-recovery that is not optional -- a folded element has no term of its own",
-   "sha256": "5a9d47f1203c54ce904ccda4a3e1f7383de0c918029babaace79cbd0654c59ed",
-   "chars": 2752,
+   "sha256": "5014e90025cf96b478f8a14714e7d92c9d60b579400d2d347791abd5f326429b",
+   "chars": 2747,
    "lines": 30
   },
   {
    "name": "report_nan_total",
    "describe": "report_text over the REAL NaN case: compute_z_matrix could not measure it, so the residual is NaN, the split is withheld and the warnings say so",
-   "sha256": "3139b2dc9bb9a46507124df33b0f98cddfbf90f827368b48d1965aaeb8d730bf",
-   "chars": 3934,
+   "sha256": "33cda01f71f5e818a08ed49a6a89b642f4af1a56d61c0b1da73acc7763a72884",
+   "chars": 3929,
    "lines": 33
   },
   {

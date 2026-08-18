@@ -30,4 +30,4 @@ WARN: Measurement port(s) 'vic' have no return path for the injected current; th
 WARN: Reconciliation could not be measured: compute_z_matrix reports Z_ab = (nan+nanj) for this pair. Nothing here has been checked against a second algorithm, so the per-element split is WITHHELD -- an unchecked split is not a checked one that happened to pass.
 WARN: compute_z_matrix: Measurement port(s) 'vic' have no return path for the injected current at freq[0]=5.1e+09 Hz (their probes are not orthogonal to the null space of the node admittance). Their row and column of Z are NaN. Add the missing '-' side or a ground port.
 
-Return path: Return-path budget: the declared elements carry 100.00% of the aggressor's return current (1e+03 mA) and the EM model's own reference 0.00% (0.446 fA).
+Return path: Return-path budget: the declared elements carry 100.00% of the aggressor's return current (1 A) and the EM model's own reference 0.00% (0.446 fA).

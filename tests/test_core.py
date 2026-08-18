@@ -647,6 +647,68 @@ class TestFormatSI(unittest.TestCase):
         self.assertEqual(format_si(1e-18, "F"), "0.001 fF")
 
 
+class TestFormatSiRollsOverItsPrefix(unittest.TestCase):
+    """
+    The prefix is chosen from `log10` and the rounding to `sig` figures
+    happens AFTER it, so a mantissa just under the next decade rounds up
+    THROUGH it and the number leaves engineering notation altogether.
+
+    Measured before the fix: `9.9996e-10 H` rendered `'1e+03 pH'` where
+    `1 nH` was meant, and `999999 Ohm` rendered `'1e+03 kOhm'`.  This is not
+    a plot concern -- `format_si` is the one renderer the cursor readout, the
+    results pane, the CLI and both attribution exports all go through, and
+    the broken form was captured in five files under `tests/fixtures/`
+    (`... return current (1e+03 mA)`, `ground port 3   1e+03 uA`).
+
+    Mutation check: delete the promotion block in `format_si` and the four
+    rollover tests below go red; the four beneath them are the guard that the
+    promotion does not fire when it should not.
+    """
+
+    def test_a_mantissa_that_rounds_up_promotes_the_prefix(self):
+        self.assertEqual(format_si(9.9996e-10, "H"), "1 nH")
+
+    def test_it_promotes_at_the_unit_boundary_too(self):
+        self.assertEqual(format_si(999.96, "H"), "1 kH")
+
+    def test_it_promotes_upward_through_kilo(self):
+        self.assertEqual(format_si(999999.0, "Ω"), "1 MΩ")
+
+    def test_a_negative_value_promotes_and_keeps_its_sign(self):
+        self.assertEqual(format_si(-9.9996e-10, "H"), "-1 nH")
+
+    def test_a_mantissa_that_does_NOT_round_up_is_untouched(self):
+        # 999.4 -> '999' at three figures, which is still inside the window
+        # its prefix stands for.  If this moved, the promotion is firing on
+        # the un-rounded value and every 999-ish reading has shifted prefix.
+        self.assertEqual(format_si(9.994e-10, "H"), "999 pH")
+
+    def test_the_top_of_the_table_has_nothing_to_promote_to(self):
+        # There is no prefix above T, so the old rendering is the honest
+        # answer rather than a wrong prefix.
+        self.assertEqual(format_si(9.9996e14, "H"), "1e+03 TH")
+
+    def test_the_rollover_follows_sig_because_the_rounding_does(self):
+        # At five figures 999.96 does not round up at all, so no promotion
+        # may happen -- the test that the trigger is the RENDERED text and
+        # not a hard-coded 999.5 threshold.
+        self.assertEqual(format_si(9.9996e-10, "H", sig=5), "999.96 pH")
+        self.assertEqual(format_si(9.9996e-10, "H", sig=2), "1 nH")
+
+    def test_ordinary_values_are_bit_identical(self):
+        # The whole existing surface, re-asserted here because this change
+        # touches the one renderer that five pinned reference files go
+        # through.
+        for value, unit, want in [(345e-12, "H", "345 pH"),
+                                  (0.000345, "H", "345 uH"),
+                                  (-1.234e-9, "H", "-1.23 nH"),
+                                  (2.5e3, "", "2.5 k"),
+                                  (0.0, "Ω", "0.00 Ω"),
+                                  (15.2, "Ω", "15.2 Ω"),
+                                  (1e-18, "F", "0.001 fF")]:
+            self.assertEqual(format_si(value, unit), want, msg=repr(value))
+
+
 class TestParserLineBreaks(unittest.TestCase):
     """
     The parser streams the file line by line, but `str.splitlines()` -- what it

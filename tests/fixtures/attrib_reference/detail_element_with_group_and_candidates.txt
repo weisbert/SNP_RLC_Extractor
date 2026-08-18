@@ -2,7 +2,7 @@ port 3 -> gnd     [lumped_to_gnd, lumped]
 
   declared by      text line 3
   contribution     +508 pH   (+50.17% of the total, +0.00% at right angles)
-  element current  +1e+03 uA  −9.45 nAj        (per 1 A into the aggressor)
+  element current  +1 mA  −9.45 nAj        (per 1 A into the aggressor)
   transimpedance   −391 uΩ  −16 kΩj     (baseline r_a, victim-side)
 
   contribution = − current × transimpedance. Both factors are real

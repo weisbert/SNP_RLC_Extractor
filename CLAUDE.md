@@ -4110,6 +4110,86 @@ mutation-checked.
   the README. If a dropdown ever carries names, those five and this window's
   role in them are one decision, not six.
 
+### The plot panel's y axis (what range it shows, what unit it says)
+
+`tests/test_plot_axes.py` is the guard (28 tests, no display), and every claim
+below was mutation-checked. Reported as one complaint — *"plotting R, the
+values are ~15.2 ohms but the y axis reads milliohms with 1e14, so the curve
+is a flat line at y=0"* — and it was two independent defects.
+
+- **A POINT THE X SCALE CANNOT DRAW MUST NOT OWN THE Y RANGE.** matplotlib's
+  y autoscale ranges over the whole data set; a log x axis (the shipped
+  default) cannot draw `f <= 0`. So a Touchstone file with a DC row hands the
+  y axis a point that never appears on screen — and **every composed sweep
+  KEEPS 0 Hz**. Measured through the real panel on a flat 15.2 Ω curve
+  carrying one large finite value at 0 Hz: `ylim (-5e+12, 1.05e+14)`, offset
+  text `'1e14'`, the curve at **4.545%** of the axis height, and the culprit
+  at `f = 0` **outside** `xlim`. That last part is the whole signature and is
+  what separates this from an ordinary pole — the reporter said *"I cannot
+  see any outlier at all"*, and they were right, because it is not drawn.
+  **A true `inf` there is harmless** (matplotlib drops non-finite values from
+  the range), so it takes a large FINITE value — which is exactly what
+  inverting a near-singular `Y` at DC produces, i.e. the same physics the
+  `lstsq`/NaN invariant above is about. `test_an_infinite_value_was_never_the_problem`
+  is that control, and without it the whole class would pass against a fix
+  that only filtered non-finite values.
+- **THE OVERRIDE ONLY FIRES WHEN SOMETHING IS ACTUALLY HIDDEN, and that is
+  the safety property the fix rests on.** `drawable_extent` returns
+  `n_hidden`, counting points that are FINITE (so matplotlib would have
+  ranged over them) and undrawable. At zero, `_apply_y_axis` sets no limit at
+  all and matplotlib's autoscale is left untouched — so a healthy plot is
+  byte-identical to what it always was, asserted against a bare matplotlib
+  figure of the same points rather than against a literal.
+- **What is not drawn is NAMED on the axes** (`N pt(s) at f≤0 not shown`,
+  `fontsize=6`, lower right). A point the reader can neither see nor infer is
+  what caused this; removing its influence in silence would be the same
+  defect facing the other way.
+- **ONE SI PREFIX PER LINEAR AXIS, IN THE LABEL, TICKS BARE.** The y values
+  are not in SI — `R(mOhm)` is milliohms, `L(nH)` nanohenries — and those
+  fixed prefixes were what the axis was LABELLED with, so 15.2 Ω was drawn
+  against an axis reading 15200 beside a cursor readout, on the same subplot,
+  saying `15.2 Ω`. Two notations for one quantity on one screen, and the axis
+  carried the one the reader has to do arithmetic on. The per-axis form is
+  what ngspice has done since 1990 and what KiCad's `LIN_SCALE` and
+  sparameterviewer arrived at independently. **Do not switch to a per-tick
+  prefix** (matplotlib's `EngFormatter`): it renders `[500 pH, 2 nH]` as
+  `500 pH, 750 pH, 1 nH, 1.25 nH` — mixed units down one column, the failure
+  the results pane's `aligned` mode exists to prevent.
+- **A LOG y axis takes the per-tick prefix instead, and that is not an
+  inconsistency.** Its ticks are decades apart, so one shared prefix would be
+  wrong for most of them and there is nothing for the labels to collide over.
+  KiCad's `LOG_SCALE` splits the same way.
+- **`tick_label_sig` IS WHAT MAKES THE RELABELLING SAFE, AND IT MUST BE
+  ALLOWED TO GIVE UP.** It raises precision until no two rendered tick labels
+  are equal (KiCad's `formatLabels` loop — it DETECTS the collision rather
+  than predicting it), capped at `TICK_SIG_TRIES`. Past the cap the axis is
+  handed back to matplotlib, whose exponent-offset notation is the right
+  rendering of a narrow range around a large value, and the label falls back
+  to the unit the stored values are ALREADY in. Measured: 500.000001 to
+  500.000003 mΩ renders as five identical `500 mΩ` under a per-tick
+  `format_si` and five identical `500` under any fixed `%g`. **Returning a
+  precision instead of `None` from the exhausted loop is a real mutation and
+  is caught.** This is also why `pkg_rlc.panels.attrib_gui`'s `si_tick` was
+  NOT ported across: per-tick `format_si` is degenerate on exactly this case.
+- **A DIMENSIONLESS QUANTITY TAKES NO PREFIX AND NO UNIT.** `Q` and `k` are
+  labelled with the bare name; `format_si` renders `k = -2.412e-4` as
+  `-241 u`, a micro-nothing. Same rule as the results views.
+- **THE `PLOT_TYPES` STRINGS DID NOT MOVE and must not.** They are a stored
+  session field (`view_state()["types"]`), and they are quoted in
+  `panels_editor`'s `MUTUAL_CURVE_HINT`, the README and `CLAUDE_CODE_PROMPT.md`.
+  Only the DISPLAY changed, through `PLOT_TYPE_NAMES` — **a table, not a
+  strip-the-parenthetical rule**, because `Re(Z)` and `Im(Z)` would strip to
+  `Re` and `Im`. **KNOWN, NOT FIXED:** the checkbox labels in the control
+  strip still read `R(mOhm)` while the axis reads `R (Ω)`. Changing them
+  ripples into the two hint strings and two docs and is a separate change.
+- **The whole of `_apply_y_axis` is guarded**, and falls back to
+  `set_ylabel(plot_type)` with matplotlib's own autoscale. An axis that
+  cannot be scaled is worth less than a curve that cannot be drawn — the same
+  rule, and the same reason, as the Attribution window's sweep axis.
+- **KNOWN, NOT FIXED: the x axis still reads `10^6`, not `1 MHz`.** The
+  surveyed tools put a per-tick SI prefix on a decade-spanning frequency
+  axis; this change deliberately touched only the axis that was lying.
+
 ### The plot panel's control strip
 
 `tests/test_plot_controls.py` is the guard, and every claim below was
@@ -4621,7 +4701,7 @@ python tests/run_parallel.py -m attrib coupling core    # substring on module na
 ```
 
 **Re-measured on this box after the package move and the layering-gate rewrite:
-2542 tests / 454 shards in 366.6 s at `-j 4` (the agreed budget while the user is on the
+2605 tests / 463 shards in 465.2 s at `-j 4` (the agreed budget while the user is on the
 box). `--fast` is unmoved at 1044 tests, and re-ran in 4.8 s against the 4.5 s recorded
 below — same eighteen modules, same count, wall-clock noise.** (The historical figures the runner's docstring
 opens with — 293 s serial against 108 s parallel over 906 tests — are what justified the

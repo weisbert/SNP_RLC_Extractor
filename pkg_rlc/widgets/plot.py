@@ -33,6 +33,7 @@ import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D                # noqa: E402
+import matplotlib.ticker as mticker               # noqa: E402
 from matplotlib.backends.backend_tkagg import (  # noqa: E402
     FigureCanvasTkAgg, NavigationToolbar2Tk,
 )
@@ -41,7 +42,7 @@ from matplotlib.backends.backend_tkagg import (  # noqa: E402
 # repo already has exactly one implementation of that rule.  Duplicating it
 # here would give the plot and the results pane two ways to render the same
 # number.  pkg_rlc_core imports nothing from this module, so this is acyclic.
-from pkg_rlc.physics.core import format_si                 # noqa: E402
+from pkg_rlc.physics.core import format_si, _SI_PREFIXES   # noqa: E402
 
 # `ReflowRow` / `reflow_rows` used to be defined here.  They are a GENERIC
 # layout widget that happened to live in the plot module: the control strip
@@ -86,6 +87,46 @@ READOUT_UNITS: dict[str, tuple[str, float]] = {
     "Q": ("", 1.0),
     "k": ("", 1.0),
 }
+# ---- y axis: what it is labelled with, and what range it shows ------------
+# A plot type's y values are NOT in SI -- `R(mOhm)` is milliohms, `L(nH)`
+# nanohenries -- and those fixed prefixes were what the AXIS was labelled
+# with too.  So a 15.2 ohm curve was drawn against an axis reading 15200 with
+# a bare `1e14` exponent in the corner, while the readout box on the SAME
+# subplot, which goes through `format_si`, said "15.2 Ω": two notations for
+# one quantity on one screen, and the axis carried the one the reader has to
+# do arithmetic on.
+#
+# The prefix is therefore taken from the data and printed ONCE, in the axis
+# LABEL, with bare numbers on the ticks.  ngspice has done that since 1990;
+# KiCad's LIN_SCALE and sparameterviewer arrived at it independently.  A
+# prefix PER TICK (matplotlib's EngFormatter) renders [500 pH, 2 nH] as
+# "500 pH, 750 pH, 1 nH, 1.25 nH" -- mixed units down one column, which is
+# the failure the results pane's `aligned` units mode exists to prevent.
+# A LOG y axis is the documented exception and takes the per-tick prefix:
+# its ticks are decades apart, so one shared prefix would be wrong for most
+# of them and there is nothing for the labels to collide over.
+#
+# The name is a TABLE and not a strip-the-parenthetical rule, because
+# "Re(Z)" and "Im(Z)" would strip to "Re" and "Im".  The dict keys are the
+# PLOT_TYPES strings themselves, which are a stored session field and are
+# deliberately not renamed here.
+PLOT_TYPE_NAMES: dict[str, str] = {
+    "R(mOhm)": "R", "L(nH)": "L", "C(pF)": "C", "|Z|(Ohm)": "|Z|",
+    "Re(Z)": "Re(Z)", "Im(Z)": "Im(Z)", "Q": "Q", "k": "k",
+}
+# matplotlib's own default margin, so a plot whose range we do NOT override
+# and one we do are padded alike.
+Y_PAD_FRAC = 0.05
+# Raise tick precision until no two rendered labels are equal -- KiCad's
+# duplicate-label loop.  It DETECTS the collision instead of predicting it,
+# which is what makes the SI relabelling safe on a narrow range: 500.000001
+# to 500.000003 mOhm renders as five identical "500 mΩ" at any fixed
+# precision.  Past the cap the axis is handed back to matplotlib, whose
+# exponent-offset notation is the right rendering for exactly that case.
+TICK_SIG_TRIES = (4, 5, 6)
+OFFSCALE_FONT_SIZE = 6
+
+
 READOUT_MAX_ROWS = 10          # beyond this the box would eat the subplot
 READOUT_NAME_LEN = 18          # hard ceiling; the real budget is measured
 READOUT_NAME_MIN = 8           # floor: below this the rows stop being distinct
@@ -191,6 +232,92 @@ def trace_y_values(freqs: np.ndarray, Z: np.ndarray, plot_type: str,
         if plot_type == "Q":
             return Z.imag / Z.real
     raise ValueError(f"Unknown plot type: {plot_type}")
+
+
+def _si_prefix(magnitude: float) -> tuple[int, str]:
+    """
+    The one SI prefix an axis reaching `magnitude` should carry.
+
+    Same table and same rule as `format_si`, IMPORTED rather than repeated:
+    two spellings of which prefix a number takes is precisely the drift this
+    repo closes everywhere else.  A non-finite or non-positive magnitude has
+    no prefix rather than an arbitrary one.
+    """
+    if not math.isfinite(magnitude) or magnitude <= 0.0:
+        return 0, ""
+    log10 = math.log10(magnitude)
+    exp, pfx = _SI_PREFIXES[0]
+    for e, p in _SI_PREFIXES:
+        if log10 >= e:
+            exp, pfx = e, p
+        else:
+            break
+    return exp, pfx
+
+
+def drawable_extent(series: Sequence[tuple], x_log: bool) -> tuple:
+    """
+    The y range over the points that can actually be DRAWN, and a count of the
+    finite points that cannot be.
+
+    Returns ``(lo, hi, n_hidden)``; ``lo`` is None when nothing is drawable.
+
+    A log x axis cannot draw f <= 0, and matplotlib's y autoscale does not
+    know that -- it takes its range from the whole data set, so a point the
+    x scale silently drops still owns the y axis.  A Touchstone file with a
+    DC row does exactly this, and every composed sweep KEEPS 0 Hz.  Measured
+    through this panel: a flat 15.2 ohm curve carrying one large finite value
+    at 0 Hz came out as ylim (-5e+12, 1.05e+14) with the curve at 4.5% of the
+    axis height, offset text '1e14', and NO visible outlier anywhere -- the
+    point that set the range is off the left edge.  A true `inf` there is
+    harmless, because matplotlib drops non-finite values from the range; it
+    is the large FINITE value, which is what inverting a near-singular Y at
+    DC produces, that does the damage.
+
+    `n_hidden` counts only points that are finite (so matplotlib WOULD have
+    ranged over them) and undrawable, which is what makes "did this change
+    anything?" answerable: zero means the shipped autoscale was already right
+    and is left alone.
+    """
+    lo = hi = None
+    n_hidden = 0
+    for freqs, y in series:
+        f = np.asarray(freqs, dtype=float).ravel()
+        v = np.asarray(y, dtype=float).ravel()
+        if f.shape != v.shape or v.size == 0:
+            continue
+        finite = np.isfinite(v) & np.isfinite(f)
+        drawable = finite & (f > 0) if x_log else finite
+        n_hidden += int(np.count_nonzero(finite & ~drawable))
+        vis = v[drawable]
+        if vis.size:
+            vlo, vhi = float(vis.min()), float(vis.max())
+            lo = vlo if lo is None else min(lo, vlo)
+            hi = vhi if hi is None else max(hi, vhi)
+    return lo, hi, n_hidden
+
+
+def tick_label_sig(values: Sequence[float], divisor: float) -> Optional[int]:
+    """
+    The fewest significant digits at which no two of these tick labels render
+    alike, or None if the cap is not enough.
+
+    KiCad's `formatLabels` loop.  It DETECTS the collision rather than
+    predicting it, which is the whole reason the per-axis SI prefix is safe:
+    at any fixed precision a narrow range around a large value collapses to
+    one repeated label, and there is no precision that is right for both that
+    case and an ordinary decade-wide sweep.
+    """
+    if divisor == 0.0 or not math.isfinite(divisor):
+        return None
+    vals = [v for v in values if math.isfinite(v)]
+    if len(vals) < 2:
+        return TICK_SIG_TRIES[0]
+    for sig in TICK_SIG_TRIES:
+        labels = [f"{v / divisor:.{sig}g}" for v in vals]
+        if len(set(labels)) == len(labels):
+            return sig
+    return None
 
 
 def _readout_value(v: float, plot_type: str) -> str:
@@ -583,27 +710,104 @@ class _PlotView:
     # -------- Drawing helpers --------
 
     def _draw_axes(self, ax, plot_type: str) -> None:
-        ax.set_title(plot_type, fontsize=10)
+        ax.set_title(PLOT_TYPE_NAMES.get(plot_type, plot_type), fontsize=10)
         ax.set_xlabel("Freq (Hz)", fontsize=8)
-        ax.set_ylabel(plot_type, fontsize=8)
         ax.tick_params(labelsize=7)
         if self.x_log:
             ax.set_xscale("log")
         if self.y_log:
             ax.set_yscale("symlog", linthresh=1e-6)
+        drawn: list[tuple] = []
         for tr in self.traces:
             y = trace_y_values(tr.freqs, tr.Z, plot_type, tr.aux)
             color = COLORS[tr.color_idx % len(COLORS)]
             ls = LINESTYLES[tr.ls_idx % len(LINESTYLES)]
             label = (tr.label or "")[:MAX_LABEL_LEN]
             ax.plot(tr.freqs, y, color=color, linestyle=ls, label=label, linewidth=1.2)
+            drawn.append((tr.freqs, y))
             if tr.fit_freqs is not None and tr.fit_Z is not None:
                 # aux is aligned with tr.freqs, not the fit grid, so the fit
                 # overlay has no aux series -- it simply skips aux subplots.
                 yf = trace_y_values(tr.fit_freqs, tr.fit_Z, plot_type)
                 ax.plot(tr.fit_freqs, yf, color=color, linestyle=":",
                         linewidth=1.0, alpha=0.7)
+                # The overlay is drawn on this axes, so it ranges the axes too.
+                drawn.append((tr.fit_freqs, yf))
         ax.grid(True, which="both", alpha=0.3)
+        self._apply_y_axis(ax, plot_type, drawn)
+
+    def _apply_y_axis(self, ax, plot_type: str, drawn: Sequence[tuple]) -> None:
+        """
+        Give the axes its range and its unit.
+
+        Two separate repairs, in this order because the second reads the range
+        the first settles:
+
+        1. A y range taken from the points that can be DRAWN.  Only applied
+           when there is something finite the x scale cannot show -- otherwise
+           matplotlib's autoscale is already right and is left completely
+           alone, which is what keeps every healthy plot byte-identical to
+           what it has always been.  What is dropped is NAMED on the axes: a
+           point the reader cannot see and cannot infer is exactly what caused
+           this, so removing its influence silently would be the same defect
+           facing the other way.
+        2. One SI prefix for the whole axis, in the LABEL, ticks bare -- or
+           the per-tick prefix on a log axis, where the ticks are decades
+           apart.  Dimensionless quantities (Q, k) take NO prefix: `format_si`
+           renders k = -2.412e-4 as "-241 u", a micro-nothing, which is not a
+           quantity.
+
+        Guarded whole: an axis that cannot be scaled is worth less than a
+        curve that cannot be drawn, so a failure here leaves matplotlib's own
+        autoscale and label in place rather than blanking the subplot.  Same
+        rule, and the same reason, as the Attribution window's sweep axis.
+        """
+        name = PLOT_TYPE_NAMES.get(plot_type, plot_type)
+        unit, to_si = READOUT_UNITS.get(plot_type, ("", 1.0))
+        try:
+            lo, hi, n_hidden = drawable_extent(drawn, self.x_log)
+            if n_hidden and lo is not None:
+                span = hi - lo
+                pad = Y_PAD_FRAC * span if span > 0 else abs(hi) * Y_PAD_FRAC
+                if not (pad > 0):
+                    pad = Y_PAD_FRAC
+                ax.set_ylim(lo - pad, hi + pad)
+                ax.text(0.99, 0.01,
+                        f"{n_hidden} pt{'s' if n_hidden > 1 else ''} at f≤0 "
+                        f"not shown",
+                        transform=ax.transAxes, ha="right", va="bottom",
+                        fontsize=OFFSCALE_FONT_SIZE, alpha=0.65)
+            self._label_y_axis(ax, name, unit, to_si)
+        except Exception:                                    # pragma: no cover
+            ax.set_ylabel(plot_type, fontsize=8)
+
+    def _label_y_axis(self, ax, name: str, unit: str, to_si: float) -> None:
+        """The unit half of `_apply_y_axis`; see its docstring for the rules."""
+        if not unit:                       # Q, k -- dimensionless, no prefix
+            ax.set_ylabel(name, fontsize=8)
+            return
+        if self.y_log:
+            ax.yaxis.set_major_formatter(mticker.FuncFormatter(
+                lambda v, _p: format_si(v * to_si, unit)))
+            ax.set_ylabel(name, fontsize=8)
+            return
+        ylo, yhi = ax.get_ylim()
+        exp, pfx = _si_prefix(max(abs(ylo), abs(yhi)) * to_si)
+        # raw -> displayed: value * to_si / 10**exp
+        divisor = (10.0 ** exp) / to_si
+        sig = tick_label_sig([t for t in ax.get_yticks() if ylo <= t <= yhi],
+                             divisor)
+        if sig is None:
+            # The labels collide at every precision we will spend.  Hand the
+            # ticks back to matplotlib -- its exponent offset is the right
+            # rendering of a narrow range around a large value -- and label
+            # with the unit the stored values are ALREADY in, which is true
+            # and is what the reader needs to read the offset.
+            ax.set_ylabel(f"{name} ({_si_prefix(to_si)[1]}{unit})", fontsize=8)
+            return
+        ax.yaxis.set_major_formatter(mticker.FuncFormatter(
+            lambda v, _p, d=divisor, g=sig: f"{v / d:.{g}g}"))
+        ax.set_ylabel(f"{name} ({pfx}{unit})", fontsize=8)
 
     def _refresh_marker(self) -> None:
         self._capture_manual_locs()     # the legends below get replaced
