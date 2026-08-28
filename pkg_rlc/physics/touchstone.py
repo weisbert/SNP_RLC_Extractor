@@ -268,10 +268,17 @@ class TouchstoneData:
         n = len(self.freqs)
         if n == 0:
             return "(no points)"
-        lo = format_freq(float(self.freqs[0]))
+        # min/max, not [0]/[-1].  parse_touchstone sorts the axis, so on
+        # a parsed file the two agree -- but this method is also handed
+        # arrays built elsewhere, and reading the span off the ends makes
+        # it silently wrong on an unsorted one (the reported .s19p covers
+        # 1-30 GHz and its LAST record is 17 GHz).  A span that depends on
+        # an invariant established in another module is a span that will
+        # one day be wrong.
+        lo = format_freq(float(self.freqs.min()))
         if n == 1:
             return f"{lo} (single point)"
-        return f"{lo} - {format_freq(float(self.freqs[-1]))}"
+        return f"{lo} - {format_freq(float(self.freqs.max()))}"
 
     def summary_lines(self) -> list[str]:
         """
@@ -735,8 +742,16 @@ def _parse_touchstone(path: Path, force_nports: int | None,
     pn_list = [port_names.get(i + 1, "") for i in range(nports)]
 
     notes: list[str] = []
-    spacing = _check_freq_axis(freqs, freq_unit, warnings_out, notes,
-                               forced=force_nports is not None)
+    spacing, freq_order = _check_freq_axis(freqs, freq_unit, warnings_out,
+                                           notes,
+                                           forced=force_nports is not None)
+    if freq_order is not None:
+        # Fancy indexing copies, so this peaks at 2x the S array -- paid only
+        # by a file that arrived out of order, which is rare, and far cheaper
+        # than every surface downstream having to cope with an unsorted axis.
+        # numpy has no in-place permutation that would avoid the copy.
+        freqs = freqs[freq_order]
+        s = s[freq_order]
     s_max = _check_s_values(s, warnings_out, notes)
 
     return TouchstoneData(
@@ -845,20 +860,41 @@ def _floats_or_none(tokens: Sequence[str]) -> list[float] | None:
 
 def _check_freq_axis(freqs: np.ndarray, freq_unit: str,
                      warnings_out: list[str], notes: list[str],
-                     forced: bool) -> str:
+                     forced: bool) -> tuple[str, np.ndarray | None]:
     """
-    Describe the frequency axis and flag what will bite downstream.
+    Describe the frequency axis, flag what will bite downstream, and SORT it.
 
-    Returns the spacing description for the file summary.  The monotonicity
-    check matters only when the port count was forced -- when it is sniffed,
-    strictly-increasing frequencies are one of the two conditions the sniffer
-    selects on, so it cannot fail here.  A forced port count skips that
-    entirely, and a wrong one shows up first as a frequency column that jumps
-    around.
+    Returns `(spacing, order)`.  `order` is the permutation the caller must
+    apply to BOTH `freqs` and `s`, or None when the axis was already
+    increasing -- the overwhelmingly normal case, and the one that costs
+    nothing.
+
+    Two ways an unsorted axis reaches here and they mean OPPOSITE things,
+    which is why the warning states both readings and this function decides
+    neither.  A FORCED port count skips the sniffer's monotonicity test
+    entirely, and a forced count that is wrong shows up first as a frequency
+    column that jumps around: there the disorder is the symptom of a wrong
+    answer.  A port count taken from the file NAME can also get here
+    (`_freq_column_plausible`, step 2b of `_sniff_nports`), and there the
+    disorder is ordinary: HFSS and ADS adaptive sweeps write their points in
+    SOLVE order, so a perfectly good export starts at the two endpoints and
+    bisects.
+
+    Sorting is right under both readings.  It is lossless -- stable, so points
+    sharing a frequency keep the order the file wrote them in -- and it is
+    what every consumer downstream already assumes: the plot connects points
+    in array order and draws a zigzag otherwise, `freq_span_str` and the fit
+    window read the ends, `snap_to_grid` derives a step, and
+    `compose.align_frequencies` compares grids.  Leaving the order alone means
+    half a dozen surfaces each looking wrong in their own way instead of one
+    sentence saying what happened.  And sorting CANNOT hide a wrong port
+    count: the warning fires either way and still names that reading, so the
+    sort moves the picture, never the verdict.
     """
     n = freqs.size
     if n == 0:
-        return ""
+        return "", None
+    order: np.ndarray | None = None
     if n == 1:
         spacing = "single point"
     else:
@@ -872,8 +908,18 @@ def _check_freq_axis(freqs: np.ndarray, freq_unit: str,
                 f"point {first + 1} ({format_freq(float(freqs[first]))}), and "
                 f"{bad} step(s) in total go backwards or repeat."
                 + (" A forced port count that is wrong looks exactly like "
-                   "this." if forced else ""))
-            spacing = "NOT monotonic"
+                   "this." if forced else "")
+                + " The points were reordered by frequency; no value was "
+                  "changed and none was dropped.")
+            order = np.argsort(freqs, kind="stable")
+            freqs = freqs[order]
+            d = np.diff(freqs)
+        if bool(np.any(d <= 0)):
+            # Only reachable with a REPEATED frequency: sorting cannot make a
+            # tie strictly increasing.  Taking this branch first also keeps a
+            # ratio of exactly 1.0 out of the logarithmic test below, where
+            # math.log(1.0) is a zero divisor.
+            spacing = "irregular spacing"
         elif np.allclose(d, d[0], rtol=1e-6, atol=0.0):
             spacing = f"linear, step {format_freq(float(d[0]))}"
         elif freqs[0] > 0 and np.allclose(freqs[1:] / freqs[:-1],
@@ -882,13 +928,17 @@ def _check_freq_axis(freqs: np.ndarray, freq_unit: str,
             spacing = f"logarithmic, {per_dec:.0f} points/decade"
         else:
             spacing = "irregular spacing"
+        if order is not None:
+            spacing = f"reordered by frequency, {spacing}"
 
-    if freqs[0] == 0.0:
+    # np.any, not `freqs[0] == 0.0`: which point is first is only a fact about
+    # the file until the sort above has run.
+    if bool(np.any(freqs == 0.0)):
         notes.append(
             "The sweep starts at DC (0 Hz). L = Im(Z)/ω, C = -1/(ω·Im(Z)) and "
             "Q are undefined at that point and will read as nan/inf; pick any "
             "other frequency for the R/L/C extraction.")
-    return spacing
+    return spacing, order
 
 
 def _check_s_values(s: np.ndarray, warnings_out: list[str],
@@ -999,6 +1049,12 @@ def _sniff_nports(values: np.ndarray, warnings_out: list[str],
          number with nothing else agreeing with it, while the name is what the
          exporter said the file was.  When both agree the answer is identical;
          when they disagree the name is the only external evidence there is.
+      2b. the file name again, with the frequency column allowed to be OUT OF
+         ORDER (`_freq_column_plausible`).  An adaptive-sweep export is written
+         in solve order, so requiring an increasing column refused files whose
+         every number was correct.  Ahead of step 3 for the same reason step 2
+         is: the name is external evidence, a bare divisibility hit at huge N
+         is not.
       3. the content again, N up to SNIFF_HARD_CAP.  This is the renamed 300-port
          package export -- the one case where the tool used to have nothing to
          offer but force_nports.
@@ -1033,6 +1089,18 @@ def _sniff_nports(values: np.ndarray, warnings_out: list[str],
             f"(nothing up to N={MAX_SNIFF_NPORTS} fits {T} numbers); the "
             f"file name says N={ext_n}, which does fit, so that is what "
             f"was used.")
+        return ext_n
+
+    if ext_n is not None and _freq_column_plausible(values, ext_n):
+        warnings_out.append(
+            f"Port count N={ext_n} was taken from the file name with its "
+            f"frequency column OUT OF ORDER: no N up to {MAX_SNIFF_NPORTS} "
+            f"fits {T} numbers with an INCREASING frequency column, but "
+            f"N={ext_n} divides them exactly into records whose leading "
+            f"column is a set of distinct non-negative values -- which is "
+            f"what an adaptive or discrete sweep export looks like, written "
+            f"in solve order. The points are sorted on read. Check the port "
+            f"count on the numbers you get.")
         return ext_n
 
     wide = _sniff_range(values, MAX_SNIFF_NPORTS + 1,
@@ -1077,6 +1145,41 @@ def _nports_fits(values: np.ndarray, n: int) -> bool:
     if int(values.size) % rec != 0:
         return False
     return _strictly_increasing(values[0::rec])
+
+
+def _freq_column_plausible(values: np.ndarray, n: int) -> bool:
+    """
+    Weaker than `_nports_fits`: the record size divides, and the frequency
+    column could be a real sweep WRITTEN OUT OF ORDER.
+
+    Reachable only from step 2b of `_sniff_nports`, i.e. only when the file
+    NAME already says N.  It exists because a strictly-increasing frequency
+    column is not a property of a good Touchstone file -- HFSS and ADS
+    adaptive sweeps write their points in SOLVE order, so a healthy export
+    starts at the two endpoints and bisects.  Measured on a real 19-port
+    export: 9399 numbers, 13 records of 723 with nothing left over, and record
+    3 at 15 GHz behind record 2's 30 GHz.  Every number in it was fine and the
+    tool refused the file outright, under a verdict telling the user to
+    re-export something that was never broken.
+
+    What is still required is that the column reads as a set of sweep points
+    at all: every value finite, none negative, and all of them DISTINCT.  That
+    is what keeps this from swallowing a wrong port count, which is the whole
+    risk in relaxing the test -- a wrong N slices S-parameter values into the
+    frequency column, and S data repeats and goes negative.  It is also only
+    ever reached with the file name agreeing, so the answer rests on two
+    independent pieces of evidence rather than on arithmetic alone, and the
+    caller says loudly which test it got in on.
+    """
+    rec = 1 + 2 * n * n
+    if int(values.size) % rec != 0:
+        return False
+    f = values[0::rec]
+    if f.size < 2:
+        return False
+    if not bool(np.all(np.isfinite(f))) or bool(np.any(f < 0.0)):
+        return False
+    return int(np.unique(f).size) == int(f.size)
 
 
 # ============================================================================
@@ -1253,8 +1356,24 @@ def _nports_from_record(n_values: int) -> int | None:
 
 
 def _diag_candidate(scan: _LineScan, values: np.ndarray, n: int, source: str,
-                    out: list[str]) -> bool:
-    """Report how candidate port count `n` fits the data. True == consistent."""
+                    out: list[str]) -> str:
+    """
+    Report how candidate port count `n` fits the data, and say WHY it does not.
+
+    Returns "" when the data reads cleanly at `n`, and otherwise one of:
+    "short" (the numbers do not divide into whole records -- the truncated
+    file, by far the commonest), "reordered" (they divide exactly and the
+    frequency column is a set of sweep points written out of order, which the
+    reader sorts) or "scrambled" (they divide exactly and the leading column
+    does not read as a frequency axis at all, which usually means the port
+    count is wrong).
+
+    The reason is returned rather than folded into a bool because the caller
+    writes the VERDICT from it, and it used to write one verdict for all three.
+    On the reported 19-port file that printed "the data does not divide into
+    whole records ... plus 0 LEFT OVER" -- a headline contradicted by its own
+    number, over advice to re-export a file with nothing wrong with it.
+    """
     rec = 1 + 2 * n * n
     total = int(values.size)
     q, r = divmod(total, rec)
@@ -1273,7 +1392,7 @@ def _diag_candidate(scan: _LineScan, values: np.ndarray, n: int, source: str,
                        f"{DIAGNOSE_MAX_LINES} data lines and further back than "
                        f"the {DIAGNOSE_TAIL_LINES}-line tail window, so its "
                        f"line number was not recorded)")
-        return False
+        return "short"
     freqs = values[0::rec] if rec <= total else values[:0]
     if freqs.size >= 2:
         d = np.diff(freqs)
@@ -1286,10 +1405,19 @@ def _diag_candidate(scan: _LineScan, values: np.ndarray, n: int, source: str,
             out.append(f"      {q} whole records, but record {k + 1}{where} "
                        f"has frequency {freqs[k]:.6g}, which does not exceed "
                        f"record {k}'s {freqs[k - 1]:.6g}")
-            return False
+            # The SAME predicate the reader selects on, not a second opinion
+            # about it: a diagnosis that refused a file the parser then opens
+            # is the disagreement this whole module exists to prevent.
+            if _freq_column_plausible(values, n):
+                out.append(f"      those {q} frequencies are all distinct and "
+                           f"non-negative, i.e. a sweep written out of order "
+                           f"(an adaptive/discrete export does exactly this). "
+                           f"The reader sorts them: CONSISTENT")
+                return "reordered"
+            return "scrambled"
     out.append(f"{head} -> {q} whole records, frequencies strictly "
                f"increasing: CONSISTENT")
-    return True
+    return ""
 
 
 def _diagnose(path: Path, force_nports: int | None = None) -> _Diagnosis:
@@ -1362,8 +1490,10 @@ def _diagnose(path: Path, force_nports: int | None = None) -> _Diagnosis:
                        f"N={_sniff_reach(total)} fits {total} numbers with an "
                        f"increasing frequency column")
 
-    consistent = [n for n, src in candidates
-                  if _diag_candidate(scan, values, n, src, out)]
+    fits = [(n, src, _diag_candidate(scan, values, n, src, out))
+            for n, src in candidates]
+    consistent = [n for n, _src, why in fits if why == ""]
+    reordered = [(n, src) for n, src, why in fits if why == "reordered"]
 
     headline: str | None = None
     hint: str | None = None
@@ -1419,19 +1549,59 @@ def _diagnose(path: Path, force_nports: int | None = None) -> _Diagnosis:
                    f"the file, or the numbers look wrong, that is a PARSER "
                    f"problem, not a file problem: please report it with this "
                    f"block.")
+    elif reordered:
+        # Divides exactly, and the frequency column is a sweep written out of
+        # order.  The reader opens this file and sorts it, so the diagnosis
+        # must not call it broken -- and it must not send anyone to re-export.
+        kind = FAULT_NONE
+        n, src = reordered[0]
+        headline = (f"the data reads cleanly as N={n} ({src}); its frequency "
+                    f"column is written out of sweep order, and the reader "
+                    f"sorts it")
+        verdict = (f"THE FILE is consistent. It divides exactly into whole "
+                   f"records at N={n}, and its frequency column is a set of "
+                   f"distinct points written out of order -- what an adaptive "
+                   f"or discrete sweep export looks like. Nothing needs "
+                   f"re-exporting.")
+        out.append(f"  VERDICT    : no inconsistency found -- the data reads "
+                   f"cleanly as N={n} once its frequency column is sorted, "
+                   f"which the reader does and says so in a WARN line. "
+                   f"Nothing needs re-exporting.")
     elif candidates:
         kind = FAULT_FILE
         n, src = candidates[0]
         rec = 1 + 2 * n * n
         left = total % rec
-        headline = (f"the data does not divide into whole records for any "
-                    f"plausible port count -- at N={n} ({src}) it is "
-                    f"{total // rec} records of {rec} plus {left} left over")
-        hint = ("the file is usually truncated -- re-export it; if the port "
-                "count above is wrong, force the right one instead")
-        out.append("  VERDICT    : THE FILE does not divide into whole "
-                   "records for any plausible port count -- see above. It is "
-                   "usually truncated.")
+        if left:
+            headline = (f"the data does not divide into whole records for any "
+                        f"plausible port count -- at N={n} ({src}) it is "
+                        f"{total // rec} records of {rec} plus {left} left "
+                        f"over")
+            hint = ("the file is usually truncated -- re-export it; if the "
+                    "port count above is wrong, force the right one instead")
+            out.append("  VERDICT    : THE FILE does not divide into whole "
+                       "records for any plausible port count -- see above. It "
+                       "is usually truncated.")
+        else:
+            # It DIVIDES.  Saying "does not divide ... plus 0 left over" here
+            # is what the reported .s19p got, and the truncation advice with
+            # it.  What actually failed is the leading column.
+            headline = (f"the data divides into {total // rec} whole records "
+                        f"at N={n} ({src}), but the column those records start "
+                        f"with does not read as a frequency axis -- it neither "
+                        f"increases nor holds distinct non-negative values")
+            hint = ("check the port count first -- a wrong one slices "
+                    "S-parameter values into the frequency column; force the "
+                    "right one (force_nports=N in the API, --force-nports N "
+                    "on the CLI)")
+            verdict = (f"EITHER the port count is not {n} -- a wrong one puts "
+                       f"S-parameter values where the frequencies should be -- "
+                       f"OR THE FILE's data section is damaged in place. The "
+                       f"record arithmetic alone cannot tell those apart.")
+            out.append(f"  VERDICT    : THE FILE divides into whole records at "
+                       f"N={n}, but its leading column does not read as a "
+                       f"frequency axis. The commonest cause is the wrong port "
+                       f"count, not a damaged file -- see above.")
     else:
         kind = FAULT_FILE
         reach = _sniff_reach(total)

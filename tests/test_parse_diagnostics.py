@@ -313,10 +313,15 @@ class TestRefusal(_TmpFileCase):
                 for f in (1e6, 3e6, 2e6, 4e6)]
         p = self.write("nonmono.s2p", "# HZ S RI R 50\n" + "\n".join(rows))
         ts = parse_touchstone(p, force_nports=2)
-        self.assertEqual(ts.freq_spacing, "NOT monotonic")
         joined = " ".join(ts.parser_warnings)
         self.assertIn("not strictly increasing", joined)
         self.assertIn("forced port count", joined)
+        # The warning is the verdict and it is unchanged; the SORT is the new
+        # part, and it must not silence the reading the warning carries.
+        self.assertIn("reordered by frequency", joined)
+        self.assertIn("reordered by frequency", ts.freq_spacing)
+        np.testing.assert_array_equal(ts.freqs,
+                                      np.array([1e6, 2e6, 3e6, 4e6]))
 
     def test_second_option_line_is_reported(self) -> None:
         text = self.src.replace("# HZ S RI R 50",
@@ -325,6 +330,274 @@ class TestRefusal(_TmpFileCase):
         self.assertEqual(ts.z0, 50.0)
         self.assertTrue(any("one option line" in w for w in ts.parser_warnings),
                         ts.parser_warnings)
+
+
+# ============================================================================
+# OUT OF SWEEP ORDER
+# ============================================================================
+
+class TestFrequenciesWrittenOutOfOrder(_TmpFileCase):
+    """
+    A real 19-port export the tool refused, and the three separate defects it
+    turned up.
+
+    The file: 9399 numbers, 13 records of 723 at N=19, NOTHING left over, and
+    record 3 at 15 GHz behind record 2's 30 GHz.  HFSS and ADS adaptive sweeps
+    write their points in SOLVE order -- endpoints first, then bisect -- so
+    the frequency column of a perfectly good export is not sorted.  Every
+    number in it was correct.
+
+    What the tool did with it:
+
+      1. `_sniff_nports` selects on a strictly-increasing frequency column, so
+         nothing fitted and the file could not be opened at all.  In the GUI
+         that is a dead end: `force_nports` is CLI-only and the error carries
+         no `retry_lenient`, so no button appears.
+      2. `_diagnose`'s verdict assumed the only way a candidate fails is
+         divisibility, and printed "the data does not divide into whole
+         records ... plus 0 LEFT OVER" -- a headline contradicted by its own
+         number -- with a hint saying the file was "usually truncated".  It
+         was not truncated, and following that advice means asking whoever ran
+         the simulation to re-export a file with nothing wrong with it.
+      3. `freq_span_str` read the ENDS of the array, so the summary said
+         "1 GHz - 17 GHz" for a file covering 1-30 GHz.
+
+    Every test below names the mutation that defeats it.
+    """
+
+    #: solve order: the two endpoints, then bisect -- what HFSS writes.
+    ADAPTIVE = (1e9, 30e9, 15e9, 8e9, 22e9, 4e9, 11e9)
+
+    def _write(self, name: str, freqs, nports: int):
+        """One record per line, with every S entry carrying its own frequency.
+
+        That is what makes a mis-applied permutation VISIBLE: sorting `freqs`
+        and forgetting `s` leaves the file readable and every number wrong,
+        which is exactly the failure this feature could introduce.
+        """
+        lines = ["# HZ S RI R 50"]
+        for f in freqs:
+            row = [f"{f:.10e}"]
+            for _ in range(nports * nports):
+                row += [f"{f:.10e}", f"{-f:.10e}"]
+            lines.append(" ".join(row))
+        return self.write(name, "\n".join(lines) + "\n")
+
+    # ------------------------------------------------------------- it opens
+    def test_it_opens_with_no_forcing_at_all(self) -> None:
+        """Mutation: drop step 2b from _sniff_nports -> TouchstoneParseError.
+
+        The whole point.  The GUI has no force-nports control, so a file the
+        sniffer refuses is a file the GUI user cannot open by any route.
+        """
+        p = self._write("adaptive.s4p", self.ADAPTIVE, 4)
+        ts = parse_touchstone(p)
+        self.assertEqual(ts.nports, 4)
+        self.assertEqual(len(ts.freqs), len(self.ADAPTIVE))
+
+    def test_the_name_is_what_lets_it_in_and_the_warning_says_so(self) -> None:
+        """Mutation: make step 2b unconditional -> a wrong N sails through.
+
+        The relaxed test is corroborated evidence, not a free pass: it runs
+        only when the file NAME already says N.  Renaming the same bytes to an
+        extension that does not fit puts it back on the refusal path.
+        """
+        p = self._write("adaptive.s4p", self.ADAPTIVE, 4)
+        joined = " ".join(parse_touchstone(p).parser_warnings)
+        self.assertIn("taken from the file name", joined)
+        self.assertIn("OUT OF ORDER", joined)
+        self.assertIn("Check the port count", joined)
+
+        renamed = self.write("adaptive.s7p", p.read_text(encoding="utf-8"))
+        with self.assertRaises(TouchstoneParseError):
+            parse_touchstone(renamed)
+
+    # --------------------------------------------------- the data is intact
+    def test_the_S_data_travels_with_its_frequency(self) -> None:
+        """Mutation: sort `freqs` and not `s` -> every number lands at the
+        wrong frequency, and NOTHING else in this file would notice.
+
+        This is the one way the fix could be worse than the bug: a readable
+        file whose every value is misfiled.  Each S entry is written equal to
+        its own record's frequency, so the check is exact.
+        """
+        for name, n in (("carry.s2p", 2), ("carry.s3p", 3)):
+            with self.subTest(name):
+                # n == 2 takes the column-major transpose and n > 2 does not,
+                # so both layouts are exercised.
+                p = self._write(name, self.ADAPTIVE, n)
+                ts = parse_touchstone(p)
+                np.testing.assert_array_equal(ts.freqs,
+                                              np.sort(np.array(self.ADAPTIVE)))
+                for k, f in enumerate(ts.freqs):
+                    np.testing.assert_allclose(ts.s[k],
+                                               np.full((n, n), f * (1 - 1j)))
+
+    #: numpy's introsort really does reorder ties at this shape -- three
+    #: elements does NOT (it falls back to a stable insertion sort), so a
+    #: three-record fixture pins nothing.  Found by search, not by guessing.
+    TIE_PATTERN = (2, 1, 1, 0, 0, 0, 0, 0)
+
+    def test_the_sort_is_stable_so_a_repeated_frequency_keeps_file_order(self) -> None:
+        """Mutation: kind="quicksort" -> records at one frequency swap.
+
+        Nothing downstream can tell two records at the same frequency apart
+        afterwards, so the only honest order is the one the file wrote.  Each
+        record is stamped with its own line number in S11, which is what makes
+        a swap visible.
+        """
+        self.assertNotEqual(
+            np.argsort(np.array(self.TIE_PATTERN, dtype=float),
+                       kind="quicksort").tolist(),
+            np.argsort(np.array(self.TIE_PATTERN, dtype=float),
+                       kind="stable").tolist(),
+            "precondition: this pattern must distinguish the two sorts")
+
+        lines = ["# HZ S RI R 50"]
+        for k, f in enumerate(self.TIE_PATTERN):
+            lines.append(f"{f * 1e9:.6e} {k:d}.0 0 0 0 0 0 0 0")
+        p = self.write("tie.s2p", "\n".join(lines) + "\n")
+        ts = parse_touchstone(p, force_nports=2)
+
+        np.testing.assert_array_equal(
+            ts.freqs, np.sort(np.array(self.TIE_PATTERN, dtype=float)) * 1e9)
+        # within each frequency, the stamps must still ascend: that is file
+        # order, and it is exactly what an unstable sort loses.
+        stamps = [c[0][0].real for c in ts.s]
+        for f in sorted(set(self.TIE_PATTERN)):
+            got = [s for s, g in zip(stamps, ts.freqs) if g == f * 1e9]
+            self.assertEqual(got, sorted(got), f"ties at {f} GHz reordered")
+
+    def test_a_repeated_frequency_is_not_a_sweep_and_is_still_refused(self) -> None:
+        """Mutation: drop the uniqueness test from _freq_column_plausible.
+
+        Distinctness is what keeps the relaxed path from swallowing a wrong
+        port count -- S data repeats, a frequency axis does not.  Without it
+        the name alone would open anything that divides.
+        """
+        p = self._write("dup.s2p", (1e9, 3e9, 3e9, 2e9), 2)
+        with self.assertRaises(TouchstoneParseError) as cm:
+            parse_touchstone(p)
+        self.assertIn("does not read as a frequency axis", str(cm.exception))
+
+    def test_a_negative_leading_column_is_not_a_sweep(self) -> None:
+        """Mutation: drop the `f < 0` test -> S data reads as frequencies.
+
+        A wrong port count slices S values into the leading column, and S data
+        goes negative where a frequency axis cannot.
+        """
+        p = self._write("neg.s2p", (1e9, -2e9, 3e9), 2)
+        with self.assertRaises(TouchstoneParseError):
+            parse_touchstone(p)
+
+    # ------------------------------------------------------- what it reports
+    def test_the_span_is_min_to_max_not_first_to_last(self) -> None:
+        """Mutation: back to freqs[0] / freqs[-1].
+
+        Held on an unsorted array directly, because parse_touchstone sorts and
+        would hide the defect: this method is also handed arrays built
+        elsewhere, and the reported file read "1 GHz - 17 GHz" over 1-30 GHz.
+        """
+        ts = parse_touchstone(self._write("span.s4p", self.ADAPTIVE, 4))
+        self.assertEqual(ts.freq_span_str(), "1 GHz - 30 GHz")
+
+        # Neither end may be read off the array: this permutation starts at
+        # 15 GHz and ends at 8 GHz, so [0] and [-1] are both wrong.  ADAPTIVE
+        # itself would not do -- it happens to start at its minimum, and the
+        # `.min()` half of the fix would go unpinned.
+        out_of_order = np.array([15e9, 1e9, 30e9, 8e9])
+        scrambled = type(ts)(**{**ts.__dict__, "freqs": out_of_order})
+        self.assertEqual(scrambled.freq_span_str(), "1 GHz - 30 GHz")
+
+    def test_the_verdict_does_not_claim_a_file_that_divides_is_truncated(self) -> None:
+        """Mutation: restore the single `elif candidates:` verdict.
+
+        The reported headline said "does not divide into whole records ...
+        plus 0 left over" and sent the user to re-export.  Both halves are
+        checked, because either one alone would have been reported.
+        """
+        p = self._write("adaptive.s4p", self.ADAPTIVE, 4)
+        kind, text = check_touchstone(p)
+        self.assertEqual(kind, FAULT_NONE, text)
+        self.assertNotIn("plus 0 left over", text)
+        self.assertNotIn("usually truncated", text)
+        self.assertIn("Nothing needs re-exporting", text)
+
+        # The other file that divides exactly and is still refused.  It is a
+        # FAULT_FILE, so it reaches the `elif candidates:` branch the reported
+        # headline came from -- and there too, "does not divide ... plus 0
+        # left over" must not be what it says.  Without this case the branch
+        # is never entered by this test and `if left:` could be `if True:`.
+        bad = self._write("dup.s2p", (1e9, 3e9, 3e9, 2e9), 2)
+        kind, text = check_touchstone(bad)
+        self.assertEqual(kind, FAULT_FILE, text)
+        self.assertNotIn("plus 0 left over", text)
+        self.assertNotIn("usually truncated", text)
+        self.assertIn("does not read as a frequency axis", text)
+
+    def test_the_diagnosis_and_the_reader_agree(self) -> None:
+        """Mutation: give _diag_candidate its own plausibility rule.
+
+        A diagnosis that calls a file broken while the reader opens it is the
+        disagreement this module exists to prevent, so both sides go through
+        `_freq_column_plausible`.
+        """
+        p = self._write("adaptive.s4p", self.ADAPTIVE, 4)
+        self.assertEqual(check_touchstone(p)[0], FAULT_NONE)
+        parse_touchstone(p)                       # must not raise
+
+        bad = self._write("dup.s2p", (1e9, 3e9, 3e9, 2e9), 2)
+        self.assertEqual(check_touchstone(bad)[0], FAULT_FILE)
+        with self.assertRaises(TouchstoneParseError):
+            parse_touchstone(bad)
+
+    def test_a_genuinely_truncated_file_keeps_the_truncation_wording(self) -> None:
+        """Mutation: route every candidate failure to the new branch.
+
+        Truncation is still by far the commonest cause, and its advice is
+        right -- splitting the verdict must not cost it.
+        """
+        p = self.write("trunc.s2p",
+                       "# HZ S RI R 50\n"
+                       "1e9 .1 0 .2 0 .2 0 .1 0\n"
+                       "2e9 .1 0 .2 0 .2 0\n")
+        kind, text = check_touchstone(p)
+        self.assertEqual(kind, FAULT_FILE)
+        self.assertIn("usually truncated", text)
+        self.assertIn("left over", text)
+
+    def test_an_already_sorted_file_is_untouched(self) -> None:
+        """Mutation: sort unconditionally.
+
+        Every fixture in the repo is sorted, and golden_legacy.npz pins
+        parser_warnings element-for-element -- a warning or a copy on the
+        normal path would be a change to every file anyone has ever opened.
+        """
+        ts = parse_touchstone(FIXTURE)
+        self.assertEqual(ts.freq_spacing, "linear, step 25 MHz")
+        self.assertFalse([w for w in ts.parser_warnings if "reorder" in w],
+                         ts.parser_warnings)
+
+    def test_the_DC_note_does_not_depend_on_DC_being_written_first(self) -> None:
+        """DELIBERATE REDUNDANCY: two things have to be reverted to break this.
+
+        The note is what warns that L, C and Q are undefined at 0 Hz, and on a
+        file written out of sweep order the DC record is not the first one.
+        Reverting `np.any(freqs == 0.0)` to `freqs[0] == 0.0` ALONE does not
+        turn this red, and that is not the test being weak -- by then the sort
+        has already run, so the two spellings genuinely agree.  Measured: the
+        single mutation leaves it green; dropping the in-function sort as well
+        turns it red.  `np.any` is kept so this check does not silently depend
+        on an ordering established four lines above it.
+
+        Against the code as it stood before this fix the test is decisive: it
+        read `freqs[0]`, with no sort anywhere, and said nothing about a file
+        whose 0 Hz point was written second.
+        """
+        p = self._write("dc.s2p", (2e9, 0.0, 1e9), 2)
+        ts = parse_touchstone(p, force_nports=2)
+        self.assertTrue(any("DC (0 Hz)" in n for n in ts.data_notes),
+                        ts.data_notes)
 
 
 # ============================================================================

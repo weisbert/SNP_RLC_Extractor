@@ -205,7 +205,9 @@ immediately above it.
 
 ## Reading files
 
-The port count comes from the **content**, never the extension. The file name is consulted for exactly two things, and says so in a warning when it is: breaking a tie when the numbers admit more than one port count (picking the smallest silently reads a 2-port file as a 1-port one), and rescuing a port count above the 256-port sniff cap — a `.s300p` package export, which content alone cannot resolve.
+The port count comes from the **content**, never the extension. The file name is consulted for exactly three things, and says so in a warning when it is: breaking a tie when the numbers admit more than one port count (picking the smallest silently reads a 2-port file as a 1-port one); rescuing a port count above the 256-port sniff cap — a `.s300p` package export, which content alone cannot resolve; and reading a file whose **frequencies are written out of order**.
+
+That last one is the adaptive/discrete sweep: many solvers export in the order they computed the points — the two endpoints first, then the midpoint — so the frequency column of a perfectly good file does not increase, and content sniffing (which selects on an increasing column) finds nothing. When the name already says the port count, the numbers divide into whole records at it, and the leading column is a set of distinct non-negative values, the file loads and **the points are sorted on read** — nothing changed, nothing dropped, ties left in file order. Two warnings say so. Check the port count on the numbers you get: a *wrong* port count produces the same symptom, because the wrong record size slices S-parameter values into the frequency column.
 
 Read: Touchstone 1.x in RI / MA / DB, any frequency unit, with or without an option line; UTF-8, UTF-8 + BOM, and UTF-16 with or without BOM; commas/semicolons between values and Fortran `D` exponents (`1.0D+09`) are accepted with a warning. Touchstone **2.0** (`[Version]`, `[Network Data]`) and compressed files are refused **by name** rather than misread — read as v1, a v2 file's `[Number of Ports] 4` injects a `4` into the data stream and shifts every value after it.
 

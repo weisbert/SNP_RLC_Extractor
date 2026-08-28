@@ -78,12 +78,35 @@ Port count detection
 --------------------
 The port count comes from the CONTENT, not the extension -- EDA tools
 rename these files constantly, so a .txt or .dat holding a 4-port sweep
-loads fine. The name is used for two things only:
+loads fine. The name is used for three things only:
   * to break a tie when the numbers admit several port counts (picking
     the smallest silently reads a 2-port file as a 1-port one);
   * when nothing up to 256 ports fits, which is the one case content
-    alone cannot resolve -- a .s300p package export.
-Both say so in a WARN line. --force-nports overrides everything.
+    alone cannot resolve -- a .s300p package export;
+  * when the file's frequencies are written OUT OF ORDER (below).
+All three say so in a WARN line. --force-nports overrides everything.
+
+Sweeps written out of order
+---------------------------
+An adaptive or discrete sweep is often exported in the order the solver
+computed it -- the two endpoints first, then the midpoint, and so on --
+rather than in frequency order. Such a file is perfectly good; its
+frequency column simply does not increase.
+
+Content sniffing looks for a port count whose records start with an
+INCREASING frequency column, so on its own it finds none. When the file
+NAME already says the port count, the numbers divide into whole records
+at that count, and the leading column is a set of distinct non-negative
+values, the file is read at that port count and the points are SORTED on
+load. Nothing is changed and nothing is dropped; two records at the same
+frequency keep the order the file wrote them in. Two WARN lines say what
+happened, and the frequency line reads "reordered by frequency".
+
+Check the port count on the numbers you get. The same symptom -- a
+frequency column that jumps around -- is also what a WRONG port count
+looks like, because the wrong record size slices S-parameter values into
+the frequency column. That is why an out-of-order file is only accepted
+when its name corroborates the count, and why the warning is loud.
 
 Formats read
 ------------
