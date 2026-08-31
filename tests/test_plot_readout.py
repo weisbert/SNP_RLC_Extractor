@@ -402,5 +402,90 @@ class TestReadoutWiring(unittest.TestCase):
         self.assertEqual(len(view._readout_loc), 1)
 
 
+@unittest.skipIf(_IMPORT_ERROR is not None,
+                 f"plot stack unavailable: {_IMPORT_ERROR}")
+class TestTheReadoutFollowsTheDigitsControl(unittest.TestCase):
+    """
+    The readout and the results table are the SAME reading -- both end in
+    `format_si` -- so the Results pane's `Digits:` control reaches both.  A
+    control that widened the table alone would put two spellings of one
+    number on one screen, which is the failure the readout was written to
+    remove.
+
+    `None` is the control's `default` and means READOUT_SIG, which is what
+    this box has always printed.  Mutations named per test; each was applied.
+    """
+
+    def test_the_default_is_what_the_box_has_always_printed(self):
+        """Mutation: change READOUT_SIG, or make `sig or READOUT_SIG` read
+        `sig` alone -- `None` then reaches the format spec and raises."""
+        self.assertEqual(P.READOUT_SIG, 3)
+        for v, t in ((3e-10, "L(nH)"), (1.5, "R(mOhm)"), (0.143, "k")):
+            self.assertEqual(P._readout_value(v, t),
+                             P._readout_value(v, t, None))
+
+    def test_an_override_reaches_the_cell_and_the_M_annotation(self):
+        """Mutation: drop `sig` at either call site in `_readout_rows` /
+        the M-key annotation -- the box keeps three digits while the table
+        beside it shows six."""
+        self.assertEqual(P._readout_value(2.0123456e-9, "L(nH)"), "2.01 nH")
+        self.assertEqual(P._readout_value(2.0123456e-9, "L(nH)", 6),
+                         "2.01235 nH")
+        # Dimensionless quantities take no prefix and still take the digits.
+        self.assertEqual(P._readout_value(0.1434567, "k"), "0.143")
+        self.assertEqual(P._readout_value(0.1434567, "k", 6), "0.143457")
+        # The M marker names the quantity itself and is the same reading.
+        self.assertEqual(P._format_value(0.8412345, "Q"), "Q=0.841")
+        self.assertEqual(P._format_value(0.8412345, "Q", 6), "Q=0.841234")
+        self.assertEqual(P._format_value(2.0123456e-9, "L(nH)", 6),
+                         "2.01235 nH")
+
+    def test_the_view_carries_it_into_the_rendered_box(self):
+        """The property that matters is not the helper's return value but
+        what ends up on screen.  Mutation: read `self.sig_digits` nowhere in
+        `_readout_rows`."""
+        from dataclasses import replace
+        f, traces = _coupling_traces()
+        # The fixture's inductances are exactly 2.0 / 2.2 / 2.4 nH, and `%g`
+        # strips trailing zeros -- at eight digits they print exactly what
+        # they print at three, so a test on them would pass against a view
+        # that ignored the setting.  (It did: this is what said so.)
+        traces = [replace(t, Z=t.Z * 1.0123456789) for t in traces]
+        fig, view = _make_view(traces, ["L(nH)"], f[len(f) // 2])
+        self.assertIsNone(view.sig_digits)
+        rows_default = [t.get_text()
+                        for t in view.axes[0].get_legend().get_texts()]
+        view.sig_digits = 8
+        view.redraw()
+        fig.canvas.draw()
+        rows_eight = [t.get_text()
+                      for t in view.axes[0].get_legend().get_texts()]
+        self.assertNotEqual(rows_default, rows_eight)
+        # ... and the columns still line up, which is `_readout_rows`' own
+        # rule (a column is as wide as its widest cell OR its header).
+        widths = {len(r) for r in rows_eight if "more" not in r}
+        self.assertEqual(len(widths), 1,
+                         f"the readout sheared at 8 digits: {rows_eight}")
+
+    def test_the_setter_redraws_and_is_a_no_op_when_nothing_changed(self):
+        """The readout is built during the DRAW, so setting the field alone
+        would leave the box at the previous digits until the next cursor
+        move.  Mutation: drop the `redraw()`."""
+        f, traces = _coupling_traces()
+        fig, view = _make_view(traces, ["L(nH)"], f[len(f) // 2])
+        drawn = []
+        view.redraw = lambda: drawn.append(1)
+
+        class _Panel:                      # PlotPanel.set_sig_digits, bound
+            pass
+        panel = _Panel()
+        panel.view = view
+        P.PlotPanel.set_sig_digits(panel, None)
+        self.assertEqual(drawn, [], "redrew for a change that was not one")
+        P.PlotPanel.set_sig_digits(panel, 6)
+        self.assertEqual(drawn, [1])
+        self.assertEqual(view.sig_digits, 6)
+
+
 if __name__ == "__main__":
     unittest.main()

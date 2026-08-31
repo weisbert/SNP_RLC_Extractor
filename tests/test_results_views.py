@@ -70,10 +70,12 @@ from pkg_rlc.frontend.app import (  # noqa: E402
     _delta_cell,
     _format_compare,
     _format_coupling_block,
+    _format_results_table,
     _format_summary_coupling,
     _format_summary_self,
     _render_columns,
     _wrap_name,
+    digits_sig,
 )
 
 FIX = Path(__file__).resolve().parent / "fixtures"
@@ -1346,6 +1348,324 @@ class TestTheResultsHeaderLayout(unittest.TestCase):
                                  "the Results header wrapped at 1500x900")
         finally:
             app.destroy()
+
+
+# ============================================================================
+# The Digits control (how many significant digits a value is printed to)
+# ============================================================================
+
+
+class TestTheDigitsControl(unittest.TestCase):
+    """
+    `Digits:` on the Results header answers "three significant figures is not
+    enough to see what changed", which is a real reading problem: two EM
+    revisions of one coil both print `2.01 nH` at three digits and differ in
+    the fourth.
+
+    TWO PROPERTIES MATTER AND THEY PULL AGAINST EACH OTHER.  `default` must
+    render byte-for-byte what the tool has always rendered -- that is what
+    `tests/fixtures/render_reference.json` pins, and it is why the control's
+    first value is a word rather than the number 3.  And an override must
+    widen the COLUMN and not merely the cell: `f"{s:>10}"` does not clip an
+    11-character string, it prints all eleven, so a table laid out against a
+    written-down width loses its alignment one row at a time.
+
+    Pure -- no display.  Every mutation named below was applied.
+    """
+
+    #: Digits that survive rounding.  `%g` strips trailing zeros, so a round
+    #: 2.0 nH prints `2 nH` at three digits and at eight alike, and a test
+    #: built on one would pass against a control that did nothing at all.
+    L_SIX = 2.0123456e-9
+    R_SIX = 1.5987654
+    C_SIX = -1.2098765e-12
+
+    def _rows(self):
+        return [_row(2, "tank", R=self.R_SIX, L=self.L_SIX, C=self.C_SIX,
+                     Q=0.8412345),
+                _row(3, "tank2", R=self.R_SIX * 1000.0, L=self.L_SIX / 900.0,
+                     C=self.C_SIX * 77.0, Q=1.2345678)]
+
+    @staticmethod
+    def _data_rows(text):
+        return [ln for ln in text.split("\n")
+                if ln.lstrip().startswith(RESULTS_SWATCH)]
+
+    # ---- default changes nothing --------------------------------------
+
+    def test_default_renders_exactly_what_no_digits_argument_does(self):
+        """
+        The control's `default` reaches the renderers as None, and None is the
+        argument every existing caller does not pass.  Mutation: make
+        `digits_sig` return 3 for `default` -- the aligned table drops a digit
+        and this fails.
+        """
+        rows = self._rows()
+        for mode in ("smart", "aligned"):
+            with self.subTest(mode=mode):
+                self.assertEqual(
+                    _format_results_table(rows, mode),
+                    _format_results_table(rows, mode, None,
+                                          digits_sig("default")))
+
+    def test_the_vocabulary_refuses_anything_it_cannot_render(self):
+        """
+        `digits_sig` is read live off a Tk variable and out of hand-edited
+        session files, so it is total.  Mutation: drop the range test -- `2`
+        becomes a one-digit table and `40` a table of noise.
+        """
+        self.assertEqual(digits_sig("5"), 5)
+        self.assertEqual(digits_sig(8), 8)
+        for junk in ("default", "", "abc", None, "2", "9", "40", 0, -3, 1.5):
+            with self.subTest(junk=junk):
+                self.assertIsNone(digits_sig(junk))
+
+    # ---- an override reaches the numbers -------------------------------
+
+    def test_more_digits_show_more_of_the_number(self):
+        """Mutation: ignore `sig` in `_fmt_smart` / `_fmt_plain`."""
+        rows = self._rows()
+        three = _format_results_table(rows, "smart")
+        six = _format_results_table(rows, "smart", None, 6)
+        self.assertIn("2.01 nH", three)
+        self.assertNotIn("2.01235 nH", three)
+        self.assertIn("2.01235 nH", six)
+        # ... and the dimensionless column with them.
+        self.assertIn("0.841", three)
+        self.assertIn("0.841234", six)
+
+    def test_the_aligned_mode_follows_too_and_keeps_its_own_prefix(self):
+        """
+        The SI prefix is picked from the DATA, never from the digit count:
+        widening a column must not also rescale it.  Mutation: derive the
+        prefix from `sig` -- the header stops saying nH and every value in it
+        changes meaning.
+        """
+        rows = self._rows()
+        head_default = [ln for ln in
+                        _format_results_table(rows, "aligned").split("\n")
+                        if "L[" in ln][0]
+        head_eight = [ln for ln in
+                      _format_results_table(rows, "aligned", None,
+                                            8).split("\n")
+                      if "L[" in ln][0]
+        self.assertIn("L[nH]", head_default)
+        self.assertIn("L[nH]", head_eight)
+        self.assertNotEqual(_format_results_table(rows, "aligned"),
+                            _format_results_table(rows, "aligned", None, 8))
+
+    # ---- and the column follows the numbers ----------------------------
+
+    def test_the_detail_table_stays_aligned_at_every_digit_count(self):
+        """
+        THE MUTATION THIS EXISTS FOR: pin NUM_W at its historical 10 / 9
+        instead of `max(that, widest cell)`.  Every row then keeps its own
+        width and the table shears -- not a crash, not an exception, just a
+        report nobody can read down.
+
+        Both rows carry the same Sign flag, so "equal line lengths" is
+        exactly "every numeric column is the same width on every row".
+        """
+        rows = self._rows()
+        for mode in ("smart", "aligned"):
+            for sig in (None, 3, 5, 8):
+                with self.subTest(mode=mode, sig=sig):
+                    text = _format_results_table(rows, mode, None, sig)
+                    data = self._data_rows(text)
+                    self.assertEqual(len(data), 2)
+                    self.assertEqual(len(data[0]), len(data[1]),
+                                     "the rows sheared:\n" + text)
+                    # The header has to move with them, or every column is
+                    # labelled with its neighbour's name.
+                    header = [ln for ln in text.split("\n")
+                              if ln.strip().startswith("ID")][0]
+                    flag = data[0].rstrip().split("  ")[-1]
+                    self.assertEqual(header.index("Sign"),
+                                     len(data[0]) - len(flag),
+                                     "the header and the rows disagree:\n"
+                                     + text)
+
+    def test_the_coupling_block_stays_aligned_and_its_Z_column_follows(self):
+        """
+        The same mutation in the second table -- `_format_coupling_block`'s
+        NUM_W (11) and Z_W (18).  The Z entries are the numbers R, L and C
+        were extracted FROM, so leaving them at four digits while the
+        extracted values print eight is two rules on one page.
+        """
+        # Values carrying more than eight digits.  The shipped fixture's
+        # 9.924+112.6j has exactly four, and `%g` cannot show a digit the
+        # number does not have -- an assertion built on it would pass against
+        # a Z cell that ignored `sig` entirely.  (It did, at first: this test
+        # is what said so.)
+        block = _two_port_block(zaa=9.9241234567 + 112.61234567j,
+                                zbb=4.8312345678 + 49.401234567j)
+        for sig in (None, 4, 8):
+            with self.subTest(sig=sig):
+                text = _format_coupling_block(block, "smart", sig)
+                # The two rows UNDER the table header, taken by position:
+                # `VCO x RX:` also starts with the first port's name, so any
+                # prefix test picks up the pair line and then compares the
+                # wrong pair of lines.
+                lines = text.split("\n")
+                head = [i for i, ln in enumerate(lines)
+                        if ln.strip().startswith("Port")][0]
+                ports = lines[head + 1:head + 3]
+                self.assertTrue(ports[0].startswith("      VCO"), text)
+                self.assertTrue(ports[1].startswith("      RX"), text)
+                self.assertEqual(len(ports[0]), len(ports[1]),
+                                 "the self table sheared:\n" + text)
+                # AGAINST THE HEADER, not just row against row.  Both rows
+                # here are the same width even when the column is too narrow
+                # for them -- 9.9241235 and 4.8312346 are both nine
+                # characters -- so they shear together and equal lengths
+                # cannot see it.  The header does not shear with them: every
+                # cell of it is padded to the declared width, so the last
+                # column ends where the rows' last column ends only while
+                # that width is honest.  (Measured: with NUM_W pinned at 11
+                # and Z_W at 18 the rows-only check passes and this one
+                # fails, which is why both are here.)
+                self.assertEqual(len(lines[head]), len(ports[0]),
+                                 "the header and the rows disagree:\n" + text)
+        # The Z column is the reading the digits were asked for.
+        self.assertIn("9.924+112.6j", _format_coupling_block(block, "smart"))
+        self.assertIn("9.9241235+112.61235j",
+                      _format_coupling_block(block, "smart", 8))
+
+    def test_the_Z_matrix_follows_the_digits(self):
+        """
+        At three measurement ports the matrix is printed instead of the Z
+        column, and it is the same number under the same control.  Mutation:
+        drop the `cell=` argument at the `_format_z_matrix` call -- the
+        matrix stays at four digits while the table under it does not.
+        """
+        Zs = {"L1": 1.5123456789 + 126.98765432j,
+              "L2": 1.6123456789 + 130.98765432j,
+              "L3": 1.7123456789 + 140.98765432j}
+        block = _block(7, "osc", Zs,
+                       [_pair("L1", "L2", 0.01 + 13.0j,
+                              Zs["L1"].imag / W, Zs["L2"].imag / W)])
+        self.assertIn("1.512+127j", _format_coupling_block(block, "smart"))
+        self.assertIn("1.5123457+126.98765j",
+                      _format_coupling_block(block, "smart", 8))
+
+    def test_the_other_two_views_follow_the_same_control(self):
+        """
+        A control that reached `detail` alone would print two precisions on
+        one screen the moment the view was switched.  Mutation: drop `sig`
+        from any one of the three `_format_summary_*` / `_format_compare`
+        call sites.
+        """
+        blocks = [_two_port_block(1, "a"), _two_port_block(4, "b")]
+        rows = self._rows()
+        self.assertIn("0.841234",
+                      _format_summary_self(rows, [], "smart", 6)[0])
+        self.assertNotIn("0.841234",
+                         _format_summary_self(rows, [], "smart")[0])
+        self.assertNotEqual(_format_summary_coupling(blocks, "smart")[0],
+                            _format_summary_coupling(blocks, "smart", 6)[0])
+        self.assertNotEqual(_format_compare(rows, [], "smart")[0],
+                            _format_compare(rows, [], "smart", 6)[0])
+        # The delta is a reading too, and its default is its own.
+        self.assertEqual(_delta_cell(1.0, 1.23456789, ""),
+                         _delta_cell(1.0, 1.23456789, "", None))
+        self.assertNotEqual(_delta_cell(1.0, 1.23456789, ""),
+                            _delta_cell(1.0, 1.23456789, "", 7))
+
+
+@unittest.skipUnless(TK_OK, "no Tk display available")
+class TestTheDigitsControlIsWiredUp(unittest.TestCase):
+    """
+    The join no pure test reaches: the control on the header strip, the run
+    pages it repaints, and the plot it tells.
+
+    `_run_report_segments` reads the digits LIVE, exactly as it reads the
+    units mode and the view -- how precisely a value is printed is a
+    rendering choice, not a recorded fact, so it is not frozen onto a
+    RunSnapshot and every page follows the control as it stands now.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        _ensure_fixtures()
+
+    def setUp(self):
+        self.app = App()
+        self.app.withdraw()
+        self.fe = FileEntry(parse_touchstone(FIXTURE))
+        self.app.files.append(self.fe)
+        self.app._refresh_file_list()
+        self.app._refresh_file_combobox()
+        self.tc = TraceConfig(
+            id=1, file_label=self.fe.label, mode=6, label="coils",
+            mports=[MeasPortRow(name="c1", plus="1"),
+                    MeasPortRow(name="c2", plus="2")])
+        self.app.traces.append(self.tc)
+        self.app._refresh_trace_list()
+        self._settle()
+
+    def tearDown(self):
+        self.app.destroy()
+
+    def _settle(self, rounds=3):
+        for _ in range(rounds):
+            self.app.update_idletasks()
+            self.app.update()
+
+    def _log(self):
+        return self.app.results_text.get("1.0", tk.END)
+
+    def _page(self):
+        return self.app._run_tabs[0].text.get("1.0", tk.END)
+
+    def test_the_default_is_the_page_the_tool_always_had(self):
+        """A new control may not change what an existing user sees on
+        startup -- which is also what render_reference.json pins."""
+        self.assertEqual(self.app.sig_digits_var.get(), "default")
+        self.assertIsNone(self.app.plot.view.sig_digits)
+
+    def test_choosing_digits_repaints_the_log_the_page_and_the_plot(self):
+        """
+        Mutation: repaint only the newest page, or forget the
+        `plot.set_sig_digits` call -- one screen then shows two precisions,
+        which is the failure the units switch's own rule is written from.
+        """
+        self.app._on_calculate()
+        self._settle()
+        before_page = self._page()
+        self.app.sig_digits_var.set("7")
+        self.app._on_digits_changed()
+        self._settle()
+        self.assertIn("re-rendered with digits=7", self._log())
+        self.assertNotEqual(self._page(), before_page,
+                            "the run page kept the old precision")
+        self.assertEqual(self.app.plot.view.sig_digits, 7)
+        # ... and choosing a view or a unit afterwards keeps the digits,
+        # because all three are read live off the same header.
+        self.app.results_view_var.set(VIEW_SUMMARY)
+        self.app._on_results_view_changed()
+        self._settle()
+        self.assertEqual(self.app.plot.view.sig_digits, 7)
+
+    def test_it_creates_no_run(self):
+        """Choosing a precision measures nothing, so it is not a run --
+        the units switch's rule, and the same code path."""
+        self.app._on_calculate()
+        self._settle()
+        n_tabs, n_runs = len(self.app._run_tabs), self.app._run_counter
+        self.app.sig_digits_var.set("5")
+        self.app._on_digits_changed()
+        self._settle()
+        self.assertEqual(len(self.app._run_tabs), n_tabs)
+        self.assertEqual(self.app._run_counter, n_runs)
+
+    def test_it_survives_having_nothing_to_repaint(self):
+        """The plot is told even when there is no run: `_rerender_every_page`
+        returns early with none, and the control must still not raise from a
+        Tk callback, where nothing catches it."""
+        self.app.sig_digits_var.set("6")
+        self.app._on_digits_changed()
+        self._settle()
+        self.assertEqual(self.app.plot.view.sig_digits, 6)
 
 
 if __name__ == "__main__":

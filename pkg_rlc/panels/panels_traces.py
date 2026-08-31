@@ -45,6 +45,10 @@ from pkg_rlc.panels.files_gui import FILES_MENU_LABEL, refresh_files_windows
 # EDITOR and stayed there.)
 FREEZE_MENU_LABEL = "Freeze as new trace"
 UNFREEZE_MENU_LABEL = "Unfreeze"
+#: The entry that empties the Traces list.  On the MENU and not as a fifth
+#: button for the reason the two above are: the row is 448 px against 364 for
+#: four buttons and `pack` unmaps from the end.
+CLEAR_TRACES_MENU_LABEL = "Clear all traces"
 
 
 class TracesPanel:
@@ -122,6 +126,13 @@ class TracesPanel:
         # disagree.  Still no separator -- see above.
         self._trace_menu.add_command(label=FILES_MENU_LABEL,
                                      command=app._on_files_window)
+        # APPENDED, and it is the FIFTH entry.  Still no separator, for the
+        # reason above: `tests/test_freeze_trace.py` enumerates this menu's
+        # labels by index and a separator carries no `-label`.  It is the one
+        # entry here that does NOT act on the row under the pointer, which is
+        # why it is last and why it asks before it acts.
+        self._trace_menu.add_command(label=CLEAR_TRACES_MENU_LABEL,
+                                     command=self._on_clear_traces)
         self.traces_lb.bind("<Button-3>", self._on_trace_context_menu)
 
     # -------------------------------------------------------------- Trace ops
@@ -159,6 +170,46 @@ class TracesPanel:
         # identity too, and one on a trace that is gone would keep offering
         # [Set as home] on it.
         refresh_files_windows(app)
+
+    def _on_clear_traces(self) -> None:
+        """
+        Empty the Traces list in one gesture.  The FILES stay loaded.
+
+        That is the whole difference from `Clear all files`, and it is the
+        case this entry exists for: keeping the measurement data and throwing
+        away the specs written against it is how a second port map gets tried
+        without re-parsing a 300-port file.
+
+        A spec is not recoverable by retyping it in a hurry, so this asks
+        first -- and it asks only when there is something to lose.  A FROZEN
+        trace is included: it is a snapshot of results, and this gesture says
+        every trace.  The run PAGES are untouched, so the numbers a frozen
+        trace was compared against are still on screen to read.
+        """
+        app = self.app
+        if not app.traces:
+            return
+        frozen = sum(1 for t in app.traces if t.frozen)
+        note = f"Remove all {len(app.traces)} trace(s)? The loaded files stay."
+        if frozen:
+            note += (f" {frozen} of them are frozen snapshots, which cannot "
+                     f"be recomputed from a file that has since changed.")
+        if not messagebox.askyesno(CLEAR_TRACES_MENU_LABEL, note, parent=app):
+            return
+        # Cancel, don't flush -- the queued edit belongs to a trace that is
+        # about to be discarded (`_apply_session`'s rule and its reason).
+        app._cancel_editor_sync()
+        n = len(app.traces)
+        app.traces = []
+        self._refresh_trace_list()
+        # The same three calls `_on_remove_trace` ends on, and each for its own
+        # reason: the plot would keep drawing curves whose traces are gone, and
+        # neither window can re-read its way out of a subject that no longer
+        # exists -- they have to be told.
+        app._replot_from_cache()
+        refresh_attribution_windows(app)
+        refresh_files_windows(app)
+        app._append_result(f"Cleared all traces ({n})")
 
     def _on_toggle_trace_key(self, _event=None) -> str:
         self._on_toggle_trace()

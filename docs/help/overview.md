@@ -151,6 +151,56 @@ change; every page is repainted in place and no new run is created.
 
 The choice is saved with the session, like the units mode.
 
+Digits: how precisely a value is printed (the dropdown beside Units)
+--------------------------------------------------------------------
+   default  -- what the tool has always printed: 3 significant
+               digits in the smart units mode, 4 in aligned and for
+               the dimensionless cells (Q, k, dB). This is the
+               startup setting and choosing it again is the way back
+               to it.
+   3 .. 8   -- that many significant digits everywhere: the table,
+               the coupling blocks, all three views, the Z matrix
+               and the plot's cursor readout, all at once.
+
+Use it when two variants read the same at three digits and differ in
+the fourth -- two EM revisions of one coil both printing "2.01 nH"
+is the case this exists for. Nothing is recomputed and no number
+changes; the columns widen to fit and every open run page and the
+cursor readout are repainted together, so one screen never shows two
+precisions.
+
+The ceiling is 8 on purpose. Every value here comes out of a Schur
+reduction and a pseudo-inverse, so digits past the eighth are the
+arithmetic's rather than the measurement's -- and each one widens
+the readout box on the plot, which has only its own subplot to sit
+in. Export CSV is unaffected either way: it has always written full
+precision.
+
+The choice is saved with the session, like the units mode and the
+view.
+
+Clearing the window
+-------------------
+Three gestures, and what they leave behind is what tells them apart.
+
+   * Right-click the Loaded Files list -> "Clear all files".
+     Every file goes, and so do the traces bound to them: a trace
+     whose file is gone cannot be computed at all. A trace naming a
+     file that never loaded (a config whose data has moved) stays,
+     so its spec is not lost. The run pages stay.
+   * Right-click the Traces list -> "Clear all traces". The FILES
+     STAY. This is the one to use for trying a second port map on a
+     large package file without re-parsing it.
+   * "File -> Clear All". Files, traces, run pages -- kept pages
+     included -- and the Log. What it does not touch is how you have
+     set the tool up: the view, the units, the digits, the fit
+     settings and the marker frequency all stay as they are.
+
+Each asks first, names what will go, and does nothing at all on an
+empty window. None of them can be undone: a spec is not recoverable
+by retyping it in a hurry, and "Save Config..." is what makes one
+recoverable at all.
+
 Editing traces: there is no "Apply"
 -----------------------------------
 Whatever is in the editor IS what the selected trace holds. Type a

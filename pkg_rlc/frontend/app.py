@@ -216,12 +216,14 @@ from pkg_rlc.present.report import (
     COMPARE_STACK_LINES_MAX,
     COUPLING_FLOOR_DB,
     COUPLING_LEGEND_LINES,
+    DIGITS_DEFAULT,
     FREQ_WIDE_FMT,
     FreqSnap,
     LOG_BADGE_CAP,
     LOG_ERROR,
     LOG_INFO,
     LOG_WARN,
+    RESULTS_DIGITS,
     RESULTS_PANE_COLS,
     RESULTS_SWATCH,
     RESULTS_VIEWS,
@@ -263,6 +265,7 @@ from pkg_rlc.present.report import (
     _wrap_name,
     combine_freq_snaps,
     describe_run_change,
+    digits_sig,
     freq_grid_step,
     keep_button_label,
     log_tab_label,
@@ -474,11 +477,12 @@ from pkg_rlc.panels.files_gui import (
 # They may not import this module back, at module level or inside a function:
 # they are L5 in tests/test_layering.py and this file is L6.  What they need
 # from here they get through the injected App.
-from pkg_rlc.panels.panels_files import FilesPanel
+from pkg_rlc.panels.panels_files import CLEAR_FILES_MENU_LABEL, FilesPanel
 # FREEZE_MENU_LABEL / UNFREEZE_MENU_LABEL moved WITH the menu they label and
 # are RE-EXPORTED here, the same rule as the DSL helpers and the connections
 # table: `from pkg_rlc_gui import FREEZE_MENU_LABEL` keeps resolving.
 from pkg_rlc.panels.panels_traces import (
+    CLEAR_TRACES_MENU_LABEL,
     FREEZE_MENU_LABEL,
     TracesPanel,
     UNFREEZE_MENU_LABEL,
@@ -1043,6 +1047,15 @@ class PortRolesWindow(tk.Toplevel):
 # Main GUI
 # ============================================================================
 
+#: The File-menu entry that empties the whole window.  Named for the reason
+#: every other menu label in this app is: the test looks it up by label, and a
+#: menu entry nobody can find is the same as no feature at all.  The two
+#: NARROWER clears -- `Clear all files` and `Clear all traces` -- are on the
+#: two lists' own right-click menus and live with them
+#: (`pkg_rlc.panels.panels_files` / `pkg_rlc.panels.panels_traces`).
+CLEAR_ALL_MENU_LABEL = "Clear All"
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -1256,6 +1269,15 @@ class App(tk.Tk):
         file_menu.add_command(label="Restore Last Session",
                               command=self._on_restore_last_session)
         file_menu.add_separator()
+        # BETWEEN the session entries and Exit, because that is what it is:
+        # the start of a new session without leaving the window.  The two
+        # narrower clears are on the lists' own right-click menus, where the
+        # thing being cleared is what the pointer is already on; this one is
+        # the everything gesture and so it is on the menu that owns the
+        # session.  It asks first -- see `_on_clear_all`.
+        file_menu.add_command(label=CLEAR_ALL_MENU_LABEL,
+                              command=self._on_clear_all)
+        file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self._on_close)
         menubar.add_cascade(label="File", menu=file_menu)
 
@@ -1443,6 +1465,7 @@ class App(tk.Tk):
         self._results_panel = ResultsPanel(results_frame, self)
         self.results_view_var = self._results_panel.results_view_var
         self.units_mode_var = self._results_panel.units_mode_var
+        self.sig_digits_var = self._results_panel.sig_digits_var
         self._runs_menubutton = self._results_panel._runs_menubutton
         self._runs_menu = self._results_panel._runs_menu
         self._keep_btn = self._results_panel._keep_btn
@@ -2595,6 +2618,7 @@ class App(tk.Tk):
                 "fit_model": self.fit_model_var.get(),
                 "units_mode": self.units_mode_var.get(),
                 "results_view": self.results_view_var.get(),
+                "sig_digits": self.sig_digits_var.get(),
             },
             plot_state=self.plot.view_state(),
             base_dir=base_dir,
@@ -2666,6 +2690,77 @@ class App(tk.Tk):
                 f"or trace open.")
             return
         self._load_session_file(str(path), "Restored last session")
+
+    def _on_clear_all(self) -> None:
+        """
+        Back to the window the tool starts with, without restarting it.
+
+        WHAT IT CLEARS AND WHY EACH: the files and the traces, because that is
+        the gesture; the RUN PAGES and the Log, because every line in them is
+        about a file or a trace that is gone, and a run page whose numbers
+        cannot be traced back to anything is worse than no page; the composed
+        stack cache, because every entry is validated by FileEntry IDENTITY
+        and every FileEntry it could validate against has just gone, so all
+        that is left of it is the largest allocation this app holds; and the
+        two counters, because "a new session" is what this claims to be and a
+        run numbered 7 in a window with no runs in it is not that.
+
+        WHAT IT DOES NOT CLEAR: the display controls (view, units, digits, the
+        fit model, the marker frequency).  Those are how the reader has set
+        the tool up, not what they are looking at -- the same distinction the
+        session file draws when it saves them next to the data rather than
+        inside it.
+
+        IT ASKS FIRST, and it asks with the counts, because none of this is
+        undoable and a mode-6 spec is not recoverable by retyping it in a
+        hurry.  It asks only when there is something to lose: on an empty
+        window the entry does nothing at all rather than opening a dialog
+        about nothing.
+        """
+        if not (self.files or self.traces or self._run_tabs):
+            return
+        bits = []
+        if self.files:
+            bits.append(f"{len(self.files)} file(s)")
+        if self.traces:
+            bits.append(f"{len(self.traces)} trace(s)")
+        if self._run_tabs:
+            kept = sum(1 for rt in self._run_tabs if rt.kept)
+            bits.append(f"{len(self._run_tabs)} run page(s)"
+                        + (f" ({kept} kept)" if kept else ""))
+        if not messagebox.askyesno(
+                CLEAR_ALL_MENU_LABEL,
+                "Clear " + ", ".join(bits) + " and the Log?\n\n"
+                "The view, units, digits and fit settings stay as they are. "
+                "This cannot be undone.",
+                parent=self):
+            return
+        # Cancel, don't flush: the queued edit belongs to a trace that is about
+        # to be discarded -- `_apply_session`'s rule, and its reason.
+        self._cancel_editor_sync()
+        self.files = []
+        self.traces = []
+        self._trace_list_shown = []
+        self._compose_cache.clear()
+        self._next_trace_id = 1
+        self._run_counter = 0
+        # The pane's own half: the run pages, the Log text and the badge.  It
+        # is the panel's because the panel built those widgets.
+        self._results_panel._clear_results()
+        self._refresh_file_list()
+        self._refresh_trace_list()
+        self._refresh_file_combobox()
+        # keep_cursors=False: nothing is computed any more, so there is no
+        # curve for a kept cursor to read -- the same argument `_apply_session`
+        # makes for the same call.
+        self._replot_from_cache(keep_cursors=False)
+        # Every open window that HOLDS a result has just had its subject taken
+        # away and cannot re-read its way out of that; the Ports & Roles window
+        # can, and re-reads to an empty list.
+        refresh_attribution_windows(self)
+        refresh_files_windows(self)
+        self._refresh_port_roles_window()
+        self._append_result("Cleared " + ", ".join(bits) + ".")
 
     def _load_session_file(self, path: str, origin: str) -> bool:
         """
@@ -2767,9 +2862,16 @@ class App(tk.Tk):
                          ("fit_fmax_ghz", self.fit_fmax_var),
                          ("fit_model", self.fit_model_var),
                          ("units_mode", self.units_mode_var),
-                         ("results_view", self.results_view_var)):
+                         ("results_view", self.results_view_var),
+                         ("sig_digits", self.sig_digits_var)):
             if key in controls:
                 var.set(controls[key])
+        # The plot's cursor readout is the one thing the Digits control
+        # reaches that is not repainted by simply setting the variable: the
+        # readout is built during a draw, and the draw below is the first one
+        # this session.  Set BEFORE it, so the restored session's first frame
+        # is already at the restored precision.
+        self.plot.set_sig_digits(digits_sig(self.sig_digits_var.get()))
 
         self._refresh_file_list()
         self._refresh_trace_list()
@@ -3107,6 +3209,9 @@ class App(tk.Tk):
 
     def _on_units_mode_changed(self) -> None:
         return self._results_panel._on_units_mode_changed()
+
+    def _on_digits_changed(self) -> None:
+        return self._results_panel._on_digits_changed()
 
     def _rerender_every_page(self, log_note: str) -> None:
         return self._results_panel._rerender_every_page(log_note)

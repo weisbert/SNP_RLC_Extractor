@@ -230,6 +230,19 @@ still here.
   below and the swatches stop lining up with the curves. This is why
   `pkg_rlc.widgets.plot` imports `pkg_rlc.physics.core` (acyclic: core imports nothing back);
   a second copy of the rule would let the plot and the results pane disagree.
+- **The readout's DIGITS come from the Results pane's `Digits:` control**
+  (`_PlotView.sig_digits`, set through `PlotPanel.set_sig_digits`, `None` =
+  `READOUT_SIG` = 3 = what this box has always printed). The readout and the
+  results table are the same reading — both end in `format_si` — so a control
+  that widened one and not the other would put two spellings of one number on
+  one screen, which is the failure the readout exists to remove. **The setter
+  REDRAWS**, because the box is built during the draw: setting the field alone
+  leaves the previous digits on screen until the next cursor move. The
+  fullscreen window inherits it with the rest of the view state. The full
+  account is "The Digits control" in `docs/conventions/results_pane.md`;
+  `tests/test_plot_readout.py::TestTheReadoutFollowsTheDigitsControl` is the
+  guard, and it asserts the rendered rows still line up at 8 digits, not just
+  that the helper returns a longer string.
 - **A dragged box must be captured BEFORE the legend is replaced, not from a
   button-release handler.** The box is draggable (`set_draggable(True,
   update="loc")`) and is rebuilt on every cursor move, so the position has to be

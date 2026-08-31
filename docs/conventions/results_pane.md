@@ -456,6 +456,88 @@ the left edge at the same moment.
   `reference_provenance` side, where the sentence is written, not by re-wrapping
   it here.
 
+### The Digits control (how many significant digits a value is printed to)
+
+`Digits:` on the Results header strip, beside `View:` and `Units:`. The
+vocabulary is `pkg_rlc.model.trace`'s (`DIGITS_DEFAULT` / `RESULTS_DIGITS` /
+`digits_sig`, re-exported from `pkg_rlc.present.report`), the control is
+`pkg_rlc.panels.panels_results`', and the guards are
+`tests/test_results_views.py::TestTheDigitsControl` (pure) and
+`::TestTheDigitsControlIsWiredUp` (a real App). Every claim below was
+mutation-checked.
+
+- **`default` IS A WORD AND NOT THE NUMBER 3, and that is forced.** The three
+  renderers this reaches were never written to one number: the smart units
+  mode goes through `format_si`, whose own default is 3, while the aligned
+  mode's `%g` and the dimensionless cells (Q, k, dB, and the complex Z) have
+  always been 4. `default` means exactly that pair, so the page it produces is
+  byte-for-byte the one `tests/fixtures/render_reference.json` pins and
+  nothing about an existing user's startup screen moved. It reaches the
+  renderers as `sig=None`, which is the argument every pre-existing caller
+  does not pass. Any other value is an override and applies to all of them —
+  `Digits: 6` means six everywhere, with no second rule to learn.
+- **THE COLUMN WIDTHS FOLLOW THE DIGITS, and that is the defect this feature
+  would otherwise have shipped.** `_format_results_table` (NUM_W 10 / 9) and
+  `_format_coupling_block` (NUM_W 11, Z_W 18) are the two tables in
+  `pkg_rlc.present.report` laid out against a written-down width rather than
+  through `_render_columns`, and a wider cell under a fixed width does not
+  clip — `f"{s:>10}"` on an 11-character string prints all eleven — it drags
+  that one row out of line with the others. Both now take `max(<the
+  historical width>, widest cell)`: at `default` nothing reaches the max and
+  the byte-for-byte page stands. Everything in the summary and compare views
+  is `_render_columns`', which has always sized a column from its own widest
+  cell, so those needed nothing.
+- **The rows-against-rows check is NOT sufficient and both halves are
+  asserted.** In the coupling block the two port rows are the same width even
+  when the column is too narrow for them (`9.9241235` and `4.8312346` are both
+  nine characters), so they shear together and equal line lengths cannot see
+  it. The HEADER does not shear with them, and that is the assertion that
+  catches the pinned width. Measured: with NUM_W pinned at 11 and Z_W at 18
+  the rows-only check passes and the header check fails.
+- **A test built on a round number proves nothing here.** `%g` strips trailing
+  zeros, so a 2.0 nH inductance prints `2 nH` at three digits and at eight
+  alike; the fixtures for these tests carry values with more than eight
+  significant digits for that reason, and two of the first assertions written
+  against the shipped fixtures passed against code that ignored `sig`
+  entirely.
+- **It is read LIVE off the header, like the units mode and the view, and is
+  never frozen onto a `RunSnapshot`.** How precisely a value is printed is a
+  rendering choice, not a recorded fact. `_on_digits_changed` shares
+  `_rerender_every_page` with the other two: every page is repainted in place
+  and NO run tab is created, because choosing a precision measures nothing.
+- **It also tells the PLOT, which is the one thing the units switch does not
+  do.** The cursor readout and the results table are the same reading — both
+  end in `format_si` — so a control that widened one and not the other would
+  put two spellings of one number on one screen, which is the failure the
+  readout was written to remove. `PlotPanel.set_sig_digits` is called even
+  when there is no run to repaint (`_rerender_every_page` returns early
+  then), because the plot can hold curves the pane is no longer showing.
+- **The Attribution window is deliberately NOT poked**, unlike on the units
+  switch. This control does not reach it: its tables take the digits their
+  own formatters have always used and its provenance block records the units
+  mode alone, so there is nothing there this can leave stale. Extending it
+  there means extending `Provenance`, which is a separate change with its own
+  golden reference (`tests/fixtures/attrib_reference/`).
+- **The ceiling is 8 and the floor is 3, enforced in `digits_sig` and nowhere
+  else.** A double carries ~15–17 decimal digits, but every value here is the
+  end of a Schur reduction and a `pinv`, so the digits past the eighth are the
+  arithmetic's rather than the measurement's — and each one widens the cursor
+  readout box, which is measured against its own subplot. `digits_sig` is
+  TOTAL and never raises: it is read off a Tk variable on the path that
+  repaints every page, and out of hand-edited session files, so anything
+  unrecognised reads as `default` — the one value that cannot be wrong.
+- **The FREQUENCY PROVENANCE sentences are deliberately outside it.**
+  `marker_freq_text` and `_table_freq_note` keep their own `format_si` calls
+  and their callers' `'{:.6g}'`: the frequency a measurement was read at is
+  provenance, not one of the measured values, and `tests/test_freq_label.py`
+  pins that the pane and the CLI render one `FreqSnap` IDENTICALLY. The CLI
+  has no Digits control, so letting this one reach that renderer would make
+  the two front ends print different sentences about the same fact — the
+  divergence that test exists to prevent.
+- **Export CSV is untouched and must stay so.** It has always written full
+  precision, and a display control that quietly rounded an export would be
+  the "the pane and the file disagree" this repo refuses everywhere else.
+
 ### Run history (the run tabs after the Log)
 
 `tests/test_run_history.py` is the guard, and every claim below was

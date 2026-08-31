@@ -30,6 +30,7 @@ import numpy as np
 
 from pkg_rlc.physics.core import RECIPROCITY_WARN, format_si
 from pkg_rlc.model.trace import (
+    DIGITS_DEFAULT,
     FREQ_EXACT_FRAC,
     FREQ_EXACT_REL,
     FREQ_UNIFORM_TOL,
@@ -37,14 +38,43 @@ from pkg_rlc.model.trace import (
     LOG_ERROR,
     LOG_INFO,
     LOG_WARN,
+    RESULTS_DIGITS,
     RESULTS_VIEWS,
     VIEW_COMPARE,
     VIEW_DETAIL,
     VIEW_SUMMARY,
     combine_freq_snaps,
+    digits_sig,
     freq_grid_step,
     snap_to_grid,
 )
+
+
+# ---- how many significant digits ------------------------------------------
+#
+# RE-EXPORTED from `pkg_rlc.model.trace` for the same reason RESULTS_VIEWS is,
+# and the account of what `default` means is there, beside the tuple.  What
+# matters HERE is the contract every renderer below keeps: `sig=None` is
+# `default` and means each formatter uses the digit count it has always used
+# (3 through `format_si`, 4 for a `%g` cell), so a report built with no `sig`
+# is byte-for-byte the one `tests/fixtures/render_reference.json` pins.  An
+# int overrides all of them.
+#
+# THE COLUMN WIDTHS FOLLOW THE DIGITS.  `_format_results_table` and
+# `_format_coupling_block` are the two tables in this file that are laid out
+# against a written-down width rather than through `_render_columns`, and a
+# wider cell under a fixed width does not clip -- `f"{s:>10}"` on an 11-char
+# string prints all 11 -- it pushes that ONE row out of line with the others.
+# So both take their number width as `max(<the historical width>, widest
+# cell)`: at `default` nothing reaches the max and the byte-for-byte page
+# stands, and at 8 digits the column grows once for every row at once.
+_SIG_SMART = 3          # format_si's own default: the 'smart' units mode
+_SIG_PLAIN = 4          # a bare '%g' cell: 'aligned', and Q / k / dB / Z
+
+
+def _sig_or(sig: Optional[int], default: int) -> int:
+    """The override, or the digit count this cell has always had."""
+    return default if sig is None else sig
 
 
 # ---- the three results views ----------------------------------------------
@@ -219,10 +249,15 @@ def _aligned_prefix_for(values):
     return chosen
 
 
-def _fmt_aligned(value: float, exp: int, sig: int = 4) -> str:
+def _fmt_aligned(value: float, exp: int, sig: Optional[int] = None) -> str:
     if not math.isfinite(value):
         return "nan"
-    return f"{value / (10 ** exp):.{sig}g}"
+    return f"{value / (10 ** exp):.{_sig_or(sig, _SIG_PLAIN)}g}"
+
+
+def _fmt_smart(value: float, unit: str, sig: Optional[int] = None) -> str:
+    """The 'smart' units mode's cell: `format_si`, at the chosen digits."""
+    return format_si(value, unit, _sig_or(sig, _SIG_SMART))
 
 
 def _sign_flag(res) -> str:
@@ -629,10 +664,14 @@ def _render_columns(headers: Sequence, aligns: Sequence[str],
 
 
 def _format_results_table(rows: Sequence[RowSnapshot], units_mode: str,
-                          freq: Optional[FreqSnap] = None) -> str:
+                          freq: Optional[FreqSnap] = None,
+                          sig: Optional[int] = None) -> str:
     """
     rows: list of RowSnapshot. Returns a multi-line aligned table.
     units_mode in {'smart', 'aligned'}.
+
+    `sig` is the Digits control: None keeps every cell at the digit count it
+    has always had (and this table byte-for-byte), an int overrides it.
 
     Every data row starts with RESULTS_SWATCH and every other line starts with
     an equally wide run of spaces; App._append_swatched finds the rows by that
@@ -714,6 +753,33 @@ def _format_results_table(rows: Sequence[RowSnapshot], units_mode: str,
         col_R, col_L, col_C, col_Q = "R", "L", "C", "Q"
         NUM_W = 10
 
+    # THE NUMBERS ARE RENDERED BEFORE THE HEADER IS WRITTEN, because the
+    # column has to be as wide as its widest cell: `f"{s:>9}"` does not clip an
+    # 11-character cell, it prints all eleven and pushes that one row out of
+    # line with every other.  At the default digits nothing here exceeds the
+    # historical width, so `max()` returns it and the table is unchanged.
+    cells = []
+    for r in rows:
+        res = r.res
+        if units_mode == "aligned":
+            cells.append((
+                _fmt_aligned(res.R_ohm, r_exp, sig),
+                _fmt_aligned(res.L_henry, l_exp, sig),
+                _fmt_aligned(res.C_farad, c_exp, sig),
+                _fmt_plain(res.Q, sig),
+            ))
+        else:
+            cells.append((
+                _fmt_smart(res.R_ohm, "Ω", sig),
+                _fmt_smart(res.L_henry, "H", sig),
+                _fmt_smart(res.C_farad, "F", sig),
+                # Q is dimensionless, so it never takes an SI prefix -- and in
+                # the smart mode it has always been the ONE cell here printed
+                # at format_si's 3 rather than at a %g cell's 4.
+                _fmt_plain(res.Q, _sig_or(sig, _SIG_SMART)),
+            ))
+    NUM_W = max([NUM_W] + [len(c) for row in cells for c in row])
+
     # "ID   " is FIVE wide, matching "[{id:>2}] " on the data rows.  It was
     # four, so the header sat one column left of everything under it -- barely
     # visible with a ragged left edge, obvious now that a swatch squares it up.
@@ -728,20 +794,8 @@ def _format_results_table(rows: Sequence[RowSnapshot], units_mode: str,
     parts.append("Sign")
     lines.append("".join(parts))
 
-    for r in rows:
-        res = r.res
-        flag = _sign_flag(res)
-        if units_mode == "aligned":
-            r_str = _fmt_aligned(res.R_ohm, r_exp)
-            l_str = _fmt_aligned(res.L_henry, l_exp)
-            c_str = _fmt_aligned(res.C_farad, c_exp)
-            q_str = "nan" if not math.isfinite(res.Q) else f"{res.Q:.4g}"
-        else:
-            r_str = format_si(res.R_ohm, "Ω")
-            l_str = format_si(res.L_henry, "H")
-            c_str = format_si(res.C_farad, "F")
-            q_str = "nan" if not math.isfinite(res.Q) else f"{res.Q:.3g}"
-
+    for r, (r_str, l_str, c_str, q_str) in zip(rows, cells):
+        flag = _sign_flag(r.res)
         row_parts = [
             # Every row here IS on the plot: _render_results filters the hidden
             # traces out before calling, and names them on one line under the
@@ -797,22 +851,29 @@ def _trunc_str(s: str, w: int, ell: str = "…") -> str:
     return s if len(s) <= w else s[: w - 1] + ell
 
 
-def _value_formatter(values, unit: str, units_mode: str):
+def _value_formatter(values, unit: str, units_mode: str,
+                     sig: Optional[int] = None):
     """
     (header suffix, format function) for one column, honouring the units mode.
 
     'smart' delegates to format_si (per-value prefix, unit inline); 'aligned'
     picks one SI prefix for the whole column and puts it in the header, exactly
     like the main results table.
+
+    `sig` is the Digits control; None is 'default' and gives each mode the
+    digit count it has always had.  The SI PREFIX IS PICKED FROM THE DATA, not
+    from the digits, so widening a column cannot also change what it is scaled
+    to -- one control, one effect.
     """
     if units_mode == "aligned":
         exp, pfx = _aligned_prefix_for(list(values))
-        return f"[{pfx}{unit}]", (lambda v: _fmt_aligned(v, exp))
-    return "", (lambda v: format_si(v, unit))
+        return f"[{pfx}{unit}]", (lambda v: _fmt_aligned(v, exp, sig))
+    return "", (lambda v: _fmt_smart(v, unit, sig))
 
 
-def _fmt_plain(value: float, sig: int = 4) -> str:
-    return "nan" if not math.isfinite(value) else f"{value:.{sig}g}"
+def _fmt_plain(value: float, sig: Optional[int] = None) -> str:
+    return ("nan" if not math.isfinite(value)
+            else f"{value:.{_sig_or(sig, _SIG_PLAIN)}g}")
 
 
 # ---- ranking the coupling list -------------------------------------------
@@ -947,9 +1008,10 @@ def _pane_z_name(n) -> str:
     return _trunc_str(n, 12)
 
 
-def _pane_z_cell(z) -> str:
+def _pane_z_cell(z, sig: Optional[int] = None) -> str:
     """The results pane's spelling of one matrix entry: 'a+bj'."""
-    return f"{z.real:.4g}{z.imag:+.4g}j"
+    g = _sig_or(sig, _SIG_PLAIN)
+    return f"{z.real:.{g}g}{z.imag:+.{g}g}j"
 
 
 def _format_z_matrix(names, Zk, indent: str = "      ",
@@ -1012,10 +1074,16 @@ COUPLING_LEGEND_LINES = (
 )
 
 
-def _format_coupling_block(block: CouplingSnapshot, units_mode: str) -> str:
+def _format_coupling_block(block: CouplingSnapshot, units_mode: str,
+                           sig: Optional[int] = None) -> str:
     """
     Full mode-6 results block for one trace at the marker frequency:
     the Z matrix, the per-port self table, then one entry per pair.
+
+    `sig` is the Digits control and reaches EVERY number in the block, the raw
+    complex Z entries included: a digits control that widened R, L and C and
+    left the matrix they were extracted from at four would be two rules on one
+    page.  None keeps all of them where they have always been.
 
     Takes a CouplingSnapshot, not a live TraceConfig: the heading is the
     identity of the trace AS MEASURED, and the trace it came from may since
@@ -1066,15 +1134,26 @@ def _format_coupling_block(block: CouplingSnapshot, units_mode: str) -> str:
         f"off-diagonal = mutual, every other port open)",
     ]
     if matrix_block:
-        lines.append(_format_z_matrix(names, cres.Z_matrix))
+        lines.append(_format_z_matrix(names, cres.Z_matrix,
+                                      cell=lambda z: _pane_z_cell(z, sig)))
 
     # --- self impedance table -------------------------------------------
     ports = list(cres.ports)
-    r_sfx, fmt_r = _value_formatter([p.R_ohm for p in ports], "Ω", units_mode)
-    l_sfx, fmt_l = _value_formatter([p.L_henry for p in ports], "H", units_mode)
-    c_sfx, fmt_c = _value_formatter([p.C_farad for p in ports], "F", units_mode)
+    r_sfx, fmt_r = _value_formatter([p.R_ohm for p in ports], "Ω", units_mode,
+                                    sig)
+    l_sfx, fmt_l = _value_formatter([p.L_henry for p in ports], "H", units_mode,
+                                    sig)
+    c_sfx, fmt_c = _value_formatter([p.C_farad for p in ports], "F", units_mode,
+                                    sig)
     NAME_W = max([len(_trunc_str(n, 14)) for n in names] + [4])
-    NUM_W = 11
+    # Same rule as the detail table: a cell wider than the written-down width
+    # is not clipped, it drags its own row out of line.  `max()` returns the
+    # historical 11 at the default digits.
+    NUM_W = max([11] + [len(f(v)) for f, vs in ((fmt_r, [p.R_ohm for p in ports]),
+                                                (fmt_l, [p.L_henry for p in ports]),
+                                                (fmt_c, [p.C_farad for p in ports]))
+                        for v in vs]
+                + [len(_fmt_plain(p.Q, sig)) for p in ports])
     # The heading exists to separate this table from the matrix ABOVE it.  With
     # no matrix there is nothing to separate it from, and the table's own
     # header row names every column -- so it would be a line spent restating
@@ -1089,12 +1168,15 @@ def _format_coupling_block(block: CouplingSnapshot, units_mode: str) -> str:
     if matrix_block:
         sign_cell, z_head, z_cells = (lambda s: s), "", (lambda p: "")
     else:
+        # The Z column is sized the same way the numeric ones are, and for the
+        # same reason -- 18 is what it has always been and what it stays at
+        # the default digits.
+        Z_W = max([Z_W] + [len(_pane_z_cell(p.Z, sig)) for p in ports])
         sign_cell = (lambda s: f"{s:<{SIGN_W}}")
         z_head = f"  {'Z (Ω)':>{Z_W}}"
         # Rendered exactly as _format_z_matrix renders a cell, so the two
         # spellings of one number cannot drift.
-        z_cells = (lambda p: "  "
-                   + f"{p.Z.real:.4g}{p.Z.imag:+.4g}j".rjust(Z_W))
+        z_cells = (lambda p: "  " + _pane_z_cell(p.Z, sig).rjust(Z_W))
     lines.append(
         f"      {'Port':<{NAME_W}}  {'R' + r_sfx:>{NUM_W}}  "
         f"{'L' + l_sfx:>{NUM_W}}  {'C' + c_sfx:>{NUM_W}}  "
@@ -1103,7 +1185,7 @@ def _format_coupling_block(block: CouplingSnapshot, units_mode: str) -> str:
         lines.append(
             f"      {_trunc_str(p.name, 14):<{NAME_W}}  "
             f"{fmt_r(p.R_ohm):>{NUM_W}}  {fmt_l(p.L_henry):>{NUM_W}}  "
-            f"{fmt_c(p.C_farad):>{NUM_W}}  {_fmt_plain(p.Q):>{NUM_W}}  "
+            f"{fmt_c(p.C_farad):>{NUM_W}}  {_fmt_plain(p.Q, sig):>{NUM_W}}  "
             f"{sign_cell(_sign_flag(p))}{z_cells(p)}")
 
     # --- per-pair coupling ----------------------------------------------
@@ -1117,9 +1199,9 @@ def _format_coupling_block(block: CouplingSnapshot, units_mode: str) -> str:
         # a hidden pair setting the column's SI prefix would scale every cell
         # to a value that is not on screen.
         m_sfx, fmt_m = _value_formatter([p.M_henry for p in shown_pairs], "H",
-                                        units_mode)
+                                        units_mode, sig)
         cc_sfx, fmt_cc = _value_formatter([p.C_c_farad for p in shown_pairs],
-                                          "F", units_mode)
+                                          "F", units_mode, sig)
         # The heading says two things: the open-circuit convention, which the
         # 'Z matrix @' line two lines up has already said, and the RANKING,
         # which means nothing when there is one pair to rank.  So a single-pair
@@ -1141,8 +1223,8 @@ def _format_coupling_block(block: CouplingSnapshot, units_mode: str) -> str:
             lines.append(
                 f"      {p.name_a} x {p.name_b}:  "
                 f"M{m_sfx} = {fmt_m(p.M_henry)}   "
-                f"k = {_fmt_plain(p.k)}   "
-                f"worst M/L = {_fmt_plain(_pair_strength_db(p))} dB   "
+                f"k = {_fmt_plain(p.k, sig)}   "
+                f"worst M/L = {_fmt_plain(_pair_strength_db(p), sig)} dB   "
                 f"C_c{cc_sfx} = {fmt_cc(p.C_c_farad)}"
                 + (f"   [{flag}]" if flag else ""))
             # Z_ab only where there is no matrix block to read it off.  Both
@@ -1150,12 +1232,12 @@ def _format_coupling_block(block: CouplingSnapshot, units_mode: str) -> str:
             # ranking key and takes an abs(), so a dB-only line would be the
             # one place in this report where a physical sign is hidden.
             zab = ("" if matrix_block
-                   else f"   Z_ab = {p.Z_ab.real:.4g}{p.Z_ab.imag:+.4g}j")
+                   else f"   Z_ab = {_pane_z_cell(p.Z_ab, sig)}")
             lines.append(
-                f"          M/L({p.name_a}) = {_fmt_plain(p.M_over_La)} "
-                f"({_fmt_plain(p.M_over_La_dB)} dB)   "
-                f"M/L({p.name_b}) = {_fmt_plain(p.M_over_Lb)} "
-                f"({_fmt_plain(p.M_over_Lb_dB)} dB){zab}")
+                f"          M/L({p.name_a}) = {_fmt_plain(p.M_over_La, sig)} "
+                f"({_fmt_plain(p.M_over_La_dB, sig)} dB)   "
+                f"M/L({p.name_b}) = {_fmt_plain(p.M_over_Lb, sig)} "
+                f"({_fmt_plain(p.M_over_Lb_dB, sig)} dB){zab}")
             for note in p.notes:
                 lines.append(f"          note: {note}")
         if weak_pairs:
@@ -1224,8 +1306,14 @@ def _summary_self_rows(rows, blocks) -> list:
     return out
 
 
-def _format_summary_self(rows, blocks, units_mode: str) -> tuple:
-    """(text, colour indices) for the self-impedance table, or ('', ())."""
+def _format_summary_self(rows, blocks, units_mode: str,
+                         sig: Optional[int] = None) -> tuple:
+    """(text, colour indices) for the self-impedance table, or ('', ()).
+
+    `sig` is the Digits control.  Nothing here has a written-down width --
+    `_render_columns` sizes every column from its own widest cell -- so more
+    digits widen the table and never break its alignment.
+    """
     entries = _summary_self_rows(rows, blocks)
     if not entries:
         return "", ()
@@ -1234,9 +1322,12 @@ def _format_summary_self(rows, blocks, units_mode: str) -> tuple:
     have_port = any(name for _r, name, _v in entries)
 
     vals = [v for _r, _n, v in entries]
-    r_sfx, fmt_r = _value_formatter([v.R_ohm for v in vals], "Ω", units_mode)
-    l_sfx, fmt_l = _value_formatter([v.L_henry for v in vals], "H", units_mode)
-    c_sfx, fmt_c = _value_formatter([v.C_farad for v in vals], "F", units_mode)
+    r_sfx, fmt_r = _value_formatter([v.R_ohm for v in vals], "Ω", units_mode,
+                                    sig)
+    l_sfx, fmt_l = _value_formatter([v.L_henry for v in vals], "H", units_mode,
+                                    sig)
+    c_sfx, fmt_c = _value_formatter([v.C_farad for v in vals], "F", units_mode,
+                                    sig)
 
     # The heading sits over the id DIGITS, not over the bracket: the
     # swatch and the "[N]" are one cell so a coloured row reads as one
@@ -1267,7 +1358,7 @@ def _format_summary_self(rows, blocks, units_mode: str) -> tuple:
             # what identifies it, and is what the detail table prints.
             cells.append(_trunc_str(name or rec.port_desc, 22))
         cells += [fmt_r(v.R_ohm), fmt_l(v.L_henry), fmt_c(v.C_farad),
-                  _fmt_plain(v.Q), _sign_flag(v)]
+                  _fmt_plain(v.Q, sig), _sign_flag(v)]
         if multi:
             cells.append(_file_cell(rec, alias))
         body.append(cells)
@@ -1280,7 +1371,8 @@ def _format_summary_self(rows, blocks, units_mode: str) -> tuple:
     return "\n".join(out), tuple(colors)
 
 
-def _format_summary_coupling(blocks, units_mode: str) -> tuple:
+def _format_summary_coupling(blocks, units_mode: str,
+                             sig: Optional[int] = None) -> tuple:
     """(text, colour indices) for the coupling table, or ('', ()).
 
     EVERY pair of every block, ranked within its block exactly as the detail
@@ -1299,9 +1391,10 @@ def _format_summary_coupling(blocks, units_mode: str) -> tuple:
         return "", ()
 
     pairs = [p for _b, p in entries]
-    m_sfx, fmt_m = _value_formatter([p.M_henry for p in pairs], "H", units_mode)
+    m_sfx, fmt_m = _value_formatter([p.M_henry for p in pairs], "H", units_mode,
+                                    sig)
     cc_sfx, fmt_cc = _value_formatter([p.C_c_farad for p in pairs], "F",
-                                      units_mode)
+                                      units_mode, sig)
     heads = [_SWATCH_PAD + "  ID ", "Label", "Pair", "M" + m_sfx, "k",
              "worst M/L", "C_c" + cc_sfx, "Sign"]
     aligns = ["<", "<", "<", ">", ">", ">", ">", "<"]
@@ -1312,8 +1405,8 @@ def _format_summary_coupling(blocks, units_mode: str) -> tuple:
             f"{RESULTS_SWATCH} [{b.id:>2}]",
             _trunc_str(b.label, SUMMARY_LABEL_MAX),   # see _format_summary_self
             f"{p.name_a} x {p.name_b}",
-            fmt_m(p.M_henry), _fmt_plain(p.k),
-            f"{_fmt_plain(_pair_strength_db(p))} dB",
+            fmt_m(p.M_henry), _fmt_plain(p.k, sig),
+            f"{_fmt_plain(_pair_strength_db(p), sig)} dB",
             fmt_cc(p.C_c_farad), _pair_flag(p),
         ])
         colors.append(b.color_idx)
@@ -1517,7 +1610,8 @@ def _compare_groups(rows, blocks) -> list:
     return out
 
 
-def _delta_cell(a: float, b: float, unit: str) -> str:
+def _delta_cell(a: float, b: float, unit: str,
+                sig: Optional[int] = None) -> str:
     """
     How much b differs from a, in the form a reader can act on.
 
@@ -1534,17 +1628,21 @@ def _delta_cell(a: float, b: float, unit: str) -> str:
     """
     if not (math.isfinite(a) and math.isfinite(b)):
         return "—"
+    # The Δ is a READING like any other, so it follows the Digits control too.
+    # Its two %g widths differ (4 for a difference, 3 for a percentage) and
+    # each keeps its own default, the same rule as everywhere else in here.
     if unit == "dB":
-        return f"{b - a:+.4g} dB"
+        return f"{b - a:+.{_sig_or(sig, _SIG_PLAIN)}g} dB"
     if a == 0.0:
         return "—" if b != 0.0 else "0"
     rel = (b - a) / abs(a)
     if abs(rel) <= 9.0:
-        return f"{rel * 100.0:+.3g} %"
-    return f"{b / a:+.4g} ×"
+        return f"{rel * 100.0:+.{_sig_or(sig, _SIG_SMART)}g} %"
+    return f"{b / a:+.{_sig_or(sig, _SIG_PLAIN)}g} ×"
 
 
-def _format_compare(rows, blocks, units_mode: str) -> tuple:
+def _format_compare(rows, blocks, units_mode: str,
+                    sig: Optional[int] = None) -> tuple:
     """
     (text, colour indices, refusal).  The refusal is empty when the table is
     the whole answer and carries the reason when it is not -- the caller falls
@@ -1585,11 +1683,11 @@ def _format_compare(rows, blocks, units_mode: str) -> tuple:
             # shares a unit.
             if unit in ("", "dB"):
                 sfx = ""
-                fmt = ((lambda v: f"{_fmt_plain(v)} dB") if unit == "dB"
-                       else _fmt_plain)
+                fmt = ((lambda v: f"{_fmt_plain(v, sig)} dB") if unit == "dB"
+                       else (lambda v: _fmt_plain(v, sig)))
             else:
                 sfx, fmt = _value_formatter(list(vals.values()), unit,
-                                            units_mode)
+                                            units_mode, sig)
             cells = [label if first else "", name + sfx]
             for r in records:
                 v = vals.get(r.id)
@@ -1597,7 +1695,7 @@ def _format_compare(rows, blocks, units_mode: str) -> tuple:
             if two:
                 a, b = vals.get(ids[0]), vals.get(ids[1])
                 cells.append("" if a is None or b is None
-                             else _delta_cell(a, b, unit))
+                             else _delta_cell(a, b, unit, sig))
             body.append(cells)
             first = False
 

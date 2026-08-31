@@ -30,10 +30,12 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import tkinter as tk  # noqa: E402
+from tkinter import messagebox  # noqa: E402
 
 import numpy as np  # noqa: E402
 
@@ -732,6 +734,240 @@ class TestBothCurveKindsUnchecked(_Case):
         self.assertGreater(len(self.app.plot.view.traces), 0)
         self._note_shown(False, False)
         self.assertEqual(len(self.app.plot.view.traces), 0)
+
+
+# ============================================================================
+# Clearing the lists (files, traces, everything)
+# ============================================================================
+
+
+@unittest.skipUnless(TK_OK, "no Tk display available")
+class TestClearingTheLists(_Case):
+    """
+    Three gestures, and what separates them is what SURVIVES each.
+
+      * `Clear all files`  -- on the Files list's right-click menu.  The
+        traces bound to those files go too, by `Remove`'s own rule: a trace
+        whose file is gone cannot be computed at all, and leaving it in the
+        list to fail on the next Calculate is the "the plot and the Traces
+        list disagree" that rule exists to prevent.
+      * `Clear all traces` -- on the Traces list's menu.  The FILES STAY,
+        which is the case it exists for: trying a second port map without
+        re-parsing a 300-port file.
+      * `Clear All`        -- on the File menu.  Files, traces, run pages,
+        the Log.  The display settings stay, because they are how the reader
+        has set the tool up, not what they are looking at.
+
+    ALL THREE ASK FIRST and none of them is undoable.  The declined case is
+    tested for each, because a confirmation that is asked and then ignored is
+    worse than none at all.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.app._on_calculate()          # so there is a run page to clear
+        self._settle()
+
+    def _yes(self):
+        return mock.patch.object(messagebox, "askyesno", return_value=True)
+
+    def _no(self):
+        return mock.patch.object(messagebox, "askyesno", return_value=False)
+
+    def _log(self):
+        return self.app.results_text.get("1.0", tk.END)
+
+    def _file_menu_labels(self):
+        menu = self.app._file_menu
+        return [str(menu.entrycget(i, "label"))
+                for i in range(menu.index("end") + 1)
+                if menu.type(i) == "command"]
+
+    def _menu_labels(self, menu):
+        return [str(menu.entrycget(i, "label"))
+                for i in range(menu.index("end") + 1)
+                if menu.type(i) == "command"]
+
+    # ---- the affordances -----------------------------------------------
+
+    def test_all_three_gestures_are_findable(self):
+        """A feature nobody can find is a feature nobody uses -- and none of
+        these is a fifth button, because both rows are measured at 448 px
+        with four buttons already asking 364 and `pack` unmaps from the end.
+        """
+        self.assertIn(pkg_rlc_gui.CLEAR_FILES_MENU_LABEL,
+                      self._menu_labels(self.app._files_menu))
+        self.assertIn(pkg_rlc_gui.CLEAR_TRACES_MENU_LABEL,
+                      self._menu_labels(self.app._trace_menu))
+        self.assertIn(pkg_rlc_gui.CLEAR_ALL_MENU_LABEL,
+                      self._file_menu_labels())
+
+    def test_the_traces_menu_keeps_its_first_two_entries_first(self):
+        """`tests/test_freeze_trace.py` invokes this menu by INDEX, so the
+        new entry has to be appended and carry no separator in front of it
+        (a separator has no -label and would shift every index after it)."""
+        labels = [str(self.app._trace_menu.entrycget(i, "label"))
+                  for i in range(self.app._trace_menu.index("end") + 1)]
+        self.assertEqual(labels[:2], [pkg_rlc_gui.FREEZE_MENU_LABEL,
+                                      pkg_rlc_gui.UNFREEZE_MENU_LABEL])
+        self.assertEqual(labels[-1], pkg_rlc_gui.CLEAR_TRACES_MENU_LABEL)
+        self.assertNotIn("", labels, "a separator was slipped in")
+
+    # ---- clear all traces ----------------------------------------------
+
+    def test_clearing_the_traces_keeps_the_files(self):
+        with self._yes():
+            self.app._traces_panel._on_clear_traces()
+        self._settle()
+        self.assertEqual(self.app.traces, [])
+        self.assertEqual([fe.label for fe in self.app.files], [self.fe.label])
+        self.assertEqual(self.app.traces_lb.size(), 0)
+        self.assertEqual(len(self.app.plot.view.traces), 0,
+                         "the plot kept drawing curves whose traces are gone")
+
+    def test_clearing_the_traces_leaves_the_run_pages_to_read(self):
+        """A run page is the record of what WAS measured; clearing the specs
+        does not unmeasure it.  `Clear All` is the gesture that takes those
+        too."""
+        pages = len(self.app._run_tabs)
+        self.assertGreater(pages, 0)
+        with self._yes():
+            self.app._traces_panel._on_clear_traces()
+        self._settle()
+        self.assertEqual(len(self.app._run_tabs), pages)
+
+    def test_declining_clears_no_trace(self):
+        """Mutation: drop the `if not messagebox.askyesno(...): return`."""
+        with self._no():
+            self.app._traces_panel._on_clear_traces()
+        self._settle()
+        self.assertEqual(len(self.app.traces), 2)
+
+    # ---- clear all files -----------------------------------------------
+
+    def test_clearing_the_files_takes_the_traces_bound_to_them(self):
+        with self._yes():
+            self.app._files_panel._on_clear_files()
+        self._settle()
+        self.assertEqual(self.app.files, [])
+        self.assertEqual(self.app.traces, [])
+        self.assertEqual(self.app.files_lb.size(), 0)
+        self.assertEqual(len(self.app.plot.view.traces), 0)
+        self.assertIn("Cleared all files", self._log())
+
+    def test_a_trace_bound_to_a_file_that_is_not_loaded_survives(self):
+        """
+        Exactly `Remove`'s rule, applied to every row at once: this gesture
+        is about the files that ARE here.  A trace naming a file that never
+        loaded (a session whose data moved) was already not computable, and
+        dropping it would lose a spec the user can still re-point.
+
+        Mutation: clear `app.traces` outright instead of partitioning.
+        """
+        orphan = TraceConfig(id=9, file_label="gone.s4p", mode=1, port_a="1",
+                             label="orphan")
+        self.app.traces.append(orphan)
+        self.app._refresh_trace_list()
+        with self._yes():
+            self.app._files_panel._on_clear_files()
+        self._settle()
+        self.assertEqual([tc.label for tc in self.app.traces], ["orphan"])
+
+    def test_declining_clears_no_file(self):
+        """Mutation: drop the confirmation guard."""
+        with self._no():
+            self.app._files_panel._on_clear_files()
+        self._settle()
+        self.assertEqual(len(self.app.files), 1)
+        self.assertEqual(len(self.app.traces), 2)
+
+    # ---- clear all -----------------------------------------------------
+
+    def test_clear_all_empties_the_window_including_kept_pages(self):
+        """
+        A kept page whose trace, file and numbers have all been cleared away
+        is a page about nothing -- `Clear All` is the end of the session,
+        which is what keeping is scoped to.
+
+        Mutation: spare the kept pages (the `Close other runs` rule), or
+        leave `_last_run` set -- the next digits or units switch then
+        repaints a run whose pages are gone.
+        """
+        self.app._results_panel._keep_run_tab(self.app._run_tabs[0])
+        self._settle()
+        self.assertTrue(any(rt.kept for rt in self.app._run_tabs))
+        with self._yes():
+            self.app._on_clear_all()
+        self._settle()
+        self.assertEqual(self.app.files, [])
+        self.assertEqual(self.app.traces, [])
+        self.assertEqual(self.app._run_tabs, [])
+        self.assertIsNone(self.app._last_run)
+        self.assertEqual(len(self.app.plot.view.traces), 0)
+        # One tab left: the Log, which is where the tool starts.
+        self.assertEqual(len(self.app.results_nb.tabs()), 1)
+
+    def test_clear_all_empties_the_log_but_says_what_it_did(self):
+        """Everything in the Log is about files and traces that are gone --
+        except the line naming what went, which is the receipt."""
+        with self._yes():
+            self.app._on_clear_all()
+        self._settle()
+        log = self._log().strip()
+        self.assertTrue(log.startswith("Cleared "), repr(log))
+        self.assertIn("file(s)", log)
+        self.assertIn("trace(s)", log)
+        self.assertEqual(self.app._log_unseen, 0)
+        self.assertFalse(self.app._log_forced)
+
+    def test_clear_all_resets_the_counters_but_not_the_display_settings(self):
+        """
+        "A new session" is what this claims to be, and a run numbered 7 in a
+        window with no runs in it is not that.  The view / units / digits are
+        the other half of the rule: they are how the reader has set the tool
+        up, and the session file saves them beside the data for that reason.
+        """
+        self.app.units_mode_var.set("aligned")
+        self.app.sig_digits_var.set("6")
+        self.app.results_view_var.set("summary")
+        self.assertGreater(self.app._run_counter, 0)
+        with self._yes():
+            self.app._on_clear_all()
+        self._settle()
+        self.assertEqual(self.app._run_counter, 0)
+        self.assertEqual(self.app._next_trace_id, 1)
+        self.assertEqual(self.app._compose_cache, {})
+        self.assertEqual(self.app.units_mode_var.get(), "aligned")
+        self.assertEqual(self.app.sig_digits_var.get(), "6")
+        self.assertEqual(self.app.results_view_var.get(), "summary")
+
+    def test_declining_clears_nothing_at_all(self):
+        """Mutation: drop the confirmation guard."""
+        with self._no():
+            self.app._on_clear_all()
+        self._settle()
+        self.assertEqual(len(self.app.files), 1)
+        self.assertEqual(len(self.app.traces), 2)
+        self.assertGreater(len(self.app._run_tabs), 0)
+
+    def test_an_empty_window_asks_nothing_and_does_nothing(self):
+        """
+        A dialog about nothing is a dialog the user learns to dismiss without
+        reading -- which is the one thing a confirmation cannot afford.
+
+        Mutation: drop the `if not (...): return` early exit in any of the
+        three; the call below then counts an ask.
+        """
+        with self._yes():
+            self.app._on_clear_all()
+        self._settle()
+        asked = []
+        with mock.patch.object(messagebox, "askyesno",
+                               side_effect=lambda *a, **k: asked.append(1)):
+            self.app._on_clear_all()
+            self.app._files_panel._on_clear_files()
+            self.app._traces_panel._on_clear_traces()
+        self.assertEqual(asked, [])
 
 
 if __name__ == "__main__":

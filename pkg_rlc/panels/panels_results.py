@@ -48,10 +48,12 @@ from tkinter.scrolledtext import ScrolledText
 from pkg_rlc.widgets.plot import COLORS, ReflowRow
 from pkg_rlc.present.report import (
     COUPLING_LEGEND_LINES,
+    DIGITS_DEFAULT,
     FreqSnap,
     LOG_ERROR,
     LOG_INFO,
     LOG_WARN,
+    RESULTS_DIGITS,
     RESULTS_SWATCH,
     RESULTS_VIEWS,
     RUN_AUTO_MAX_UI,
@@ -68,6 +70,7 @@ from pkg_rlc.present.report import (
     _format_summary_coupling,
     _format_summary_self,
     _trunc_str,
+    digits_sig,
     keep_button_label,
     log_tab_label,
     marker_freq_text,
@@ -182,6 +185,27 @@ class ResultsPanel:
         header.add(units_combo)
         units_combo.bind("<<ComboboxSelected>>",
                          lambda _e: self._on_units_mode_changed())
+        # HOW PRECISELY, kept beside WHICH RENDERING and WHICH UNITS because
+        # all three are the same kind of choice: each repaints every run page
+        # in place and none of them creates a run.  `default` is first and is
+        # the value the tool starts at -- see DIGITS_DEFAULT: it means every
+        # cell keeps the digit count it has always had, so the strip's default
+        # state changes nothing about the page under it.
+        #
+        # A ReflowRow, so this seventh control costs no risk: it wraps rather
+        # than pushing the Keep button off the end, which is the whole reason
+        # the strip stopped being a pack() run
+        # (tests/test_results_views.py::TestTheResultsHeaderLayout walks every
+        # child, so this one is measured by the existing guard).
+        header.add(ttk.Label(header, text="Digits:"), padx=(6))
+        self.sig_digits_var = tk.StringVar(value=DIGITS_DEFAULT)
+        digits_combo = ttk.Combobox(
+            header, textvariable=self.sig_digits_var,
+            values=list(RESULTS_DIGITS), state="readonly", width=8,
+        )
+        header.add(digits_combo)
+        digits_combo.bind("<<ComboboxSelected>>",
+                          lambda _e: self._on_digits_changed())
         # Tk 8.6's ttk.Notebook has no tab-strip scrolling and no overflow
         # chevron, and past ~12 tabs a label is three characters wide.  The
         # Runs menu is where a compressed tab stays identifiable: it carries
@@ -303,21 +327,29 @@ class ResultsPanel:
         """
         units = self.units_mode_var.get()
         view = self.results_view_var.get()
+        # LIVE off the App, the same rule and the same reason as the units
+        # mode and the view: how many digits a value is printed to is a
+        # RENDERING choice, not a recorded fact, so it is not frozen onto a
+        # RunSnapshot and every page follows the control as it stands now.
+        sig = digits_sig(self.sig_digits_var.get())
         shown_rows = [r for r in run.rows if r.enabled]
         shown_blocks = [b for b in run.blocks if b.enabled]
         hidden = [r for r in run.rows if not r.enabled]
         hidden += [b for b in run.blocks if not b.enabled]
 
         if view == VIEW_SUMMARY:
-            segs = self._summary_segments(run, shown_rows, shown_blocks, units)
+            segs = self._summary_segments(run, shown_rows, shown_blocks, units,
+                                          sig)
         elif view == VIEW_COMPARE:
-            segs = self._compare_segments(run, shown_rows, shown_blocks, units)
+            segs = self._compare_segments(run, shown_rows, shown_blocks, units,
+                                          sig)
         else:
-            segs = self._detail_segments(run, shown_rows, shown_blocks, units)
+            segs = self._detail_segments(run, shown_rows, shown_blocks, units,
+                                         sig)
         return segs + self._footer_segments(shown_rows, shown_blocks, hidden)
 
     def _detail_segments(self, run: RunSnapshot, shown_rows, shown_blocks,
-                         units: str) -> list:
+                         units: str, sig: Optional[int] = None) -> list:
         """The full report: the results table, the fits, one block per trace.
 
         This is the view the tool has always had, minus the two paragraphs
@@ -327,7 +359,8 @@ class ResultsPanel:
         run_freq = run_freq_snap(run)
         segs: list = []
         if shown_rows:
-            segs.append((_format_results_table(shown_rows, units, run_freq),
+            segs.append((_format_results_table(shown_rows, units, run_freq,
+                                               sig),
                          tuple(r.color_idx for r in shown_rows), LOG_INFO))
             for f in run.fits:
                 if f.enabled:
@@ -347,7 +380,8 @@ class ResultsPanel:
                              LOG_WARN if snap.off_grid else LOG_INFO))
         for block in shown_blocks:
             segs.append(("", (), LOG_INFO))
-            segs.append((_format_coupling_block(block, units), (), LOG_INFO))
+            segs.append((_format_coupling_block(block, units, sig), (),
+                         LOG_INFO))
         return segs
 
     def _run_heading(self, run: RunSnapshot, what: str) -> str:
@@ -361,10 +395,11 @@ class ResultsPanel:
         return f"  {what} @ {marker_freq_text(run_freq_snap(run), '{:.6g}')}"
 
     def _summary_segments(self, run: RunSnapshot, shown_rows, shown_blocks,
-                          units: str) -> list:
+                          units: str, sig: Optional[int] = None) -> list:
         """One run as two tables: every self measurement, then every pair."""
         segs: list = []
-        text, colors = _format_summary_self(shown_rows, shown_blocks, units)
+        text, colors = _format_summary_self(shown_rows, shown_blocks, units,
+                                            sig)
         if text:
             segs.append((self._run_heading(run, "self impedance"), (),
                          LOG_INFO))
@@ -374,7 +409,7 @@ class ResultsPanel:
             if f.enabled:
                 segs.append((f.text, (),
                              LOG_WARN if "ERROR" in f.text else LOG_INFO))
-        text, colors = _format_summary_coupling(shown_blocks, units)
+        text, colors = _format_summary_coupling(shown_blocks, units, sig)
         if text:
             segs.append(("", (), LOG_INFO))
             segs.append((self._run_heading(run, "coupling"), (), LOG_INFO))
@@ -384,7 +419,7 @@ class ResultsPanel:
         return segs
 
     def _compare_segments(self, run: RunSnapshot, shown_rows, shown_blocks,
-                          units: str) -> list:
+                          units: str, sig: Optional[int] = None) -> list:
         """Traces as columns, with a delta at exactly two of them.
 
         FALLS BACK TO THE SUMMARY, NAMING THE REASON, rather than showing an
@@ -393,11 +428,11 @@ class ResultsPanel:
         the attribution split -- degrade, never refuse, and say which.
         """
         text, colors, refusal = _format_compare(shown_rows, shown_blocks,
-                                                units)
+                                                units, sig)
         if refusal:
             return ([(f"  compare: {refusal}", (), LOG_INFO)]
                     + self._summary_segments(run, shown_rows, shown_blocks,
-                                             units))
+                                             units, sig))
         return [(self._run_heading(run, "compare"), (), LOG_INFO),
                 (text, colors, LOG_INFO)]
 
@@ -547,6 +582,33 @@ class ResultsPanel:
         if self.app._last_run is not None and (self.app._last_run.rows
                                            or self.app._last_run.blocks):
             refresh_attribution_windows(self.app, rerender=True)
+
+    def _on_digits_changed(self) -> None:
+        """Repaint every page -- and the PLOT -- at the newly chosen digits.
+
+        SAME CODE PATH as the units switch, for the same reason: the digit
+        count is a rendering choice, not a recorded fact, so leaving one page
+        at the old precision is the "one screen, two formattings, then a
+        silent flip" that rule is written from.
+
+        THE PLOT IS TOLD TOO, and that is the one thing this handler does that
+        the units switch does not.  The cursor readout is the same reading as
+        the table -- `_readout_value` and `_value_formatter` both end in
+        `format_si` -- so a control that widened one and not the other would
+        put two spellings of one number on one screen, which is the defect the
+        readout was written to remove.  It is called even when there is no run
+        to repaint (`_rerender_every_page` returns early then): the plot can
+        hold curves the pane is no longer showing.
+
+        The Attribution window is deliberately NOT poked.  Unlike the units
+        mode, this control does not reach it: its tables take the digits their
+        formatters have always used, and its provenance block records the
+        units mode alone.  Nothing there can be left stale by this.
+        """
+        sig = digits_sig(self.sig_digits_var.get())
+        self.app.plot.set_sig_digits(sig)
+        self._rerender_every_page(
+            f"\n--- re-rendered with digits={self.sig_digits_var.get()} ---")
 
     def _rerender_every_page(self, log_note: str) -> None:
         run = self.app._last_run
@@ -1077,6 +1139,40 @@ class ResultsPanel:
         self.app._run_tabs_var.set(self.app._run_tabs_max)
         self._evict_run_tabs()
         self._render_all_run_tabs()
+        self._refresh_keep_button()
+
+    def _clear_results(self) -> None:
+        """
+        Back to the pane the tool starts with: no run pages, an empty Log.
+
+        KEPT PAGES GO TOO, and that is the one place this differs from every
+        other teardown in this module.  `Close other runs` spares them because
+        keeping is a claim about which run matters WITHIN a session; `Clear
+        All` is the end of the session, and a kept page whose trace, file and
+        numbers have all been cleared away is a page about nothing.  It is
+        reached only from the File menu, which asks first.
+
+        The Log is emptied rather than appended to, because everything in it
+        is about files and traces that are gone.  The badge goes with it: it
+        counts warnings the reader has not seen, and there is nothing left to
+        see.  `_log_forced` is released for the same reason.
+
+        Nothing here touches `App.files` / `App.traces` -- this is the pane's
+        half of `_on_clear_all`, and the panel owns exactly the widgets it
+        built.
+        """
+        for rt in list(self.app._run_tabs):
+            self._destroy_run_tab(rt)
+        self.app._last_run = None
+        self.app._log_unseen = 0
+        self.results_text.delete("1.0", tk.END)
+        self._render_log_badge()
+        self._select_log_tab()
+        # AFTER the select, which sets the flag itself: `_log_forced` means an
+        # ERROR line is holding the Log in front, and nothing is.  Setting it
+        # before would leave it True and make the next automatic switch a
+        # no-op for no reason.
+        self.app._log_forced = False
         self._refresh_keep_button()
 
     def _append_result(self, text: str, severity: str = LOG_INFO) -> None:

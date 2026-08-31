@@ -11,9 +11,9 @@ bit-exactness rules, the rejected-proposal list) and points here for the rest.
 it.** Every `###` heading below is the section title it had in `CLAUDE.md`, so a
 cross-reference of the form ``CLAUDE.md § <title>`` still resolves.
 
-## [`architecture.md`](architecture.md) — 27k
+## [`architecture.md`](architecture.md) — 32k
 
-The four sections of the main window as four classes; what a Calculate RUNS vs what it SHOWS; why the run record sits at L1; and the arithmetic the CLI and the results pane share, against the spellings they deliberately do not.
+The four sections of the main window as four classes (and the three gestures that empty them); what a Calculate RUNS vs what it SHOWS; why the run record sits at L1; and the arithmetic the CLI and the results pane share, against the spellings they deliberately do not.
 
 - The four panels of the main window (`pkg_rlc/panels/panels_*.py`)
 - One formatter, two spellings (the CLI and the results pane)
@@ -56,7 +56,7 @@ Several Touchstone files solved as ONE network: the reference-node weld, the fre
 - Composition — several files as ONE network (`pkg_rlc/physics/compose.py`, round 2)
 - The two-file GUI — schema, namespace, engine (round 3)
 
-## [`plot_panel.md`](plot_panel.md) — 18k
+## [`plot_panel.md`](plot_panel.md) — 19k
 
 What range the axes show and what unit they say, the control strip that wraps instead of losing its tail, and the one readout box per cursor.
 
@@ -70,17 +70,18 @@ A non-numeric token is a HARD error; every failure is a `TouchstoneParseError` c
 
 - Reading files (robustness, diagnosis, refusal)
 
-## [`results_pane.md`](results_pane.md) — 42k
+## [`results_pane.md`](results_pane.md) — 49k
 
-The Log tab and its badge, the three views and the 144-column budget, the run tabs and their two disjoint caps, the immutable run snapshot, and freeze-as-trace.
+The Log tab and its badge, the three views and the 144-column budget, the Digits control and the column widths that follow it, the run tabs and their two disjoint caps, the immutable run snapshot, and freeze-as-trace.
 
 - Freeze as trace (the before/after comparison)
 - The run snapshot (what a finished Calculate leaves behind)
 - The Results pane notebook (the Log tab and its badge)
 - The three results views (`detail` / `summary` / `compare`)
+- The Digits control (how many significant digits a value is printed to)
 - Run history (the run tabs after the Log)
 
-## [`session_and_help.md`](session_and_help.md) — 11k
+## [`session_and_help.md`](session_and_help.md) — 12k
 
 The session file as a pure dict round trip (config never results), and the Help window whose prose lives in `docs/help/`.
 
@@ -95,7 +96,7 @@ The session file as a pure dict round trip (config never results), and the Help 
 - `deploy/` specifics (red-zone pipeline)
 - Hiding the GUI tests (`tests/_isolated_desktop.py`)
 
-## [`test_suite_map.md`](test_suite_map.md) — 31k
+## [`test_suite_map.md`](test_suite_map.md) — 33k
 
 One row per test file: what it measures, which mutation it was checked against, and the numbers it pins. `CLAUDE.md` carries the one-line index into it.
 

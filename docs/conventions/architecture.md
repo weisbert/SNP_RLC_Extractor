@@ -118,6 +118,70 @@ is 4407 lines.
   companion is a `symtable` pass for free names, which is what catches a moved
   body whose import did not come with it.
 
+#### Clearing the lists (`Clear all files` / `Clear all traces` / `Clear All`)
+
+Three gestures, added on 2026-08-31. What separates them is what SURVIVES
+each, and each one lives with the widgets it clears:
+`pkg_rlc.panels.panels_files._on_clear_files`,
+`pkg_rlc.panels.panels_traces._on_clear_traces`, and `App._on_clear_all` with
+`ResultsPanel._clear_results` as its half of the pane.
+`tests/test_editor_autoapply.py::TestClearingTheLists` is the guard and every
+claim below was mutation-checked.
+
+- **NONE OF THEM IS A FIFTH BUTTON.** Both list rows are measured at 448 px
+  with four buttons already asking 364, and `pack` unmaps from the END — in
+  the Files row the button that would go is `Check File`, which
+  `tests/test_parse_diagnostics.py` asserts is on screen at the minsize. So
+  the two narrow clears are on the lists' own right-click menus (where the
+  thing being cleared is what the pointer is already on) and the wide one is
+  on the File menu, which is what owns the session. Same reasoning that put
+  Freeze / Unfreeze on a menu.
+- **The new Traces entry is APPENDED and carries NO separator.**
+  `tests/test_freeze_trace.py` enumerates that menu by INDEX and a separator
+  has no `-label`, so one in front of the new entry turns a one-token update
+  into a `TclError`. It is the fifth entry and the only one that does not act
+  on the row under the pointer, which is why it is last.
+- **`Clear all files` drops the traces bound to those files, by `Remove`'s own
+  rule** — a trace whose file is gone in ANY of its slots cannot be computed
+  at all, and leaving it in the list to fail on the next Calculate is the "the
+  plot and the Traces list disagree" that rule exists to prevent. A trace
+  naming a file that never loaded (a session whose data moved) SURVIVES: it
+  was already not computable, and this gesture is about the files that are
+  here. The partition is by IDENTITY (`keep` / `doomed` lists, never `t not in
+  dropped`) — `TraceConfig` is an `eq=True` dataclass holding numpy arrays, so
+  `in` raises "truth value of an array is ambiguous".
+- **`Clear all traces` keeps the FILES and keeps the RUN PAGES.** That is the
+  case it exists for: a second port map on a 300-port export without
+  re-parsing it. A run page is the record of what WAS measured, and clearing
+  the specs does not unmeasure it.
+- **`Clear All` takes the KEPT pages too**, which is the one place this
+  differs from every other teardown in `pkg_rlc.panels.panels_results`.
+  `Close other runs` spares them because keeping is a claim about which run
+  matters WITHIN a session; `Clear All` is the end of the session, and a kept
+  page whose trace, file and numbers have all gone is a page about nothing.
+  It also empties the Log and clears `_log_unseen` / `_log_forced` (nothing
+  left to have not seen), resets `_run_counter` and `_next_trace_id` (a run
+  numbered 7 in a window with no runs in it is not "a new session"), and drops
+  `_compose_cache` — every entry there is validated by `FileEntry` IDENTITY
+  and every `FileEntry` it could validate against has just gone, so all that
+  is left of it is the largest allocation this app holds.
+- **What `Clear All` does NOT clear is the DISPLAY SETTINGS** — view, units,
+  digits, fit model, marker frequency. Those are how the reader has set the
+  tool up, not what they are looking at; the session file draws the same line
+  when it saves them beside the data rather than inside it.
+- **All three ask first, name what will go, and do nothing at all on an empty
+  window.** A dialog about nothing is a dialog the user learns to dismiss
+  without reading, which is the one thing a confirmation cannot afford. Each
+  CANCELS the queued editor sync rather than flushing it — `_apply_session`'s
+  rule and its reason: the queued edit belongs to a trace that is about to be
+  discarded.
+- **Each ends on the same refresh sequence its `Remove` sibling ends on**, and
+  each call is load-bearing: `_replot_from_cache` (or the plot keeps drawing
+  and LEGENDING curves whose traces are gone — the readout box IS the legend),
+  `refresh_attribution_windows` and `refresh_files_windows` (both resolve
+  their subject by identity and cannot re-read their way out of a subject that
+  no longer exists), and for `Clear All` also `_refresh_port_roles_window`,
+  which can re-read and degrades to an empty list.
 ### One formatter, two spellings (the CLI and the results pane)
 
 `pkg_rlc_extractor` used to carry its own copy of six things `pkg_rlc.present.report`

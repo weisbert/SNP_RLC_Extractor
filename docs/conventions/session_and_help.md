@@ -60,6 +60,18 @@ mutation-checked.
   `bool()`: `bool("false")` is `True`, which would silently invert a checkbox.
   A combobox value outside its list is refused because both are `state="readonly"`
   and there would be no way back through the UI.
+- **`sig_digits` is a saved control, and its `default` is a VALUE rather than
+  an absent key.** It joins `units_mode` and `results_view` in `_CONTROL_KEYS`
+  / `_CONTROL_CHOICES` (validated against `RESULTS_DIGITS`, which is
+  `pkg_rlc.model.trace`'s for the reason `RESULTS_VIEWS` is: a vocabulary
+  shared between the file format at L2 and the renderer at L3 lives at or
+  below the lower of the two). A file written before the control existed
+  carries no key, which keeps the current setting — the same "an absent
+  control changes nothing" every other key here has. `_apply_session` sets the
+  variable AND calls `plot.set_sig_digits` before the first replot, because
+  the cursor readout is built during a draw and the restored session's first
+  frame has to already be at the restored precision. See "The Digits control"
+  in `docs/conventions/results_pane.md`.
 - **`SessionError` carries the whole verdict in `str(e)`**, the
   `TouchstoneParseError` contract: not-ours, no version, and version-from-the-
   future are three different messages, and the future one names both numbers.

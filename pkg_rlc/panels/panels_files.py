@@ -39,6 +39,13 @@ from pkg_rlc.panels.attrib_gui import refresh_attribution_windows
 from pkg_rlc.panels.files_gui import FILES_MENU_LABEL, refresh_files_windows
 
 
+#: The Files-list context-menu entry that empties the list.  A named constant
+#: because the test looks the entry up by label, and a menu entry nobody can
+#: find is the same as no feature at all.  Re-exported from
+#: `pkg_rlc.frontend.app`, where every other menu label of this kind is.
+CLEAR_FILES_MENU_LABEL = "Clear all files"
+
+
 class FilesPanel:
     """The Files section: `Loaded Files` frame, its buttons and its Listbox."""
 
@@ -88,6 +95,15 @@ class FilesPanel:
         self._files_menu = tk.Menu(self.app, tearoff=0)
         self._files_menu.add_command(label=FILES_MENU_LABEL,
                                      command=self.app._on_files_window)
+        # APPENDED, and on the MENU rather than as a fifth button: the row is
+        # measured at 448 px with four buttons already asking 364, and `pack`
+        # unmaps from the END -- `Check File` is the one that would go, and
+        # `tests/test_parse_diagnostics.py` asserts it is on screen at the
+        # minsize.  Same reason Freeze / Unfreeze are on the Traces menu.
+        # No separator: one carries no `-label`, and both menus in this window
+        # are enumerated by label.
+        self._files_menu.add_command(label=CLEAR_FILES_MENU_LABEL,
+                                     command=self._on_clear_files)
         self.files_lb.bind("<Button-3>", self._on_files_context_menu)
 
     # --------------------------------------------------------------- File ops
@@ -217,6 +233,76 @@ class FilesPanel:
                 f"  also removed {len(by_extra)} trace(s) that composed with "
                 f"it: " + ", ".join(f"[{t.id}] {_trunc_str(t.label, 18)}"
                                     for t in by_extra), LOG_WARN)
+
+    def _on_clear_files(self) -> None:
+        """
+        Empty the Files list in one gesture, and say what goes with it.
+
+        SAME RULE AS `Remove`, applied to every row at once: a trace bound to
+        a file that is gone -- in ANY of its slots, not only as its home file
+        -- cannot be computed at all, so it goes too.  Leaving it in the list
+        to fail on the next Calculate is the "the plot and the Traces list
+        disagree" this panel's other handler is written against.
+
+        THE CONFIRMATION NAMES BOTH COUNTS, because the trace count is the
+        half the user cannot see coming: the gesture says 'files' and a mode-6
+        spec that took ten minutes to type is not recoverable by re-adding the
+        file.  It is asked only when there is something to lose.
+
+        A trace bound to a label that is NOT loaded (a session whose data
+        moved) survives, exactly as it survives `Remove` -- it was already not
+        computable, and this gesture is about the files that ARE here.
+        """
+        app = self.app
+        if not app.files:
+            return
+        labels = {fe.label for fe in app.files}
+        keep, doomed = [], []
+        for t in app.traces:
+            (doomed if labels & set(trace_file_labels(t))
+             else keep).append(t)
+        note = (f"Remove all {len(app.files)} loaded file(s)?")
+        if doomed:
+            note += (f"\n\n{len(doomed)} trace(s) are bound to them and go "
+                     f"too. This cannot be undone.")
+        if not messagebox.askyesno("Clear all files", note, parent=app):
+            return
+        # Cancel, don't flush: the queued edit belongs to a trace that is
+        # about to be discarded.  `_apply_session` cancels for this reason and
+        # the identity check in `_apply_editor_sync` would decline it anyway --
+        # running it just to be declined is a way for that check to rot.
+        app._cancel_editor_sync()
+        app.files = []
+        # `keep`, never `[t for t in app.traces if t not in doomed]`:
+        # TraceConfig is an eq=True dataclass holding numpy arrays, so `in`
+        # runs == against a non-matching trace and raises "truth value of an
+        # array is ambiguous".  The partition above is the documented idiom
+        # (`_on_remove_file`, `_apply_editor_sync`).
+        app.traces = keep
+        # Every entry is keyed by file labels and validated by FileEntry
+        # IDENTITY, and every FileEntry it could validate against has just
+        # gone -- so the whole cache is dead weight, and a composed stack is
+        # the largest thing this app holds.  `Remove` leaves it to the
+        # identity check; clearing everything makes dropping it exact.
+        app._compose_cache.clear()
+        self._refresh_file_list()
+        app._refresh_trace_list()
+        app._refresh_file_combobox()
+        # Same call, same position, same reason as `Remove`: without it the
+        # PLOT keeps drawing and legending the curves of traces that are gone,
+        # and the readout box IS the legend.
+        app._replot_from_cache()
+        # And the same two windows, for the same reason: both resolve their
+        # subject by identity and neither can re-read its way out of a subject
+        # that no longer exists.
+        refresh_attribution_windows(app)
+        refresh_files_windows(app)
+        app._append_result(f"Cleared all files ({len(labels)})")
+        if doomed:
+            app._append_result(
+                f"  also removed {len(doomed)} trace(s) bound to them: "
+                + ", ".join(f"[{t.id}] {_trunc_str(t.label, 18)}"
+                            for t in doomed), LOG_WARN)
 
     def _on_check_file(self) -> None:
         """

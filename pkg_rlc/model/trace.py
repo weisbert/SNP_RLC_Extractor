@@ -533,6 +533,52 @@ VIEW_COMPARE = "compare"
 RESULTS_VIEWS = (VIEW_DETAIL, VIEW_SUMMARY, VIEW_COMPARE)
 
 
+# How many SIGNIFICANT DIGITS the Results pane and the plot's cursor readout
+# print a measured value to.
+#
+# WHY THERE IS A `default` VALUE AND IT IS NOT THE NUMBER 3.  The three
+# renderers this control reaches were never written to one number: the smart
+# units mode goes through `format_si`, whose own default is 3, while the
+# aligned mode's `%g` and the dimensionless cells (Q, k, dB) have always been
+# 4.  `default` means EXACTLY THAT PAIR -- every renderer keeps the digit count
+# it has always had, so the pane it produces is byte-for-byte the one
+# `tests/fixtures/render_reference.json` pins, and choosing it is the way back
+# to that page.  Any other value is an OVERRIDE and applies to all of them, so
+# `Digits: 6` means six everywhere and there is no second rule to learn.
+#
+# WHY THE NAMES ARE HERE, beside RESULTS_VIEWS and for its reason exactly:
+# `sig_digits` is SAVED, so the vocabulary is shared between the file format
+# (L2, `pkg_rlc.services.session._CONTROL_CHOICES`) and the renderer (L3,
+# `pkg_rlc.present.report`), and a shared vocabulary lives at or below the
+# lower of its two users.  `pkg_rlc.present.report` re-exports all three.
+#
+# THE CEILING IS 8 AND IT IS NOT ARBITRARY.  A double carries ~15-17 decimal
+# digits, but every number this reaches is the end of a Schur reduction and a
+# `pinv`, so the digits past the eighth are the arithmetic's, not the
+# measurement's -- and each one widens the cursor readout box, which is
+# measured against its own subplot (see "The name column is a measured budget"
+# in docs/conventions/plot_panel.md).  The floor is 3 because that is what the
+# tool has always shown and nothing below it is a reading.
+DIGITS_DEFAULT = "default"
+RESULTS_DIGITS = (DIGITS_DEFAULT, "3", "4", "5", "6", "7", "8")
+
+
+def digits_sig(choice) -> Optional[int]:
+    """
+    The Digits control's value as a `sig` override -- None means 'as today'.
+
+    Total, and never raises: it is read live off a Tk variable on the path
+    that repaints every run page, and a hand-edited session file can put any
+    string in it.  Anything unrecognised reads as `default`, which is the one
+    value that cannot be wrong.
+    """
+    try:
+        n = int(str(choice))
+    except (TypeError, ValueError):
+        return None
+    return n if 3 <= n <= 8 else None
+
+
 # ============================================================================
 # What a line written to the Results pane MEANS
 # ============================================================================

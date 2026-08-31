@@ -320,6 +320,46 @@ class TestSurvivingAHandEdit(unittest.TestCase):
         self.assertEqual(sess.controls["rlc_freq_ghz"], "2.5")
         self.assertTrue(any("fit_model" in w for w in sess.warnings))
 
+    def test_the_digits_control_round_trips_and_is_validated(self):
+        """
+        `sig_digits` is saved for the reason `units_mode` and `results_view`
+        are: it is what the reader had set up, and a session that came back
+        showing three digits to somebody who had chosen six is a silent
+        change to the numbers they are reading.
+
+        Its combobox is state="readonly" like the other two, so a value from
+        outside the list costs its own field and never the file.  A file
+        written before the control existed carries no key at all, which is
+        the `default` case and must keep the current setting rather than
+        clearing it.
+
+        Mutation: leave "sig_digits" out of `_CONTROL_KEYS` (the value is
+        dropped on load, silently) or out of `_CONTROL_CHOICES` ("17" is
+        accepted and lands in a readonly combobox with no way back).
+        """
+        data = {"format": pkg_rlc_gui.SESSION_FORMAT,
+                "version": pkg_rlc_gui.SESSION_VERSION,
+                "controls": {"sig_digits": "6"}}
+        self.assertEqual(session_from_dict(data).controls["sig_digits"], "6")
+
+        data["controls"] = {"sig_digits": "default"}
+        self.assertEqual(session_from_dict(data).controls["sig_digits"],
+                         "default")
+
+        data["controls"] = {"sig_digits": "17", "units_mode": "smart"}
+        sess = session_from_dict(data)
+        self.assertNotIn("sig_digits", sess.controls)
+        self.assertEqual(sess.controls["units_mode"], "smart")
+        self.assertTrue(any("sig_digits" in w for w in sess.warnings),
+                        sess.warnings)
+
+        # A pre-control session file: no key, no note, nothing cleared.
+        data["controls"] = {"units_mode": "smart"}
+        sess = session_from_dict(data)
+        self.assertNotIn("sig_digits", sess.controls)
+        self.assertEqual(sess.warnings, [])
+
+
 
 class TestPathResolution(unittest.TestCase):
     def setUp(self):

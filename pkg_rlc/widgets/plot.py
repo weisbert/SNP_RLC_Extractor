@@ -369,7 +369,17 @@ def tick_label_sig(values: Sequence[float], divisor: float) -> Optional[int]:
     return None
 
 
-def _readout_value(v: float, plot_type: str) -> str:
+#: Significant digits in a readout cell when the Digits control says
+#: `default` -- `format_si`'s own default, which is what this box has always
+#: printed.  The control's other values arrive as `sig` and override it; the
+#: ceiling of 8 is enforced where the vocabulary lives
+#: (`pkg_rlc.model.trace.digits_sig`), because a readout box is measured
+#: against its own subplot and every digit widens it.
+READOUT_SIG = 3
+
+
+def _readout_value(v: float, plot_type: str,
+                   sig: Optional[int] = None) -> str:
     """
     One cell of the cursor readout, in engineering units.
 
@@ -386,11 +396,12 @@ def _readout_value(v: float, plot_type: str) -> str:
         return "--"
     unit = PLOT_TYPE_UNITS.get(plot_type, "")
     if not unit:
-        return f"{v:.3g}"
-    return format_si(v, unit)
+        return f"{v:.{sig or READOUT_SIG}g}"
+    return format_si(v, unit, sig or READOUT_SIG)
 
 
-def _format_value(v: float, plot_type: str) -> str:
+def _format_value(v: float, plot_type: str,
+                  sig: Optional[int] = None) -> str:
     """
     Standalone value label, used by the 'M' key annotation, which names no
     curve and so has to carry the quantity itself.
@@ -398,10 +409,10 @@ def _format_value(v: float, plot_type: str) -> str:
     if not np.isfinite(v):
         return "nan"
     if plot_type == "Q":
-        return f"Q={v:.3g}"
+        return f"Q={v:.{sig or READOUT_SIG}g}"
     if plot_type == "k":
-        return f"k={v:.3g}"
-    return _readout_value(v, plot_type)
+        return f"k={v:.{sig or READOUT_SIG}g}"
+    return _readout_value(v, plot_type, sig)
 
 
 def _fit_names(names: list[str], budget: int) -> list[str]:
@@ -458,6 +469,13 @@ class _PlotView:
         self.y_log = False
         self.show_marker = True
         self.show_readout = True
+        # Significant digits in the readout and the M annotation.  None is the
+        # Digits control's `default` and means READOUT_SIG, which is what this
+        # box has always printed.  It is set from the Results pane's control
+        # (ResultsPanel._on_digits_changed), because "how precisely is a value
+        # printed" is one question, and a reader who answered it in one place
+        # is entitled to see it answered in the other.
+        self.sig_digits: Optional[int] = None
         self.marker_freq_hz: float = 1e9
 
         self.axes: list = []
@@ -696,7 +714,8 @@ class _PlotView:
                     continue
                 y = trace_y_values(tr.freqs, tr.Z, plot_type, tr.aux)
                 i = int(np.argmin(np.abs(tr.freqs - f_hz)))
-                col.append(_readout_value(float(y[i]), plot_type))
+                col.append(_readout_value(float(y[i]), plot_type,
+                                          self.sig_digits))
             cols.append(col)
 
         shown = min(len(self.traces), READOUT_MAX_ROWS)
@@ -1016,7 +1035,7 @@ class _PlotView:
         m_artist, = ax.plot([xd], [yd], marker="s", markersize=8,
                             color=color, markerfacecolor="none", markeredgewidth=1.5)
         an = ax.annotate(
-            f"{xd/1e9:.4g} GHz\n{_format_value(yd, t)}",
+            f"{xd/1e9:.4g} GHz\n{_format_value(yd, t, self.sig_digits)}",
             xy=(xd, yd), xytext=(20, 20), textcoords="offset points",
             fontsize=8, color=color,
             arrowprops=dict(arrowstyle="->", color=color, alpha=0.6),
@@ -1153,6 +1172,20 @@ class PlotPanel(tk.Frame):
 
     def set_marker_freq(self, freq_hz: float) -> None:
         self.view.set_marker_freq(freq_hz)
+
+    def set_sig_digits(self, sig: Optional[int]) -> None:
+        """How many significant digits the cursor readout prints.
+
+        REDRAWS, because the readout is built during the draw: without it the
+        box would keep the previous digits until the next cursor move, which
+        is the "one screen, two formattings, and then a silent flip" the
+        results pane's units switch is written against.  Returns early on no
+        change, so the Results pane may call it whenever it likes.
+        """
+        if sig == self.view.sig_digits:
+            return
+        self.view.sig_digits = sig
+        self.view.redraw()
 
     def view_state(self) -> dict:
         """
@@ -1296,6 +1329,7 @@ class PlotPanel(tk.Frame):
             y_log=self.view.y_log,
             show_marker=self.view.show_marker,
             show_readout=self.view.show_readout,
+            sig_digits=self.view.sig_digits,
         )
 
 
@@ -1306,7 +1340,8 @@ class PlotPanel(tk.Frame):
 class FullscreenPlotWindow(tk.Toplevel):
     def __init__(self, master, plot_type: str, traces: list[Trace],
                  marker_freq_hz: float, x_log: bool, y_log: bool,
-                 show_marker: bool, show_readout: bool = True):
+                 show_marker: bool, show_readout: bool = True,
+                 sig_digits: Optional[int] = None):
         super().__init__(master)
         self.title(f"Fullscreen: {plot_type}")
         self.geometry("1200x700")
@@ -1325,6 +1360,9 @@ class FullscreenPlotWindow(tk.Toplevel):
         self.view.y_log = y_log
         self.view.show_marker = show_marker
         self.view.show_readout = show_readout
+        # The fullscreen window is the SAME reading in a bigger box, so it
+        # inherits the digits with the rest of the view state.
+        self.view.sig_digits = sig_digits
         self.view.marker_freq_hz = marker_freq_hz
         self.view.set_traces(traces)
         widget = self.canvas.get_tk_widget()

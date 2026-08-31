@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from pkg_rlc.physics.core import ConnectionRow, MeasPortRow
-from pkg_rlc.model.trace import RESULTS_VIEWS, TraceConfig
+from pkg_rlc.model.trace import RESULTS_DIGITS, RESULTS_VIEWS, TraceConfig
 
 
 SESSION_FORMAT = "pkg_rlc_extractor_session"
@@ -125,7 +125,7 @@ _TRACE_BOOL_FIELDS = frozenset({"plot_self", "plot_mutual", "enabled",
 # combobox is state="readonly", so a value from outside its list would sit
 # there unselectable with no way back except retyping it into the file.
 _CONTROL_KEYS = ("rlc_freq_ghz", "fit_fmin_ghz", "fit_fmax_ghz",
-                 "fit_model", "units_mode", "results_view")
+                 "fit_model", "units_mode", "results_view", "sig_digits")
 _CONTROL_CHOICES = {
     "fit_model": ("none", "auto", "inductor", "capacitor"),
     "units_mode": ("smart", "aligned"),
@@ -135,6 +135,14 @@ _CONTROL_CHOICES = {
     # moved away from would be a silent change to what they are reading.  A
     # value outside this list is dropped with a note, like every other control.
     "results_view": RESULTS_VIEWS,
+    # How many significant digits the Results pane and the cursor readout
+    # print.  Saved for the reason the two above are: it is what the reader
+    # had set up, it costs one string, and a session that came back showing
+    # three digits to somebody who had chosen six would be a silent change to
+    # the numbers they are reading.  `default` is in the tuple and is the
+    # value a file written before this control existed does NOT carry -- an
+    # absent key keeps the current setting, which at startup is `default`.
+    "sig_digits": RESULTS_DIGITS,
 }
 
 

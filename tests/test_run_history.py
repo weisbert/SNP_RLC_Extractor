@@ -1010,14 +1010,19 @@ class TestRunHistoryIsNotSaved(_AppCase):
         It is pinned as an exact set anyway, because that is what makes a run
         field added here impossible to miss.  `results_view` joined it with the
         three results views: it is a RENDERING choice, exactly like
-        `units_mode` beside it, and neither is a measurement.  Anything else
-        appearing in this set is what this test is for.
+        `units_mode` beside it, and neither is a measurement.  `sig_digits`
+        joined it with the Digits control on 2026-08-31, on the same argument
+        -- how many significant digits a value is printed to is a rendering
+        choice, it is read live off the header exactly as the other two are,
+        and it is not frozen onto a RunSnapshot.  Anything else appearing in
+        this set is what this test is for, and updating this line is the
+        deliberate act it is meant to be.
         """
         data = self.app._session_dict(None)
         self.assertEqual(
             set(data["controls"]),
             {"rlc_freq_ghz", "fit_fmin_ghz", "fit_fmax_ghz", "fit_model",
-             "units_mode", "results_view"})
+             "units_mode", "results_view", "sig_digits"})
         for key in set(data["controls"]):
             self.assertNotIn("run", key)
 
