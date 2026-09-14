@@ -87,9 +87,17 @@ def _result(**kw) -> tmg.TraceModelResult:
     m = tmod.extract_pi(_pi_Z(344, 1.69e-9, 33.2e-15, 90.0,
                               33.2e-15, 90.0, 1e8), 1e8, "in", "out",
                         kw.pop("differential", False))
+    freqs = np.array([1e8, 5e8, 1e9])
+    Z2 = np.stack([_pi_Z(344, 1.69e-9, 33.2e-15, 90.0, 33.2e-15, 90.0, f)
+                   for f in freqs])
     return tmg.TraceModelResult(
         model=m, reference=m, mode_conversion=kw.pop("mc", None),
-        port_note="", freq_snap=None, trace_id=1, trace_label="t",
+        port_note="", freq_snap=None,
+        freqs=freqs, Z2=Z2,
+        bw_table=tuple(tmod.bandwidth_table(freqs, Z2, 1e8)),
+        corners=tuple(tmod.branch_corners(m)),
+        model_band=tmod.model_band_hz(freqs, Z2),
+        trace_id=1, trace_label="t",
         file_label="f.s3p", run_number=kw.pop("run_number", 3),
         signature=kw.pop("signature", ("sig",)))
 
@@ -390,6 +398,87 @@ class TestTheDifferentialWindow(_WindowCase):
         body = self._open()._text.get("1.0", tk.END)
         self.assertIn("mode conversion", body)
         self.assertIn("balanced", body)
+
+
+class TestTheBandwidthBlock(_WindowCase):
+    """
+    The -3 dB bandwidth is trace PLUS source PLUS load, so both terminations
+    have to be ON the window and editable without leaving it.
+    """
+
+    def test_the_block_reaches_the_text_panel(self):
+        body = self._open()._text.get("1.0", tk.END)
+        self.assertIn("bandwidth", body)
+        self.assertIn("C_load", body)
+        self.assertIn("model band", body)
+        self.assertIn("corners", body)
+
+    def test_the_response_curve_is_drawn_on_its_own_canvas(self):
+        win = self._open()
+        items = win._resp.find_all()
+        self.assertGreater(len(items), 8)
+        kinds = {win._resp.type(i) for i in items}
+        self.assertIn("line", kinds)
+        self.assertIn("text", kinds)
+
+    def test_the_curve_carries_one_label_per_load(self):
+        win = self._open()
+        texts = {win._resp.itemcget(i, "text") for i in win._resp.find_all()
+                 if win._resp.type(i) == "text"}
+        self.assertIn("open", texts)
+        self.assertIn("20 fF", texts)
+
+    def test_editing_the_terminations_recomputes_without_a_resolve(self):
+        """
+        No Calculate, no solve -- the sweep is already on the result and the
+        two fields only change what is asked OF it.
+        """
+        win = self._open()
+        before = win._text.get("1.0", tk.END)
+        win._src_var.set("200")
+        win._load_var.set("35")
+        win._on_terminations_changed()
+        win.update()
+        after = win._text.get("1.0", tk.END)
+        self.assertNotEqual(before, after)
+        self.assertIn("35 fF", after)
+        self.assertIn("source 200", after.replace("Ω", ""))
+
+    def test_a_typed_load_joins_the_swept_defaults_without_duplicating(self):
+        win = self._open()
+        win._load_var.set("50")          # already one of the defaults
+        win._on_terminations_changed()
+        win.update()
+        body = win._text.get("1.0", tk.END)
+        self.assertEqual(body.count("50 fF"), 1)
+
+    def test_a_nonsense_entry_falls_back_instead_of_blanking_the_window(self):
+        """
+        These are what-if knobs. A window that goes empty mid-keystroke is
+        worse than one that shows the default.
+        """
+        win = self._open()
+        win._src_var.set("not a number")
+        win._load_var.set("")
+        win._on_terminations_changed()
+        win.update()
+        self.assertIn("bandwidth", win._text.get("1.0", tk.END))
+        self.assertGreater(len(win._resp.find_all()), 8)
+
+    def test_a_negative_load_is_refused_by_falling_back(self):
+        win = self._open()
+        win._load_var.set("-40")
+        win._on_terminations_changed()
+        win.update()
+        self.assertIn("bandwidth", win._text.get("1.0", tk.END))
+
+    def test_resizing_redraws_the_curve(self):
+        win = self._open()
+        win.geometry("1100x820")
+        win.update_idletasks()
+        win.update()
+        win._draw_response()
+        self.assertGreater(len(win._resp.find_all()), 8)
 
 
 @unittest.skipUnless(TK_OK, "no Tk display available")

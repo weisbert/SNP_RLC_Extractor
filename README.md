@@ -977,6 +977,48 @@ bottom of the sweep and the movement printed per branch: inside 10 % the values 
 anywhere in the band, past it the structure is not one lumped pi and the values are good at that
 frequency only. Both points are already in the sweep, so it costs nothing.
 
+### Bandwidth: three numbers, kept apart
+
+The window also answers "how fast can this trace go?" — but **"the bandwidth of a trace" names
+three unrelated things, and only two of them are properties of the trace**:
+
+```
+  bandwidth      -3 dB of |V_load / V_src|, referenced to 100 MHz   (source 1 Ω)
+
+                     C_load             f_3dB     vs marker (76.8 MHz)
+                       open          15.3 GHz          199 x
+                      20 fF          10.1 GHz          131 x
+                      50 fF           6.3 GHz           82 x
+                     200 fF          2.09 GHz           27 x
+
+                 at the marker: -0.0006 dB   the trace is not the limit here
+                 model band:    the pi holds to 5 GHz -- the top of the sweep, not a limit
+                 corners:       series RL 32.4 GHz  ·  shunt_in RC 53.3 GHz  ·  shunt_out RC 53.3 GHz
+```
+
+**The −3 dB figure is not a property of the trace.** It belongs to trace + source + load, and on
+the line above the *load alone* moves it by **7.3×** (15.31 GHz open against 2.09 GHz into
+200 fF) with another 1.9× from a 200 Ω source. So the report sweeps the load instead of printing
+one number, and the two fields on the window (`source` Ω, `extra load` fF) pin the row you care
+about. A curve of `|H(f)|` is drawn under the schematic, from the same numbers.
+
+The `vs marker` column is what turns the table into an answer: *"6.3 GHz"* is a fact, *"82× your
+working frequency"* is a verdict.
+
+The two trace-only numbers sit underneath because they **explain** the first one: the **model
+band** says how high the extracted pi is still one lumped pi (assumption-free), and the
+**corners** say where each branch's reactance overtakes its resistance.
+
+Three things it will not do:
+
+- **It never extrapolates past the file.** No −3 dB crossing inside the sweep prints
+  `> 5 GHz` with the droop actually reached, not a fitted guess.
+- **It references the bottom of the sweep, not DC**, and says so — a file starting at 0.1 GHz
+  cannot tell you what DC does.
+- **A response that peaks has no −3 dB bandwidth**, and the column says `peaks +13.6 dB at
+  8.2 GHz` instead of a number. A series L into a load C rises before it rolls off, and a
+  crossing measured after that is taken from a baseline the curve left long ago.
+
 ### Differential traces need no extra flag
 
 Declare both ends with a `/` and the same command gives you the differential pi — the probe model
@@ -989,6 +1031,9 @@ python pkg_rlc_extractor.py --cli pair.s5p --mode coupling \
 ```
 
 A 4-port file with no separate ground pin just leaves `--gnd` out. Both shapes work.
+
+From the command line the terminations are `--trace-model-src OHM` and `--trace-model-load
+FF[,FF]` (added to the swept defaults).
 
 Two things the differential report does that the single-ended one cannot:
 

@@ -538,6 +538,217 @@ class TestCanvasGeometry(unittest.TestCase):
                                         "node", "gnd", "note"})
 
 
+def pi_sweep(Rs, Ls, R1, C1, R2, C2, freqs):
+    """(nfreqs, 2, 2) open-circuit Z of a pi built from known constants."""
+    out = []
+    for f in freqs:
+        w = 2 * math.pi * f
+        ys = 1.0 / complex(Rs, w * Ls)
+        y1 = 1.0 / complex(R1, -1.0 / (w * C1))
+        y2 = 1.0 / complex(R2, -1.0 / (w * C2))
+        out.append(np.linalg.inv(np.array([[ys + y1, -ys], [-ys, ys + y2]],
+                                          dtype=complex)))
+    return np.stack(out)
+
+
+class TestTransferFunction(unittest.TestCase):
+    """
+    H is checked against a CLOSED FORM, not against itself.
+
+    Drive a pure series R into a shunt C from a near-ideal source with the far
+    end open and the answer is 1 / (1 + jwRC) -- textbook, and the only way to
+    know the Z-parameter expression was transcribed right.
+    """
+
+    def setUp(self):
+        self.Rs, self.C2 = 1000.0, 1e-12
+        self.freqs = np.logspace(6, 10, 4001)
+        self.Zm = pi_sweep(self.Rs, 0.0, 1e-6, 1e-18, 1e-6, self.C2,
+                           self.freqs)
+
+    def test_it_matches_the_textbook_single_pole(self):
+        H = tm.transfer_function(self.Zm, self.freqs, 1e-6, 0.0)
+        w = 2 * math.pi * self.freqs
+        want = 1.0 / (1.0 + 1j * w * self.Rs * self.C2)
+        ratio = np.abs(H) / np.abs(want)
+        self.assertLess(float(np.max(np.abs(ratio - 1.0))), 2e-3)
+
+    def test_the_pole_lands_where_the_formula_says(self):
+        H = tm.transfer_function(self.Zm, self.freqs, 1e-6, 0.0)
+        bw = tm.bandwidth_3db(self.freqs, H, 1e8, 1e-6, 0.0)
+        self.assertTrue(bw.crossed)
+        want = 1.0 / (2 * math.pi * self.Rs * self.C2)
+        self.assertAlmostEqual(bw.f_3db_hz / want, 1.0, places=2)
+
+    def test_a_load_capacitance_moves_the_pole_by_the_right_factor(self):
+        """C_load adds to the far-end shunt, so the pole scales with 1/(C+CL)."""
+        cl = 3e-12
+        H = tm.transfer_function(self.Zm, self.freqs, 1e-6, cl)
+        bw = tm.bandwidth_3db(self.freqs, H, 1e8, 1e-6, cl)
+        want = 1.0 / (2 * math.pi * self.Rs * (self.C2 + cl))
+        self.assertAlmostEqual(bw.f_3db_hz / want, 1.0, places=2)
+
+    def test_a_wrong_shape_is_refused_by_name(self):
+        with self.assertRaises(ValueError) as cm:
+            tm.transfer_function(np.eye(2, dtype=complex)[None, :, :1],
+                                 self.freqs[:1])
+        self.assertIn("(nfreqs, 2, 2)", str(cm.exception))
+
+    def test_a_length_mismatch_is_refused_by_name(self):
+        with self.assertRaises(ValueError):
+            tm.transfer_function(self.Zm, self.freqs[:-1])
+
+
+class TestBandwidthHonesty(unittest.TestCase):
+    """
+    The three things the report must never invent.
+
+    Every one of these was a real wrong answer on a real fixture before it was
+    a test.
+    """
+
+    def test_a_band_that_never_drops_3_dB_is_NOT_extrapolated(self):
+        freqs = np.logspace(6, 8, 501)          # stops far below the pole
+        Zm = pi_sweep(1000.0, 0.0, 1e-6, 1e-18, 1e-6, 1e-14, freqs)
+        bw = tm.bandwidth_3db(freqs, tm.transfer_function(Zm, freqs, 1e-6),
+                              1e7)
+        self.assertFalse(bw.crossed)
+        self.assertTrue(math.isnan(bw.f_3db_hz))
+        self.assertGreater(bw.droop_top_db, -3.0)
+
+    def test_LC_peaking_is_detected_and_carries_its_frequency(self):
+        """
+        A series L into a load C PEAKS before it rolls off -- measured at
+        +13.6 dB on a real fixture. A -3 dB number quoted across that is taken
+        from a baseline the curve left long ago.
+        """
+        freqs = np.logspace(8, 11, 2001)
+        Zm = pi_sweep(2.0, 5e-9, 1e-6, 1e-18, 1e-6, 1e-15, freqs)
+        bw = tm.bandwidth_3db(freqs,
+                              tm.transfer_function(Zm, freqs, 1.0, 200e-15),
+                              1e9, 1.0, 200e-15)
+        self.assertGreater(bw.peak_db, 1.0)
+        self.assertTrue(math.isfinite(bw.peak_hz))
+        lines = tmr.bandwidth_lines([bw], [], (freqs[-1], "sweep"),
+                                    float(freqs[-1]))
+        self.assertTrue(any("LC resonance" in x for x in lines))
+        self.assertFalse(any("vs marker" in x and "GHz" in x
+                             for x in lines[3:4]))
+
+    def test_the_reference_is_the_bottom_of_the_sweep_and_is_named(self):
+        freqs = np.logspace(8, 10, 501)
+        Zm = pi_sweep(1000.0, 0.0, 1e-6, 1e-18, 1e-6, 1e-13, freqs)
+        bw = tm.bandwidth_3db(freqs, tm.transfer_function(Zm, freqs, 1e-6),
+                              1e9)
+        self.assertEqual(bw.reference_hz, float(freqs[0]))
+        lines = tmr.bandwidth_lines([bw], [], (freqs[-1], "sweep"),
+                                    float(freqs[-1]))
+        self.assertTrue(any("referenced to" in x for x in lines))
+
+    def test_bandwidth_table_gives_one_row_per_load(self):
+        freqs = np.logspace(8, 10, 301)
+        Zm = pi_sweep(344.0, 1.69e-9, 90.0, 33.2e-15, 90.0, 33.2e-15, freqs)
+        t = tm.bandwidth_table(freqs, Zm, 76.8e6)
+        self.assertEqual(len(t), len(tm.DEFAULT_LOADS_F))
+        self.assertEqual([b.c_load_farad for b in t],
+                         list(tm.DEFAULT_LOADS_F))
+
+    def test_every_printed_line_fits_the_pane(self):
+        """144 columns, the budget tests/test_results_views.py enforces."""
+        freqs = np.logspace(8, 10, 301)
+        Zm = pi_sweep(344.0, 1.69e-9, 90.0, 33.2e-15, 90.0, 33.2e-15, freqs)
+        m = tm.extract_pi_at(freqs, Zm, 1e9)
+        lines = tmr.bandwidth_lines(tm.bandwidth_table(freqs, Zm, 1e9),
+                                    tm.branch_corners(m),
+                                    tm.model_band_hz(freqs, Zm),
+                                    float(freqs[-1]))
+        for ln in lines:
+            self.assertLessEqual(len(ln), 144, repr(ln))
+
+
+class TestBranchCorners(unittest.TestCase):
+
+    def test_the_corners_are_the_textbook_ones(self):
+        Rs, Ls, Rp, Cp = 344.0, 1.69e-9, 90.0, 33.2e-15
+        Z = pi_Z(Rs, Ls, Cp, Rp, Cp, Rp, 1e9)
+        got = {c.name: c for c in tm.branch_corners(tm.extract_pi(Z, 1e9))}
+        self.assertAlmostEqual(got["series"].f_hz / (Rs / (2 * math.pi * Ls)),
+                               1.0, places=3)
+        self.assertEqual(got["series"].kind, "RL")
+        self.assertAlmostEqual(
+            got["shunt_in"].f_hz / (1.0 / (2 * math.pi * Rp * Cp)), 1.0,
+            places=3)
+        self.assertEqual(got["shunt_in"].kind, "RC")
+
+    def test_a_noise_level_resistance_yields_NO_corner(self):
+        """
+        On a lossless fixture the shunt reads R = 3.15 mOhm of round-off and
+        1/(2*pi*R*C) came out as "5.05e+04 THz"; where the round-off was
+        negative the series corner came out at "-57 mHz". Both look like
+        measurements, which is worse than no number.
+        """
+        Z = pi_Z(344.0, 1.69e-9, 33.2e-15, 1e-9, 33.2e-15, 1e-9, 1e9)
+        got = {c.name: c for c in tm.branch_corners(tm.extract_pi(Z, 1e9))}
+        self.assertTrue(math.isnan(got["shunt_in"].f_hz))
+        self.assertEqual(got["shunt_in"].kind, "--")
+
+    def test_a_negative_resistance_yields_NO_corner(self):
+        b = tm.Branch("x", complex(-2.87e-9, 50.0), -2.87e-9, 1e-9,
+                      -1.0, -1.7e10)
+        m = tm.PiModel(1e9, 1e9, "a", "b", False, b, b, b, 0.0, [])
+        for c in tm.branch_corners(m):
+            self.assertTrue(math.isnan(c.f_hz))
+
+
+class TestModelBand(unittest.TestCase):
+    """
+    The assumption-free member of the three. It has been wrong twice.
+    """
+
+    FREQS = np.logspace(8, 10.7, 900)
+
+    def test_a_perfect_lumped_pi_holds_over_the_WHOLE_sweep(self):
+        """
+        The regression for the definition bug.
+
+        An earlier version keyed on `Branch.reads_as` and answered 0.32 GHz
+        for a network that is a constant R, L and C by construction: a series
+        R + jwL necessarily crosses the |Q| = 0.01 display threshold as
+        frequency rises, and that is what a constant R and L DO. A second
+        version compared R relatively and answered 1 MHz on a LOSSLESS
+        fixture, where R is round-off.
+        """
+        for args in ((344.0, 1.69e-9, 90.0, 33.2e-15),
+                     (848.0, 9.72e-9, 310.0, 44.4e-15),
+                     (2.0, 5e-9, 1e-9, 1e-15)):          # lossless shunt
+            with self.subTest(args=args):
+                Rs, Ls, Rp, Cp = args
+                Zm = pi_sweep(Rs, Ls, Rp, Cp, Rp, Cp, self.FREQS)
+                f, why = tm.model_band_hz(self.FREQS, Zm)
+                self.assertEqual(why, "sweep")
+                self.assertAlmostEqual(f / float(self.FREQS[-1]), 1.0,
+                                       places=6)
+
+    def test_a_drifting_element_ends_the_band(self):
+        Zm = np.stack([
+            pi_sweep(344.0, 1.69e-9 * (1 + 3 * (f / 5e9) ** 2),
+                     90.0, 33.2e-15, 90.0, 33.2e-15, [f])[0]
+            for f in self.FREQS])
+        f, why = tm.model_band_hz(self.FREQS, Zm)
+        self.assertEqual(why, "drift")
+        self.assertLess(f, float(self.FREQS[-1]))
+
+    def test_it_is_the_generalisation_of_the_two_point_check(self):
+        """Where lumped_drift says 'within tol', model_band must not stop."""
+        Zm = pi_sweep(344.0, 1.69e-9, 90.0, 33.2e-15, 90.0, 33.2e-15,
+                      self.FREQS)
+        a = tm.extract_pi_at(self.FREQS, Zm, float(self.FREQS[-1]))
+        b = tm.extract_pi_at(self.FREQS, Zm, float(self.FREQS[0]))
+        self.assertTrue(all(abs(v) <= tm.LUMPED_DRIFT_WARN
+                            for v in tm.lumped_drift(a, b).values()))
+        self.assertEqual(tm.model_band_hz(self.FREQS, Zm)[1], "sweep")
+
+
 class TestCliEndToEnd(unittest.TestCase):
     """
     Against fixtures whose element values are written in their own headers.

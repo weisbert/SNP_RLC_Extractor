@@ -597,6 +597,20 @@ CASES: list[CliCase] = [
     _c("trace_model_unknown_name", "a name that is not a measurement port",
        "--cli", PI, "--mode", "coupling", "--mport", "in = 1",
        "--mport", "out = 2", "--freq", "1.0", "--trace-model", "in,ghost"),
+    _c("trace_model_terminations",
+       "the -3 dB block is trace PLUS source PLUS load, so both are named",
+       "--cli", PI, "--mode", "coupling", "--mport", "in = 1",
+       "--mport", "out = 2", "--freq", "1.0", "--trace-model", "in,out",
+       "--trace-model-src", "200", "--trace-model-load", "35,120"),
+    _c("trace_model_bad_load", "a load that is not a number in fF",
+       "--cli", PI, "--mode", "coupling", "--mport", "in = 1",
+       "--mport", "out = 2", "--freq", "1.0", "--trace-model", "in,out",
+       "--trace-model-load", "big"),
+    _c("trace_model_dependents_without_parent",
+       "--trace-model-* without --trace-model",
+       "--cli", PI, "--mode", "coupling", "--mport", "in = 1",
+       "--mport", "out = 2", "--freq", "1.0", "--trace-model-src", "50"),
+
 
     # ------------------------------------------------------------- --compose
     _c("compose_no_cli", "--compose without --cli would drop every extra file",

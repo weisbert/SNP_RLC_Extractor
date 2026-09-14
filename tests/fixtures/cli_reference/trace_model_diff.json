@@ -82,6 +82,17 @@
   "  mode conversion  max|Ydc| / max|Ydd| = 3.327e-13",
   "                   the pair is balanced at this frequency, so the differential pi above is the whole story.",
   "",
+  "  bandwidth      -3 dB of |V_load / V_src|, referenced to 1 MHz   (source 1 Ω)",
+  "",
+  "                     C_load             f_3dB     vs marker (1 GHz)",
+  "                       open          > 10 GHz     top of sweep is +0.14 dB",
+  "                      20 fF             peaks     +9.1 dB at 10 GHz -- LC resonance, no flat passband",
+  "                      50 fF             peaks     +50.3 dB at 7.93 GHz -- LC resonance, no flat passband",
+  "                     200 fF             peaks     +45.9 dB at 3.98 GHz -- LC resonance, no flat passband",
+  "",
+  "                 at the marker: +0.0014 dB   the trace is not the limit here",
+  "                 model band:    the pi holds to 10 GHz -- the top of the sweep -- the FILE stops there, not the model",
+  "                 corners:       series --  ·  shunt_in --  ·  shunt_out --",
   ""
  ],
  "stderr": [

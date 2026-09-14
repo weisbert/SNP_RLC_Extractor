@@ -47,15 +47,20 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+import numpy as np
+
 from pkg_rlc.physics.core import format_si
 from pkg_rlc.physics.tracemodel import (
-    LUMPED_DRIFT_WARN, Branch, PiModel, lumped_drift,
+    BW_DROP_DB, Bandwidth, BranchCorner, LUMPED_DRIFT_WARN, Branch, PiModel,
+    lumped_drift,
 )
 from pkg_rlc.present.report import marker_freq_text
 
 __all__ = [
     "pi_report_lines", "pi_schematic_lines", "branch_value_lines",
+    "bandwidth_lines",
     "CanvasItem", "pi_canvas_items", "CANVAS_W", "CANVAS_H",
+    "response_canvas_items", "RESPONSE_DB_FLOOR",
     "MODE_CONVERSION_WARN",
 ]
 
@@ -66,6 +71,12 @@ __all__ = [
 # the threshold sits an order of magnitude clear of numerical zero and well
 # below a genuinely broken pair.
 MODE_CONVERSION_WARN = 0.05
+
+#: A response that rises this far above its reference is PEAKING, not flat.
+#: 1 dB is comfortably above the +0.03..+0.14 dB a clean lossless fixture
+#: shows from round-off, and well below the +13.6 dB a real series-L into a
+#: 200 fF load produced.
+PEAK_WARN_DB = 1.0
 
 # 'Ω' the way every other printed surface spells it -- `report.py`'s
 # `_TABLE_BASE_UNITS`, its three `_value_formatter` call sites and the CLI's
@@ -419,4 +430,216 @@ def pi_canvas_items(model: PiModel, width: int = CANVAS_W,
                                     role="gnd"))
         items.append(CanvasItem("text", (cx, y_bot + height * 0.155),
                                 text="reference", role="label"))
+    return items
+
+
+# ============================================================================
+# Bandwidth -- three numbers, kept apart on purpose
+# ============================================================================
+
+def bandwidth_lines(table: "list[Bandwidth]",
+                    corners: "list[BranchCorner]",
+                    model_band: "tuple[float, str]",
+                    sweep_top_hz: float) -> list[str]:
+    """
+    The bandwidth block: the sensitivity table, then what explains it.
+
+    The -3 dB column is a SWEEP over load capacitance rather than one number,
+    because the number is not a property of the trace -- measured on a real
+    line, the load alone moves it 7.3x.  The `vs marker` column is what turns
+    the table into a verdict: "6.3 GHz" is a fact, "82x your marker" is an
+    answer.
+
+    The two trace-only numbers sit UNDER it rather than beside it: the model
+    band and the branch corners explain where the -3 dB figure came from, and
+    printing them in the same column as it would invite reading all three as
+    one quantity.
+    """
+    if not table:
+        return []
+    ref = table[0]
+    out = [
+        f"  bandwidth      {BW_DROP_DB:.0f} dB of |V_load / V_src|, referenced "
+        f"to {format_si(ref.reference_hz, 'Hz')}"
+        f"   (source {format_si(ref.z_src_ohm, OHM)})",
+        "",
+        f"                 {'C_load':>10}  {'f_3dB':>16}     vs marker "
+        f"({format_si(ref.marker_hz, 'Hz')})",
+    ]
+    for bw in table:
+        cl = format_si(bw.c_load_farad, "F") if bw.c_load_farad else "open"
+        if not bw.passband_ok:
+            out.append(f"                 {cl:>10}  {'--':>16}     no flat "
+                       f"passband at the bottom of the sweep")
+            continue
+        # A response that PEAKED has no -3 dB bandwidth: the crossing below
+        # is measured from a baseline the curve left long ago, and printing
+        # it would be one more plausible wrong number -- 6.17 GHz for a
+        # response already 46 dB up was the measured case.  The peak is the
+        # answer here, so the peak is what goes in the column.
+        if bw.peak_db > PEAK_WARN_DB and math.isfinite(bw.peak_hz):
+            out.append(f"                 {cl:>10}  {'peaks':>16}     "
+                       f"{bw.peak_db:+.1f} dB at "
+                       f"{format_si(bw.peak_hz, 'Hz')} -- LC resonance, no "
+                       f"flat passband")
+        elif bw.crossed:
+            ratio = bw.ratio_to_marker
+            rtxt = f"{ratio:,.0f} x" if math.isfinite(ratio) else ""
+            out.append(f"                 {cl:>10}  "
+                       f"{format_si(bw.f_3db_hz, 'Hz'):>16}     {rtxt:>10}")
+        else:
+            # NOTHING is extrapolated past the file.  A -3 dB point the sweep
+            # never reaches is not a measurement, and printing one would be
+            # inventing the part of the curve the file does not contain.
+            out.append(f"                 {cl:>10}  "
+                       f"{'> ' + format_si(sweep_top_hz, 'Hz'):>16}     "
+                       f"top of sweep is {bw.droop_top_db:+.2f} dB")
+    out.append("")
+
+    mk = ref.droop_marker_db
+    if math.isfinite(mk):
+        verdict = ("the trace is not the limit here"
+                   if abs(mk) < 0.5 else
+                   "the trace is ALREADY costing you signal here")
+        out.append(f"                 at the marker: {mk:+.4f} dB   {verdict}")
+
+    band_hz, why = model_band
+    reason = {
+        "sweep": "the top of the sweep -- the FILE stops there, not the model",
+        "drift": f"an element moved more than {LUMPED_DRIFT_WARN:.0%}",
+        "resonance": "a branch's reactance changed sign (it resonated)",
+    }.get(why, why)
+    out.append(f"                 model band:    the pi holds to "
+               f"{format_si(band_hz, 'Hz')} -- {reason}")
+
+    if corners:
+        parts = []
+        for c in corners:
+            if math.isfinite(c.f_hz):
+                parts.append(f"{c.name} {c.kind} {format_si(c.f_hz, 'Hz')}")
+            else:
+                # R is round-off on this branch, so there is no corner to
+                # quote.  '--' once, not '-- --'.
+                parts.append(f"{c.name} --")
+        out.append("                 corners:       " + "  ·  ".join(parts))
+    return out
+
+
+# ============================================================================
+# The |H(f)| curve, as GEOMETRY -- no Tk, no matplotlib
+# ============================================================================
+#
+# WHY IT IS NOT A `PLOT_TYPES` ENTRY.  It was going to be one.  `trace_y_values`
+# is handed `(freqs, Z, plot_type, aux)` and `Z` there is the ONE-DIMENSIONAL
+# trace impedance -- the transfer function needs the 2x2 `Zmat` AND a declared
+# source and load.  The existing escape hatch for that is `aux`, the mechanism
+# `k` uses; but an aux series is computed once at Calculate, so a curve fed
+# that way would silently be drawn for different terminations than the table
+# beside it names.  That is precisely the two-surfaces-disagree failure this
+# whole module is built to avoid.
+#
+# Drawn HERE, in the same window as the two fields that define it, it reads
+# the same `Bandwidth` objects the table does and cannot drift from them.  It
+# also costs the plot panel nothing: `docs/conventions/plot_panel.md` says
+# "Re-measure before adding a fourteenth control", `format_si` would render
+# 0.02 dB as "20 mdB" in the readout, and the y-log switch is global with no
+# per-type hook.  Three costs avoided and one class of lie avoided.
+
+
+#: The bottom of the response window, in dB.  Deep enough to show the corner
+#: and the roll-off past it; not so deep that the passband is a flat line
+#: squashed against the top.
+RESPONSE_DB_FLOOR = -24.0
+RESPONSE_DB_CEIL = 3.0
+
+
+def _db_to_y(db: float, top: float, bot: float) -> float:
+    t = (RESPONSE_DB_CEIL - db) / (RESPONSE_DB_CEIL - RESPONSE_DB_FLOOR)
+    return top + t * (bot - top)
+
+
+def response_canvas_items(freqs, curves, width: int, height: int,
+                          marker_hz: float = 0.0) -> list[CanvasItem]:
+    """
+    |H(f)| in dB against log frequency, as canvas primitives.
+
+    `curves` is a sequence of `(label, db_array)` -- one per load capacitance,
+    already referenced to the bottom of the sweep by `bandwidth_3db`'s own
+    rule, so the picture and the table are reading one normalisation.
+
+    Roles the renderer keys off: 'axis' for the frame and ticks, 'grid' for
+    the -3 dB rule, 'curve0'..'curve3' for the traces (so the palette lives
+    with the widgets), 'marker' for the working-frequency line, 'label' and
+    'note' for text.
+    """
+    items: list[CanvasItem] = []
+    if not curves or freqs is None or len(freqs) < 2:
+        return items
+
+    pad_l, pad_r = width * 0.115, width * 0.035
+    pad_t, pad_b = height * 0.12, height * 0.22
+    x0, x1 = pad_l, width - pad_r
+    y0, y1 = pad_t, height - pad_b
+
+    f = np.asarray(freqs, dtype=float)
+    pos = f > 0.0
+    if not np.any(pos):
+        return items
+    lo, hi = math.log10(float(f[pos][0])), math.log10(float(f[pos][-1]))
+    if hi <= lo:
+        return items
+
+    def fx(hz: float) -> float:
+        if hz <= 0.0:
+            return x0
+        t = (math.log10(hz) - lo) / (hi - lo)
+        return x0 + min(1.0, max(0.0, t)) * (x1 - x0)
+
+    # ---- frame
+    items.append(CanvasItem("line", (x0, y0, x0, y1), role="axis"))
+    items.append(CanvasItem("line", (x0, y1, x1, y1), role="axis"))
+
+    # ---- the -3 dB rule, which is what the whole picture is about
+    y3 = _db_to_y(BW_DROP_DB, y0, y1)
+    items.append(CanvasItem("line", (x0, y3, x1, y3), role="grid"))
+    items.append(CanvasItem("text", (x0 - width * 0.012, y3),
+                            text=f"{BW_DROP_DB:.0f} dB", role="label",
+                            anchor="e"))
+    y_top_lbl = _db_to_y(0.0, y0, y1)
+    items.append(CanvasItem("text", (x0 - width * 0.012, y_top_lbl),
+                            text="0 dB", role="label", anchor="e"))
+
+    # ---- decade ticks
+    for d in range(int(math.floor(lo)), int(math.ceil(hi)) + 1):
+        hz = 10.0 ** d
+        if not (lo <= d <= hi):
+            continue
+        x = fx(hz)
+        items.append(CanvasItem("line", (x, y1, x, y1 + height * 0.03),
+                                role="axis"))
+        items.append(CanvasItem("text", (x, y1 + height * 0.10),
+                                text=format_si(hz, "Hz"), role="label"))
+
+    # ---- the working frequency, so the reader sees where they actually live
+    if marker_hz > 0.0 and lo <= math.log10(marker_hz) <= hi:
+        xm = fx(marker_hz)
+        items.append(CanvasItem("line", (xm, y0, xm, y1), role="marker"))
+        items.append(CanvasItem("text", (xm, y0 - height * 0.055),
+                                text=f"marker {format_si(marker_hz, 'Hz')}",
+                                role="note"))
+
+    # ---- the curves
+    for ci, (label, db) in enumerate(curves):
+        db = np.asarray(db, dtype=float)
+        role = f"curve{ci % 4}"
+        pts: list[float] = []
+        for hz, v in zip(f, db):
+            if hz <= 0.0 or not math.isfinite(v):
+                continue
+            pts.extend((fx(hz), _db_to_y(max(v, RESPONSE_DB_FLOOR), y0, y1)))
+        if len(pts) >= 4:
+            items.append(CanvasItem("line", tuple(pts), role=role))
+        items.append(CanvasItem(
+            "text", (x1, y0 + height * 0.075 * (ci + 1) - height * 0.03),
+            text=label, role=role, anchor="e"))
     return items

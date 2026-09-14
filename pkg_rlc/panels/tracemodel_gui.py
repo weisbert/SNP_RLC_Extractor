@@ -74,7 +74,8 @@ from pkg_rlc.physics.core import (
 )
 from pkg_rlc.present.report import LOG_WARN
 from pkg_rlc.present.tracemodel_report import (
-    CANVAS_H, CANVAS_W, pi_canvas_items, pi_report_lines,
+    CANVAS_H, CANVAS_W, bandwidth_lines, pi_canvas_items, pi_report_lines,
+    response_canvas_items,
 )
 from pkg_rlc.widgets.widgets import PLACEHOLDER_FG, WARN_FG
 
@@ -104,6 +105,20 @@ _BOX_FILL = "#eef2f7"
 _BOX_EDGE = "#5a6b80"
 _VALUE_FG = "#12304f"
 _GND_FG = "#2c2c2c"
+_AXIS_FG = "#7a8694"
+_GRID_FG = "#c05a5a"          # the -3 dB rule: the one line the eye wants
+_MARKER_FG = "#3b7dd8"        # the working frequency
+#: One colour per load capacitance in the sensitivity table.  Four, because
+#: `DEFAULT_LOADS_F` is four; a fifth load would need a fifth colour here and
+#: the geometry cycles `curve0..curve3`, so the two have to move together.
+_CURVE_FG = ("#1b6ca8", "#2e8b57", "#b8860b", "#8b3a62")
+
+#: Defaults for the two termination fields.  1 ohm stands in for a near-ideal
+#: voltage source (0 would put an exact zero into the denominator), and an
+#: OPEN far end is the upper bound on any real answer -- the honest starting
+#: point, because every real load can only bring the number down.
+DEFAULT_SRC_OHM = 1.0
+DEFAULT_LOAD_FF = 0.0
 
 
 # ============================================================================
@@ -125,6 +140,16 @@ class TraceModelResult:
     mode_conversion: Optional[float]
     port_note: str
     freq_snap: object
+    # The sweep this was read from, kept so the bandwidth block and the
+    # response curve can be recomputed for new terminations WITHOUT a
+    # re-solve.  Plain arrays, no TraceConfig and no FileEntry -- the
+    # frozen-identity rule is about what can go stale underneath you, and an
+    # array that was copied out of the trace cannot.
+    freqs: object
+    Z2: object
+    bw_table: tuple
+    corners: tuple
+    model_band: tuple
     trace_id: int
     trace_label: str
     file_label: str
@@ -275,8 +300,10 @@ def _mode_conversion_for(app, trace, file_entry, rows, k) -> tuple[Optional[floa
         return (None, f"imbalance check skipped -- {e}")
 
 
-def compute_trace_model(app, trace, file_entry,
-                        freq_hz: float) -> TraceModelResult:
+def compute_trace_model(app, trace, file_entry, freq_hz: float,
+                        z_src_ohm: float = DEFAULT_SRC_OHM,
+                        c_load_farad_extra: "tuple[float, ...]" =
+                        tmod.DEFAULT_LOADS_F) -> TraceModelResult:
     """
     Read the pi off the trace's CACHED matrix.  No re-solve for the pi itself.
 
@@ -323,9 +350,14 @@ def compute_trace_model(app, trace, file_entry,
     if snap.resolved:
         snap = replace(snap, actual_hz=float(model.freq_hz))
 
+    bw_table = tuple(tmod.bandwidth_table(freqs, Z2, freq_hz,
+                                          z_src_ohm, c_load_farad_extra))
     return TraceModelResult(
         model=model, reference=reference, mode_conversion=mc, port_note=note,
-        freq_snap=snap,
+        freq_snap=snap, freqs=freqs, Z2=Z2, bw_table=bw_table,
+        corners=tuple(tmod.branch_corners(model)),
+        model_band=tmod.model_band_hz(freqs, Z2, names[i], names[j],
+                                      differential),
         trace_id=int(getattr(trace, "id", 0)),
         trace_label=str(getattr(trace, "label", "")),
         file_label=str(getattr(trace, "file_label", "")),
@@ -390,6 +422,30 @@ class TraceModelWindow(tk.Toplevel):
                                  foreground=PLACEHOLDER_FG)
         self._banner.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(0, 4))
 
+        # The two terminations, ON THE WINDOW rather than in a dialog.  The
+        # -3 dB bandwidth is a property of trace PLUS source PLUS load -- on a
+        # real routed line the load alone moves it 7.3x -- so the two numbers
+        # that decide it have to be visible beside the answer, and editable
+        # without leaving it.  They are window-local: no TraceConfig field, so
+        # no session migration is owed for a pair of what-if knobs.
+        strip = ttk.Frame(self)
+        strip.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(0, 4))
+        ttk.Label(strip, text="source").pack(side=tk.LEFT)
+        self._src_var = tk.StringVar(value=f"{DEFAULT_SRC_OHM:g}")
+        e1 = ttk.Entry(strip, textvariable=self._src_var, width=7)
+        e1.pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Label(strip, text="\u03a9     extra load").pack(side=tk.LEFT)
+        self._load_var = tk.StringVar(value=f"{DEFAULT_LOAD_FF:g}")
+        e2 = ttk.Entry(strip, textvariable=self._load_var, width=7)
+        e2.pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Label(strip, text="fF").pack(side=tk.LEFT)
+        ttk.Label(strip, text="   (the table below sweeps the load anyway; "
+                              "these two pin the highlighted row)",
+                  foreground=PLACEHOLDER_FG).pack(side=tk.LEFT, padx=(8, 0))
+        for e in (e1, e2):
+            e.bind("<Return>", self._on_terminations_changed)
+            e.bind("<FocusOut>", self._on_terminations_changed)
+
         body = ttk.PanedWindow(self, orient=tk.VERTICAL)
         body.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=8, pady=(0, 4))
 
@@ -397,6 +453,16 @@ class TraceModelWindow(tk.Toplevel):
                                  highlightthickness=1,
                                  highlightbackground="#c8d0da")
         body.add(self._canvas, weight=3)
+
+        # |H(f)| sits in the SAME window as the two fields that define it, so
+        # the curve and the table can never be drawn for different
+        # terminations.  It is not a PLOT_TYPES entry for exactly that reason
+        # -- see the note on `response_canvas_items`.
+        self._resp = tk.Canvas(body, background="white",
+                               highlightthickness=1,
+                               highlightbackground="#c8d0da")
+        body.add(self._resp, weight=2)
+        self._resp.bind("<Configure>", self._on_canvas_configure)
 
         txt_frame = ttk.Frame(body)
         self._text = tk.Text(txt_frame, wrap=tk.NONE, font=TM_FONT, height=10)
@@ -423,6 +489,89 @@ class TraceModelWindow(tk.Toplevel):
 
     def _on_canvas_configure(self, _event=None) -> None:
         self._draw()
+        self._draw_response()
+
+    def _terminations(self) -> "tuple[float, float]":
+        """
+        The two fields, as (ohms, farads).  A bad entry falls back to the
+        default and SAYS so rather than refusing to redraw: this is a what-if
+        knob, and a window that goes blank while you are mid-keystroke is
+        worse than one that shows the default.
+        """
+        try:
+            src = float(self._src_var.get())
+            if not math.isfinite(src) or src < 0.0:
+                raise ValueError
+        except Exception:                                   # noqa: BLE001
+            src = DEFAULT_SRC_OHM
+        try:
+            load = float(self._load_var.get()) * 1e-15
+            if not math.isfinite(load) or load < 0.0:
+                raise ValueError
+        except Exception:                                   # noqa: BLE001
+            load = DEFAULT_LOAD_FF * 1e-15
+        return (src, load)
+
+    def _on_terminations_changed(self, _event=None) -> None:
+        """Recompute the bandwidth block and the curve. No re-solve."""
+        src, load = self._terminations()
+        loads = tuple(sorted(set(tmod.DEFAULT_LOADS_F) | {load}))
+        try:
+            table = tuple(tmod.bandwidth_table(
+                self._res.freqs, self._res.Z2,
+                self._res.model.requested_hz, src, loads))
+        except Exception:                                   # noqa: BLE001
+            return
+        self._res = replace(self._res, bw_table=table)
+        self._render_text()
+        self._draw_response()
+
+    def _draw_response(self) -> None:
+        """The |H(f)| curves, one per row of the sensitivity table."""
+        cv = self._resp
+        cv.delete("all")
+        res = self._res
+        if res.freqs is None or len(res.freqs) < 2 or not res.bw_table:
+            return
+        w = max(cv.winfo_width(), TM_MIN_W - 40)
+        h = max(cv.winfo_height(), 120)
+        fs = max(7, min(9, int(round(h / 18))))
+
+        curves = []
+        for bw in res.bw_table:
+            H = tmod.transfer_function(res.Z2, res.freqs, bw.z_src_ohm,
+                                       bw.c_load_farad)
+            mag = np.abs(H)
+            ref = mag[0] if (len(mag) and np.isfinite(mag[0]) and mag[0] > 0) \
+                else 1.0
+            with np.errstate(divide="ignore", invalid="ignore"):
+                db = 20.0 * np.log10(mag / ref)
+            label = (f"{bw.c_load_farad * 1e15:g} fF"
+                     if bw.c_load_farad else "open")
+            curves.append((label, db))
+
+        for it in response_canvas_items(res.freqs, curves, w, h,
+                                        res.model.freq_hz):
+            if it.kind == "line":
+                if it.role == "grid":
+                    cv.create_line(*it.coords, fill=_GRID_FG, dash=(4, 3))
+                elif it.role == "marker":
+                    cv.create_line(*it.coords, fill=_MARKER_FG, dash=(2, 3))
+                elif it.role.startswith("curve"):
+                    cv.create_line(*it.coords, width=2,
+                                   fill=_CURVE_FG[int(it.role[-1]) % 4])
+                else:
+                    cv.create_line(*it.coords, fill=_AXIS_FG)
+            elif it.kind == "text":
+                if it.role.startswith("curve"):
+                    fill = _CURVE_FG[int(it.role[-1]) % 4]
+                elif it.role == "note":
+                    fill = _MARKER_FG
+                else:
+                    fill = _AXIS_FG
+                cv.create_text(it.coords[0], it.coords[1], text=it.text,
+                               fill=fill, font=(TM_FONT[0], fs),
+                               anchor=it.anchor)
 
     def _draw(self) -> None:
         """Hand every geometry item to the canvas.  No layout decisions here."""
@@ -459,18 +608,25 @@ class TraceModelWindow(tk.Toplevel):
                                anchor=it.anchor)
 
     def _render(self) -> None:
+        self._render_text()
+        self.refresh_banner()
+        self._draw()
+        self._draw_response()
+
+    def _render_text(self) -> None:
         self._header.configure(text=header_text(self._res))
+        res = self._res
         lines = pi_report_lines(
-            self._res.model, freq_snap=self._res.freq_snap,
-            reference=self._res.reference,
-            mode_conversion=self._res.mode_conversion,
-            port_note=self._res.port_note, drawing=False)
+            res.model, freq_snap=res.freq_snap, reference=res.reference,
+            mode_conversion=res.mode_conversion,
+            port_note=res.port_note, drawing=False)
+        top = float(res.freqs[-1]) if len(res.freqs) else float("nan")
+        lines.extend(bandwidth_lines(list(res.bw_table), list(res.corners),
+                                     tuple(res.model_band), top))
         self._text.configure(state=tk.NORMAL)
         self._text.delete("1.0", tk.END)
         self._text.insert("1.0", "\n".join(lines))
         self._text.configure(state=tk.DISABLED)
-        self.refresh_banner()
-        self._draw()
 
     def refresh_banner(self) -> None:
         """One tuple compare, one Label write.  Never raises."""

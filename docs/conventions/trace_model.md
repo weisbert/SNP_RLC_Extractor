@@ -85,6 +85,83 @@ that distinguishes a lumped element from a distributed line, and it exists
 because the alternative — extract twice by hand and compare — is what this
 feature was designed from.
 
+### Bandwidth — THREE numbers, and conflating them is the trap
+
+"The bandwidth of this trace" names three unrelated quantities and **only two
+of them are properties of the trace at all**. They are computed separately,
+printed under separate labels, and must stay that way.
+
+1. **Model band** (`model_band_hz`) — how high the extracted pi is still ONE
+   lumped pi. Assumption-free and free to compute. Its answer is usually
+   `sweep`, which means *the FILE stops there, not the model* — say it that
+   way, because "the pi holds to 10 GHz" read as a physics limit is wrong.
+2. **Branch corners** (`branch_corners`) — `f_RL = R/(2πL)`, `f_RC = 1/(2πRC)`.
+   Trace-only. They EXPLAIN the third number rather than compete with it.
+3. **The −3 dB bandwidth** (`bandwidth_3db`) — what everyone means, and **not a
+   property of the trace**. It belongs to trace + source + load.
+
+**Never print one −3 dB number.** Measured on a real routed line (Rs 344 Ω,
+Ls 1.69 nH, Cp 33.2 fF/end): the answer moves from **15.31 GHz at C_load = 0 to
+2.09 GHz at 200 fF** — 7.3× from the load alone, and another 1.9× from a 200 Ω
+source. A single figure is one arbitrary point on that curve presented as a
+fact. `bandwidth_table` sweeps `DEFAULT_LOADS_F` and the report prints the
+sensitivity; the two termination fields on the window pin the row you care
+about. This is `attrib`'s answer to `attrib`'s question: show the what-if
+rather than bury the assumption.
+
+**H(f) comes from the RAW 2×2, never from the pi.**
+`H = Z21·ZL / [(Z11+Zs)(Z22+ZL) − Z12·Z21]`, per frequency. The pi is the
+picture; the transfer function has to stay right where the structure has
+stopped being lumped.
+
+**Nothing is extrapolated past the file.** No −3 dB crossing inside the sweep
+means `crossed = False` and the report says `> <top>` with the droop that was
+actually reached. The reference is the BOTTOM OF THE SWEEP, not DC — a file
+starting at 0.1 GHz cannot say what DC does — and `reference_hz` is carried so
+the report names it.
+
+**A response that PEAKS has no −3 dB bandwidth, and the column says `peaks`
+instead of a number.** A series L into a load C rises before it rolls off
+(measured: **+13.6 dB**, and +50.3 dB on the lossless differential fixture);
+the crossing after that is measured from a baseline the curve left long ago.
+`PEAK_WARN_DB = 1.0`, clear of the +0.03…+0.14 dB a clean fixture shows from
+round-off.
+
+**`R_MEANINGFUL_Q = 1e3` exists because R is round-off on a low-loss branch,
+and reasoning about it produces nonsense that looks like measurements.**
+`pi_2port.s2p` is a synthetic LOSSLESS pi whose shunt reads R = 3.15 mΩ
+against 160 kΩ of reactance, and the differential fixture reads **−2.87 nΩ**
+— negative, because this tool never clips a sign. Dividing by either gave
+corners of **"5.05e+04 THz"** and **"−57 mHz"**. Past the threshold a corner
+is NaN and the report prints `--`.
+
+**`model_band_hz` has been wrong twice; both are pinned.** It must NOT key on
+`Branch.reads_as` — that is a DISPLAY verdict (`|Q| < 0.01`) and a constant
+series `R + jωL` necessarily crosses it as frequency rises, which once
+answered **0.32 GHz for a network built from constants**. And R must be judged
+against the branch's whole `|Z|`, not against itself, or round-off swings by
+orders of magnitude and answers **1 MHz** two lines under a lumped check
+saying every branch was within 10 %. Element identity is the SIGN of Im(Z);
+drift is on the values.
+
+### Why `|H(f)|` is NOT a `PLOT_TYPES` entry
+
+It was going to be one, and the reason it is not is worth keeping.
+`trace_y_values(freqs, Z, plot_type, aux)` is handed the **one-dimensional**
+trace impedance; the transfer function needs the 2×2 `Zmat` **and** a declared
+source and load. The existing hatch for that is `aux` (the mechanism `k`
+uses) — but an aux series is computed once at Calculate, so a curve fed that
+way would silently be drawn for different terminations than the table beside
+it names. **That is the two-surfaces-disagree failure this whole area is built
+to avoid.**
+
+Drawn in the Trace Model window instead, beside the two fields that define it,
+it reads the same `Bandwidth` objects the table does. Three incidental costs
+also avoided: `plot_panel.md` says *"Re-measure before adding a fourteenth
+control"*, `format_si` renders 0.02 dB as **"20 mdB"** in the readout, and the
+y-log switch is global with no per-type hook. **Do not move it to the plot
+panel without solving the terminations problem first.**
+
 ### The Trace Model window (`pkg_rlc/panels/tracemodel_gui.py`)
 
 **GUI is this project's acceptance criterion, so a trace-model that only
@@ -115,6 +192,13 @@ the window ever runs is the differential imbalance check, one frequency wide.
 **`RunSnapshot` is NOT the source here and must not become one**: it keeps
 only the marker-frequency `Z_matrix` and `tests/test_run_snapshot.py` pins
 that the total reachable array size stays ≤ 64 whatever the sweep length.
+
+**The two termination fields are window-local on purpose.** `source` (Ω) and
+`extra load` (fF) are what-if knobs, not spec: putting them on `TraceConfig`
+would make them session state and owe a migration for two numbers that mean
+nothing without the window open. A bad entry falls back to the default and
+redraws rather than blanking the window — a knob that goes empty mid-keystroke
+is worse than one showing the default.
 
 **Two measurement ports means no picker, and more than two is refused.** A pi
 has two nodes; a trace declaring exactly two ports IS a trace, in the order

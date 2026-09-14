@@ -97,7 +97,7 @@ row changes.
 | `pkg_rlc/physics/solve.py` | **The arithmetic**: `s_to_y` / `y_to_s`, `compute_z_matrix` / `compute_z` / `_probe_impedance`, the extractors, the fit models, the tolerances. Imports `spec` + two names from `touchstone`; nothing imports it back. |
 | `pkg_rlc/physics/attrib.py` | **Port attribution**: the exact signed decomposition of `Z_ab`, the exact what-if, the cold-start screen (CLI-only), the composed-network gauge. Imports `pkg_rlc.physics.core` ONLY (acyclic), no scipy. |
 | `pkg_rlc/physics/compose.py` | **Several Touchstone files measured as ONE network**: k files stacked into one `Y`, every cross-file link an ordinary `ShortPair` / `LumpedBetween` handed to the SAME `compute_z_matrix`. Imports `pkg_rlc.physics.core` ONLY. |
-| `pkg_rlc/physics/tracemodel.py` | **A routed trace as a pi model, read EXACTLY**: `Y_series = -Ym`, `Y_shunt = Yii + Ym` off the inverse of a 2x2 `Zmat` block — an identity, not a fit — plus the differential imbalance check. Imports `pkg_rlc.physics.core` ONLY (acyclic). |
+| `pkg_rlc/physics/tracemodel.py` | **A routed trace as a pi model, read EXACTLY**, plus its BANDWIDTH — three separate numbers (model band, branch corners, −3 dB), where the last is a property of trace PLUS source PLUS load and is therefore swept, never printed as one figure.: `Y_series = -Ym`, `Y_shunt = Yii + Ym` off the inverse of a 2x2 `Zmat` block — an identity, not a fit — plus the differential imbalance check. Imports `pkg_rlc.physics.core` ONLY (acyclic). |
 
 ### L1 — `pkg_rlc/model/` (the shared data model, and the spec logic over it)
 

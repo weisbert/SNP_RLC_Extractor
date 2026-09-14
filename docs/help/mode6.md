@@ -1261,6 +1261,44 @@ both ends, which is exact for a symmetric pair and an unstated
 assumption otherwise, so the report states it: above 5 % the pair
 is imbalanced and the pi is the differential part only.
 
+BANDWIDTH: THREE NUMBERS, KEPT APART
+------------------------------------
+"The bandwidth of this trace" is three different things:
+
+  model band   how high the pi is still ONE lumped pi.  Nothing
+               declared, nothing assumed.  It usually answers
+               "the top of the sweep", which means the FILE
+               stops there -- not the model.
+  corners      f_RL = R/(2*pi*L) and f_RC = 1/(2*pi*R*C), per
+               branch.  Where the reactance overtakes the
+               resistance.  These EXPLAIN the third number.
+  -3 dB        what everyone means -- and NOT a property of the
+               trace.  It belongs to trace + source + load.
+
+That last point is why the report prints a TABLE and not a
+number.  On a real routed line the load capacitance alone moves
+the answer 7.3x (15.31 GHz open, 2.09 GHz into 200 fF), and the
+source resistance another 1.9x.  The two fields at the top of
+the window -- source (ohm) and extra load (fF) -- pin the row
+you care about, and the curve under the schematic is drawn from
+the same numbers.
+
+The "vs marker" column is the useful one: "6.3 GHz" is a fact,
+"82x your working frequency" is an answer.
+
+Three things it will not do:
+
+  * it never extrapolates past the file.  If the sweep never
+    drops 3 dB you get "> 5 GHz" and the droop actually reached;
+  * it references the BOTTOM OF THE SWEEP, not DC, and says so;
+  * a response that PEAKS has no -3 dB bandwidth.  A series L
+    into a load C rises before it rolls off, so the column says
+    "peaks +13.6 dB at 8.2 GHz" instead of a number that would
+    be measured from a baseline the curve already left.
+
+From the command line: --trace-model-src OHM and
+--trace-model-load FF[,FF].
+
 READ THE |Q| BEFORE YOU READ THE C
 ----------------------------------
 Every branch prints its own |Q| and what follows from it:

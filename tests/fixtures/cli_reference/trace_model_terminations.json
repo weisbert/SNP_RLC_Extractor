@@ -1,6 +1,6 @@
 {
- "name": "trace_model_single",
- "describe": "the single-ended pi, drawn, on a known network",
+ "name": "trace_model_terminations",
+ "describe": "the -3 dB block is trace PLUS source PLUS load, so both are named",
  "argv": [
   "--cli",
   "tests/fixtures/pi_2port.s2p",
@@ -13,7 +13,11 @@
   "--freq",
   "1.0",
   "--trace-model",
-  "in,out"
+  "in,out",
+  "--trace-model-src",
+  "200",
+  "--trace-model-load",
+  "35,120"
  ],
  "returncode": 0,
  "stdout": [
@@ -77,13 +81,15 @@
   "                 shunt_out C        1 fF ->        1 fF     +0.0 %",
   "                 all branches within 10 % -- the values above are reusable across this band.",
   "",
-  "  bandwidth      -3 dB of |V_load / V_src|, referenced to 1 MHz   (source 1 Ω)",
+  "  bandwidth      -3 dB of |V_load / V_src|, referenced to 1 MHz   (source 200 Ω)",
   "",
   "                     C_load             f_3dB     vs marker (1 GHz)",
   "                       open          > 10 GHz     top of sweep is +0.03 dB",
-  "                      20 fF          > 10 GHz     top of sweep is +0.75 dB",
-  "                      50 fF             peaks     +2.0 dB at 10 GHz -- LC resonance, no flat passband",
-  "                     200 fF             peaks     +13.6 dB at 10 GHz -- LC resonance, no flat passband",
+  "                      20 fF          > 10 GHz     top of sweep is +0.37 dB",
+  "                      35 fF          > 10 GHz     top of sweep is +0.21 dB",
+  "                      50 fF          > 10 GHz     top of sweep is -0.28 dB",
+  "                     120 fF          8.01 GHz            8 x",
+  "                     200 fF          4.45 GHz            4 x",
   "",
   "                 at the marker: +0.0003 dB   the trace is not the limit here",
   "                 model band:    the pi holds to 10 GHz -- the top of the sweep -- the FILE stops there, not the model",

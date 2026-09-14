@@ -446,6 +446,18 @@ def _make_arg_parser() -> argparse.ArgumentParser:
                              "differential energy the pair converts to common "
                              "mode, which is the one thing a differential pi "
                              "cannot represent.")
+    tm_grp.add_argument("--trace-model-src", type=float, default=None,
+                        metavar="OHM",
+                        help="Source resistance for the bandwidth block "
+                             "(default 1, a near-ideal voltage source). The "
+                             "-3 dB bandwidth is a property of the trace PLUS "
+                             "the source PLUS the load -- measured on a real "
+                             "routed line, the load alone moves it 7.3x -- so "
+                             "the report sweeps the load and names both.")
+    tm_grp.add_argument("--trace-model-load", default=None, metavar="FF[,FF]",
+                        help="Extra load capacitances in fF, added to the "
+                             "swept defaults (0, 20, 50, 200 fF). e.g. "
+                             "--trace-model-load 35,120")
 
     # ---- composition (several files as one network) -----------------------
     # Its own group for the same reason the two above have one: every flag
@@ -1794,6 +1806,33 @@ def _run_trace_model(args: argparse.Namespace, ts, Y: np.ndarray, term,
             model, freq_snap=snap, reference=reference,
             mode_conversion=mc, port_note=port_note):
         print(line)
+
+    # The bandwidth block, printed from the SAME 2x2 the pi was read from.
+    # It is three different numbers kept apart on purpose -- see
+    # `docs/conventions/trace_model.md`.
+    src = 1.0 if args.trace_model_src is None else float(args.trace_model_src)
+    loads = set(tracemodel.DEFAULT_LOADS_F)
+    if args.trace_model_load:
+        for tok in str(args.trace_model_load).replace(",", " ").split():
+            try:
+                v = float(tok)
+            except ValueError:
+                print(f"ERROR: --trace-model-load: '{tok}' is not a number "
+                      f"in fF", file=sys.stderr)
+                return 2
+            if v < 0.0:
+                print("ERROR: --trace-model-load: a capacitance cannot be "
+                      "negative", file=sys.stderr)
+                return 2
+            loads.add(v * 1e-15)
+    table = tracemodel.bandwidth_table(ts.freqs, Z2, f_target_hz, src,
+                                       tuple(sorted(loads)))
+    for line in tracemodel_report.bandwidth_lines(
+            table, tracemodel.branch_corners(model),
+            tracemodel.model_band_hz(ts.freqs, Z2, names[i], names[j],
+                                     differential),
+            float(ts.freqs[-1])):
+        print(line)
     return 0
 
 
@@ -2975,6 +3014,11 @@ def _run_cli(args: argparse.Namespace) -> int:
                   "those exist only where --mport defines them (e.g. --mode "
                   "coupling --mport \"vic = 1\" --mport \"agg = 2\" "
                   "--cold-start vic,agg)", file=sys.stderr)
+            return 2
+        if args.trace_model_src is not None or args.trace_model_load:
+            print("ERROR: --trace-model-src / --trace-model-load are inert "
+                  "without --trace-model, which names the two ENDS of the "
+                  "trace (e.g. --trace-model in,out)", file=sys.stderr)
             return 2
         if args.trace_model:
             print("ERROR: --trace-model is only valid with --mode coupling: "

@@ -1,6 +1,6 @@
 {
- "name": "trace_model_single",
- "describe": "the single-ended pi, drawn, on a known network",
+ "name": "trace_model_bad_load",
+ "describe": "a load that is not a number in fF",
  "argv": [
   "--cli",
   "tests/fixtures/pi_2port.s2p",
@@ -13,9 +13,11 @@
   "--freq",
   "1.0",
   "--trace-model",
-  "in,out"
+  "in,out",
+  "--trace-model-load",
+  "big"
  ],
- "returncode": 0,
+ "returncode": 2,
  "stdout": [
   "Loaded tests/fixtures/pi_2port.s2p",
   "  2 ports, 401 points, Z0 = 50Ω, read as '# HZ S RI R 50'",
@@ -77,20 +79,10 @@
   "                 shunt_out C        1 fF ->        1 fF     +0.0 %",
   "                 all branches within 10 % -- the values above are reusable across this band.",
   "",
-  "  bandwidth      -3 dB of |V_load / V_src|, referenced to 1 MHz   (source 1 Ω)",
-  "",
-  "                     C_load             f_3dB     vs marker (1 GHz)",
-  "                       open          > 10 GHz     top of sweep is +0.03 dB",
-  "                      20 fF          > 10 GHz     top of sweep is +0.75 dB",
-  "                      50 fF             peaks     +2.0 dB at 10 GHz -- LC resonance, no flat passband",
-  "                     200 fF             peaks     +13.6 dB at 10 GHz -- LC resonance, no flat passband",
-  "",
-  "                 at the marker: +0.0003 dB   the trace is not the limit here",
-  "                 model band:    the pi holds to 10 GHz -- the top of the sweep -- the FILE stops there, not the model",
-  "                 corners:       series RL 159 MHz  ·  shunt_in --  ·  shunt_out --",
   ""
  ],
  "stderr": [
+  "ERROR: --trace-model-load: 'big' is not a number in fF",
   ""
  ],
  "artifacts": {}

@@ -83,7 +83,9 @@ from pkg_rlc.physics import core
 __all__ = [
     "Branch", "PiModel",
     "extract_pi", "extract_pi_at", "mode_conversion_ratio", "lumped_drift",
-    "LUMPED_DRIFT_WARN",
+    "Bandwidth", "BranchCorner", "transfer_function", "bandwidth_3db",
+    "branch_corners", "model_band_hz", "bandwidth_table", "DEFAULT_LOADS_F",
+    "LUMPED_DRIFT_WARN", "BW_DROP_DB",
 ]
 
 
@@ -94,6 +96,18 @@ __all__ = [
 # to sit well above the 2.5 % that a well-behaved on-chip line drifts across a
 # 50x span and well below the order-of-magnitude a distributed line shows.
 LUMPED_DRIFT_WARN = 0.10
+
+#: Above this |Q|, a branch's RESISTANCE is numerical noise and must not be
+#: reasoned about.  Measured on `tests/fixtures/pi_2port.s2p`, a synthetic
+#: LOSSLESS pi: its shunt reads R = 3.15 mOhm against 160 kOhm of reactance
+#: (|Q| = 5e7) purely from the S-to-Y round trip, and the differential fixture
+#: reads R = -2.87 nOhm -- NEGATIVE, because this tool never clips a sign.
+#: Comparing either of those to itself across frequency, or dividing by it to
+#: get an RC corner, produces pure nonsense: a model band of "1 MHz" for a
+#: network that is a constant R, L and C by construction, and corners of
+#: "5.05e+04 THz" and "-57 mHz".  1e3 keeps a real on-chip shunt (|Q| ~ 500,
+#: where R is 0.2 % of the reactance and genuinely lossy) and drops those.
+R_MEANINGFUL_Q = 1e3
 
 
 @dataclass(frozen=True)
@@ -402,3 +416,359 @@ def lumped_drift(model: PiModel, reference: PiModel) -> dict[str, float]:
         else:
             out[b.name] = (a - r) / abs(r)
     return out
+
+
+# ============================================================================
+# Bandwidth -- THREE different numbers, and conflating them is the trap
+# ============================================================================
+#
+# "The bandwidth of this trace" names three unrelated quantities, and only two
+# of them are properties of the trace at all:
+#
+#   1. MODEL BAND  (`model_band_hz`)  -- how high the extracted pi is still ONE
+#      lumped pi.  Trace-only, assumption-free, and free to compute: the pi is
+#      already exact at every frequency, so this is just asking where the
+#      element values stop holding still.
+#
+#   2. BRANCH CORNERS (`branch_corners`) -- f_RL = R/(2*pi*L) on the series
+#      branch and f_RC = 1/(2*pi*R*C) on each shunt, i.e. where the reactance
+#      overtakes the resistance.  Trace-only.  They are what EXPLAINS the third
+#      number rather than competing with it.
+#
+#   3. THE -3 dB BANDWIDTH (`bandwidth_3db`) -- what everyone means by the
+#      word, and NOT A PROPERTY OF THE TRACE.  It is a property of trace plus
+#      source plus load.  Measured on a real routed line (Rs 344 ohm, Ls
+#      1.69 nH, Cp 33.2 fF/end): the answer moves from 15.31 GHz at C_load = 0
+#      to 2.09 GHz at C_load = 200 fF -- a factor of 7.3 from the load alone,
+#      and another 1.9x from a 200 ohm source.  Printing one number for that
+#      without naming the terminations is exactly the mistake `attrib` exists
+#      because of, where an unstated "everything else is OPEN" moved a real
+#      answer by 6.07 dB.  So the report prints a SENSITIVITY TABLE over
+#      `DEFAULT_LOADS_F`, and the caller may name its own pair.
+#
+# The transfer function is computed from the RAW 2x2 Z at every frequency, not
+# from the pi: the pi is for understanding, and H(f) has to stay right even
+# where the structure has stopped being lumped.
+
+
+#: -3 dB, spelled once.  The half-power point, and the only drop this tool
+#: reports, because a "-1 dB bandwidth" and a "-3 dB bandwidth" printed in the
+#: same column with no label is how two numbers become one wrong one.
+BW_DROP_DB = -3.0
+
+#: The load capacitances the sensitivity table sweeps, in farads.  0 is an
+#: OPEN far end -- the trace's own shunt is then the whole load, which is the
+#: upper bound on any real answer and worth having as the first row.
+DEFAULT_LOADS_F = (0.0, 20e-15, 50e-15, 200e-15)
+
+
+@dataclass(frozen=True)
+class Bandwidth:
+    """
+    One -3 dB answer, WITH the terminations that produced it.
+
+    `crossed` is the honest half: when |H| never falls `BW_DROP_DB` inside the
+    swept band there is no -3 dB frequency in the data, and `f_3db_hz` is NaN
+    while `droop_top_db` says how far down the top of the sweep actually is.
+    Extrapolating past the file would be inventing a measurement.
+
+    `passband_ok` is False when |H| is not flat at the bottom of the sweep --
+    then there is no passband for anything to be 3 dB down FROM, and the
+    number, if one were printed, would be measured against a slope.
+    """
+    z_src_ohm: float
+    c_load_farad: float
+    reference_hz: float
+    f_3db_hz: float
+    crossed: bool
+    droop_top_db: float
+    droop_marker_db: float
+    marker_hz: float
+    passband_ok: bool
+    #: The highest point of |H| relative to the reference, and where.  A
+    #: series L into a load C PEAKS before it rolls off -- measured on a real
+    #: fixture at +13.64 dB -- and a "-3 dB bandwidth" quoted across a peak is
+    #: measured from the wrong baseline.  The report says so instead.
+    peak_db: float = 0.0
+    peak_hz: float = float("nan")
+
+    @property
+    def ratio_to_marker(self) -> float:
+        """How many times the marker frequency the -3 dB point sits at."""
+        if not (self.crossed and self.marker_hz > 0.0):
+            return float("nan")
+        return self.f_3db_hz / self.marker_hz
+
+
+@dataclass(frozen=True)
+class BranchCorner:
+    """Where one branch's reactance overtakes its resistance."""
+    name: str
+    kind: str            # 'RL' or 'RC'
+    f_hz: float
+
+
+def transfer_function(Z2: np.ndarray, freqs: np.ndarray,
+                      z_src_ohm: float = 1.0,
+                      c_load_farad: float = 0.0) -> np.ndarray:
+    """
+    |V_load / V_src| as a complex array over the whole sweep.  EXACT.
+
+    For a two-port with open-circuit matrix Z, a source impedance Zs on port 1
+    and a load ZL on port 2:
+
+        H = Z21 * ZL / [ (Z11 + Zs)(Z22 + ZL) - Z12 * Z21 ]
+
+    Straight from the definition, per frequency, out of the SAME `Zmat` block
+    the pi is read from.  Deliberately NOT computed from the pi: the pi is the
+    picture, and this has to stay right at frequencies where the structure has
+    stopped being one lumped pi.
+
+    `c_load_farad == 0` means an OPEN far end, the upper bound on any real
+    answer.  `z_src_ohm` is a plain resistance; 1 ohm stands in for a
+    near-ideal voltage source without the infinity that a literal 0 would put
+    into the arithmetic.
+    """
+    Z2 = np.asarray(Z2, dtype=complex)
+    freqs = np.asarray(freqs, dtype=float)
+    if Z2.ndim != 3 or Z2.shape[1:] != (2, 2):
+        raise ValueError(
+            f"transfer_function needs Zmat of shape (nfreqs, 2, 2), got "
+            f"{Z2.shape}. Declare exactly two measurement ports.")
+    if len(freqs) != Z2.shape[0]:
+        raise ValueError(
+            f"{len(freqs)} frequencies against {Z2.shape[0]} matrices.")
+
+    omega = 2.0 * np.pi * freqs
+    if c_load_farad > 0.0:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            zl = 1.0 / (1j * omega * c_load_farad)
+    else:
+        # An open far end.  A large finite number rather than inf, so the
+        # product below stays a number: inf * 0 in the denominator would make
+        # the whole sweep NaN instead of the flat response it actually is.
+        zl = np.full(freqs.shape, complex(1e18, 0.0))
+
+    Z11, Z12 = Z2[:, 0, 0], Z2[:, 0, 1]
+    Z21, Z22 = Z2[:, 1, 0], Z2[:, 1, 1]
+    den = (Z11 + z_src_ohm) * (Z22 + zl) - Z12 * Z21
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return Z21 * zl / den
+
+
+def bandwidth_3db(freqs: np.ndarray, H: np.ndarray, marker_hz: float,
+                  z_src_ohm: float = 1.0,
+                  c_load_farad: float = 0.0) -> Bandwidth:
+    """
+    The first frequency where |H| is `BW_DROP_DB` below the reference.
+
+    The REFERENCE is the bottom of the sweep, not DC -- a Touchstone file that
+    starts at 0.1 GHz cannot say what DC does, and quietly calling the lowest
+    swept point "DC" is how a reader ends up believing a number the file never
+    measured.  The reference frequency is carried on the result so the report
+    can name it.
+
+    Linear interpolation between the two points that straddle the crossing, in
+    dB against log frequency -- the grid is what it is, and reporting the
+    nearest sample instead would quantise the answer to the sweep step.
+
+    NOTHING IS EXTRAPOLATED.  If |H| never falls that far inside the band,
+    `crossed` is False and `droop_top_db` reports where the top of the sweep
+    actually sits.
+    """
+    freqs = np.asarray(freqs, dtype=float)
+    H = np.asarray(H, dtype=complex)
+    mag = np.abs(H)
+    nan = float("nan")
+
+    ref_hz = float(freqs[0])
+    ref = float(mag[0])
+    if not np.isfinite(ref) or ref <= 0.0:
+        return Bandwidth(z_src_ohm, c_load_farad, ref_hz, nan, False, nan,
+                         nan, float(marker_hz), False)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        db = 20.0 * np.log10(mag / ref)
+
+    # Is there a passband at all?  If the response has already sagged at the
+    # bottom of the sweep, "3 dB down from the reference" is measured against
+    # a slope rather than a plateau, and the answer would be an artefact of
+    # where the file happens to start.
+    low = db[:max(2, len(db) // 20)]
+    passband_ok = bool(np.all(np.isfinite(low))
+                       and float(np.min(low)) > BW_DROP_DB / 2.0)
+
+    k = int(np.argmin(np.abs(freqs - float(marker_hz))))
+    droop_marker = float(db[k]) if np.isfinite(db[k]) else nan
+    droop_top = float(db[-1]) if np.isfinite(db[-1]) else nan
+
+    finite = np.isfinite(db)
+    if np.any(finite):
+        pk = int(np.nanargmax(np.where(finite, db, -np.inf)))
+        peak_db, peak_hz = float(db[pk]), float(freqs[pk])
+    else:
+        peak_db, peak_hz = 0.0, nan
+
+    below = np.nonzero(np.isfinite(db) & (db <= BW_DROP_DB))[0]
+    if len(below) == 0 or below[0] == 0:
+        return Bandwidth(z_src_ohm, c_load_farad, ref_hz, nan, False,
+                         droop_top, droop_marker, float(marker_hz),
+                         passband_ok, peak_db, peak_hz)
+
+    i = int(below[0])
+    f0, f1 = freqs[i - 1], freqs[i]
+    d0, d1 = db[i - 1], db[i]
+    if d1 == d0 or f0 <= 0.0:
+        f3 = float(f1)
+    else:
+        t = (BW_DROP_DB - d0) / (d1 - d0)
+        f3 = float(math.exp(math.log(f0) + t * (math.log(f1) - math.log(f0))))
+    return Bandwidth(z_src_ohm, c_load_farad, ref_hz, f3, True, droop_top,
+                     droop_marker, float(marker_hz), passband_ok,
+                     peak_db, peak_hz)
+
+
+def branch_corners(model: PiModel) -> list[BranchCorner]:
+    """
+    Where each branch's reactance overtakes its resistance.
+
+    `f_RL = R / (2*pi*L)` on an inductive branch and `f_RC = 1 / (2*pi*R*C)`
+    on a capacitive one.  Both are read off the branch's OWN R and whichever
+    of L / C it reads as, so a branch the tool calls a bare resistor
+    (`|Q| < 0.01`) gets a corner too -- that is precisely the branch whose
+    corner a reader wants, because it says how far above the marker the
+    reactance starts to matter.
+
+    A corner needs a MEANINGFUL resistance, and on a low-loss branch there is
+    not one: `R_MEANINGFUL_Q` is the guard, and past it the corner is NaN and
+    the report prints '--'.  Without it a lossless fixture produces
+    `1/(2*pi*R*C)` with R = 3.15 mOhm of round-off -- "5.05e+04 THz" -- or,
+    where the round-off is negative, a corner at "-57 mHz".  Both are worse
+    than no number, because both look like measurements.
+    """
+    out: list[BranchCorner] = []
+    for b in model.branches:
+        r = b.R_ohm
+        if (not math.isfinite(r) or r <= 0.0
+                or (math.isfinite(b.Q) and abs(b.Q) > R_MEANINGFUL_Q)):
+            out.append(BranchCorner(b.name, "--", float("nan")))
+            continue
+        if b.Z.imag > 0.0:
+            L = b.L_henry
+            f = r / (2.0 * math.pi * L) if (math.isfinite(L) and L > 0)                 else float("nan")
+            out.append(BranchCorner(b.name, "RL", f))
+        else:
+            C = b.C_farad
+            f = 1.0 / (2.0 * math.pi * r * C) if (math.isfinite(C) and C > 0)                 else float("nan")
+            out.append(BranchCorner(b.name, "RC", f))
+    return out
+
+
+def model_band_hz(freqs: np.ndarray, Zmat: np.ndarray,
+                  in_name: str = "IN", out_name: str = "OUT",
+                  differential: bool = False,
+                  tol: float = LUMPED_DRIFT_WARN) -> tuple[float, str]:
+    """
+    How high the extracted pi is still ONE lumped pi.  Trace-only.
+
+    Walks the sweep, reads the pi at every point, and returns the highest
+    frequency at which every branch still holds BOTH its resistance and its
+    reactive element within `tol` of the bottom-of-sweep value -- plus a
+    one-word reason for where it stopped:
+
+        'sweep'      every point held; the band is limited by the FILE rather
+                     than by the physics, and the answer is the top of the
+                     sweep.  Not "the model fails above here" -- "the file
+                     stops here";
+        'drift'      R, L or C moved more than tol;
+        'resonance'  a branch's reactance changed SIGN: the capacitor became
+                     an inductor or the reverse.  That is not drift, it is a
+                     different element, and it ends the band outright.
+
+    WHAT THIS MUST NOT USE, AND WHY.  An earlier version keyed on
+    `Branch.reads_as` and got a perfect lumped pi wrong by two decades,
+    reporting 0.32 GHz for a network that is a constant R, L and C by
+    construction.  `reads_as` answers "which of L or C should a reader take
+    from this branch", and its `|Q| < 0.01` threshold is a DISPLAY verdict: a
+    constant series R + jwL necessarily crosses it as frequency rises, because
+    that is what a constant R and a constant L DO.  Element identity is the
+    SIGN of Im(Z), not the size of Q.  The check is on the values themselves.
+
+    This is the generalisation of `lumped_drift`'s two-point check, and it is
+    the assumption-free member of the three bandwidth numbers: no source, no
+    load, nothing declared.
+    """
+    freqs = np.asarray(freqs, dtype=float)
+    Zmat = np.asarray(Zmat, dtype=complex)
+    if len(freqs) < 2:
+        return (float(freqs[0]) if len(freqs) else float("nan"), "sweep")
+
+    def _reactive(branch) -> tuple[int, float]:
+        """(sign of the reactance, the element value on that side)."""
+        im = branch.Z.imag
+        if im > 0.0:
+            return (1, branch.L_henry)
+        if im < 0.0:
+            return (-1, branch.C_farad)
+        return (0, float("nan"))
+
+    base = extract_pi(Zmat[0], float(freqs[0]), in_name, out_name,
+                      differential)
+    refs = [(_reactive(b)[0], _reactive(b)[1], b.R_ohm, abs(b.Z))
+            for b in base.branches]
+
+    def _moved(v: float, ref: float) -> bool:
+        if not (math.isfinite(v) and math.isfinite(ref)) or ref == 0.0:
+            return True
+        return abs((v - ref) / abs(ref)) > tol
+
+    def _r_moved(r: float, r_ref: float, z_ref: float) -> bool:
+        """
+        R is judged against the branch's whole |Z|, not against itself.
+
+        On a low-loss branch R is round-off -- 3.15 mOhm against 160 kOhm of
+        reactance on a lossless fixture -- and a RELATIVE comparison on it
+        swings by orders of magnitude while the element it belongs to has not
+        moved at all.  That is what once reported "the pi holds to 1 MHz" for
+        a network built from constants, two lines under a lumped check saying
+        every branch was within 10 %.  Normalising by |Z| asks the question
+        that was meant: has this branch's IMPEDANCE left what a constant
+        element predicts?  On a resistive branch |Z| is R and the test reduces
+        to the relative one.
+        """
+        if not (math.isfinite(r) and math.isfinite(r_ref)) or z_ref <= 0.0:
+            return True
+        return abs(r - r_ref) / z_ref > tol
+
+    last_ok = float(freqs[0])
+    for i in range(1, len(freqs)):
+        m = extract_pi(Zmat[i], float(freqs[i]), in_name, out_name,
+                       differential)
+        for b, (sgn_ref, val_ref, r_ref, z_ref) in zip(m.branches, refs):
+            sgn, val = _reactive(b)
+            if sgn != sgn_ref:
+                return (last_ok, "resonance")
+            if _moved(val, val_ref) or _r_moved(b.R_ohm, r_ref, z_ref):
+                return (last_ok, "drift")
+        last_ok = float(freqs[i])
+    return (last_ok, "sweep")
+
+
+def bandwidth_table(freqs: np.ndarray, Z2: np.ndarray, marker_hz: float,
+                    z_src_ohm: float = 1.0,
+                    loads: "tuple[float, ...]" = DEFAULT_LOADS_F
+                    ) -> list[Bandwidth]:
+    """
+    One -3 dB answer per load capacitance -- the SENSITIVITY, not a number.
+
+    The -3 dB bandwidth is a property of trace plus source plus load, and on a
+    real routed line the load alone moves it by 7.3x (15.31 GHz at C_load = 0
+    against 2.09 GHz at 200 fF).  A single printed number would therefore be
+    one arbitrary point on that curve, presented as a fact about the trace.
+    The table is the fix, and it is the same answer `attrib` gives to the same
+    shape of question: show the what-if rather than bury the assumption.
+    """
+    return [bandwidth_3db(freqs,
+                          transfer_function(Z2, freqs, z_src_ohm, cl),
+                          marker_hz, z_src_ohm, cl)
+            for cl in loads]
