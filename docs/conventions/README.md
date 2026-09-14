@@ -7,8 +7,8 @@ importance. `CLAUDE.md` keeps what applies to a change anywhere (the layer map,
 the module map, the cross-cutting invariants, the import gate, the
 bit-exactness rules, the rejected-proposal list) and points here for the rest.
 
-**Read the file that covers the area you are about to touch, before you touch
-it.** Every `###` heading below is the section title it had in `CLAUDE.md`, so a
+**Before changing anything in an area, check that area's dossier for the rules
+that bind it** (its section titles are listed under each file below). Every `###` heading below is the section title it had in `CLAUDE.md`, so a
 cross-reference of the form ``CLAUDE.md § <title>`` still resolves.
 
 ## [`architecture.md`](architecture.md) — 32k
@@ -19,6 +19,8 @@ The four sections of the main window as four classes (and the three gestures tha
 - One formatter, two spellings (the CLI and the results pane)
 - The run module (`pkg_rlc/services/run.py`) — the SOLVE landed, the ORCHESTRATION did not
 - How the run record got its home — READ THIS BEFORE MOVING ANY OF IT
+- How to add a new measurement mode (moved from `CLAUDE.md`, 2026-09-12)
+- How to add a new fit model (moved from `CLAUDE.md`, 2026-09-12)
 
 ## [`attribution_core.md`](attribution_core.md) — 38k
 
@@ -70,6 +72,16 @@ A non-numeric token is a HARD error; every failure is a `TouchstoneParseError` c
 
 - Reading files (robustness, diagnosis, refusal)
 
+## [`rejected_ui.md`](rejected_ui.md) — 5k
+
+Seven UI proposals that were designed, measured and turned down — the plot-tab
+schematic, two `ttk.Treeview` tables, the `|k|` bar chart, the KPI strip, the
+Attribution notebook and the eleventh Help tab. Each entry carries the
+measurement that refused it, so the refusal is re-checkable rather than
+remembered.
+
+- Rejected UI proposals (do not re-propose these)
+
 ## [`results_pane.md`](results_pane.md) — 49k
 
 The Log tab and its badge, the three views and the 144-column budget, the Digits control and the column widths that follow it, the run tabs and their two disjoint caps, the immutable run snapshot, and freeze-as-trace.
@@ -88,6 +100,25 @@ The session file as a pure dict round trip (config never results), and the Help 
 - The session file (Save Config / Load Config / autosave)
 - The Help window's prose lives in `docs/help/`, not in Python
 
+## [`solve_numerics.md`](solve_numerics.md) — 8k
+
+The solver's failure paths: why `lstsq` is the last resort and what one bad
+frequency must do, the `pkg_rlc.physics.core` facade's load-bearing
+write-through, why `format_si` and `_validate_port_indices` sit where they do,
+the literal U+2029 in the parser, and the places the "coupling ratio" label is
+spelled.
+
+- The solver's failure paths (the long form of five `CLAUDE.md` invariants)
+- Measurement ports / coupling (Mode 6) — bit-exactness rules (moved from `CLAUDE.md`, 2026-09-12)
+
+## [`trace_model.md`](trace_model.md)
+
+Why the pi comes out EXACT rather than fitted, why differential needs no new mathematics and no new flag, the two capacitance conventions a differential shunt is ambiguous between, and the one sentence in `rejected_ui.md` that lets a schematic exist at all.
+
+- The trace pi model (`pkg_rlc/physics/tracemodel.py`, `pkg_rlc/present/tracemodel_report.py`)
+- Why the schematic is TEXT, and what would let it be a Canvas
+- What the CLI surface owes
+
 ## [`standalone_and_deploy.md`](standalone_and_deploy.md) — 18k
 
 `reduce_snp.py` (standalone, imports nothing from this repo), the air-gapped deploy pipeline, and running the Tk suite on its own Win32 desktop.
@@ -100,7 +131,9 @@ The session file as a pure dict round trip (config never results), and the Help 
 
 One row per test file: what it measures, which mutation it was checked against, and the numbers it pins. `CLAUDE.md` carries the one-line index into it.
 
+- Index — one line per file (moved from `CLAUDE.md`, 2026-09-12 — **start here**)
 - `tests/` — the suite, in the order it grew
+- Shard priority (moved from `CLAUDE.md`, 2026-09-12)
 
 ---
 

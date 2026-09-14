@@ -201,6 +201,7 @@ inert (and refused by name) without its lead flag:
 |---|---|---|
 | [Attribution](#running-it--cli) | `--attribute VICTIM,AGGRESSOR` | Of the `Z_ab` this spec produced, how much came from each termination you declared — and what it would be if any of them were different. |
 | [Cold start](#cold-start-which-ports-matter-before-you-have-a-spec) | `--cold-start VICTIM,AGGRESSOR` | Which ports the spec should have mentioned at all. Starts from **all-open** and sets your `--gnd` / `--short` aside, naming every one it set aside. |
+| [Trace model](#trace-model-what-is-this-routed-trace-as-a-circuit) | `--trace-model IN,OUT` | The routed trace between two measurement ports as an **exact** pi circuit — series R/L, shunt at each end — drawn with the values on it. Single-ended or differential. |
 
 They may be given together; the attribution prints first, because it explains the `M` printed
 immediately above it.
@@ -318,6 +319,7 @@ Beside the modes there is one **post-processing layer**, which is not a mode and
 | Layer | Module | Surface | What it answers |
 |-------|--------|---------|-----------------|
 | Port attribution | `pkg_rlc/physics/attrib.py` | **Analyze → Attribution…** (`pkg_rlc/panels/attrib_gui.py`), or `--attribute` | Of the `Z_ab` a mode just produced, how much is the bare EM coupling and how much is each termination you declared — and what the answer would be if any of them were different. Exact both ways. See [Port attribution](#port-attribution-where-a-coupling-number-comes-from). |
+| Trace model | `pkg_rlc/physics/tracemodel.py` | `--trace-model` (CLI) | What a routed trace IS, as a circuit: the exact pi between two measurement ports, drawn with R / L / C on it, single-ended or differential. Not a fit — a two-port's Y matrix and a pi are the same object. See [Trace model](#trace-model-what-is-this-routed-trace-as-a-circuit). |
 | Cold-start port screen | `pkg_rlc/physics/attrib.py` | `--cold-start` (CLI only) | Which ports matter *before* a spec exists. A bracket, a two-column ranking of every undeclared port, a pair scan, and a greedy cumulative curve — all from **all-open**, all exact. See [Cold start](#cold-start-which-ports-matter-before-you-have-a-spec). |
 
 ### Mode 4 is retired: VDD ports go into the GND field
@@ -900,6 +902,86 @@ rows are two real, independent ball inductances and nothing is said.
 
 Which spelling is right is a question about your package, not about this tool — but answer it
 on purpose rather than by default.
+
+---
+
+## Trace model: what IS this routed trace, as a circuit?
+
+You have an `.sNp` of a routed trace — an input, an output, a ground pin — and the question is
+not "what is `Z11`" but **"what is this thing, and what does it load my driver with?"**
+`--trace-model` answers it as a circuit:
+
+```bash
+python pkg_rlc_extractor.py --cli trace.s3p --mode coupling \
+    --mport "in = 1" --mport "out = 2" --gnd 3 \
+    --freq 0.1 --trace-model in,out
+```
+
+```
+Trace model (single-ended):  in -> out
+  @ 0.1 GHz
+
+                   R = 344 Ω   L = 1.69 nH
+             in *------------------------------*  out
+                |                              |
+                |R = 90 Ω              R = 90 Ω|
+                |C = 33.2 fF        C = 33.2 fF|
+                |                              |
+              --+---------------*--------------+--
+                           reference
+
+  series    |Q| = 0.003087   |Q| < 0.01: a resistor, the reactance is a residue -- do not read L or C
+  shunt_in  |Q| = 532.6      capacitive -- read C
+  shunt_out |Q| = 532.6      capacitive -- read C
+
+  lumped check   the same pi at the bottom of the sweep (100 MHz):
+                 series    R       344 Ω ->       338 Ω      -1.7 %
+                 shunt_in  C     33.2 fF ->     33.3 fF      +0.2 %
+                 shunt_out C     33.2 fF ->     33.3 fF      +0.2 %
+                 all branches within 10 % -- the values above are reusable across this band.
+```
+
+**It is not a fit.** A two-port's admittance matrix and a pi circuit are the same object, not an
+approximation of one another — `Y_series = -Ym`, `Y_shunt = Yii + Ym` is an identity — so every
+element comes out **exact at every frequency**, with no least-squares and no assumption that the
+two ends are symmetric. The single-ended case re-solves nothing at all: the 2×2 it needs is
+already inside the Z matrix the coupling report printed above it.
+
+**Read the `|Q|` before you read the `C`.** A branch with `|Q|` far below 1 is a *resistor* whose
+reactive part is too small to interpret. It will still print a capacitance — the sign is real and
+this tool never hides one — but that number is the reading of a fraction of an ohm, not a
+capacitor. The verdict column says so on every branch, because believing a `9.15 nF` that is
+really a `-0.17 Ω` residue is the most common way to misread the output.
+
+**The lumped check is what tells you whether the answer travels.** The same pi is re-read at the
+bottom of the sweep and the movement printed per branch: inside 10 % the values are reusable
+anywhere in the band, past it the structure is not one lumped pi and the values are good at that
+frequency only. Both points are already in the sweep, so it costs nothing.
+
+### Differential traces need no extra flag
+
+Declare both ends with a `/` and the same command gives you the differential pi — the probe model
+already ties a `+` and a `-` side into one measurement port:
+
+```bash
+python pkg_rlc_extractor.py --cli pair.s5p --mode coupling \
+    --mport "in = 1 / 2" --mport "out = 3 / 4" --gnd 5 \
+    --freq 0.1 --trace-model in,out
+```
+
+A 4-port file with no separate ground pin just leaves `--gnd` out. Both shapes work.
+
+Two things the differential report does that the single-ended one cannot:
+
+- **It prints both capacitance conventions.** The differential shunt is the capacitance *across
+  the pair* (`C12 + C1g/2`) — the loading a differential driver actually sees — and it is exactly
+  **half** the per-line odd-mode number an EM tool quotes. Both appear on the same line
+  (`C = 0.5 fF` / `(odd 1 fF)`), so a bare "C" is never ambiguous by a factor of two.
+- **It measures the imbalance.** A differential pi assumes common mode is OPEN at both ends,
+  which is exact for a symmetric pair and an *unstated assumption* otherwise. The report takes
+  the four ports single-ended, transforms to mixed mode and prints `max|Ydc| / max|Ydd|`; above
+  5 % it says the pair is imbalanced and that the pi is the differential part only. There is no
+  reference node in a differential drawing, and the drawing says that too.
 
 ---
 

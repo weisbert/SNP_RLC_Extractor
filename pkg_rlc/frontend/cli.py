@@ -138,6 +138,8 @@ from pkg_rlc.physics.core import (
     s_to_y,
     y_series_rlc,
 )
+import pkg_rlc.physics.tracemodel as tracemodel
+import pkg_rlc.present.tracemodel_report as tracemodel_report
 from pkg_rlc.present.csv import write_coupling_table
 from pkg_rlc.present.report import (
     COUPLING_FLOOR_DB,
@@ -417,6 +419,33 @@ def _make_arg_parser() -> argparse.ArgumentParser:
                              "mirror, the curve and the name-family "
                              "suggestions. One row per record, tagged by a "
                              "'section' column")
+
+    # ---- trace model (--mode coupling only) -------------------------------
+    #
+    # The fourth member of the same family as --attribute and --cold-start:
+    # one parent flag naming two measurement ports, inert without them, and
+    # refused by name in _run_cli when --mode is not coupling.  It needs NO
+    # differential flag -- an --mport with a '/' already declares a probe with
+    # a minus side, so `--mport "IN = 1 / 2"` makes compute_z_matrix return the
+    # DIFFERENTIAL 2x2 and the same pi identity reads the differential model
+    # off it.  A file with a separate ground pin just adds --gnd.
+    tm_grp = p.add_argument_group(
+        "trace model (--mode coupling only)",
+        "Read the routed trace between two measurement ports as an EXACT pi "
+        "circuit -- series R/L, and the shunt at each end -- and draw it with "
+        "the values on it. Not a fit: a two-port's Y matrix and a pi ARE the "
+        "same object, so the elements come out exact at the marker frequency.")
+    tm_grp.add_argument("--trace-model", default=None, metavar="IN,OUT",
+                        help="Two measurement ports naming the two ENDS of the "
+                             "trace, e.g. --trace-model in,out. Each side is "
+                             "named exactly as --attribute names its own: an "
+                             "--mport name, or a 1-based position in the "
+                             "--mport list. Declare both ends with '/' "
+                             "(--mport \"in = 1 / 2\") for a differential "
+                             "trace; the report then also measures how much "
+                             "differential energy the pair converts to common "
+                             "mode, which is the one thing a differential pi "
+                             "cannot represent.")
 
     # ---- composition (several files as one network) -----------------------
     # Its own group for the same reason the two above have one: every flag
@@ -1662,6 +1691,113 @@ def _run_cold_start(args: argparse.Namespace, ts, Y: np.ndarray, term,
 
 
 # ============================================================================
+# Trace model (--trace-model):  the routed trace, as a pi circuit, drawn
+# ============================================================================
+#
+# A LAYER over the coupling solve, not a mode -- the same relationship
+# `--attribute` has to it.  Nothing here re-solves in the single-ended case:
+# `Zmat` IS the open-circuit matrix, so the 2x2 sub-block over two measurement
+# ports is already the two-port Z the pi identity wants, with every
+# termination, short, lumped element and merged node baked into it.
+#
+# The ONE extra solve is the differential imbalance check, and it is one
+# frequency wide: four single-ended probes on the same four ports, solved on a
+# one-element slice of the sweep.  That check exists because the differential
+# pi assumes common mode OPEN at both ends -- exact for a symmetric pair, and
+# an UNSTATED ASSUMPTION otherwise, which is the shape of mistake `attrib` was
+# written to stop this tool making.
+
+
+def _tm_single_ports(entry) -> tuple[int | None, int | None]:
+    """
+    An --mport entry as (plus, minus) 1-based ports, or (None, None).
+
+    Only a probe whose two sides are ONE port each can be taken apart into the
+    four single-ended ports the imbalance check needs.  A side that ties
+    several ports together is a legitimate measurement port and gives a
+    legitimate differential pi; it just has no four-port decomposition, so the
+    check is skipped and the report says that it was.
+    """
+    _name, plus, minus = entry
+    if len(plus) != 1 or len(minus) != 1:
+        return (None, None)
+    return (int(plus[0]), int(minus[0]))
+
+
+def _run_trace_model(args: argparse.Namespace, ts, Y: np.ndarray, term,
+                     mports, gnd, short_pairs, names: list[str],
+                     Zmat: np.ndarray, f_target_hz: float, net=None) -> int:
+    """Print the pi model of the trace between two measurement ports."""
+    try:
+        in_tok, out_tok = _attr_parse_pair(args.trace_model)
+    except ValueError as e:
+        print(f"ERROR: --trace-model {e}", file=sys.stderr)
+        return 2
+    try:
+        i, notes_i = _attr_resolve_port(in_tok, names)
+        j, notes_j = _attr_resolve_port(out_tok, names)
+    except ValueError as e:
+        print(f"ERROR: --trace-model: {e}", file=sys.stderr)
+        return 2
+    if i == j:
+        print(f"ERROR: --trace-model needs the two ENDS of one trace, but "
+              f"both sides resolved to measurement port '{names[i]}'. A pi "
+              f"has two nodes.", file=sys.stderr)
+        return 2
+    for n in notes_i + notes_j:
+        print(f"  NOTE: {n}")
+
+    # Zmat is the OPEN-CIRCUIT matrix, so its 2x2 sub-block over these two
+    # ports IS the two-port Z with every other measurement port open -- which
+    # is exactly the definition of one.  No re-solve.
+    sel = np.array([i, j])
+    Z2 = Zmat[:, sel[:, None], sel[None, :]]
+
+    differential = bool(mports[i][2]) or bool(mports[j][2])
+    model = tracemodel.extract_pi_at(ts.freqs, Z2, f_target_hz,
+                                     names[i], names[j], differential)
+    reference = tracemodel.extract_pi_at(ts.freqs, Z2, float(ts.freqs[0]),
+                                         names[i], names[j], differential)
+
+    mc: float | None = None
+    port_note = ""
+    if differential:
+        pi_plus, pi_minus = _tm_single_ports(mports[i])
+        pj_plus, pj_minus = _tm_single_ports(mports[j])
+        if net is not None:
+            port_note = ("imbalance check skipped on a composed network -- "
+                         "the four ports live in different files.")
+        elif None in (pi_plus, pi_minus, pj_plus, pj_minus):
+            port_note = ("imbalance check skipped -- a probe side ties more "
+                         "than one port, which has no four-port form.")
+        else:
+            four = [(f"{names[i]}_p", [pi_plus], []),
+                    (f"{names[i]}_n", [pi_minus], []),
+                    (f"{names[j]}_p", [pj_plus], []),
+                    (f"{names[j]}_n", [pj_minus], [])]
+            k = int(np.argmin(np.abs(ts.freqs - f_target_hz)))
+            try:
+                term4 = build_terminations_coupling(four, gnd, short_pairs,
+                                                    nports=ts.nports)
+                Z4, _n4, _w4 = compute_z_matrix(Y[k:k + 1],
+                                                ts.freqs[k:k + 1], term4)
+                mc = tracemodel.mode_conversion_ratio(Z4[0])
+            except ValueError as e:
+                port_note = f"imbalance check skipped -- {e}"
+        if not port_note:
+            port_note = (f"differential nodes: {names[i]} = "
+                         f"({pi_plus})-({pi_minus}), {names[j]} = "
+                         f"({pj_plus})-({pj_minus})")
+
+    snap = _cli_marker(ts.freqs, f_target_hz, model.freq_hz)
+    for line in tracemodel_report.pi_report_lines(
+            model, freq_snap=snap, reference=reference,
+            mode_conversion=mc, port_note=port_note):
+        print(line)
+    return 0
+
+
+# ============================================================================
 # Composition (--compose):  several files measured as ONE network
 # ============================================================================
 #
@@ -2840,6 +2976,13 @@ def _run_cli(args: argparse.Namespace) -> int:
                   "coupling --mport \"vic = 1\" --mport \"agg = 2\" "
                   "--cold-start vic,agg)", file=sys.stderr)
             return 2
+        if args.trace_model:
+            print("ERROR: --trace-model is only valid with --mode coupling: "
+                  "it names the two ENDS of the trace as measurement ports, "
+                  "and those exist only where --mport defines them (e.g. "
+                  "--mode coupling --mport \"in = 1\" --mport \"out = 2\" "
+                  "--trace-model in,out)", file=sys.stderr)
+            return 2
         if args.mode == "gnd":
             if not a:
                 print("ERROR: --porta required", file=sys.stderr)
@@ -2981,6 +3124,18 @@ def _run_cli(args: argparse.Namespace) -> int:
             rc = _run_cold_start(args, ts, Y, term, names,
                                  baseline=attr_baseline,
                                  extra_notes=attr_notes, net=net)
+            if rc:
+                return rc
+
+        if args.trace_model:
+            # Last of the three, and for the same reason each of the others
+            # sits where it does: this one re-reads the SAME Zmat printed
+            # above as a circuit, so it belongs after the numbers it is a
+            # picture of.  It costs no solve at all in the single-ended case
+            # -- the 2x2 it needs is a sub-block of the matrix already in
+            # hand, because Zmat IS the open-circuit matrix.
+            rc = _run_trace_model(args, ts, Y, term, mports, g, sp,
+                                  names, Zmat, f_target_hz, net=net)
             if rc:
                 return rc
 

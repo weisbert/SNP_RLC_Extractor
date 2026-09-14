@@ -7,6 +7,74 @@ resolves. **These rules are exactly as binding as the ones that stayed.**
 The index is `docs/conventions/README.md` and the pointer table is in
 `CLAUDE.md` under "The rest of the rules live in `docs/conventions/`".*
 
+## Index — one line per file
+
+*Moved verbatim from `CLAUDE.md` on 2026-09-12, where its heading read: `tests/` — one line each; the full account is `docs/conventions/test_suite_map.md`. It sits above the account it indexes.*
+
+**The prose that used to be here — what each file measured, which mutation it was
+checked against, the numbers it pins — is `docs/conventions/test_suite_map.md`,
+moved verbatim.** This table is the index into it: enough to answer "what do I
+run after changing X", not enough to answer "why does that test exist".
+
+| File | Guards |
+|-------------------------|---------------------------------------------------------|
+| `tests/run_parallel.py` | **THE runner.** Class-sharded, longest-first; `-m <substr>` picks modules by name. Not auto-discovered. |
+| `tests/test_run_parallel.py` | The runner itself: the contention rule, the atomic registry, the heartbeat, the BelowNormal shard spawn. |
+| `tests/test_tracemodel.py` | The trace pi model: the identity is exact on an ASYMMETRIC network (and the fit it replaces is not), both differential routes agree, the imbalance metric, the drawing's columns. |
+| `tests/test_layering.py` | The import-layering gate — folder IS the layer, acyclicity, `KNOWN_BACK_IMPORTS` in both directions. |
+| `tests/test_golden_regression.py` | **The bit-exactness guard.** Replays `golden_legacy.npz` through the current API with `assert_array_equal`. |
+| `tests/_golden_capture.py` | Regenerates `golden_legacy.npz`. Not auto-discovered. Only in the commit that justifies moving it. |
+| `tests/generate_test_snp.py` | Builds the synthetic fixtures with analytically known R/L/C/M. |
+| `tests/test_parse_diagnostics.py` | Robust reading: every refusal pins the verdict AND the line number; recovery cases; out-of-order sweeps. |
+| `tests/test_large_files.py` | How big a file the tool will read, and what it says when it will not. |
+| `tests/test_content_sniffer.py` | The content-based Touchstone parser and the port-count sniffer. |
+| `tests/test_port_parser.py` | `parse_port_range` / `parse_short_pairs`, and the range in the Mode 5 DSL's leading port field. |
+| `tests/test_freq_label.py` | The marker frequency says where the numbers came from — pane and CLI render one `FreqSnap` identically. |
+| `tests/test_core.py` | Parser edges, port ranges, terminations and their precedence, Schur fallback, the one-bad-frequency NaN. |
+| `tests/test_connection_rows.py` | Rows ↔ DSL round trip; rows reproduce modes 1/2/3 *including* the ground-wins overlap. |
+| `tests/test_conn_nets.py` | Named merged nodes and the parallel-stamp refusal (10 fH typed reads 3.333 fH). |
+| `tests/test_conn_rowshape.py` | Per-kind row shape over all 63 kind subsets; the footer route. Drives real widgets — slow. |
+| `tests/test_row_table.py` | The `RowTable` widget, the legacy migrations, and that Duplicate shares no list. |
+| `tests/test_mode5_editor.py` | The text ↔ rows import decision, both strips, per-mode visibility, the measured layout numbers. |
+| `tests/test_editor_scroll.py` | The editor keeps the reader's place when the TRACE changes, and only then. |
+| `tests/test_editor_autoapply.py` | When the editor writes into a `TraceConfig` and which one; the style picker; plot visibility; the three CLEARS. |
+| `tests/test_port_roles.py` | `port_roles`, `row_sources`, the open-port name check, and the Ports & Roles window. |
+| `tests/test_freeze_trace.py` | Freeze's copy rules, both refusals, the label budget, the CSV provenance, the session round trip. |
+| `tests/test_session.py` | Save / Load / Restore Last Session — and that the Help window's tab strip still fits. |
+| `tests/test_results_notebook.py` | The Log is tab 0, selected and MAPPED at startup; the width-stable badge; severity routing. |
+| `tests/test_results_views.py` | The three views, the measured 144-column budget, that a trace name is never elided, and the Digits control. |
+| `tests/test_report_readability.py` | The ranked/floored coupling list, the coloured Listbox, the tagged swatch, the footer summary. |
+| `tests/test_run_history.py` | The run tabs: both caps, eviction, the stale banner, the conditional auto-switch, Keep at 150%. |
+| `tests/test_run_snapshot.py` | The rendered page is byte-identical to `render_reference.json`; no per-frequency array is reachable from a run. |
+| `tests/_render_capture.py` | Regenerates `render_reference.json`, and knows the renderers' signatures. Not auto-discovered. |
+| `tests/test_plot_controls.py` | The control strip wraps and drops nothing, at any width; the two `ReflowRow` re-place bugs. |
+| `tests/test_plot_axes.py` | What range the axes show and what unit they say; the drawable-extent override; pad Y, never pad X. |
+| `tests/test_plot_readout.py` | One cursor gets ONE readout: no two texts overlap, none leaves its axes; it follows Digits. |
+| `tests/test_attrib_core.py` | Attribution's twelve requirements, and the reconciliation of every what-if against an honest recompute. |
+| `tests/test_attrib_vs_engine.py` | A deliberately INDEPENDENT second opinion on decomposition == engine; 4000-spec fuzz. |
+| `tests/test_attrib_degenerate.py` | What attribution does when the spec, the network or the data is broken — every case yields a plausible number. |
+| `tests/test_attrib_coldstart.py` | The cold-start closed form against an honest re-solve; the bracket, the pair scan, the shield. |
+| `tests/test_attrib_cli_coldstart.py` | `--cold-start`: the flag refusals, the printed ORDER, the CSV round trip, the line-width budget. |
+| `tests/test_attrib_cli.py` | `--attribute` end to end: every refusal names what was wrong, the printed ORDER, the CSV. |
+| `tests/test_attrib_window.py` | The Attribution window in isolation — pure formatters with no display, plus real Tk at 100% and 150%. |
+| `tests/test_attrib_gui_integration.py` | The same window END TO END through the real app. Owns the JOIN between the hooks and the window. |
+| `tests/test_attrib_golden.py` | The window's TEXT, pinned byte for byte over 56 cases. Creates no Tk root, but imports tkinter. |
+| `tests/_attrib_capture.py` | Regenerates `tests/fixtures/attrib_reference/`. Not auto-discovered. |
+| `tests/test_attrib_composed.py` | The composed-network gauge inside `pkg_rlc.physics.attrib`; `_island_elements` fuzzed. |
+| `tests/test_compose.py` | Composition arithmetic: the weld, the reference check, the frequency plan, the pre-reduction, the export. |
+| `tests/test_compose_cli.py` | Every `--compose-*` refusal BY TOKEN; the namespace surviving in and out; R2-8 as a capability. |
+| `tests/test_multifile_session.py` | The multi-file SCHEMA — a single-file trace's JSON stays byte-identical. |
+| `tests/test_multifile_table.py` | The files window and the measured 7-character port-cell budget. |
+| `tests/test_multifile_engine.py` | What Calculate DOES with several files, and the surfaces that have to say so. |
+| `tests/test_cli_golden.py` | Replays `tests/fixtures/cli_reference/` byte for byte; the flag matrix is self-guarding. |
+| `tests/_cli_capture.py` | Regenerates `cli_reference/` over 143 in-process invocations. Not auto-discovered. |
+| `tests/test_cli_coupling_report.py` | The three coupling-report cases no shipped `.sNp` produces (`\|k\|>1`, an undefined rank key, the alarm). |
+| `tests/test_coupling.py` | The coupling matrix, degenerate probes, the ranked report, the fits. |
+| `tests/test_reduce_snp.py` | `reduce_snp.py`: tied ports, port ranges, and the config file read as it was written. |
+| `tests/_isolated_desktop.py` | Runs a child on its own Win32 desktop object. **NOT wired into the runner.** Not auto-discovered. |
+| `tests/_smoke.py` | Manual sanity-check script. Not auto-discovered. |
+| `tests/_repackage.py` | The one-shot move of the 25 flat modules into `pkg_rlc/`, committed so it reads as a diff. Not auto-discovered. |
+
 ### `tests/` — the suite, in the order it grew
 
 | File                    | Responsibility                                                                  |
@@ -58,3 +126,24 @@ The index is `docs/conventions/README.md` and the pointer table is in
 | `tests/test_attrib_golden.py` | The Attribution window's TEXT, pinned byte for byte (12 tests, 0.33 s). Written for the report-unification phase, whose whole acceptance criterion is "the window's text did not move" and which is unverifiable without a BEFORE. 56 cases chosen for breadth of output SHAPE: every decomposable quantity (including `Z`, the only two-value-column one) and every one refused BY NAME; the reconciliation's three verdicts plus the WITHHELD clause; the declared / diagonal / shared-return ground models on the spec measured at **1.0120 nH independent against 2.0259 nH shared**; a composed network with and without the `BaselineLinks` gauge (the far file's ground ball is **exactly 0** without it and **+254 pH** with it); a sweep with the documented **505 nH** pole and `decap`'s exactly-constant one with none; the singular baseline naming what it folded; a NaN, a signed infinity and an exact zero in one table; and both units modes. |
 | `tests/_isolated_desktop.py` | **Runs a child process on its own Win32 desktop OBJECT** (`CreateDesktopW` + `STARTUPINFO.lpDesktop`, stdlib `ctypes` only), so a Tk-driven shard throws its windows nowhere the user can see and cannot steal their focus. `run()` returns a `subprocess.CompletedProcess`, i.e. a drop-in for the `subprocess.run` in `run_shard` — but it is NOT wired in yet. NOT auto-discovered (leading underscore). The finding and the reproduction commands are `docs/test_isolation.md`; see "Hiding the GUI tests" below. |
 | `tests/_smoke.py`       | Manual sanity-check script (NOT auto-discovered by `unittest`). |
+
+### Shard priority (moved verbatim from CLAUDE.md § How to run tests, 2026-09-12)
+
+- **Shards run at BELOW NORMAL priority on Windows, and that is free.** The user works on
+  this box while the suite runs; a full run is 4-8 test processes for six to ten minutes,
+  and at NORMAL priority that is head-on competition with whatever they are doing.
+  `run_parallel._priority_kwargs()` returns
+  `{"creationflags": subprocess.BELOW_NORMAL_PRIORITY_CLASS}` on Windows and `{}` everywhere
+  else — the guard tests **both** `sys.platform` and `hasattr`, because the constant does not
+  exist in `subprocess` off Windows (`sys.platform` alone is an AttributeError on POSIX;
+  `hasattr` alone is a silent no-op). **BelowNormal, not Idle**: Idle is starved by anything
+  that compiles, so a suite at Idle stops making progress exactly when the user is busiest,
+  which is when it was left running. Measured, two adjacent runs at ONE worker count on one
+  tree (2522 tests / 452 shards, 20 cores, sibling test processes live throughout): `-j 4`
+  NORMAL **461.7 s** against `-j 4` BelowNormal **464.6 s**, i.e. **+0.6%**, noise.
+  `--fast -j 4` is 10.2 s BelowNormal against 10.6 s NORMAL. Verified on a real process
+  rather than inferred — `(Get-Process -Id N).PriorityClass` reads BelowNormal through
+  `run_shard`'s spawn and Normal through the same spawn without the flag. The `-j 8` NORMAL
+  (414.2 s) vs `-j 4` BelowNormal (464.6 s) gap quoted in the docstring is the WORKER COUNT,
+  not the priority: the same `-j 8` NORMAL run repeated during a contention spike read
+  **648.1 s**. Read the exit code, not the clock.

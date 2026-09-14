@@ -571,6 +571,33 @@ CASES: list[CliCase] = [
        "--cli", DIFF, "--mode", "coupling", "--mport", "vic = 1",
        "--mport", "agg = 2", "--cold-start", "vic,ghost"),
 
+    # --------------------------------------------------------- --trace-model
+    # pi_2port.s2p carries its own truth in its header (R_series = 1.0,
+    # L_series = 1e-9, C_shunt_each_port = 1e-15) and diff_pair_4port.s4p
+    # carries L_loop = 8e-9, so these two cases pin the NUMBERS and not just
+    # the layout -- a reference that only froze the drawing would let the
+    # elements drift silently underneath it.
+    _c("trace_model_single", "the single-ended pi, drawn, on a known network",
+       "--cli", PI, "--mode", "coupling", "--mport", "in = 1",
+       "--mport", "out = 2", "--freq", "1.0", "--trace-model", "in,out"),
+    _c("trace_model_diff",
+       "a differential trace: both ends probed, plus the imbalance check",
+       "--cli", DIFF, "--mode", "coupling", "--mport", "in = 1 / 2",
+       "--mport", "out = 3 / 4", "--freq", "1.0",
+       "--trace-model", "in,out"),
+    _c("trace_model_by_position", "positions instead of names, as --attribute",
+       "--cli", PI, "--mode", "coupling", "--mport", "in = 1",
+       "--mport", "out = 2", "--freq", "1.0", "--trace-model", "1,2"),
+    _c("trace_model_wrong_mode", "--trace-model outside coupling mode",
+       "--cli", PI, "--mode", "gnd", "--porta", "1", "--freq", "1.0",
+       "--trace-model", "in,out"),
+    _c("trace_model_same_port", "a pi has two nodes, so the ends must differ",
+       "--cli", PI, "--mode", "coupling", "--mport", "in = 1",
+       "--mport", "out = 2", "--freq", "1.0", "--trace-model", "in,in"),
+    _c("trace_model_unknown_name", "a name that is not a measurement port",
+       "--cli", PI, "--mode", "coupling", "--mport", "in = 1",
+       "--mport", "out = 2", "--freq", "1.0", "--trace-model", "in,ghost"),
+
     # ------------------------------------------------------------- --compose
     _c("compose_no_cli", "--compose without --cli would drop every extra file",
        "--compose", f"PKG={D4}", G2),

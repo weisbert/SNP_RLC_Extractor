@@ -1187,3 +1187,80 @@ Calculate the bare EM trace, right-click it in the Traces list ->
 Freeze as new trace, then add the package and Calculate again. The
 two rows sit side by side in the results table, and the frozen one
 can never be recalculated or edited by accident.
+
+
+===========================================================
+THE TRACE MODEL  (--trace-model IN,OUT)
+===========================================================
+
+"What IS this routed trace, as a circuit, and what are its
+element values?"  Give it the two measurement ports that are the
+two ENDS of the trace and it prints the pi -- series R and L, and
+the shunt at each end -- drawn, with every value on the drawing.
+
+    --mode coupling --mport "in = 1" --mport "out = 2" \
+    --gnd 3 --freq 0.1 --trace-model in,out
+
+IT IS NOT A FIT
+---------------
+A two-port's Y matrix and a pi circuit are the same object, not
+an approximation of one another, so the elements come out EXACT
+at the frequency you ask for.  Nothing is least-squared, nothing
+assumes the two ends are symmetric, and the single-ended case
+re-solves nothing at all -- the 2x2 it needs is already inside
+the Z matrix the coupling report above it just printed.
+
+DIFFERENTIAL: NO EXTRA FLAG
+---------------------------
+Declare both ends with a '/' and you get the differential pi:
+
+    --mport "in = 1 / 2" --mport "out = 3 / 4" --gnd 5 \
+    --freq 0.1 --trace-model in,out
+
+A file with a separate ground pin just adds --gnd; a 4-port file
+with no ground pin leaves it out.  Both work.
+
+The differential shunt is the capacitance ACROSS THE PAIR --
+what a differential driver actually sees -- and it is HALF the
+per-line odd-mode capacitance an EM tool usually quotes.  The
+report prints both on the same line so there is nothing to guess:
+
+    C = 0.5 fF          (across the pair)
+    (odd 1 fF)          (per line, odd mode)
+
+It also measures how much differential energy the pair converts
+to common mode.  The differential pi assumes common mode OPEN at
+both ends, which is exact for a symmetric pair and an unstated
+assumption otherwise, so the report states it: above 5 % the pair
+is imbalanced and the pi is the differential part only.
+
+READ THE |Q| BEFORE YOU READ THE C
+----------------------------------
+Every branch prints its own |Q| and what follows from it:
+
+    series    |Q| = 0.003087   a resistor, the reactance is a
+                               residue -- do not read L or C
+    shunt_in  |Q| = 532.6      capacitive -- read C
+
+|Q| far below 1 means the branch is a RESISTOR whose reactive
+part is too small to interpret.  A series branch like that will
+still print a capacitance -- it has to, the sign is real -- but
+that number is the reading of a fraction of an ohm, not a
+capacitor.  This is the most common way to misread the tool.
+
+IS IT ONE LUMPED ELEMENT ACROSS YOUR BAND?
+------------------------------------------
+The report re-reads the same pi at the BOTTOM of the sweep and
+prints the movement per branch.  Inside 10 % the values are
+reusable anywhere in the band; past it the structure is not one
+lumped pi and the values are good at that frequency only.  This
+costs no extra solve -- both points are already in the sweep.
+
+IF YOUR WORKING FREQUENCY IS BELOW THE FILE
+-------------------------------------------
+The marker resolves to the nearest swept point and the report
+always prints BOTH the point it used and the frequency you
+asked for, so you are never answered silently at a frequency you
+did not choose.  Whether that reads as a note or as an "outside
+the swept band" warning depends on how coarse the grid is at
+that end.

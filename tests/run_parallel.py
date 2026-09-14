@@ -253,6 +253,12 @@ FAST_MODULES = (
     "test_compose_cli",
     "test_attrib_composed",
     "test_conn_nets",
+    # The trace pi model.  Same one property: `pkg_rlc.physics.tracemodel`
+    # imports `pkg_rlc.physics.core` only, `pkg_rlc.present.tracemodel_report`
+    # reaches no further than L3, and the end-to-end cases drive
+    # `pkg_rlc.frontend.cli.main` through argv, which never imports tkinter.
+    # Measured on this box, serially: 38 tests / 0.078 s.
+    "test_tracemodel",
 )
 
 _RAN_RE = re.compile(r"Ran (\d+) test")
