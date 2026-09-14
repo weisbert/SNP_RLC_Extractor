@@ -319,7 +319,7 @@ Beside the modes there is one **post-processing layer**, which is not a mode and
 | Layer | Module | Surface | What it answers |
 |-------|--------|---------|-----------------|
 | Port attribution | `pkg_rlc/physics/attrib.py` | **Analyze → Attribution…** (`pkg_rlc/panels/attrib_gui.py`), or `--attribute` | Of the `Z_ab` a mode just produced, how much is the bare EM coupling and how much is each termination you declared — and what the answer would be if any of them were different. Exact both ways. See [Port attribution](#port-attribution-where-a-coupling-number-comes-from). |
-| Trace model | `pkg_rlc/physics/tracemodel.py` | `--trace-model` (CLI) | What a routed trace IS, as a circuit: the exact pi between two measurement ports, drawn with R / L / C on it, single-ended or differential. Not a fit — a two-port's Y matrix and a pi are the same object. See [Trace model](#trace-model-what-is-this-routed-trace-as-a-circuit). |
+| Trace model | `pkg_rlc/physics/tracemodel.py` | **Analyze → Trace model…** (`pkg_rlc/panels/tracemodel_gui.py`), the Traces right-click, or `--trace-model` | What a routed trace IS, as a circuit: the exact pi between two measurement ports, drawn with R / L / C on it, single-ended or differential. Not a fit — a two-port's Y matrix and a pi are the same object. See [Trace model](#trace-model-what-is-this-routed-trace-as-a-circuit). |
 | Cold-start port screen | `pkg_rlc/physics/attrib.py` | `--cold-start` (CLI only) | Which ports matter *before* a spec exists. A bracket, a two-column ranking of every undeclared port, a pair scan, and a greedy cumulative curve — all from **all-open**, all exact. See [Cold start](#cold-start-which-ports-matter-before-you-have-a-spec). |
 
 ### Mode 4 is retired: VDD ports go into the GND field
@@ -909,7 +909,26 @@ on purpose rather than by default.
 
 You have an `.sNp` of a routed trace — an input, an output, a ground pin — and the question is
 not "what is `Z11`" but **"what is this thing, and what does it load my driver with?"**
-`--trace-model` answers it as a circuit:
+
+### In the GUI
+
+1. Load the file, set the trace to **Mode 6**, and declare **exactly two** measurement ports —
+   the IN end and the OUT end. (For a differential trace give each one a minus side too.)
+2. **Calculate.**
+3. **Analyze → Trace model…**, or right-click the trace, or follow the pointer line the Results
+   pane prints under the coupling block.
+
+The window draws the circuit with every element value on it, and under the drawing puts the three
+things you need before believing any of them: each branch's `|Q|` and whether to read it as R, L
+or C; the same pi re-read at the bottom of the sweep, so you can see whether it is one lumped
+element across your band; and, for a pair, how much differential energy it converts to common
+mode. It is modeless — keep it open beside the main window while you edit — and it tells you when
+the spec has moved underneath it rather than quietly redrawing.
+
+Two measurement ports means no picker: they *are* the two ends, in the order you declared them.
+More than two is a coupling study, and the window says so instead of guessing.
+
+### The same thing from the command line
 
 ```bash
 python pkg_rlc_extractor.py --cli trace.s3p --mode coupling \

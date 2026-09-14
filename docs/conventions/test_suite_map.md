@@ -20,6 +20,7 @@ run after changing X", not enough to answer "why does that test exist".
 |-------------------------|---------------------------------------------------------|
 | `tests/run_parallel.py` | **THE runner.** Class-sharded, longest-first; `-m <substr>` picks modules by name. Not auto-discovered. |
 | `tests/test_run_parallel.py` | The runner itself: the contention rule, the atomic registry, the heartbeat, the BelowNormal shard spawn. |
+| `tests/test_tracemodel_window.py` | The Trace Model window, in two halves: PURE (refusal, end resolution, staleness) off fakes, and TK off a real App — where the fixture's own header values are asserted **off the canvas items**. Not in `FAST_MODULES`: it imports tkinter. |
 | `tests/test_tracemodel.py` | The trace pi model: the identity is exact on an ASYMMETRIC network (and the fit it replaces is not), both differential routes agree, the imbalance metric, the drawing's columns. |
 | `tests/test_layering.py` | The import-layering gate — folder IS the layer, acyclicity, `KNOWN_BACK_IMPORTS` in both directions. |
 | `tests/test_golden_regression.py` | **The bit-exactness guard.** Replays `golden_legacy.npz` through the current API with `assert_array_equal`. |

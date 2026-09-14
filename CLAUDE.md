@@ -140,6 +140,7 @@ row changes.
 | `pkg_rlc/panels/panels_results.py` | **The Results pane** (L5): `ResultsPanel` — the header strip, the notebook, the Log tab and its badge, the run pages with keep / evict, both menus, `_tag_swatch_rows`. Imports L0–L4 only. |
 | `pkg_rlc/panels/panels_editor.py` | **The editor** (L5): `EditorPanel` — the pinned footer, the mode-aware form, both `RowTable`s, the strips, the text hatch, the auto-apply sync chain, and `StylePicker`. Imports L0–L4 only. |
 | `pkg_rlc/panels/files_gui.py` | **Which FILES a trace is made of** (round 3): the `Files in this trace…` window, the port-cell scope rules and the GUI rendering of the reference-node check. **It imports `pkg_rlc.frontend.app` NOT AT ALL.** |
+| `pkg_rlc/panels/tracemodel_gui.py` | **The Trace Model window** — a modeless `Toplevel` over `pkg_rlc.physics.tracemodel` whose schematic is a `tk.Canvas` (the ONE form `rejected_ui.md` sanctions), plus the pure formatters it is testable through with no display. **Every coordinate comes from L3; it authors no geometry.** Imports `pkg_rlc.frontend.app` NOT AT ALL. |
 | `pkg_rlc/panels/attrib_gui.py` | **The Attribution window** — a modeless `Toplevel` over `pkg_rlc.physics.attrib` — plus the pure formatters it is testable through with no display. **It imports NOTHING back and has no deferred imports left.** |
 
 ### L6 — `pkg_rlc/frontend/` (the App itself and the argv entry point)

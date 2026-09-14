@@ -80,6 +80,10 @@ from pkg_rlc.present.report import (
     run_stale_banner,
     run_tab_label,
 )
+from pkg_rlc.panels.tracemodel_gui import (
+    TRACE_MODEL_MENU_LABEL,
+    refresh_trace_model_windows,
+)
 from pkg_rlc.panels.attrib_gui import ATTRIB_MENU_LABEL, refresh_attribution_windows
 
 
@@ -484,6 +488,12 @@ class ResultsPanel:
         # tail was shortened around them to bring the whole sentence inside the
         # pane's measured 144 columns; it was 147, so the ROUTE was the part
         # falling off the right-hand edge.
+        if any(len(b.cres.names) == 2 for b in shown_blocks):
+            segs.append((
+                f"  what this trace IS as a circuit, drawn with R / L / C on "
+                f"it: select the trace \u2192 Analyze \u2192 "
+                f"{TRACE_MODEL_MENU_LABEL} (or its right-click menu)",
+                (), LOG_INFO))
         if any(b.cres.pairs for b in shown_blocks):
             segs.append((
                 f"  where each M above comes from, and what would move it: "
@@ -582,6 +592,7 @@ class ResultsPanel:
         if self.app._last_run is not None and (self.app._last_run.rows
                                            or self.app._last_run.blocks):
             refresh_attribution_windows(self.app, rerender=True)
+            refresh_trace_model_windows(self.app, rerender=True)
 
     def _on_digits_changed(self) -> None:
         """Repaint every page -- and the PLOT -- at the newly chosen digits.

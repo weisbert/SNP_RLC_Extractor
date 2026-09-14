@@ -101,6 +101,9 @@ from pkg_rlc.model.validate import (
     scope_echo_messages,
     trace_is_composed,
 )
+from pkg_rlc.panels.tracemodel_gui import (
+    refresh_trace_model_windows,
+)
 from pkg_rlc.panels.attrib_gui import (
     live_windows as attribution_windows,
     refresh_attribution_windows,
@@ -1253,6 +1256,7 @@ class EditorPanel:
         # function.  `_strips_wanted` is what gets us here at all in mode 6;
         # see the note there.
         refresh_attribution_windows(self.app)
+        refresh_trace_model_windows(self.app)
         # The file windows get the whole picture rather than a banner, because
         # unlike an Attribution table nothing in them is a computed NUMBER:
         # the alias legend, the port counts and the spec problems are all

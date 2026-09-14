@@ -425,6 +425,119 @@ class TestReportRendering(unittest.TestCase):
         self.assertTrue(any(tmr.OHM in x for x in self._lines()))
 
 
+class TestCanvasGeometry(unittest.TestCase):
+    """
+    The DRAWN schematic, asserted with no Tk root at all.
+
+    `rejected_ui.md` allows a schematic only as "a `tk.Canvas` in a Toplevel",
+    and the geometry lives at L3 precisely so the half that can be wrong
+    silently -- where things are -- is testable in `FAST_MODULES` rather than
+    behind a widget test that takes seconds and a display.
+    """
+
+    def _items(self, **kw):
+        Z = pi_Z(344, 1.69e-9, 33.2e-15, 90.0, 33.2e-15, 90.0, 1e8)
+        m = tm.extract_pi(Z, 1e8, "in(1)", "out(2)", **kw)
+        return m, tmr.pi_canvas_items(m)
+
+    def test_nothing_is_drawn_outside_the_canvas(self):
+        """A clipped value is a wrong value that looks like a right one."""
+        for kw in ({}, dict(differential=True)):
+            with self.subTest(kw=kw):
+                _m, items = self._items(**kw)
+                for it in items:
+                    for k, c in enumerate(it.coords):
+                        lim = tmr.CANVAS_W if k % 2 == 0 else tmr.CANVAS_H
+                        self.assertGreaterEqual(c, 0, f"{it}")
+                        self.assertLessEqual(c, lim, f"{it}")
+
+    def test_it_scales_with_the_canvas(self):
+        """Coordinates are derived, not hard-coded, so a resize follows."""
+        m, _ = self._items()
+        big = tmr.pi_canvas_items(m, tmr.CANVAS_W * 2, tmr.CANVAS_H * 2)
+        small = tmr.pi_canvas_items(m, tmr.CANVAS_W, tmr.CANVAS_H)
+        self.assertEqual(len(big), len(small))
+        for a, b in zip(big, small):
+            self.assertEqual(a.kind, b.kind)
+            for ca, cb in zip(a.coords, b.coords):
+                self.assertAlmostEqual(ca, cb * 2, places=6)
+
+    def test_the_single_ended_drawing_has_a_ground_symbol(self):
+        _m, items = self._items()
+        self.assertTrue(any(it.role == "gnd" for it in items))
+        self.assertTrue(any(it.text == "reference" for it in items))
+
+    def test_the_differential_drawing_has_NO_ground_symbol(self):
+        """
+        Same rule as the text drawing, on the other surface.
+
+        A differential pi's shunt goes between the two conductors; there is no
+        reference node to draw, and drawing one would be a lie that reads as a
+        diagram.
+        """
+        _m, items = self._items(differential=True)
+        self.assertFalse(any(it.role == "gnd" for it in items))
+        self.assertFalse(any(it.text == "reference" for it in items))
+        self.assertTrue(any("across the pair" in it.text for it in items))
+
+    def test_every_element_value_reaches_the_drawing(self):
+        """
+        The drawing and the text block read the same `branch_value_lines`,
+        so a value can never appear on one surface and not the other.
+        """
+        m, items = self._items()
+        drawn = {it.text for it in items if it.kind == "text"}
+        for b in m.branches:
+            for want in tmr.branch_value_lines(m, b)[:2]:
+                self.assertIn(want, drawn)
+
+    def test_both_end_node_names_are_drawn(self):
+        m, items = self._items()
+        drawn = {it.text for it in items if it.role == "label"}
+        self.assertIn(m.in_name, drawn)
+        self.assertIn(m.out_name, drawn)
+
+    def test_a_resistive_series_branch_says_so_on_the_drawing(self):
+        """|Q| << 1 has to be visible where the value is, not only in text."""
+        m, items = self._items()
+        self.assertTrue(m.series.is_resistive)
+        self.assertTrue(any("a resistor here" in it.text for it in items))
+
+    def test_the_differential_drawing_carries_the_odd_mode_restatement(self):
+        _m, items = self._items(differential=True)
+        self.assertTrue(any(it.text.startswith("(odd ") for it in items))
+
+    def test_a_long_end_name_still_fits_inside_the_canvas(self):
+        """
+        The end-node NAMES hang outside the legs and were clipped.
+
+        Measured in the real window: with the side margin at 0.135 the last
+        character of "out" was drawn past the canvas edge -- silently, because
+        a Canvas neither wraps nor marks an overflow.  A name is worth 7 px a
+        character in the window's font, and the margin has to hold 12 of them
+        plus the offset.
+        """
+        Z = pi_Z(344, 1.69e-9, 33.2e-15, 90.0, 33.2e-15, 90.0, 1e8)
+        m = tm.extract_pi(Z, 1e8, "a_very_long_name", "another_long_one")
+        for it in tmr.pi_canvas_items(m):
+            if it.role != "label" or it.anchor not in ("w", "e"):
+                continue
+            x = it.coords[0]
+            wide = len(it.text) * 7
+            lo, hi = ((x, x + wide) if it.anchor == "w" else (x - wide, x))
+            self.assertGreaterEqual(lo, 0, f"{it.text!r} runs off the left")
+            self.assertLessEqual(hi, tmr.CANVAS_W,
+                                 f"{it.text!r} runs off the right")
+
+    def test_every_item_is_a_kind_the_renderer_knows(self):
+        for kw in ({}, dict(differential=True)):
+            _m, items = self._items(**kw)
+            for it in items:
+                self.assertIn(it.kind, {"line", "rect", "text", "oval"})
+                self.assertIn(it.role, {"wire", "box", "value", "label",
+                                        "node", "gnd", "note"})
+
+
 class TestCliEndToEnd(unittest.TestCase):
     """
     Against fixtures whose element values are written in their own headers.

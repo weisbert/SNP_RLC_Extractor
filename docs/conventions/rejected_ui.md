@@ -27,10 +27,11 @@ recorded here rather than in a commit message nobody will find.
   — i.e. per keystroke. If a schematic is ever built, it is a `tk.Canvas` in a
   Toplevel, like the Ports & Roles window.
   **Followed, 2026-09-14** (`docs/conventions/trace_model.md`): the trace pi
-  model draws its schematic as TEXT — in the CLI, returning `list[str]`, no
-  tab, no matplotlib, zero plot height. A `tk.Canvas` Toplevel over the same
-  `PiModel` is the sanctioned next step. What stays rejected is this entry as
-  written: the tab and the matplotlib.
+  model draws its schematic BOTH sanctioned ways and neither rejected one — as
+  TEXT returning `list[str]` (CLI and Results pane, zero plot height), and as
+  a **`tk.Canvas` in a Toplevel**, `pkg_rlc/panels/tracemodel_gui.py`, exactly
+  as the sentence above prescribes. Both read one `PiModel`. What stays
+  rejected is this entry as written: the tab and the matplotlib.
 - **A `ttk.Treeview` for the MAIN results table.** It destroys the `aligned`
   units mode outright — that mode exists so digits line up column-wise in a
   monospace `Text`, and a Treeview lays out per cell in a proportional font; it

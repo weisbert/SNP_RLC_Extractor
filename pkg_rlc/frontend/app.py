@@ -434,6 +434,12 @@ from pkg_rlc.physics.core import _collect_nets
 #     needs the label at build time), and a menu path spelled in two places is
 #     exactly the drift the "Show Ports needed five pointers" history warns
 #     about.
+from pkg_rlc.panels.tracemodel_gui import (
+    TRACE_MODEL_MENU_LABEL,
+    live_windows as trace_model_windows,
+    open_trace_model_window,
+    refresh_trace_model_windows,
+)
 from pkg_rlc.panels.attrib_gui import (
     ATTRIB_MENU_LABEL,
     apply_attribution_session_state,
@@ -1310,6 +1316,8 @@ class App(tk.Tk):
         # four buttons already asking 364, and a fifth row inside Global
         # Controls comes straight out of an editor viewport that is down to
         # 45 px there.  No accelerator, for the reason above this cascade.
+        analyze_menu.add_command(label=TRACE_MODEL_MENU_LABEL,
+                                 command=self._on_trace_model)
         analyze_menu.add_command(label=FILES_MENU_LABEL,
                                  command=self._on_files_window)
         menubar.add_cascade(label="Analyze", menu=analyze_menu)
@@ -1889,6 +1897,22 @@ class App(tk.Tk):
         tc = (self.traces[idx]
               if idx is not None and idx < len(self.traces) else None)
         open_attribution_window(self, tc)
+
+    def _on_trace_model(self) -> None:
+        """
+        Open the Trace Model window on the SELECTED trace.
+
+        Same shape as `_on_attribution`, and deliberately so: no refusal logic
+        here either.  `open_trace_model_window` flushes the editor, resolves
+        the file, asks `trace_model_refusal` and shows whatever it returns --
+        including for `trace=None`, which is why no selection is not
+        special-cased.  One decision in one place, so the menubar entry and
+        the right-click entry cannot start refusing different things.
+        """
+        idx = self._sel_idx(self.traces_lb)
+        tc = (self.traces[idx]
+              if idx is not None and idx < len(self.traces) else None)
+        open_trace_model_window(self, tc)
 
 
     def _migrate_trace(self, tc: TraceConfig) -> None:
@@ -2770,6 +2794,7 @@ class App(tk.Tk):
         # away and cannot re-read its way out of that; the Ports & Roles window
         # can, and re-reads to an empty list.
         refresh_attribution_windows(self)
+        refresh_trace_model_windows(self)
         refresh_files_windows(self)
         self._refresh_port_roles_window()
         self._append_result("Cleared " + ", ".join(bits) + ".")
@@ -2940,6 +2965,7 @@ class App(tk.Tk):
         # that holds a result cannot re-read its way out of that, it has to be
         # told, or it carries on offering [Recompute] on a trace that is gone.
         refresh_attribution_windows(self)
+        refresh_trace_model_windows(self)
         refresh_files_windows(self)
         # Second: what the SAVED windows were reading.  Nothing is reopened --
         # `attribution_refusal` turns away a trace with no numbers, and a

@@ -257,7 +257,9 @@ FAST_MODULES = (
     # imports `pkg_rlc.physics.core` only, `pkg_rlc.present.tracemodel_report`
     # reaches no further than L3, and the end-to-end cases drive
     # `pkg_rlc.frontend.cli.main` through argv, which never imports tkinter.
-    # Measured on this box, serially: 38 tests / 0.078 s.
+    # Measured on this box, serially: 48 tests / 0.088 s.
+    # `test_tracemodel_window` is deliberately NOT here -- it drives a real
+    # App and imports tkinter, which is the one property this list is about.
     "test_tracemodel",
 )
 

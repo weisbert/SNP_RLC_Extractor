@@ -85,7 +85,67 @@ that distinguishes a lumped element from a distributed line, and it exists
 because the alternative — extract twice by hand and compare — is what this
 feature was designed from.
 
-### Why the schematic is TEXT, and what would let it be a Canvas
+### The Trace Model window (`pkg_rlc/panels/tracemodel_gui.py`)
+
+**GUI is this project's acceptance criterion, so a trace-model that only
+reached the CLI was not finished.** The window is the deliverable; the
+`--trace-model` flag is the same analysis reached another way.
+
+**Three routes in, and they are the Attribution window's three, for the
+reasons `app.py` gives beside them**: the Analyze menubar (discoverable), the
+Traces right-click (already under the pointer), and one line in the Results
+pane footer (reaches the reader who is staring at a number). All three land in
+`open_trace_model_window`, which owns the ONLY refusal logic — so they cannot
+start refusing different things — and **none of them is ever greyed out**,
+because the window names its five refusals and a disabled menu entry names
+none of them.
+
+**The window authors NO geometry.** Every coordinate comes from
+`pi_canvas_items` at L3 and this module hands each item to `Canvas.create_*`
+with a colour and a font. Two reasons: the geometry is then assertable with no
+display, in `FAST_MODULES`, which is where "where things are" can be checked
+cheaply; and the window and the text block read the SAME `PiModel` through the
+SAME `branch_value_lines`, so they cannot print different numbers for one
+measurement. **Do not compute a coordinate in the panel module.**
+
+**Nothing is re-solved for the pi.** `Calculate` already caches `Zmat`
+(nfreqs, G, G) on the `TraceConfig` and it is the open-circuit matrix, so the
+2x2 sub-block over the two measurement ports is read directly. The one solve
+the window ever runs is the differential imbalance check, one frequency wide.
+**`RunSnapshot` is NOT the source here and must not become one**: it keeps
+only the marker-frequency `Z_matrix` and `tests/test_run_snapshot.py` pins
+that the total reachable array size stays ≤ 64 whatever the sweep length.
+
+**Two measurement ports means no picker, and more than two is refused.** A pi
+has two nodes; a trace declaring exactly two ports IS a trace, in the order
+declared, and one declaring more is a coupling study. `resolve_ends` reads the
+differential flag off `MeasPortRow.minus` being non-blank — which is exactly
+what makes `compute_z_matrix` return the differential 2x2 — so **no session
+field was added and no migration is owed**.
+
+**Staleness, never auto-refresh.** Same rule as the Attribution window: the
+result is frozen at open time with the spec signature and run number stamped
+on it, `refresh_banner` compares them against the live trace, and `[Recompute]`
+is the user's move. `refresh_trace_model_windows` is registered at all eight
+sites the Attribution refresh is, and like it, **never raises** — it sits on a
+keystroke handler, a session load and Clear All.
+
+**The drawing's labels are part of its correctness, on the Canvas too.** A
+single-ended pi ends in a ground symbol and the word `reference`; a
+differential pi ends in a plain rail and says `across the pair — no reference
+node`, because its shunt goes between the two conductors and there is no
+reference node to draw.
+`tests/test_tracemodel_window.py::TestTheDifferentialWindow::test_there_is_NO_ground_under_a_differential_pi`
+pins it on the widget and `tests/test_tracemodel.py` pins it on the geometry.
+
+**What only driving the real App could catch.** The module imported, the
+layering gate was green and every pure test passed while `compute_trace_model`
+still reached for `file_entry.data` — an attribute `FileEntry` does not have.
+The Tk half of `tests/test_tracemodel_window.py` exists for that class of
+defect, and the fixture values (`R = 1 Ω`, `L = 1 nH`, `C = 1 fF`,
+`L = 8 nH`) are asserted **off the canvas items**, not off the model.
+
+### Why the schematic was TEXT first, and how the Canvas got here
 
 `rejected_ui.md` turned down a matplotlib schematic in a tab beside the plot
 on three measurements, and ends with the sentence that governs this area:
@@ -94,12 +154,11 @@ on three measurements, and ends with the sentence that governs this area:
 > Ports & Roles window."
 
 **So a schematic was never banned — the tab and the matplotlib were.** The
-text form is deliberately the half that shipped first: it costs zero pixels,
-serves the CLI and the results pane from one code path, and needs no Tk, which
-is what keeps `test_tracemodel` in `FAST_MODULES` (38 tests / 0.078 s). **A
-`tk.Canvas` Toplevel is the sanctioned second step and must read the SAME
-`PiModel`**, so the two surfaces cannot disagree about a number. It must not
-become a tab, and it must not be matplotlib.
+text form shipped first because it costs zero pixels, serves the CLI and the
+pane from one code path, and needs no Tk, which is what keeps
+`test_tracemodel` in `FAST_MODULES`. **The `tk.Canvas` Toplevel landed on
+2026-09-14 and reads the SAME `PiModel`**, so the two surfaces cannot disagree
+about a number. It must not become a tab, and it must not be matplotlib.
 
 **The drawing's labels are part of its correctness.** The single-ended and
 differential drawings share one skeleton because they ARE one topology, and

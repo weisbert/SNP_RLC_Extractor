@@ -1190,14 +1190,35 @@ can never be recalculated or edited by accident.
 
 
 ===========================================================
-THE TRACE MODEL  (--trace-model IN,OUT)
+THE TRACE MODEL  (Analyze -> Trace model...)
 ===========================================================
 
 "What IS this routed trace, as a circuit, and what are its
 element values?"  Give it the two measurement ports that are the
-two ENDS of the trace and it prints the pi -- series R and L, and
-the shunt at each end -- drawn, with every value on the drawing.
+two ENDS of the trace and it draws the pi -- series R and L, and
+the shunt at each end -- with every value on the drawing.
 
+IN THE WINDOW
+-------------
+  1. Set the trace to Mode 6 and declare EXACTLY TWO measurement
+     ports: the IN end and the OUT end.
+  2. Calculate.
+  3. Analyze -> Trace model..., or right-click the trace in the
+     Traces list, or follow the pointer line the Results pane
+     prints under the coupling block.
+
+Two ports means no picker -- they ARE the two ends, in the order
+you declared them.  More than two is a coupling study and the
+window says so rather than guessing which two you meant.
+
+The window is modeless: keep it open beside the main window while
+you edit.  It does NOT silently redraw when you change the spec --
+it tells you the spec has moved and waits for you to press
+Recompute, because a picture that quietly became a picture of
+something else is worse than no picture.
+
+FROM THE COMMAND LINE
+---------------------
     --mode coupling --mport "in = 1" --mport "out = 2" \
     --gnd 3 --freq 0.1 --trace-model in,out
 
@@ -1210,15 +1231,21 @@ assumes the two ends are symmetric, and the single-ended case
 re-solves nothing at all -- the 2x2 it needs is already inside
 the Z matrix the coupling report above it just printed.
 
-DIFFERENTIAL: NO EXTRA FLAG
----------------------------
-Declare both ends with a '/' and you get the differential pi:
+DIFFERENTIAL: NOTHING EXTRA TO TURN ON
+--------------------------------------
+Give each measurement port a MINUS side and you get the
+differential pi.  In the window that is the '-' column of the
+measurement-port table; on the command line it is the '/':
 
     --mport "in = 1 / 2" --mport "out = 3 / 4" --gnd 5 \
     --freq 0.1 --trace-model in,out
 
-A file with a separate ground pin just adds --gnd; a 4-port file
-with no ground pin leaves it out.  Both work.
+A file with a separate ground pin just adds the ground; a 4-port
+file with no ground pin leaves it out.  Both work.
+
+The differential drawing has NO ground rail under it, on purpose:
+the shunt goes between the two conductors, and there is no
+reference node in that picture to draw.
 
 The differential shunt is the capacitance ACROSS THE PAIR --
 what a differential driver actually sees -- and it is HALF the

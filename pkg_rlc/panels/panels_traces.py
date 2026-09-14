@@ -34,6 +34,10 @@ from tkinter import messagebox, ttk
 
 from pkg_rlc.widgets.plot import COLORS
 from pkg_rlc.present.report import LOG_WARN
+from pkg_rlc.panels.tracemodel_gui import (
+    refresh_trace_model_windows,
+)
+from pkg_rlc.panels.tracemodel_gui import TRACE_MODEL_MENU_LABEL
 from pkg_rlc.panels.attrib_gui import ATTRIB_MENU_LABEL, refresh_attribution_windows
 from pkg_rlc.panels.files_gui import FILES_MENU_LABEL, refresh_files_windows
 
@@ -120,6 +124,8 @@ class TracesPanel:
         # need a rule between them anyway.
         self._trace_menu.add_command(label=ATTRIB_MENU_LABEL,
                                      command=app._on_attribution)
+        self._trace_menu.add_command(label=TRACE_MODEL_MENU_LABEL,
+                                     command=app._on_trace_model)
         # APPENDED for the same two reasons, and it is the FOURTH entry: the
         # file set belongs to a trace, and the right-click selects the row
         # under the pointer first so the gesture and the subject cannot
@@ -166,6 +172,7 @@ class TracesPanel:
         # answer about nothing.  It resolves its subject by identity against
         # app.traces, so this call is the whole of what is needed.
         refresh_attribution_windows(app)
+        refresh_trace_model_windows(app)
         # Same reason, same position: a file window resolves its subject by
         # identity too, and one on a trace that is gone would keep offering
         # [Set as home] on it.
@@ -208,6 +215,7 @@ class TracesPanel:
         # exists -- they have to be told.
         app._replot_from_cache()
         refresh_attribution_windows(app)
+        refresh_trace_model_windows(app)
         refresh_files_windows(app)
         app._append_result(f"Cleared all traces ({n})")
 
@@ -311,6 +319,8 @@ class TracesPanel:
         # stale trace.  It is set explicitly rather than left at its default so
         # the invariant is stated where it can be read and asserted.
         self._trace_menu.entryconfigure(ATTRIB_MENU_LABEL, state=tk.NORMAL)
+        self._trace_menu.entryconfigure(TRACE_MODEL_MENU_LABEL,
+                                        state=tk.NORMAL)
         # LIVE on a frozen trace too, and for the same reason: the window is
         # read-only on one (`_apply_file_set` refuses by name), and a snapshot
         # is exactly the trace whose file set someone wants to READ while

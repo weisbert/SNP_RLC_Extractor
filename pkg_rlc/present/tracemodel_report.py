@@ -45,6 +45,7 @@ misread this tool's output.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 from pkg_rlc.physics.core import format_si
 from pkg_rlc.physics.tracemodel import (
@@ -54,6 +55,7 @@ from pkg_rlc.present.report import marker_freq_text
 
 __all__ = [
     "pi_report_lines", "pi_schematic_lines", "branch_value_lines",
+    "CanvasItem", "pi_canvas_items", "CANVAS_W", "CANVAS_H",
     "MODE_CONVERSION_WARN",
 ]
 
@@ -203,7 +205,7 @@ def _drift_lines(model: PiModel, reference: PiModel) -> list[str]:
 def pi_report_lines(model: PiModel, freq_snap=None,
                     reference: PiModel | None = None,
                     mode_conversion: float | None = None,
-                    port_note: str = "") -> list[str]:
+                    port_note: str = "", drawing: bool = True) -> list[str]:
     """
     The whole trace-model report for one two-port at one frequency.
 
@@ -225,8 +227,12 @@ def pi_report_lines(model: PiModel, freq_snap=None,
                 else f"{model.freq_hz / 1e9:.4g} GHz")
     lines.append(f"  @ {freq_txt}")
     lines.append("")
-    lines.extend(pi_schematic_lines(model))
-    lines.append("")
+    # `drawing=False` is what the Toplevel passes: it draws the SAME PiModel
+    # on a tk.Canvas, and printing the picture twice in two notations under
+    # one another is how the two start disagreeing about a value.
+    if drawing:
+        lines.extend(pi_schematic_lines(model))
+        lines.append("")
 
     for b in model.branches:
         lines.append(f"  {b.name:<9} |Q| = {abs(b.Q):<10.4g} "
@@ -272,3 +278,145 @@ def pi_report_lines(model: PiModel, freq_snap=None,
     if model.warnings:
         lines.append("")
     return lines
+
+
+# ============================================================================
+# The drawn schematic, as GEOMETRY -- no Tk
+# ============================================================================
+#
+# `rejected_ui.md` allows exactly one form of schematic in this tool: "a
+# `tk.Canvas` in a Toplevel, like the Ports & Roles window".  This is the half
+# of that which can be tested without a display.
+#
+# `pi_canvas_items` returns primitives -- lines, rectangles and texts, in
+# canvas coordinates -- and `pkg_rlc/panels/tracemodel_gui.py` does nothing
+# but hand each one to `Canvas.create_*`.  Keeping the geometry HERE, at L3,
+# is what lets the drawing be asserted with no Tk root at all (the layout
+# tests run in `FAST_MODULES`, where a widget test could not), and it is the
+# same split `attrib_gui` uses for its own pure formatters.
+#
+# The item list is also the reason the drawn window and the text block cannot
+# disagree about a number: both read the SAME `PiModel` through the SAME
+# `branch_value_lines`.
+
+
+CANVAS_W = 620          # the drawing's natural size.  Everything below is
+CANVAS_H = 330          # derived from these two, so a caller may scale.
+
+
+@dataclass(frozen=True)
+class CanvasItem:
+    """
+    One primitive for `tk.Canvas`, with the ROLE that decides its styling.
+
+    `kind` is 'line' | 'rect' | 'text' | 'oval'; `coords` is what the matching
+    `create_*` takes.  `role` is what the renderer keys colour and font off --
+    'wire', 'box', 'value', 'label', 'node', 'gnd', 'note' -- so the palette
+    lives with the widgets and the geometry lives here.
+    """
+    kind: str
+    coords: tuple[float, ...]
+    text: str = ""
+    role: str = "wire"
+    anchor: str = "center"
+
+
+def _box(items, cx, cy, w, h, role="box"):
+    items.append(CanvasItem("rect", (cx - w / 2, cy - h / 2,
+                                     cx + w / 2, cy + h / 2), role=role))
+
+
+def pi_canvas_items(model: PiModel, width: int = CANVAS_W,
+                    height: int = CANVAS_H) -> list[CanvasItem]:
+    """
+    The pi, as canvas primitives, with every element value placed.
+
+    Coordinates are derived from `width` / `height` rather than hard-coded, so
+    the window can be resized and the drawing follows.  Nothing here imports
+    tkinter or knows a colour.
+
+    The single-ended and differential drawings are ONE layout and differ only
+    in the bottom rail: single-ended ends in a ground symbol, differential
+    ends in a plain rail labelled "across the pair", because a differential
+    pi's shunt goes between the two conductors and there is no reference node
+    to draw.  Drawing a ground under it would be a lie that reads as a
+    diagram -- see `tests/test_tracemodel.py` and the same rule on the text
+    drawing.
+    """
+    items: list[CanvasItem] = []
+    # The end-node NAMES hang outside the legs, so the side margin has to hold
+    # a name and not just the leg.  Measured against a 12-character name in
+    # the window's own font: 0.175 leaves 108 px at CANVAS_W, the name needs
+    # ~84 plus the 12 px offset.  At 0.135 the last character of "out" was
+    # drawn past the canvas edge and clipped with no indication at all.
+    x_in = width * 0.175
+    x_out = width - x_in
+    y_top = height * 0.26   # room above the rail for the series
+                           # values AND the |Q| note over them
+    y_bot = height * 0.76
+    span = x_out - x_in
+    leg = y_bot - y_top
+
+    # ---- the two end nodes, named
+    r = width * 0.0065           # NOTHING in this function may be an absolute
+    off = width * 0.019          # pixel count, or a resize skews the drawing
+    for x, name, anch in ((x_in, model.in_name, "e"),
+                          (x_out, model.out_name, "w")):
+        items.append(CanvasItem("oval", (x - r, y_top - r, x + r, y_top + r),
+                                role="node"))
+        dx = -off if anch == "e" else off
+        items.append(CanvasItem("text", (x + dx, y_top), text=name[:12],
+                                role="label", anchor=anch))
+
+    # ---- the series branch: the top rail, two boxes on it, values above
+    items.append(CanvasItem("line", (x_in, y_top, x_out, y_top), role="wire"))
+    svals = branch_value_lines(model, model.series)
+    bw, bh = span * 0.22, height * 0.085
+    for i, txt in enumerate(svals[:2]):
+        cx = x_in + span * (0.30 + 0.40 * i)
+        _box(items, cx, y_top, bw, bh)
+        items.append(CanvasItem("text", (cx, y_top - bh * 0.5 - height * 0.055),
+                                text=txt, role="value"))
+    if model.series.is_resistive:
+        items.append(CanvasItem(
+            "text", (width / 2, y_top - bh * 0.5 - height * 0.135),
+            text=f"|Q| = {abs(model.series.Q):.4g} -- a resistor here",
+            role="note"))
+
+    # ---- the two shunt legs, each with its boxes and values INSIDE the span
+    for x, branch, side in ((x_in, model.shunt_in, +1),
+                            (x_out, model.shunt_out, -1)):
+        items.append(CanvasItem("line", (x, y_top, x, y_bot), role="wire"))
+        vals = branch_value_lines(model, branch)
+        vw, vh = width * 0.045, leg * 0.20
+        for i, txt in enumerate(vals[:2]):
+            cy = y_top + leg * (0.28 + 0.34 * i)
+            _box(items, x, cy, vw, vh)
+            items.append(CanvasItem(
+                "text", (x + side * (vw * 0.5 + width * 0.018), cy),
+                text=txt, role="value",
+                anchor="w" if side > 0 else "e"))
+        if len(vals) > 2:                       # the odd-mode restatement
+            items.append(CanvasItem(
+                "text", (x + side * (vw * 0.5 + width * 0.018),
+                         y_top + leg * 0.62 + vh * 0.75),
+                text=vals[2], role="note",
+                anchor="w" if side > 0 else "e"))
+
+    # ---- the bottom rail, and what it MEANS
+    items.append(CanvasItem("line", (x_in, y_bot, x_out, y_bot), role="wire"))
+    cx = width / 2
+    if model.differential:
+        items.append(CanvasItem("text", (cx, y_bot + height * 0.085),
+                                text="across the pair -- no reference node",
+                                role="note"))
+    else:
+        items.append(CanvasItem("line", (cx, y_bot, cx, y_bot + height * 0.035),
+                                role="wire"))
+        for i, half in enumerate((width * 0.055, width * 0.035, width * 0.016)):
+            y = y_bot + height * (0.035 + 0.022 * i)
+            items.append(CanvasItem("line", (cx - half, y, cx + half, y),
+                                    role="gnd"))
+        items.append(CanvasItem("text", (cx, y_bot + height * 0.155),
+                                text="reference", role="label"))
+    return items
