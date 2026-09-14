@@ -517,7 +517,10 @@ class _AppCase(unittest.TestCase):
     def _wipe(self):
         self.app.files = []
         self.app.traces = []
-        self.app._trace_list_shown = []
+        # None, not [] -- [] is the key an empty trace list RENDERS to, so it
+        # tells the refresh below that the Listbox is already empty when it
+        # still holds every row.  See App._on_clear_all.
+        self.app._trace_list_shown = None
         self.app._refresh_file_list()
         self.app._refresh_trace_list()
         self.app._refresh_file_combobox()
@@ -684,6 +687,30 @@ class TestLoadFailuresAreSurvivable(_AppCase):
         ok = self.app._load_session_file(str(alien), "test")
         self.assertFalse(ok)
         self.assertIn("not a PKG RLC Extractor session file", errors[0][1])
+
+    def test_a_session_with_no_traces_empties_the_traces_LIST(self):
+        """
+        The Listbox has to follow the model down to ZERO as well, and that is
+        the case a rendered-content cache gets wrong: an empty trace list
+        renders to [], which is also what `_apply_session` writes to say "the
+        list no longer shows what I rendered".  Read as content, that stops
+        the rebuild and leaves the outgoing session's rows on screen with
+        nothing behind them -- one click, and an index into an empty
+        `app.traces`.
+
+        Mutation: `_apply_session` invalidating with [] instead of None.
+        """
+        self.app.traces = []
+        path = self._save()              # one file, no trace
+        self.app.traces.extend([self.tc, self.tc2])
+        self.app._refresh_trace_list()
+        self.assertEqual(self.app.traces_lb.size(), 2)
+        self._patch(pkg_rlc_gui.messagebox, "askyesno", lambda t, m: True)
+        self.assertTrue(self.app._load_session_file(path, "test"))
+        self._settle()
+        self.assertEqual(self.app.traces, [])
+        self.assertEqual(self.app.traces_lb.size(), 0,
+                         "the Traces list still shows the old session")
 
     def test_loading_over_live_work_asks_first_and_no_means_no(self):
         path = self._save()

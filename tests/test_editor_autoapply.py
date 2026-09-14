@@ -941,6 +941,32 @@ class TestClearingTheLists(_Case):
         self.assertEqual(self.app.sig_digits_var.get(), "6")
         self.assertEqual(self.app.results_view_var.get(), "summary")
 
+    def test_clear_all_empties_the_LISTBOXES_too_not_just_the_lists(self):
+        """
+        The crash this was reported as: `Clear All` emptied `app.traces` and
+        left every row of the Traces list on screen.  Clicking one then
+        resolved its index into an empty list -- IndexError out of
+        `_on_trace_selected` -- and `Remove` could not take the row away
+        either, because it pops that same index.
+
+        Mutation: `_on_clear_all` invalidating `_trace_list_shown` with `[]`
+        instead of None.  `[]` IS the rendered state of an empty list, so the
+        early return in `_refresh_trace_list` read it as "the list already
+        shows nothing" and kept every stale row.
+        """
+        self.assertGreater(self.app.traces_lb.size(), 0)
+        with self._yes():
+            self.app._on_clear_all()
+        self._settle()
+        self.assertEqual(self.app.traces_lb.size(), 0,
+                         "the Traces list still shows traces that are gone")
+        self.assertEqual(self.app.files_lb.size(), 0)
+        # And the two gestures that crashed on a stale row.  With the list
+        # empty there is nothing to select, so both must simply do nothing.
+        self.app.traces_lb.selection_set(0)
+        self.app._on_trace_selected()
+        self.app._traces_panel._on_remove_trace()
+
     def test_declining_clears_nothing_at_all(self):
         """Mutation: drop the confirmation guard."""
         with self._no():

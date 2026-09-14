@@ -1222,7 +1222,10 @@ class TestTheViewSelector(unittest.TestCase):
                 Path(path).write_text(json.dumps(data), encoding="utf-8")
             self.app.files = []
             self.app.traces = []
-            self.app._trace_list_shown = []
+            # None, not []: [] is what an empty trace list RENDERS
+            # to, so it reads as "already showing nothing" and
+            # leaves the rows on screen.  See App._on_clear_all.
+            self.app._trace_list_shown = None
             self.app._refresh_file_list()
             self.app._refresh_trace_list()
             self.app._refresh_file_combobox()

@@ -1082,7 +1082,11 @@ class App(tk.Tk):
         self._ed_sync_after: object = None
         self._ed_sync_target: Optional[TraceConfig] = None
         # (rendered line, colour index) per trace -- see _refresh_trace_list.
-        self._trace_list_shown: list[tuple[str, int]] = []
+        # None means "what the Listbox is showing is unknown, rebuild it".  It
+        # has to be None rather than [], because [] is what an EMPTY trace
+        # list renders to and the two readings are opposites -- see
+        # _on_clear_all.
+        self._trace_list_shown: Optional[list[tuple[str, int]]] = None
         self._scrollables: dict[str, object] = {}
         # Results-pane notebook state.  Set BEFORE _build_ui: adding the first
         # tab fires <<NotebookTabChanged>> straight away, and the handler reads
@@ -2740,7 +2744,15 @@ class App(tk.Tk):
         self._cancel_editor_sync()
         self.files = []
         self.traces = []
-        self._trace_list_shown = []
+        # None, NOT [] -- and that one character is a reported crash.  This
+        # line means "the Listbox no longer shows what I last rendered", but
+        # [] is ALSO the rendered state of an empty trace list, so
+        # _refresh_trace_list's early return read it as "the list already
+        # shows nothing" and left every stale row on screen.  Clicking one
+        # then indexed an empty self.traces (IndexError out of
+        # _on_trace_selected), and Remove could not take the row away either
+        # -- it pops that same index.
+        self._trace_list_shown = None
         self._compose_cache.clear()
         self._next_trace_id = 1
         self._run_counter = 0
@@ -2816,7 +2828,11 @@ class App(tk.Tk):
         self._cancel_editor_sync()
         self.files = []
         self.traces = []
-        self._trace_list_shown = []
+        # None, not [] -- `_on_clear_all`'s reason and the same crash: a
+        # session that restores NO trace renders to [] as well, so [] here
+        # would leave the outgoing session's rows in the list with nothing
+        # behind them.
+        self._trace_list_shown = None
         self._append_result(f"\n=== {origin} ===")
         for note in sess.warnings:
             # A dropped key or a coerced value: the file did not load as

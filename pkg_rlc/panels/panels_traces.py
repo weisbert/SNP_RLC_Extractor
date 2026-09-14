@@ -413,6 +413,12 @@ class TracesPanel:
         # and the early return would keep the old foreground on screen forever,
         # with the plot already redrawn in the new one.
         key = [(ln, tc.color_idx) for ln, tc in zip(lines, app.traces)]
+        # `app._trace_list_shown is None` means the Listbox no longer shows
+        # what was last rendered into it, and it can never compare equal to a
+        # key.  That is what an invalidating caller must write: `[]` looks
+        # like an invalidation and is the opposite of one -- it is exactly the
+        # key an EMPTY trace list produces, so it would stop this rebuild in
+        # the one case that most needs it (`_on_clear_all`).
         if key == app._trace_list_shown:
             return
         app._trace_list_shown = key

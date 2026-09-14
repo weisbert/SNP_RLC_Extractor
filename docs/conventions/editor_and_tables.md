@@ -607,6 +607,19 @@ claim below was mutation-checked — reverting the behaviour turns its test red.
   `info_str()` renders no colour, so a style change alone left the rendered lines byte-identical,
   the "unchanged → return early" optimisation fired, and the list kept the old foreground while
   the plot was already redrawn in the new one.
+- **The only way to INVALIDATE that cache is `_trace_list_shown = None`, never `[]`.** `[]` is
+  what an EMPTY trace list renders to, so a caller writing it to mean "the Listbox no longer
+  shows what I rendered" is telling `_refresh_trace_list` the opposite — that the list is
+  already empty — and the early return leaves every stale row on screen. That is a crash, not
+  a cosmetic stall: `Clear All` emptied `app.traces`, the rows stayed, and the next click
+  resolved one of them into an empty list (`IndexError` out of `_on_trace_selected`), with
+  `Remove` unable to take the row away because it pops that same index. Both invalidating
+  call sites are in `pkg_rlc/frontend/app.py` — `_on_clear_all` and `_apply_session`, the
+  latter reachable whenever a session restores NO trace — and the guards are
+  `tests/test_editor_autoapply.py::TestClearingTheLists::` `test_clear_all_empties_the_LISTBOXES_too_not_just_the_lists`
+  and `tests/test_session.py::TestSaveLoad::test_a_session_with_no_traces_empties_the_traces_LIST`.
+  The three test helpers that wipe the model by hand (`test_session._wipe` and the two inline
+  ones) write None for the same reason.
 - **The results table's rows are headed by a width-stable colour swatch**, a Text tag
   (`c0`..`c11`, the `"flag"` tag's precedent) — **not** a `ttk.Treeview`, which was reviewed
   and rejected: it destroys the `aligned` units mode (one SI prefix per column, right-aligned,

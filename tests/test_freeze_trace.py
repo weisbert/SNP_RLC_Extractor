@@ -845,7 +845,10 @@ class TestTheSessionRoundTrip(_Case):
             self.app._write_session(path, tmp)
             self.app.files = []
             self.app.traces = []
-            self.app._trace_list_shown = []
+            # None, not []: [] is what an empty trace list RENDERS
+            # to, so it reads as "already showing nothing" and
+            # leaves the rows on screen.  See App._on_clear_all.
+            self.app._trace_list_shown = None
             self.app._refresh_trace_list()
             self.app.results_text.delete("1.0", tk.END)
             self.assertTrue(self.app._load_session_file(path, "test"))
