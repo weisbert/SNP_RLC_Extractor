@@ -213,7 +213,10 @@ still here.
   in em of the readout font (so it holds at any DPI), with `READOUT_NAME_MIN = 8`
   as a floor — rows that cannot be told apart are worse than a slightly wide box,
   and that corner is what the `Readout` toggle and Fullscreen are for. `_fit_names`
-  keeps the **tail**: `osc_primary_coil_00` / `_01` differ only at the end, and
+  keeps the **tail**: `osc_primary_coil_00` / `_01` differ only at the end —
+  UNLESS the tails collide, when the shared tail is dropped at a separator and
+  the rest kept (`ind_30G/L.s1p_p1_to_gnd` / `ind_80G/…` read `ind_30G…` /
+  `ind_80G…`, not `…p1_to_gnd` twice) — and
   `MAX_LABEL_LEN` (a legend-width rule) must not be applied before the shared
   trace prefix is stripped or they arrive already identical.
 - **A value column is as wide as its widest cell OR its header.** Sizing on the

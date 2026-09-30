@@ -25,6 +25,7 @@ panel needs is a `FileEntry`, and it asks the App for one
 from __future__ import annotations
 
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from pkg_rlc.physics.core import (
@@ -156,6 +157,10 @@ class FilesPanel:
                 continue
             fe = app._make_file_entry(ts)
             app.files.append(fe)
+            # BEFORE the default trace, which is named after the label: a file
+            # whose basename is already loaded gets a folder in its label, and
+            # so does the one it clashes with (see distinct_file_labels).
+            renamed = app._relabel_files()
             app._append_result("")
             for line in ts.summary_lines():
                 # The summary is a description of the file (info), except for
@@ -165,6 +170,14 @@ class FilesPanel:
                 app._append_result(
                     line,
                     LOG_WARN if line.lstrip().startswith("WARN:") else LOG_INFO)
+            for was, now in renamed.items():
+                app._append_result(
+                    f"  '{was}' is now '{now}' -- another loaded file has the "
+                    f"same name; its traces followed it")
+            if fe.label != Path(fe.ts.source_path).name:
+                app._append_result(
+                    f"  shown as '{fe.label}' -- another loaded file is named "
+                    f"'{Path(fe.ts.source_path).name}' too")
             # Auto-create a default trace bound to this file
             tc = app._make_default_trace(fe)
             app.traces.append(tc)
@@ -207,9 +220,19 @@ class FilesPanel:
         # Files row is right there.  One removed because of a file it merely
         # composed with does: the name that went is not the name on the trace.
         by_extra = [t for t in dropped if t.file_label != fe.label]
+        # The file it shared a name with, if any, gets its plain name back --
+        # labels are a function of what is loaded, so a session saved now
+        # reloads under the same ones.  Refreshes nothing on its own: every
+        # list, window and the plot are repainted just below.
+        renamed = app._relabel_files(refresh=False)
         self._refresh_file_list()
         app._refresh_trace_list()
         app._refresh_file_combobox()
+        # A renamed survivor may be the trace on screen, and the editor still
+        # holds its old label: the next auto-apply would write it back and
+        # bind the trace to a file that no longer goes by that name.
+        if renamed and app._selected_trace() is not None:
+            app._on_trace_selected()
         # Same call, same position, same reason as _on_remove_trace: the traces
         # bound to this file are gone from the list, and without this the PLOT
         # keeps drawing and legending their curves until the next Calculate.

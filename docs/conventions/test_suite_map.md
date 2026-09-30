@@ -41,6 +41,7 @@ run after changing X", not enough to answer "why does that test exist".
 | `tests/test_editor_autoapply.py` | When the editor writes into a `TraceConfig` and which one; the style picker; plot visibility; the three CLEARS. |
 | `tests/test_port_roles.py` | `port_roles`, `row_sources`, the open-port name check, and the Ports & Roles window. |
 | `tests/test_freeze_trace.py` | Freeze's copy rules, both refusals, the label budget, the CSV provenance, the session round trip. |
+| `tests/test_file_labels.py` | Two files of the same NAME stay two files: `distinct_file_labels`, the rebind, and through Add File — the 80 GHz trace draws the 80 GHz file, remove, session reload, the editor never writes an old label back. |
 | `tests/test_session.py` | Save / Load / Restore Last Session — and that the Help window's tab strip still fits. |
 | `tests/test_results_notebook.py` | The Log is tab 0, selected and MAPPED at startup; the width-stable badge; severity routing. |
 | `tests/test_results_views.py` | The three views, the measured 144-column budget, that a trace name is never elided, and the Digits control. |

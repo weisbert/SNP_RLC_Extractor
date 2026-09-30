@@ -38,8 +38,19 @@ mutation-checked.
   both survive the rule, which are the layouts the relative path exists for.
 - **A missing file is reported, not fatal.** The traces bound to it stay in the
   list; `_on_calculate` already says `file '…' not loaded`. `_apply_session` also
-  re-binds traces when a resolved file's basename differs from the stored label,
+  re-binds traces when a resolved file's label differs from the stored one,
   which is the only route a hand-edited config has to re-point at moved data.
+- **A file's label is a function of the SET of loaded paths, never its
+  basename alone** (`distinct_file_labels` in `pkg_rlc/model/trace.py`). The
+  label is the KEY traces bind by; as the bare basename, two `L.s1p` from two
+  folders shared one, `_file_by_label` returned the first for both, and the
+  trace made for an 80 GHz file drew a 30 GHz one. A clashing group carries the
+  fewest trailing folders that separate it (`ind_30G/L.s1p`), and
+  `App._relabel_files` recomputes on every add, remove and session load — so a
+  session reloads under the labels it saved, and the survivor of a removed pair
+  gets its plain name back. After a relabel the editor MUST be reloaded, or its
+  next auto-apply writes the old label back into the trace
+  (`tests/test_file_labels.py`).
   The `found` flag is checked BEFORE `_load_one_file`, which reports through a
   **modal** dialog — a session whose folder moved would otherwise open one per
   file (measured: the test does not fail, it hangs) before the user could read

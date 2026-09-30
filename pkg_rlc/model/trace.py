@@ -78,6 +78,108 @@ class FileEntry:
                 f"M={len(self.ts.freqs)}, Z0={self.ts.z0:g}Ω)")
 
 
+# ----------------------------------------------------------------------------
+# File labels -- the KEY every trace binds its file by
+# ----------------------------------------------------------------------------
+#
+# A label is not decoration: `tc.file_label` / `tc.file_labels` name files by
+# it, `_file_by_label` resolves them by it, and the session file stores it.
+# When it was simply the basename, two files called `L.s1p` from two folders
+# got ONE label, every lookup returned the first, and a trace built on the
+# second (an 80 GHz sweep) silently drew the first (a 30 GHz one) -- the plot
+# stopped at 30 GHz with nothing on screen to say why, and the Traces list
+# offered two indistinguishable names.
+#
+# The rule: a file is its basename, UNLESS another loaded file shares that
+# basename; then every file in that group carries the fewest trailing folders
+# that tell them apart (`ind_30G/L.s1p`, `ind_80G/L.s1p`).  The labels are a
+# pure function of the SET of loaded paths, recomputed on every add and every
+# remove -- so a session reloads under exactly the labels it was saved with,
+# and removing one of a pair gives the survivor its plain name back.
+
+def default_trace_label(file_label: str) -> str:
+    """The label a new trace on this file gets -- the tool's own, so a relabel
+    of the file may carry it along; a label the user typed is never touched."""
+    return f"{file_label}_p1_to_gnd"
+
+
+def _path_parts(path: str) -> tuple:
+    # Split on BOTH separators: a session saved on Linux and loaded on Windows
+    # (or the reverse) must name its folders the same way.
+    return tuple(p for p in str(path).replace("\\", "/").split("/") if p)
+
+
+def distinct_file_labels(paths: Sequence[str]) -> list:
+    """
+    One label per path, unique across the list.
+
+    Paths whose basenames differ get the bare basename, exactly as before.  A
+    group sharing a basename gets the smallest number of trailing path parts
+    that separates every DIFFERENT path in the group -- the same depth for the
+    whole group, so the two names read as a pair.  The same file loaded more
+    than once cannot be told apart by any folder, so its repeats are numbered
+    `L.s1p (2)`, `L.s1p (3)`, first one plain.
+    """
+    parts = [_path_parts(p) or (str(p),) for p in paths]
+    out = [p[-1] for p in parts]
+    groups: dict = {}
+    for i, p in enumerate(parts):
+        groups.setdefault(p[-1], []).append(i)
+    for idx in groups.values():
+        if len(idx) < 2:
+            continue
+        members = [parts[i] for i in idx]
+        n_distinct = len(set(members))
+        depth = max(len(m) for m in members)
+        k = 1
+        while k < depth and len({m[-k:] for m in members}) < n_distinct:
+            k += 1
+        seen: dict = {}
+        for i in idx:
+            lbl = "/".join(parts[i][-k:])
+            n = seen[lbl] = seen.get(lbl, 0) + 1
+            out[i] = lbl if n == 1 else f"{lbl} ({n})"
+    return out
+
+
+def file_relabels(entries: Sequence[tuple]) -> tuple:
+    """
+    `entries` is `(current_label, path)` per loaded file, in load order.
+    Returns `(new_labels, mapping)`: the label each file should carry, and
+    `{old: new}` for the traces bound to an old label.
+
+    Two files can hold the SAME current label -- the new file of a clashing
+    pair, before this runs, or an old session saved while the clash went
+    unnoticed.  The first file carrying it wins the traces, which is exactly
+    what `_file_by_label` resolved them to before, so no trace changes which
+    data it draws.  A label some file KEEPS is never remapped, or the traces
+    of the first copy of a twice-loaded file would move to the second.
+    """
+    new = distinct_file_labels([p for _lbl, p in entries])
+    kept = {old for (old, _p), nl in zip(entries, new) if old == nl}
+    mapping: dict = {}
+    for (old, _p), nl in zip(entries, new):
+        if old != nl and old not in kept:
+            mapping.setdefault(old, nl)
+    return new, mapping
+
+
+def rebind_file_labels(traces: Sequence, mapping: dict) -> None:
+    """Point every trace bound to an old label at its new one -- the home file
+    and every composed extra -- and carry the tool's own default trace label
+    along with it."""
+    if not mapping:
+        return
+    for tc in traces:
+        old = tc.file_label
+        if old in mapping:
+            tc.file_label = mapping[old]
+            if tc.label == default_trace_label(old):
+                tc.label = default_trace_label(mapping[old])
+        if tc.file_labels:
+            tc.file_labels = [mapping.get(lbl, lbl) for lbl in tc.file_labels]
+
+
 @dataclass
 class TraceConfig:
     """

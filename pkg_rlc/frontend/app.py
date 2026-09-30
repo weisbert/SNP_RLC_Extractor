@@ -189,6 +189,10 @@ from pkg_rlc.model.trace import (
     _SIGNATURE_FIELDS,
     _snapshot_files,
     _snapshot_fit,
+    default_trace_label,
+    distinct_file_labels,
+    file_relabels,
+    rebind_file_labels,
     run_signatures,
     trace_signature_fields,
 )
@@ -1548,6 +1552,47 @@ class App(tk.Tk):
         """
         return FileEntry(ts)
 
+    def _relabel_files(self, traces: Optional[list] = None,
+                       refresh: bool = True) -> dict:
+        """
+        Give every loaded file its distinct label and re-bind the traces.
+
+        Called after every change to `self.files` that can make two basenames
+        clash or stop clashing -- an add, a remove, a session load.  Returns
+        `{old: new}`, empty when nothing moved, which is the common case and
+        costs nothing: no flush, no repaint.
+
+        `traces` defaults to `self.traces`; a session load passes the traces
+        it has not installed yet, with `refresh=False`, because it repaints
+        everything itself a few lines later.
+
+        The editor is FLUSHED first and RELOADED after: its file combobox and
+        label field hold the old strings, and the next auto-apply would write
+        them straight back into the trace, binding it to a label no file has.
+        """
+        entries = [(fe.label, fe.ts.source_path) for fe in self.files]
+        new, mapping = file_relabels(entries)
+        if all(fe.label == nl for fe, nl in zip(self.files, new)):
+            return {}
+        if refresh:
+            self._flush_editor_sync()
+        for fe, nl in zip(self.files, new):
+            fe.label = nl
+        rebind_file_labels(self.traces if traces is None else traces, mapping)
+        if refresh:
+            self._refresh_file_list()
+            self._refresh_trace_list()
+            self._refresh_file_combobox()
+            if self._selected_trace() is not None:
+                self._on_trace_selected()
+            # The legend names come from the trace labels, which may just have
+            # been carried along with their file.
+            self._replot_from_cache()
+            refresh_attribution_windows(self)
+            refresh_trace_model_windows(self)
+            refresh_files_windows(self)
+        return mapping
+
     def _load_one_file(self, path: str) -> TouchstoneData | None:
         return self._files_panel._load_one_file(path)
 
@@ -1727,7 +1772,7 @@ class App(tk.Tk):
             file_label=fe.label,
             mode=1,
             port_a="1",
-            label=f"{fe.label}_p1_to_gnd",
+            label=default_trace_label(fe.label),
             color_idx=(self._next_trace_id - 1) % len(COLORS),
             ls_idx=((self._next_trace_id - 1) // len(COLORS)) % len(LINESTYLES),
         )
@@ -2875,24 +2920,24 @@ class App(tk.Tk):
                 missing.append((label, path))
                 continue
             fe = FileEntry(ts)
-            if fe.label != label:
-                # Only reachable via a hand-edited file -- which is also the
-                # only way to re-point a session at data that moved, since the
-                # loader offers no relocate dialog.  Re-bind rather than leave
-                # every trace reporting "file not loaded".
-                for tc in sess.traces:
-                    if tc.file_label == label:
-                        tc.file_label = fe.label
-                    # The extra files are bound by the same label and have to
-                    # be re-pointed by the same rule: re-binding only the home
-                    # file would leave a composed trace half resolved, naming
-                    # a file that is loaded under another name.
-                    tc.file_labels = [fe.label if lbl == label else lbl
-                                      for lbl in tc.file_labels]
-                self._append_result(
-                    f"  '{label}' resolved to {fe.label}; its traces were "
-                    f"re-bound to the new name", LOG_WARN)
+            # Under the label the session SAVED, so its traces find it; the
+            # relabel below then gives every file the label its path earns.
+            fe.label = label
             self.files.append(fe)
+
+        # Labels are a function of the loaded paths (distinct_file_labels), so
+        # a session reloaded as saved changes nothing here.  What does change:
+        # a hand-edited file re-pointed at data under another name -- the only
+        # way to follow moved data, since the loader offers no relocate dialog
+        # -- and a session saved before same-named files were told apart,
+        # whose traces all resolved to the FIRST of them and still do.  Both
+        # re-bind the home file AND every extra: re-binding only the home file
+        # would leave a composed trace half resolved.
+        for was, now in self._relabel_files(traces=sess.traces,
+                                            refresh=False).items():
+            self._append_result(
+                f"  '{was}' resolved to {now}; its traces were "
+                f"re-bound to the new name", LOG_WARN)
 
         self.traces = list(sess.traces)
         self._next_trace_id = max((tc.id for tc in self.traces), default=0) + 1

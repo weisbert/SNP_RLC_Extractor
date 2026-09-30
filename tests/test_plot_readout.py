@@ -243,6 +243,17 @@ class TestReadoutContent(unittest.TestCase):
         self.assertEqual(len(set(got)), 2, got)
         self.assertTrue(all(len(g) <= 8 for g in got), got)
 
+    def test_names_that_differ_only_in_the_middle_stay_apart(self):
+        """Two same-named files told apart by their folders: the tail is
+        shared, so keeping it made both rows read '…p1_to_gnd'."""
+        names = ["ind_30G/L.s1p_p1_to_gnd", "ind_80G/L.s1p_p1_to_gnd"]
+        got = P._fit_names(names, 10)
+        self.assertEqual(got, ["ind_30G…", "ind_80G…"])
+        got = P._fit_names(["a/verylongfoldername_30G/L.s1p_p1_to_gnd",
+                            "a/verylongfoldername_80G/L.s1p_p1_to_gnd"], 10)
+        self.assertEqual(len(set(got)), 2, got)
+        self.assertTrue(all(len(g) <= 10 for g in got), got)
+
     def test_multi_cursor_columns_line_up(self):
         f, traces = _coupling_traces()
         fig, view = _make_view(traces, ["L(nH)"], f[len(f) // 2])

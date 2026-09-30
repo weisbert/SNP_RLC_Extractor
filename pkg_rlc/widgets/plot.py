@@ -22,6 +22,7 @@ Features (per spec):
 from __future__ import annotations
 
 import math
+import os
 import tkinter as tk
 from dataclasses import dataclass
 from tkinter import ttk
@@ -426,7 +427,25 @@ def _fit_names(names: list[str], budget: int) -> list[str]:
     """
     if budget <= 0:
         return list(names)
-    return [n if len(n) <= budget else "…" + n[-(budget - 1):] for n in names]
+    out = [n if len(n) <= budget else "…" + n[-(budget - 1):] for n in names]
+    if len(set(out)) == len(set(names)):
+        return out
+    # The tail did not tell them apart, because the names differ only AWAY
+    # from it: 'ind_30G/L.s1p_p1_to_gnd' and 'ind_80G/L.s1p_p1_to_gnd' (two
+    # same-named files told apart by their folders) both clip to
+    # '…p1_to_gnd'.  Drop the tail they all share -- marked with '…' so the
+    # cut is visible -- and clip what is left, keeping ITS tail.
+    suffix = os.path.commonprefix([n[::-1] for n in names])[::-1]
+    # Start the dropped tail at a separator, so 'ind_30G' / 'ind_80G' keep
+    # their whole last word instead of reading 'ind_3…' / 'ind_8…'.
+    cut = next((i for i, ch in enumerate(suffix) if ch in "/\\_ .:-"), None)
+    suffix = suffix[cut:] if cut is not None else ""
+    if not suffix or any(len(n) <= len(suffix) for n in names):
+        return out
+    cores = [n[:-len(suffix)] for n in names]
+    alt = [c + "…" if len(c) + 1 <= budget
+           else "…" + c[-max(budget - 2, 1):] + "…" for c in cores]
+    return alt if len(set(alt)) == len(set(names)) else out
 
 
 def _strip_common_prefix(labels: list[str]) -> tuple[list[str], str]:
