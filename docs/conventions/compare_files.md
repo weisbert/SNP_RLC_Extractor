@@ -48,3 +48,15 @@ Rules, each pinned by `tests/test_compare_files.py` and mutation-checked:
 - **A removed file is SAID to be gone**; the window does not keep comparing
   from the arrays it last saw. `refresh_compare_windows` is called wherever
   `refresh_files_windows` is on the Files side, and from `App._relabel_files`.
+- **The S level shows EVERY entry, not one number.** The worst entry, how many
+  of the n² entries are over the limit, the largest few (identical entries are
+  not ranked), and — up to 32 ports — the whole matrix of each entry's worst dB,
+  one decimal (−39.6 printed as −40 beside a −40 dB limit and starred as over it
+  reads as a contradiction). An entry is ALWAYS written `S(i,j)`: the first
+  version printed `S1415` for S(14,15), which the owner could not read and
+  which is ambiguous from ten ports up. Beside every dB, the same difference as
+  a percentage.
+- **A percentage axis is not scaled by one wild point** (`pct_view_span`): it
+  covers the 98th percentile, never less than twice the limit, and counts what
+  it leaves off. A near-open port read −4e8 % at 1 MHz and flattened a band
+  that sat inside ±2 %. The worst value is still in the text.

@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from tkinter import messagebox, ttk
 from typing import Optional, Sequence
 
+import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
@@ -43,7 +44,7 @@ from pkg_rlc.physics.core import compute_z_matrix, format_freq
 __all__ = [
     "COMPARE_MENU_LABEL", "COMPARE_TITLE", "DEFAULT_SETUP",
     "CompareResult", "CompareWindow", "compare_files", "compare_summary_lines",
-    "verdict", "trace_choices", "compare_refusal",
+    "verdict", "trace_choices", "compare_refusal", "s_matrix_lines",
     "open_compare_window", "live_windows", "refresh_compare_windows",
 ]
 
@@ -116,15 +117,16 @@ def compare_summary_lines(res: CompareResult, s_limit_db: float,
     if res.s is not None:
         v = verdict(res.s.worst_db, s_limit_db, db=True)
         verdicts.append(("S-parameters", v))
-        i, j = res.s.worst_entry
-        out.append(f"S-parameters   worst |S_B - S_A| = {res.s.worst_db:7.1f} dB"
-                   f"  at {format_freq(res.s.worst_f)}, S{i}{j}"
-                   f"    limit {s_limit_db:g} dB  -> {v}")
+        out += s_matrix_lines(res.s, s_limit_db, v)
+        out.append("")
     else:
         out.append(f"S-parameters   not compared -- {res.s_why}")
     out.append(f"Port setup     {res.setup}")
     if not res.ports:
         out.append(f"L / Q / R      not compared -- {res.z_why}")
+    elif res.ports:
+        out.append("L / Q / R  -- the port setup above, solved on both files; "
+                   "percent of A's value, + means B is larger")
     for pc in res.ports:
         z = pc.z
         vl = verdict(z.l.value, l_limit_pct, db=False)
@@ -157,6 +159,99 @@ def compare_summary_lines(res: CompareResult, s_limit_db: float,
     for n in res.notes + (res.s.notes if res.s is not None else []):
         out.append(f"note: {n}")
     return out
+
+
+#: Above this many ports the full difference matrix is not printed -- it
+#: would be wider than any pane -- and the ranked list stands in for it.
+S_MATRIX_MAX_PORTS = 32
+#: How many entries the ranked list names.
+S_RANK_SHOWN = 8
+#: Below this, an entry is the same to printing precision (identical data
+#: floors at -300 dB) and reads '--' rather than a number nobody can use.
+S_IDENTICAL_DB = -200.0
+
+
+def _entry(i: int, j: int) -> str:
+    # S(14,15), never S1415: with ten or more ports the concatenated form
+    # cannot be read back -- S1415 is S(14,15), S(1,415) or S(141,5).
+    return f"S({i},{j})"
+
+
+def _db_pct(db: float) -> str:
+    """-39.5 dB -> '1.06 %': what a dB difference means on a |S| <= 1
+    scale, for a reader who does not think in dB."""
+    return f"{100.0 * 10.0 ** (db / 20.0):.3g} %"
+
+
+def s_matrix_lines(sc, s_limit_db: float, v: str) -> list:
+    """The raw-matrix comparison: the worst entry, how many entries are over
+    the limit, the largest few, and -- up to S_MATRIX_MAX_PORTS -- every entry
+    as a matrix, so WHICH ports moved is on screen and not one number."""
+    i, j = sc.worst_entry
+    out = ["S-PARAMETERS  -- the two matrices entry by entry, "
+           "|S_B(i,j) - S_A(i,j)|",
+           f"  worst entry   {_entry(i, j)} = {sc.worst_db:.1f} dB "
+           f"(a {_db_pct(sc.worst_db)} difference)  at "
+           f"{format_freq(sc.worst_f)}"]
+    ranked = sc.ranked_entries()
+    over = sum(1 for _i, _j, db, _f in ranked if db > s_limit_db)
+    if ranked:
+        out.append(f"  limit {s_limit_db:g} dB  -> {v}   "
+                   f"({over} of {len(ranked)} entries over the limit)")
+        out.append("  largest differences (each entry's worst over the band):")
+        shown = [e for e in ranked if e[2] > S_IDENTICAL_DB][:S_RANK_SHOWN]
+        if not shown:
+            out.append("    (none -- every entry is identical)")
+        for ii, jj, db, f in shown:
+            mark = "  over" if db > s_limit_db else ""
+            out.append(f"    {_entry(ii, jj):<10} {db:7.1f} dB "
+                       f"({_db_pct(db):>8})  at {format_freq(f)}{mark}")
+    else:
+        out.append(f"  limit {s_limit_db:g} dB  -> {v}")
+    n = 0 if sc.entry_db is None else sc.entry_db.shape[0]
+    if 1 < n <= S_MATRIX_MAX_PORTS:
+        out.append(f"  every entry, dB (row i = port i, column j = port j; "
+                   f"* = over the limit, -- = identical):")
+        # Each cell is a 6-wide number plus a 1-wide '*' slot; the column
+        # number sits over the NUMBER, not over the star.
+        out.append("      " + "".join(f"{c:>6} " for c in range(1, n + 1)))
+        for r in range(n):
+            cells = []
+            for c in range(n):
+                db = float(sc.entry_db[r, c])
+                if db <= S_IDENTICAL_DB:
+                    cells.append(f"{'--':>6} ")
+                else:
+                    # One decimal: -39.6 printed as -40 beside a -40 dB
+                    # limit, starred as over it, reads as a contradiction.
+                    cells.append(f"{db:6.1f}"
+                                 + ("*" if db > s_limit_db else " "))
+            out.append(f"  {r + 1:>3} " + "".join(cells))
+    elif n > S_MATRIX_MAX_PORTS:
+        out.append(f"  ({n} ports: the full matrix is not printed -- "
+                   f"the list above is ranked over all {n * n} entries)")
+    return out
+
+
+def pct_view_span(abs_pct, limit: float) -> tuple:
+    """
+    (half-height of a percentage axis, points left off it), or (None, 0) to
+    leave matplotlib's autoscale alone.
+
+    One point of a near-open port can read -4e8 % while the rest of the band
+    sits inside +-2 %: autoscaled, the axis runs to 1e8 and every other point
+    lies on the zero line.  The axis covers the 98th percentile (never less
+    than twice the limit, so the limit lines are always on screen); what it
+    leaves out is COUNTED on the plot, the worst value is in the text above.
+    """
+    v = np.asarray(abs_pct, dtype=float)
+    v = v[np.isfinite(v)]
+    if v.size == 0:
+        return None, 0
+    span = max(float(np.percentile(v, 98)) * 1.1, 2.0 * abs(limit))
+    if float(v.max()) <= span:
+        return None, 0
+    return span, int(np.count_nonzero(v > span))
 
 
 def trace_choices(traces: Sequence) -> list:
@@ -315,10 +410,13 @@ class CompareWindow(tk.Toplevel):
         body = ttk.PanedWindow(self, orient=tk.VERTICAL)
         body.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=8, pady=2)
         tf = ttk.Frame(body)
-        self.text = tk.Text(tf, height=14, wrap=tk.NONE, font=CMP_FONT)
+        # Scrolls both ways: the S matrix alone is one line per port.
+        self.text = tk.Text(tf, height=18, wrap=tk.NONE, font=CMP_FONT)
         xs = ttk.Scrollbar(tf, orient=tk.HORIZONTAL, command=self.text.xview)
-        self.text.configure(xscrollcommand=xs.set)
+        ys = ttk.Scrollbar(tf, orient=tk.VERTICAL, command=self.text.yview)
+        self.text.configure(xscrollcommand=xs.set, yscrollcommand=ys.set)
         xs.pack(side=tk.BOTTOM, fill=tk.X)
+        ys.pack(side=tk.RIGHT, fill=tk.Y)
         self.text.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.text.tag_configure("bad", foreground=_LIMIT_FG)
         body.add(tf, weight=0)
@@ -397,7 +495,8 @@ class CompareWindow(tk.Toplevel):
         self.text.delete("1.0", tk.END)
         for ln in lines:
             self.text.insert(tk.END, ln + "\n",
-                             ("bad",) if DIFFERENT in ln else ())
+                             ("bad",) if (DIFFERENT in ln
+                                         or ln.endswith("  over")) else ())
         self.text.configure(state=tk.DISABLED)
 
     def _render(self) -> None:
@@ -442,6 +541,16 @@ class CompareWindow(tk.Toplevel):
             for sgn in (1, -1):
                 ax.axhline(sgn * abs(lim), color=_LIMIT_FG, linestyle="--",
                            linewidth=1.0)
+            ys = np.concatenate([np.abs(pc.z.dl_pct if kind == "L"
+                                        else pc.z.dq_pct)
+                                 for pc in res.ports])
+            span, n_off = pct_view_span(ys, lim)
+            if span is not None:
+                ax.set_ylim(-span, span)
+                if n_off:
+                    ax.text(0.99, 0.02, f"{n_off} pt{'s' if n_off > 1 else ''}"
+                            f" off scale", transform=ax.transAxes,
+                            ha="right", va="bottom", fontsize=7, alpha=0.7)
             ax.set_ylabel(f"Δ{kind} B vs A (%)", fontsize=8)
             if len(res.ports) > 1:
                 ax.legend(fontsize=7, loc="best")

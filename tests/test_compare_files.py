@@ -159,11 +159,59 @@ def _result(dl_worst=0.4):
 
 class TestSummary(unittest.TestCase):
 
+    def _fifteen_port(self):
+        """The owner's case: 15 ports, S(14,15) / S(15,14) just over -40 dB."""
+        f = np.linspace(0, 30e9, 31)
+        rng = np.random.default_rng(0)
+        sa = (rng.normal(size=(15, 15)) * 0.3 + 0j)[None] * np.ones((31, 1, 1))
+        sb = sa.copy()
+        sb[1, 13, 14] += 0.0106                     # -39.5 dB
+        sb[1, 14, 13] += 0.0105
+        sb[:, 2, 3] += 0.001                        # -60 dB
+        return sim.compare_s(f, sa, 50, f, sb, 50)
+
+    def test_a_two_digit_port_is_never_run_together(self):
+        """'S1415' was printed for S(14,15) -- unreadable, and ambiguous."""
+        text = "\n".join(cg.s_matrix_lines(self._fifteen_port(), -40,
+                                            cg.DIFFERENT))
+        self.assertIn("S(14,15) = -39.5 dB", text)
+        self.assertNotIn("S1415", text)
+        self.assertIn("1.06 %", text)
+
+    def test_every_entry_of_the_matrix_is_shown(self):
+        lines = cg.s_matrix_lines(self._fifteen_port(), -40, cg.DIFFERENT)
+        self.assertIn("(2 of 225 entries over the limit)", "\n".join(lines))
+        head = next(i for i, ln in enumerate(lines) if "every entry" in ln)
+        rows = lines[head + 2:head + 17]
+        self.assertEqual(len(rows), 15)
+        self.assertIn("-39.5*", rows[13])
+        self.assertIn("-60.0 ", rows[2])
+        self.assertEqual(rows[0].split()[1:], ["--"] * 15)
+
+    def test_one_wild_point_does_not_flatten_the_percentage_axis(self):
+        """A near-open port read -4e8 % at 1 MHz while the band sat inside
+        +-2 %: autoscaled, every other point lay on the zero line."""
+        ys = np.abs(np.r_[4e8, np.linspace(-2, 2, 200)])
+        span, n_off = cg.pct_view_span(ys, 1.0)
+        self.assertLess(span, 10)
+        self.assertGreaterEqual(span, 2.0)          # the limit lines show
+        self.assertEqual(n_off, 1)
+        self.assertEqual(cg.pct_view_span(np.linspace(0, 2, 50), 1.0),
+                         (None, 0))
+
+    def test_identical_entries_are_not_ranked(self):
+        lines = cg.s_matrix_lines(self._fifteen_port(), -40, cg.DIFFERENT)
+        head = next(i for i, ln in enumerate(lines) if "largest" in ln)
+        ranked = lines[head + 1:head + 4]
+        self.assertEqual([r.split()[0] for r in ranked],
+                         ["S(14,15)", "S(15,14)", "S(3,4)"])
+        self.assertIn("every entry", lines[head + 4])
+
     def test_within_every_limit_is_SAME(self):
         text = "\n".join(cg.compare_summary_lines(_result(), -40, 1, 5))
         self.assertIn("Overall: SAME", text)
         self.assertIn("A = ind_30G/L.s1p", text)
-        self.assertIn("S11", text)
+        self.assertIn("S(1,1)", text)
 
     def test_the_verdict_follows_the_readers_limit(self):
         text = "\n".join(cg.compare_summary_lines(_result(0.4), -40, 0.2, 5))

@@ -163,6 +163,22 @@ class SCompare:
     worst_f: float
     worst_entry: tuple           # (i, j), 1-based -- what the reader types
     notes: list = field(default_factory=list)
+    # EVERY entry, not just the worst one: the reader's question is "how do
+    # the two MATRICES differ", and one number for a 15x15 matrix hides which
+    # ports moved.  (n, n): each entry's worst |dS| over the band, in dB, and
+    # the frequency it happens at.
+    entry_db: Optional[np.ndarray] = None
+    entry_f: Optional[np.ndarray] = None
+
+    def ranked_entries(self) -> list:
+        """[(i, j, dB, f)] 1-based, largest difference first."""
+        if self.entry_db is None:
+            return []
+        n = self.entry_db.shape[0]
+        order = np.argsort(-self.entry_db, axis=None, kind="stable")
+        return [(int(k // n) + 1, int(k % n) + 1,
+                 float(self.entry_db.flat[k]), float(self.entry_f.flat[k]))
+                for k in order]
 
 
 def compare_s(fa, sa, z0a: float, fb, sb, z0b: float) -> SCompare:
@@ -194,9 +210,12 @@ def compare_s(fa, sa, z0a: float, fb, sb, z0b: float) -> SCompare:
     k = int(np.nanargmax(per_f))
     n = sa.shape[-1]
     ij = int(np.nanargmax(d[k].reshape(-1)))
+    kf = np.nanargmax(d, axis=0)                       # (n, n) worst index
     return SCompare(axis=ax, err_db=err_db(per_f), worst_db=float(err_db(per_f[k])),
                     worst_f=float(ax.freqs[k]),
-                    worst_entry=(ij // n + 1, ij % n + 1), notes=notes)
+                    worst_entry=(ij // n + 1, ij % n + 1), notes=notes,
+                    entry_db=err_db(np.nanmax(d, axis=0)),
+                    entry_f=ax.freqs[kf])
 
 
 # ============================================================================
