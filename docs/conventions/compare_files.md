@@ -60,3 +60,33 @@ Rules, each pinned by `tests/test_compare_files.py` and mutation-checked:
   covers the 98th percentile, never less than twice the limit, and counts what
   it leaves off. A near-open port read −4e8 % at 1 MHz and flattened a band
   that sat inside ±2 %. The worst value is still in the text.
+
+### The reading is written for someone DECIDING (2026-09-30, second pass)
+
+The owner, on the first version: *"我希望这个软件里面的解读，是人能看懂的样子，
+现在这个样子根本看不懂"*. It printed the measurement (`worst |S_B - S_A| = -39.5
+dB ... S1415 ... limit -40 dB -> DIFFERENT`). `compare_summary_lines` is now
+ordered as a reader asks, and `tests/test_compare_files.py::TestSummary` pins it:
+
+- **IN SHORT first**: THE SAME / NOT THE SAME, then one bullet per thing over
+  its limit, in words ("inductance L: B is 5.9 % higher than A below 9.44 GHz
+  (worst at 9.4 GHz)"), then the numbers AT THE MARKER FREQUENCY — the working
+  frequency is what a designer signs off on. Then WHAT TO DO NEXT, conditional
+  on what was found. The evidence (what was compared, the raw file, the
+  inductor, the port-pair table) comes after, never before.
+- **No dB and no scientific notation anywhere in the text.** The S limit box is
+  in PERCENT of full scale (1 % = −40 dB; `sim.db_to_pct` / `pct_to_db`); a
+  percentage is never `2.8e+02` (`_num`). The S plot is in % on a log axis with
+  `1 %`, `0.1 %` ticks, floored at 0.0001 %.
+- **Ports in words**: `S(14,15), between port 14 and port 15`.
+- **L and Q are JUDGED only below `SRF_JUDGE_FRAC` (85 %) of the lower
+  self-resonance** (`ZCompare.usable_limit`). Past the resonance the part is a
+  capacitor, and at it a 1 % shift of the resonance reads as hundreds of percent
+  of L — the first version's headline was that number. The region past it is
+  shaded "not judged" on the plots and its worst is still printed; the
+  resonance shift itself is one sentence ("moved from 11.2 GHz (A) to 11.1 GHz
+  (B), 1.2 % down"). Mutation-checked: an `usable_limit` of +inf fails
+  `test_the_resonance_is_not_what_the_verdict_reads`.
+- Section headings bold, what is over a limit red (`line_tags`).
+- The text stays ENGLISH, like every other window: the red zone's X11 fonts are
+  not known to carry CJK, and a reading in boxes is worse than one in English.

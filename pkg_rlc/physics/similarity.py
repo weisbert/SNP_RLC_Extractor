@@ -41,7 +41,8 @@ from pkg_rlc.physics.core import format_freq, s_to_y, y_to_s
 
 __all__ = [
     "SimilarityError", "CommonAxis", "SCompare", "ZCompare",
-    "common_axis", "compare_s", "compare_z", "err_db",
+    "common_axis", "compare_s", "compare_z", "err_db", "self_resonance",
+    "db_to_pct", "pct_to_db", "SRF_JUDGE_FRAC",
     "DEFAULT_S_LIMIT_DB", "DEFAULT_L_LIMIT_PCT", "DEFAULT_Q_LIMIT_PCT",
     "NEAR_ZERO_FRAC", "GRID_RTOL",
 ]
@@ -61,6 +62,13 @@ DEFAULT_Q_LIMIT_PCT = 5.0
 #: and 1% of THAT peak threw away every ordinary low-frequency R point.
 NEAR_ZERO_FRAC = 0.01
 
+#: L and Q are JUDGED only below this fraction of the lower self-resonance.
+#: Past the resonance the part is a capacitor and "L" is a formula applied to
+#: it; at the resonance a 1 % shift of it reads as hundreds of percent of L.
+#: Both are shown -- but a verdict on "is it the same inductor" read there is
+#: a verdict on the wrong question.
+SRF_JUDGE_FRAC = 0.85
+
 #: Two grid points closer than this, relative, are the same frequency.  A file
 #: written in GHz and one in Hz never compare equal as floats.
 GRID_RTOL = 1e-9
@@ -71,6 +79,17 @@ _DB_FLOOR = 1e-15
 
 class SimilarityError(ValueError):
     """The two inputs cannot be compared at all (no overlap, no data)."""
+
+
+def db_to_pct(db):
+    """A |dS| in dB as a percentage of full scale (|S| <= 1): -40 dB -> 1 %."""
+    return 100.0 * 10.0 ** (np.asarray(db, dtype=float) / 20.0)
+
+
+def pct_to_db(pct):
+    """The inverse: 1 % -> -40 dB.  What the window's '%' limit box means."""
+    return 20.0 * np.log10(np.maximum(np.asarray(pct, dtype=float) / 100.0,
+                                      _DB_FLOOR))
 
 
 def err_db(x) -> np.ndarray:
@@ -238,6 +257,49 @@ class ZCompare:
     l: Worst
     q: Worst
     r: Worst
+    # The first self-resonance of each (Im Z going + to -) inside the band,
+    # nan when there is none.  A large L difference right beside it is the
+    # resonance moving, not the inductance -- which the window says in words.
+    srf_a: float = float("nan")
+    srf_b: float = float("nan")
+
+    def usable_limit(self) -> float:
+        """The top of the band where L and Q still MEAN inductance and its
+        quality: SRF_JUDGE_FRAC of the lower self-resonance, or +inf when
+        neither file resonates inside the compared band."""
+        srfs = [f for f in (self.srf_a, self.srf_b) if np.isfinite(f)]
+        return SRF_JUDGE_FRAC * min(srfs) if srfs else float("inf")
+
+    def worst_in(self, kind: str, lo: float, hi: float) -> Worst:
+        """The worst of `kind` ("L" / "Q" / "R") over lo <= f < hi."""
+        pct = {"L": self.dl_pct, "Q": self.dq_pct, "R": self.dr_pct}[kind]
+        f = self.axis.freqs
+        m = (f >= lo) & (f < hi)
+        sub = np.where(m, pct, np.nan)
+        return _worst(sub, f, 0)
+
+    def at(self, f_hz: float) -> Optional[tuple]:
+        """(dL %, dQ %, dR %, grid frequency used) at the grid point nearest
+        `f_hz`, or None when `f_hz` is outside the compared band."""
+        f = self.axis.freqs
+        if not (self.axis.lo <= f_hz <= self.axis.hi) or len(f) == 0:
+            return None
+        k = int(np.argmin(np.abs(f - f_hz)))
+        return (float(self.dl_pct[k]), float(self.dq_pct[k]),
+                float(self.dr_pct[k]), float(f[k]))
+
+
+def self_resonance(f: np.ndarray, z: np.ndarray) -> float:
+    """The first frequency where Im(Z) crosses from inductive (+) to
+    capacitive (-), linearly interpolated; nan if it never does."""
+    im = np.asarray(z).imag
+    f = np.asarray(f, dtype=float)
+    ok = np.isfinite(im)
+    for k in range(len(im) - 1):
+        if ok[k] and ok[k + 1] and im[k] > 0 >= im[k + 1] and f[k] > 0:
+            t = im[k] / (im[k] - im[k + 1])
+            return float(f[k] + t * (f[k + 1] - f[k]))
+    return float("nan")
 
 
 def _rel_pct(ref: np.ndarray, other: np.ndarray) -> tuple:
@@ -285,4 +347,5 @@ def compare_z(fa, za, fb, zb) -> ZCompare:
     dr, xr = _rel_pct(ra, rb)
     return ZCompare(axis=ax, dl_pct=dl, dq_pct=dq, dr_pct=dr,
                     l=_worst(dl, f, xl), q=_worst(dq, f, xq),
-                    r=_worst(dr, f, xr))
+                    r=_worst(dr, f, xr),
+                    srf_a=self_resonance(f, a), srf_b=self_resonance(f, b))

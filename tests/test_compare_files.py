@@ -145,80 +145,102 @@ class TestCompareZ(unittest.TestCase):
 # ============================================================================
 
 
-def _result(dl_worst=0.4):
+def _result(dl_worst=0.4, marker_hz=float("nan")):
     ax = sim.common_axis(F30, F30)
     s = sim.SCompare(axis=ax, err_db=np.full(len(F30), -52.0), worst_db=-52.0,
                      worst_f=27e9, worst_entry=(1, 1))
-    z = sim.ZCompare(axis=ax, dl_pct=np.zeros(len(F30)),
-                     dq_pct=np.zeros(len(F30)), dr_pct=np.zeros(len(F30)),
-                     l=sim.Worst(dl_worst, 29e9, 0), q=sim.Worst(-3.0, 1e9, 0),
-                     r=sim.Worst(2.0, 1e9, 0))
-    return cg.CompareResult("ind_30G/L.s1p", "ind_80G/L.s1p", cg.DEFAULT_SETUP,
-                            s=s, ports=[cg.PortCompare("Z", z)])
+    n = len(F30)
+    dl = np.zeros(n)
+    dl[-10] = dl_worst
+    z = sim.ZCompare(axis=ax, dl_pct=dl, dq_pct=np.full(n, -3.0),
+                     dr_pct=np.full(n, 2.0),
+                     l=sim.Worst(dl_worst, F30[-10], 0),
+                     q=sim.Worst(-3.0, 1e9, 0), r=sim.Worst(2.0, 1e9, 0))
+    return cg.CompareResult("ind_30G/L.s1p", "ind_80G/L.s1p", "the setup",
+                            s=s, ports=[cg.PortCompare("Z", z)],
+                            marker_hz=marker_hz)
+
+
+def _text(res, s=1.0, l=1.0, q=5.0):
+    return "\n".join(cg.compare_summary_lines(res, s, l, q))
 
 
 class TestSummary(unittest.TestCase):
+    """The reading is for someone DECIDING -- the owner, on the first
+    version: "根本看不懂".  So the answer comes first, in words."""
 
     def _fifteen_port(self):
-        """The owner's case: 15 ports, S(14,15) / S(15,14) just over -40 dB."""
+        """The owner's case: 15 ports, S(14,15) / S(15,14) just over 1 %."""
         f = np.linspace(0, 30e9, 31)
         rng = np.random.default_rng(0)
         sa = (rng.normal(size=(15, 15)) * 0.3 + 0j)[None] * np.ones((31, 1, 1))
         sb = sa.copy()
-        sb[1, 13, 14] += 0.0106                     # -39.5 dB
+        sb[1, 13, 14] += 0.0106                     # 1.06 %
         sb[1, 14, 13] += 0.0105
-        sb[:, 2, 3] += 0.001                        # -60 dB
+        sb[:, 2, 3] += 0.001                        # 0.1 %
         return sim.compare_s(f, sa, 50, f, sb, 50)
+
+    def test_the_answer_comes_first(self):
+        lines = cg.compare_summary_lines(_result(), 1, 1, 5)
+        self.assertEqual(lines[0], "IN SHORT")
+        self.assertIn("THE SAME within your limits", lines[1])
+        heads = [ln for ln in lines if ln and not ln.startswith(" ")]
+        self.assertEqual(heads[:3], ["IN SHORT", "WHAT TO DO NEXT",
+                                     "WHAT WAS COMPARED"])
+
+    def test_no_dB_and_no_scientific_notation_anywhere(self):
+        res = _result(dl_worst=280.0)
+        res.s = self._fifteen_port()
+        text = _text(res)
+        self.assertNotIn(" dB", text)
+        self.assertNotRegex(text, r"\de[+-]\d")
+        self.assertIn("280 % higher", text)
+
+    def test_what_is_over_is_said_in_words_with_the_worst_place(self):
+        text = _text(_result(0.4), l=0.2)
+        self.assertIn("NOT THE SAME", text)
+        self.assertIn("inductance L: B is 0.4 % higher than A", text)
+        self.assertIn("Within your limits: the raw S-parameters, Q.", text)
+
+    def test_the_s_limit_is_a_percentage(self):
+        # -52 dB is 0.25 %: within 1 %, over 0.1 %.
+        self.assertIn("Your limit is 1 %  ->  within it.", _text(_result(), s=1.0))
+        self.assertIn("the raw S-parameters differ by up to 0.25 %",
+                      _text(_result(), s=0.1))
+
+    def test_the_marker_frequency_is_read_out(self):
+        text = _text(_result(marker_hz=1e9))
+        self.assertIn("At the marker frequency", text)
+        self.assertIn("Q: B is 3 % lower", text)
+        text = _text(_result(marker_hz=90e9))
+        self.assertIn("outside the compared range", text)
 
     def test_a_two_digit_port_is_never_run_together(self):
         """'S1415' was printed for S(14,15) -- unreadable, and ambiguous."""
-        text = "\n".join(cg.s_matrix_lines(self._fifteen_port(), -40,
-                                            cg.DIFFERENT))
-        self.assertIn("S(14,15) = -39.5 dB", text)
+        res = _result()
+        res.s = self._fifteen_port()
+        text = _text(res)
+        self.assertIn("S(14,15), between port 14 and port 15", text)
         self.assertNotIn("S1415", text)
-        self.assertIn("1.06 %", text)
+        self.assertIn("1.1 %", text)
 
-    def test_every_entry_of_the_matrix_is_shown(self):
-        lines = cg.s_matrix_lines(self._fifteen_port(), -40, cg.DIFFERENT)
-        self.assertIn("(2 of 225 entries over the limit)", "\n".join(lines))
-        head = next(i for i, ln in enumerate(lines) if "every entry" in ln)
-        rows = lines[head + 2:head + 17]
+    def test_every_port_pair_is_in_the_table(self):
+        lines = cg.s_matrix_lines(self._fifteen_port(), 1.0)
+        self.assertTrue(lines[0].startswith("ALL PORT PAIRS"))
+        rows = lines[3:]
         self.assertEqual(len(rows), 15)
-        self.assertIn("-39.5*", rows[13])
-        self.assertIn("-60.0 ", rows[2])
-        self.assertEqual(rows[0].split()[1:], ["--"] * 15)
+        self.assertIn("1.1*", rows[13])
+        self.assertIn("0.1 ", rows[2])
+        self.assertEqual(rows[0].split()[1:], ["."] * 15)
 
-    def test_one_wild_point_does_not_flatten_the_percentage_axis(self):
-        """A near-open port read -4e8 % at 1 MHz while the band sat inside
-        +-2 %: autoscaled, every other point lay on the zero line."""
-        ys = np.abs(np.r_[4e8, np.linspace(-2, 2, 200)])
-        span, n_off = cg.pct_view_span(ys, 1.0)
-        self.assertLess(span, 10)
-        self.assertGreaterEqual(span, 2.0)          # the limit lines show
-        self.assertEqual(n_off, 1)
-        self.assertEqual(cg.pct_view_span(np.linspace(0, 2, 50), 1.0),
-                         (None, 0))
-
-    def test_identical_entries_are_not_ranked(self):
-        lines = cg.s_matrix_lines(self._fifteen_port(), -40, cg.DIFFERENT)
-        head = next(i for i, ln in enumerate(lines) if "largest" in ln)
-        ranked = lines[head + 1:head + 4]
-        self.assertEqual([r.split()[0] for r in ranked],
+    def test_identical_pairs_are_not_ranked(self):
+        res = _result()
+        res.s = self._fifteen_port()
+        lines = cg.compare_summary_lines(res, 1, 1, 5)
+        k = next(i for i, ln in enumerate(lines) if "The largest:" in ln)
+        self.assertEqual([ln.split()[0] for ln in lines[k + 1:k + 4]],
                          ["S(14,15)", "S(15,14)", "S(3,4)"])
-        self.assertIn("every entry", lines[head + 4])
-
-    def test_within_every_limit_is_SAME(self):
-        text = "\n".join(cg.compare_summary_lines(_result(), -40, 1, 5))
-        self.assertIn("Overall: SAME", text)
-        self.assertIn("A = ind_30G/L.s1p", text)
-        self.assertIn("S(1,1)", text)
-
-    def test_the_verdict_follows_the_readers_limit(self):
-        text = "\n".join(cg.compare_summary_lines(_result(0.4), -40, 0.2, 5))
-        self.assertIn("Overall: DIFFERENT", text)
-        self.assertIn("L", text.split("over their limit:")[1])
-        text = "\n".join(cg.compare_summary_lines(_result(0.4), -60, 1, 5))
-        self.assertIn("S-parameters", text.split("over their limit:")[1])
+        self.assertIn("2 of the 225 port pairs", lines[k])
 
     def test_a_negative_percentage_is_judged_by_magnitude(self):
         self.assertEqual(cg.verdict(-3.0, 5.0, db=False), cg.SAME)
@@ -226,10 +248,37 @@ class TestSummary(unittest.TestCase):
         self.assertEqual(cg.verdict(float("nan"), 5.0, db=False), "")
 
     def test_nothing_compared_says_so(self):
-        res = cg.CompareResult("a", "b", cg.DEFAULT_SETUP, s_why="x", z_why="y")
-        text = "\n".join(cg.compare_summary_lines(res, -40, 1, 5))
-        self.assertIn("not compared -- x", text)
-        self.assertIn("nothing could be compared", text)
+        res = cg.CompareResult("a", "b", "x", s_why="port counts differ",
+                               z_why="y")
+        text = _text(res)
+        self.assertIn("Nothing could be compared", text)
+        self.assertIn("Not compared: port counts differ", text)
+
+    def test_the_resonance_is_not_what_the_verdict_reads(self):
+        """At the self-resonance a 1 % shift reads as hundreds of percent of
+        L.  Judged below 85 % of it; the region past it shown, not judged,
+        and the resonance shift said in one sentence."""
+        f = np.linspace(1e8, 30e9, 300)
+        c = sim.compare_z(f, _z(f, C=200e-15), f, _z(f, C=200.4e-15))
+        self.assertTrue(np.isfinite(c.srf_a))       # 11.25 GHz, in band
+        res = cg.CompareResult("A", "B", "x", ports=[cg.PortCompare("Z", c)])
+        text = _text(res, l=1.0, q=5.0)
+        self.assertGreater(abs(c.l.value), 5)       # the raw worst: 5x over
+        self.assertIn("THE SAME within your limits", text)
+        self.assertIn("judged below", text)
+        self.assertIn("not judged", text)
+        self.assertIn("The self-resonance moved from", text)
+
+
+class TestLineTags(unittest.TestCase):
+
+    def test_headings_bold_and_overs_red(self):
+        self.assertEqual(cg.line_tags("IN SHORT"), ("head",))
+        self.assertEqual(cg.line_tags("  NOT THE SAME in 0 Hz - 30 GHz:"),
+                         ("bad",))
+        self.assertEqual(cg.line_tags("  inductance L   ...   1 %  OVER"),
+                         ("bad",))
+        self.assertEqual(cg.line_tags("  inductance L   ...   1 %  ok"), ())
 
 
 # ============================================================================
@@ -330,12 +379,12 @@ class TestCompareWindow(unittest.TestCase):
         res = w._res
         w.l_lim_var.set("100")
         w.q_lim_var.set("100")
-        w.s_lim_var.set("0")
+        w.s_lim_var.set("100")
         w._render()
-        self.assertIn("Overall: SAME", w.text.get("1.0", tk.END))
+        self.assertIn("THE SAME within your limits", w.text.get("1.0", tk.END))
         w.l_lim_var.set("0.01")
         w._render()
-        self.assertIn("Overall: DIFFERENT", w.text.get("1.0", tk.END))
+        self.assertIn("NOT THE SAME", w.text.get("1.0", tk.END))
         self.assertIs(w._res, res)
 
     def test_a_removed_file_is_said_to_be_gone(self):
@@ -358,7 +407,8 @@ class TestCompareWindow(unittest.TestCase):
         self.assertEqual(len(choices), 3)
         w.setup_var.set(choices[1])
         w._recompute()
-        self.assertIn("from trace [1]", w.text.get("1.0", tk.END))
+        self.assertIn("the port setup of trace [1]",
+                      w.text.get("1.0", tk.END))
         self.assertEqual(len(w._res.ports), 1)
 
 
