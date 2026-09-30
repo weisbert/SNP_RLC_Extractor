@@ -36,6 +36,12 @@ The Attribution window: every pixel budget, the four refusals, `[Recompute]`-not
 - The Attribution window (`pkg_rlc/panels/attrib_gui.py`)
 - The two attribution reports (`pkg_rlc/present/attrib_report.py`)
 
+## [`compare_files.md`](compare_files.md) — 3k
+
+Two files over the band they share: the S-level and the L/Q/R-level difference, why the grid is the COARSER file's, the near-zero exclusion, and the reference being the lower-band file.
+
+- Compare files — two files over the band they share
+
 ## [`cli_report.md`](cli_report.md) — 4k
 
 `tests/fixtures/cli_reference/` — 143 pinned invocations, what the capture normalises, and the two KNOWN-NOT-FIXED cases pinned as-is.

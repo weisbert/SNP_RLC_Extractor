@@ -97,6 +97,7 @@ row changes.
 | `pkg_rlc/physics/solve.py` | **The arithmetic**: `s_to_y` / `y_to_s`, `compute_z_matrix` / `compute_z` / `_probe_impedance`, the extractors, the fit models, the tolerances. Imports `spec` + two names from `touchstone`; nothing imports it back. |
 | `pkg_rlc/physics/attrib.py` | **Port attribution**: the exact signed decomposition of `Z_ab`, the exact what-if, the cold-start screen (CLI-only), the composed-network gauge. Imports `pkg_rlc.physics.core` ONLY (acyclic), no scipy. |
 | `pkg_rlc/physics/compose.py` | **Several Touchstone files measured as ONE network**: k files stacked into one `Y`, every cross-file link an ordinary `ShortPair` / `LumpedBetween` handed to the SAME `compute_z_matrix`. Imports `pkg_rlc.physics.core` ONLY. |
+| `pkg_rlc/physics/similarity.py` | **Are two files the same network over the band they share?** The largest `\|S_B - S_A\|` in dB, and the signed L / Q / R difference of one extracted Z, on the COARSER file's grid inside the overlap. Imports `core` and `compose` ONLY. |
 | `pkg_rlc/physics/tracemodel.py` | **A routed trace as a pi model, read EXACTLY**, plus its BANDWIDTH — three separate numbers (model band, branch corners, −3 dB), where the last is a property of trace PLUS source PLUS load and is therefore swept, never printed as one figure.: `Y_series = -Ym`, `Y_shunt = Yii + Ym` off the inverse of a 2x2 `Zmat` block — an identity, not a fit — plus the differential imbalance check. Imports `pkg_rlc.physics.core` ONLY (acyclic). |
 
 ### L1 — `pkg_rlc/model/` (the shared data model, and the spec logic over it)
@@ -141,6 +142,7 @@ row changes.
 | `pkg_rlc/panels/panels_editor.py` | **The editor** (L5): `EditorPanel` — the pinned footer, the mode-aware form, both `RowTable`s, the strips, the text hatch, the auto-apply sync chain, and `StylePicker`. Imports L0–L4 only. |
 | `pkg_rlc/panels/files_gui.py` | **Which FILES a trace is made of** (round 3): the `Files in this trace…` window, the port-cell scope rules and the GUI rendering of the reference-node check. **It imports `pkg_rlc.frontend.app` NOT AT ALL.** |
 | `pkg_rlc/panels/tracemodel_gui.py` | **The Trace Model window** — a modeless `Toplevel` over `pkg_rlc.physics.tracemodel` whose schematic is a `tk.Canvas` (the ONE form `rejected_ui.md` sanctions), plus the pure formatters it is testable through with no display. **Every coordinate comes from L3; it authors no geometry.** Imports `pkg_rlc.frontend.app` NOT AT ALL. |
+| `pkg_rlc/panels/compare_gui.py` | **The Compare files window** — modeless `Toplevel` over `pkg_rlc.physics.similarity`: two files, one port setup applied to both, editable limits, the verdict and the curves it was read off. Imports `pkg_rlc.frontend.app` NOT AT ALL. |
 | `pkg_rlc/panels/attrib_gui.py` | **The Attribution window** — a modeless `Toplevel` over `pkg_rlc.physics.attrib` — plus the pure formatters it is testable through with no display. **It imports NOTHING back and has no deferred imports left.** |
 
 ### L6 — `pkg_rlc/frontend/` (the App itself and the argv entry point)
@@ -192,6 +194,7 @@ cross-reference of the form ``CLAUDE.md § <title>`` — there are several, in
 | [`cli_report.md`](docs/conventions/cli_report.md) | The CLI's printed report (`tests/fixtures/cli_reference/`) |
 | [`editor_and_tables.md`](docs/conventions/editor_and_tables.md) | Connection table (the Mode 5 / Mode 6 row editor) · Per-kind row shape, nets, and the parallel stamp (round 1) · Auto-apply, the style picker, plot visibility · Port names, roles, and the Ports & Roles window |
 | [`multifile.md`](docs/conventions/multifile.md) | Composition — several files as ONE network (`pkg_rlc/physics/compose.py`, round 2) · The two-file GUI — schema, namespace, engine (round 3) |
+| [`compare_files.md`](docs/conventions/compare_files.md) | Compare files — two files over the band they share |
 | [`plot_panel.md`](docs/conventions/plot_panel.md) | The plot panel's axes (what range they show, what unit they say) · The plot panel's control strip · Cursor readout (the plot's marker / V-line labels) |
 | [`reading_files.md`](docs/conventions/reading_files.md) | Reading files (robustness, diagnosis, refusal) |
 | [`results_pane.md`](docs/conventions/results_pane.md) | Freeze as trace (the before/after comparison) · The run snapshot (what a finished Calculate leaves behind) · The Results pane notebook (the Log tab and its badge) · The three results views (`detail` / `summary` / `compare`) · The Digits control (how many significant digits a value is printed to) · Run history (the run tabs after the Log) |

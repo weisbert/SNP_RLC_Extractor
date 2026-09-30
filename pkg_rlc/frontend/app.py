@@ -467,6 +467,12 @@ from pkg_rlc.panels.attrib_gui import (
 # it at module level for the reference-node strip.  Nothing on the CLI path
 # pays it at all: pkg_rlc_extractor imports pkg_rlc_gui only inside the
 # GUI-launch branch.
+# Compare two files over the band they share (the 30 GHz vs 80 GHz question).
+from pkg_rlc.panels.compare_gui import (
+    COMPARE_MENU_LABEL,
+    open_compare_window,
+    refresh_compare_windows,
+)
 from pkg_rlc.panels.files_gui import (
     FILES_MENU_LABEL,
     FILES_TITLE,
@@ -1324,6 +1330,10 @@ class App(tk.Tk):
                                  command=self._on_trace_model)
         analyze_menu.add_command(label=FILES_MENU_LABEL,
                                  command=self._on_files_window)
+        # About two FILES, not the selected trace -- appended last so the
+        # three per-trace windows keep their positions.
+        analyze_menu.add_command(label=COMPARE_MENU_LABEL,
+                                 command=self._on_compare_files)
         menubar.add_cascade(label="Analyze", menu=analyze_menu)
 
         self.config(menu=menubar)
@@ -1591,7 +1601,15 @@ class App(tk.Tk):
             refresh_attribution_windows(self)
             refresh_trace_model_windows(self)
             refresh_files_windows(self)
+            refresh_compare_windows(self)
         return mapping
+
+    def _on_compare_files(self) -> None:
+        """Open (or raise) the Compare files window.  The refusal -- fewer than
+        two files loaded -- lives in `compare_gui`, so both routes to it say
+        the same thing."""
+        self._flush_editor_sync()
+        open_compare_window(self)
 
     def _load_one_file(self, path: str) -> TouchstoneData | None:
         return self._files_panel._load_one_file(path)

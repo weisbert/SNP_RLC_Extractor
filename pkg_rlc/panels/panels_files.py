@@ -40,6 +40,9 @@ from pkg_rlc.panels.tracemodel_gui import (
     refresh_trace_model_windows,
 )
 from pkg_rlc.panels.attrib_gui import refresh_attribution_windows
+from pkg_rlc.panels.compare_gui import (
+    COMPARE_MENU_LABEL, refresh_compare_windows,
+)
 from pkg_rlc.panels.files_gui import FILES_MENU_LABEL, refresh_files_windows
 
 
@@ -106,6 +109,10 @@ class FilesPanel:
         # minsize.  Same reason Freeze / Unfreeze are on the Traces menu.
         # No separator: one carries no `-label`, and both menus in this window
         # are enumerated by label.
+        # About the FILES, which is what this list is -- the one entry here
+        # that is not about the selected trace.  Before Clear, which empties.
+        self._files_menu.add_command(label=COMPARE_MENU_LABEL,
+                                     command=self.app._on_compare_files)
         self._files_menu.add_command(label=CLEAR_FILES_MENU_LABEL,
                                      command=self._on_clear_files)
         self.files_lb.bind("<Button-3>", self._on_files_context_menu)
@@ -254,6 +261,7 @@ class FilesPanel:
         # composes with, so an open window would keep listing a file that is
         # gone with a port count beside it.
         refresh_files_windows(app)
+        refresh_compare_windows(app)
         app._append_result(f"Removed {fe.label}")
         if by_extra:
             app._append_result(
@@ -325,6 +333,7 @@ class FilesPanel:
         refresh_attribution_windows(app)
         refresh_trace_model_windows(app)
         refresh_files_windows(app)
+        refresh_compare_windows(app)
         app._append_result(f"Cleared all files ({len(labels)})")
         if doomed:
             app._append_result(
