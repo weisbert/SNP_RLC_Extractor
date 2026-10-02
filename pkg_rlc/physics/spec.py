@@ -1490,6 +1490,18 @@ def probe_rule_issues(mport_rows: Sequence[MeasPortRow] = (),
     grounded = {p + 1 for p, t in conn_ts.per_port.items()
                 if isinstance(t, (Ground, Vdd))}
     vdd = {p + 1 for p, t in conn_ts.per_port.items() if isinstance(t, Vdd)}
+    # A port a SHORT ties to a grounded port is at ground too.  Without this
+    # the solve kept the probe and silently dropped the ground (measured in
+    # the stage-3 review: '+1; short 1,3; ground 3' computed exactly what
+    # '+1' alone does).  `tied` maps such a port to the grounded port it is
+    # tied to, for the message.
+    find, members = _merge_view(conn_ts)
+    tied: dict[int, int] = {}
+    for p in grounded:
+        for q0 in members.get(find(p - 1), []):
+            if q0 + 1 not in grounded:
+                tied.setdefault(q0 + 1, p)
+    at_ground = grounded | set(tied)
     # A probe port that an OPEN or element-to-GND row also names: the DSL is
     # last-assignment-wins and connections are emitted after the probes, so
     # that row takes the port off the probe.  It always did; this says so.
@@ -1556,8 +1568,16 @@ def probe_rule_issues(mport_rows: Sequence[MeasPortRow] = (),
             for p in ports:
                 owner.setdefault(p, name)
 
-        on_plus = [p for p in plus if p in grounded]
-        if on_plus:
+        on_plus = [p for p in plus if p in at_ground]
+        via = [tied[p] for p in on_plus if p in tied]
+        if on_plus and via and all(p in tied for p in on_plus):
+            issues.append(SpecIssue(
+                "mports", idx, "plus", ISSUE_ERROR,
+                f"Port {_fmt_ports(on_plus)} is on the '+' side of '{name}' "
+                f"and a short ties it to grounded port {_fmt_ports(via)}: "
+                f"that node is at 0 V, so there is nothing to measure.",
+                ISSUE_PLUS_GROUNDED))
+        elif on_plus:
             issues.append(SpecIssue(
                 "mports", idx, "plus", ISSUE_ERROR,
                 f"Port {_fmt_ports(on_plus)} is on the '+' side of '{name}' "
@@ -1567,7 +1587,7 @@ def probe_rule_issues(mport_rows: Sequence[MeasPortRow] = (),
                 + ": that node is at 0 V, so there is nothing to measure. "
                 f"Drop it from one of the two.",
                 ISSUE_PLUS_GROUNDED))
-        on_minus = [p for p in minus if p in grounded]
+        on_minus = [p for p in minus if p in at_ground]
         if on_minus and not on_plus and not both:
             tail = ("" if len(minus) == 1 else
                     f"; ports {_fmt_ports(minus)} are all at GND")
@@ -1576,7 +1596,7 @@ def probe_rule_issues(mport_rows: Sequence[MeasPortRow] = (),
                 f"'-' side is grounded (port {_fmt_ports(on_minus)}), so "
                 f"this measures {name} to GND{tail}.", ISSUE_MINUS_GROUNDED))
         for col, side, ports in (("plus", "+", plus), ("minus", "-", minus)):
-            off = [p for p in ports if p in overridden and p not in grounded]
+            off = [p for p in ports if p in overridden and p not in at_ground]
             if off:
                 issues.append(SpecIssue(
                     "mports", idx, col, ISSUE_WARNING,

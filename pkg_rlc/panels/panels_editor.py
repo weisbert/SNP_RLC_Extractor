@@ -84,6 +84,7 @@ from pkg_rlc.present.conntable import (
     CONN_TABLE_HINT_SHORT,
     ColumnSpec,
     EDITOR_TEMPLATES,
+    TEMPLATE_LABEL_TAIL,
     TEMPLATE_PROMPT,
     conn_cells_from_row,
     conn_hint_text,
@@ -100,6 +101,7 @@ from pkg_rlc.widgets.widgets import (
     _tk_dash,
     editor_scroll_fraction,
 )
+from pkg_rlc.model.trace import default_trace_label, is_default_trace_label
 from pkg_rlc.model.validate import (
     _extra_lines_indicator,
     _footer_strip_text,
@@ -1078,6 +1080,12 @@ class EditorPanel:
         mports, conn = template_rows(name, self._editor_nports())
         self.ed_mp_table.set_rows(mports)
         self.ed_conn_table.set_rows(conn)
+        # The tool's own label follows the template; one the user typed is
+        # left alone.
+        file_label = self.ed_file_var.get()
+        if is_default_trace_label(self.ed_label.get_value(), file_label):
+            self.ed_label.set_value(default_trace_label(
+                file_label, TEMPLATE_LABEL_TAIL.get(name, "p1_to_gnd")))
         self.app._ed_extra_lines = ""
         self._refresh_port_choices()
         self._update_editor_visibility()

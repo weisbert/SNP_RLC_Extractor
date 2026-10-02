@@ -531,6 +531,15 @@ TEMPLATE_BETWEEN = "Between two ports"
 TEMPLATE_SHORTED_LOOP = "Loop with shorted far end"
 TEMPLATE_COUPLING = "Several nets (coupling)"
 
+#: The tail a template gives the tool's own trace label
+#: (`pkg_rlc.model.trace.DEFAULT_LABEL_TAILS`): a trace still called
+#: '<file>_p1_to_gnd' that becomes a loop must not keep saying "to gnd" in
+#: the Traces list, the legend and the results (stage-3 review).
+TEMPLATE_LABEL_TAIL = {"Port to GND": "p1_to_gnd",
+                       "Between two ports": "p1_vs_p2",
+                       "Loop with shorted far end": "loop_shorted",
+                       "Several nets (coupling)": "coupling"}
+
 #: In the order the combobox lists them.
 EDITOR_TEMPLATES = (TEMPLATE_PORT_TO_GND, TEMPLATE_BETWEEN,
                     TEMPLATE_SHORTED_LOOP, TEMPLATE_COUPLING)

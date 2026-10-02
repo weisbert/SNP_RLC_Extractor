@@ -99,10 +99,23 @@ class FileEntry:
 # remove -- so a session reloads under exactly the labels it was saved with,
 # and removing one of a pair gives the survivor its plain name back.
 
-def default_trace_label(file_label: str) -> str:
+#: The tails of the tool's own trace labels: what a new trace measures
+#: ('p1_to_gnd'), and what each editor template makes it measure.  Any of
+#: them marks a label the TOOL wrote, which it may rewrite (on a file
+#: relabel, on a template); a label the user typed is never touched.
+DEFAULT_LABEL_TAILS = ("p1_to_gnd", "p1_vs_p2", "loop_shorted", "coupling")
+
+
+def default_trace_label(file_label: str, tail: str = "p1_to_gnd") -> str:
     """The label a new trace on this file gets -- the tool's own, so a relabel
     of the file may carry it along; a label the user typed is never touched."""
-    return f"{file_label}_p1_to_gnd"
+    return f"{file_label}_{tail}"
+
+
+def is_default_trace_label(label: str, file_label: str) -> bool:
+    """True when `label` is one the tool wrote for a trace on `file_label`."""
+    return any(label == default_trace_label(file_label, t)
+               for t in DEFAULT_LABEL_TAILS)
 
 
 def _path_parts(path: str) -> tuple:
@@ -176,8 +189,10 @@ def rebind_file_labels(traces: Sequence, mapping: dict) -> None:
         old = tc.file_label
         if old in mapping:
             tc.file_label = mapping[old]
-            if tc.label == default_trace_label(old):
-                tc.label = default_trace_label(mapping[old])
+            for tail in DEFAULT_LABEL_TAILS:
+                if tc.label == default_trace_label(old, tail):
+                    tc.label = default_trace_label(mapping[old], tail)
+                    break
         if tc.file_labels:
             tc.file_labels = [mapping.get(lbl, lbl) for lbl in tc.file_labels]
 

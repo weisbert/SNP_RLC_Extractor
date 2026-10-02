@@ -523,6 +523,24 @@ class TestTheReviewFindings(unittest.TestCase):
             build_terminations_rows(mp, conn, nports=4)
         self.assertEqual(str(cm.exception), first.message)
 
+    def test_a_short_to_a_grounded_port_grounds_the_probe_port(self):
+        # Stage-3 review: '+1; short 1,3; ground 3' was solved as '+1' alone,
+        # the ground silently dropped.  On '+' it is refused; on '-' it is
+        # the whole '-' side at ground, folded like a direct ground row.
+        iss = probe_rule_issues([MeasPortRow("P1", "1", "")],
+                                [ConnectionRow("short", "1,3"),
+                                 ConnectionRow("ground", "3")])
+        self.assertEqual([(i.column, i.code) for i in iss],
+                         [("plus", "plus_grounded")])
+        self.assertIn("short ties it to grounded port 3", iss[0].message)
+        mp = [MeasPortRow("P1", "1", "2")]
+        conn = [ConnectionRow("short", "2", "4"), ConnectionRow("ground", "4")]
+        iss = probe_rule_issues(mp, conn)
+        self.assertEqual([i.code for i in iss], ["minus_grounded"])
+        fmp, fconn = fold_grounded_minus(mp, conn)
+        self.assertEqual(fmp[0].minus, "")
+        self.assertEqual((fconn[-1].kind, fconn[-1].ports), ("ground", "2"))
+
 
 class TestNoTk(unittest.TestCase):
 

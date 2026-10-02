@@ -233,6 +233,22 @@ class TestTemplates(_Case):
                 self.assertEqual(self.app.ed_template_var.get(),
                                  TEMPLATE_PROMPT)
 
+    def test_the_tools_label_follows_the_template_a_typed_one_does_not(self):
+        from pkg_rlc.model.trace import default_trace_label
+        self.tc.label = default_trace_label(self.fe.label)
+        self._select(0)
+        with mock.patch.object(panels_editor.messagebox, "askyesno",
+                               return_value=True):
+            self._choose(TEMPLATE_BETWEEN)
+            self.app._flush_editor_sync()
+            self.assertEqual(self.tc.label,
+                             default_trace_label(self.fe.label, "p1_vs_p2"))
+            self.app.ed_label.set_value("mine")
+            self.app._flush_editor_sync()
+            self._choose(TEMPLATE_PORT_TO_GND)
+            self.app._flush_editor_sync()
+        self.assertEqual(self.tc.label, "mine")
+
     def test_an_empty_table_is_filled_without_asking(self):
         """Mutation: drop the `self._tables_have_rows() and` guard so it
         always asks -> fails."""
@@ -509,3 +525,20 @@ class TestTheMinsizeViewport(_Case):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheToolsLabelFollowsTheTemplate(unittest.TestCase):
+    """Stage-3 review: a new trace kept '<file>_p1_to_gnd' after a template
+    made it a loop, so the Traces list, the legend and the results named a
+    setup it no longer had.  The TOOL's label follows; a typed one stays."""
+
+    def test_pure(self):
+        from pkg_rlc.model.trace import (default_trace_label,
+                                         is_default_trace_label,
+                                         rebind_file_labels, TraceConfig)
+        self.assertTrue(is_default_trace_label("a.s4p_p1_vs_p2", "a.s4p"))
+        self.assertFalse(is_default_trace_label("mine", "a.s4p"))
+        tc = TraceConfig(file_label="a.s4p",
+                         label=default_trace_label("a.s4p", "coupling"))
+        rebind_file_labels([tc], {"a.s4p": "b.s4p"})
+        self.assertEqual(tc.label, "b.s4p_coupling")

@@ -353,10 +353,16 @@ def main(argv) -> int:
               file=sys.stderr)
         p = subprocess.run([sys.executable] + argv)
         return p.returncode
+    # The child's output comes back through files read as UTF-8, so the
+    # child must write UTF-8 (the console code page here is GBK); and what
+    # this console cannot show is replaced, not raised -- a walk's whole
+    # report was lost to one U+FFFD on 2026-10-03.
+    os.environ["PYTHONIOENCODING"] = "utf-8"
     with desktop() as d:
         p = d.run([sys.executable] + argv, cwd=os.getcwd())
-    sys.stdout.write(p.stdout)
-    sys.stderr.write(p.stderr)
+    for stream, text in ((sys.stdout, p.stdout), (sys.stderr, p.stderr)):
+        enc = getattr(stream, "encoding", None) or "utf-8"
+        stream.write(text.encode(enc, errors="replace").decode(enc))
     return p.returncode
 
 
