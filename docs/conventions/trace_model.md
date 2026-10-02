@@ -179,9 +179,19 @@ owner's words: he wanted the loading of one PN signal in one `.sNp`, clicked
 Trace model, and got "a warning I could not make head or tail of". The window
 answered a question about a TRACE — a `TraceConfig` with exactly two
 measurement ports, already calculated. The question asked is about a NET in a
-FILE. So the workspace asks for exactly that: which file, which nets, which
-ports are ground, at what frequency. **Nothing is inferred from the Traces
-list, and no name or end is invented.**
+FILE. So the workspace asks for exactly that: which file, which nets, what is
+done with the other ports, at what frequency. **Nothing is inferred from the
+Traces list, and no name or end is invented.**
+
+**Stage 3 (2026-10-03): the GND field is the shared connections table**
+(`docs/design_workspaces.md` § 8 item 2). Stage 1 had one `GND` entry and
+"everything else OPEN"; the other ports are now the RLC editor's own
+connection rows — ground, vdd, open, short, R / L / C to ground or between
+two ports — through `ConnectionsTable` from `pkg_rlc/panels/setup_tables.py`
+(the same component the Compare files workspace uses), with the fixed line
+`Ports not listed anywhere are OPEN.` beside its caption `Other ports:`. One
+concept, one view, the same in every workspace. **The RLC editor still builds
+its own two tables; moving it onto the component is deferred.**
 
 **GUI is still the acceptance criterion.** The workspace is the deliverable;
 `--trace-model` is ONE net of it reached another way.
@@ -190,7 +200,9 @@ list, and no name or end is invented.**
 
 - `pkg_rlc/services/tracenets.py` (L2, no Tk; imports `pkg_rlc.physics.core`,
   `pkg_rlc.physics.tracemodel` and `pkg_rlc.model.trace.snap_to_grid` only):
-  `validate_nets`, `solve_net` / `solve_nets`, `rebandwidth`, `net_signature`.
+  `validate_nets(rows, conn_rows, nports)`, `solve_net` / `solve_nets`,
+  `rebandwidth`, `retarget`, `net_signature`, and since stage 3
+  `ground_rows`, `net_mport_rows`, `conn_row_issues`.
   `tests/test_tracenets.py::TestNoTk` asserts it pulls in no tkinter.
 - `pkg_rlc/present/tracemodel_report.py` (L3): every line of text and every
   canvas coordinate, now including `summary_table_lines` / `summary_order` /
@@ -220,13 +232,33 @@ and the drawing and the text read the SAME `PiModel` through the SAME
   painting it would leave a permanently red empty row on screen.
 - Single-ended leaves both minus cells empty. Differential needs BOTH; one
   alone marks the empty one red.
-- **The rules are `build_terminations_coupling`'s own refusals restated per
-  CELL**, so the table and the builder cannot refuse different things:
-  reserved names (`A` / `B`, `LEGACY_GROUP_NAMES`, case-insensitive), duplicate
-  names (exact match — the builder's own rule), a port on both sides of one
-  net, 1-based numbering, a probe port that is also in GND. **Plus the
-  table-level rule a per-net solve cannot see**: a port beyond the file's port
-  count. **Two rows MAY share a port** — every net is its own solve, so DQ_P
+- **The rules are the builder's own refusals restated per CELL**, so the
+  table and the builder cannot refuse different things: reserved names
+  (`A` / `B`, `LEGACY_GROUP_NAMES`, case-insensitive), duplicate names (exact
+  match — the builder's own rule), a port on both sides of one net, 1-based
+  numbering. **Plus the table-level rule a per-net solve cannot see**: a port
+  beyond the file's port count.
+- **The probe rules of the one row model hold PER NET** (stage 3;
+  `probe_rule_issues`, `editor_and_tables.md` § "The one row model"): an
+  IN+ / OUT+ port in a ground or vdd row is RED on that cell (a grounded node
+  has nothing to measure); a grounded `−` side is AMBER — the whole side is
+  folded into ground, that end is solved SINGLE-ENDED, and the imbalance
+  check is skipped with a note; an open or element-to-GND row over a probe
+  port is amber. **Two refusals the per-port rules cannot see, because they
+  are about a merged NODE**, are made on the cell too
+  (`_net_merge_issues`): a short row tying two different ends of one net (the
+  solver refuses it only at solve time, naming 0-based ports), and a short
+  tying a probe `+` end to a port a ground row holds (the solver's merge keeps
+  the probe and drops the ground without a word).
+- **A connection row's own complaint lands on ITS cell** (`conn_row_issues`):
+  the parser is asked one row at a time on top of the earlier rows that
+  parsed — so a node an earlier short row named (`as coil_tap`) resolves —
+  with the `Line N:` prefix stripped, R / L / C checked on their own cells
+  first, and the editor's two warnings (values but no Port; an element with
+  no value is a 0-ohm short). A `CellIssue` carries `table='nets'|'conn'`, and
+  the issues line names a connection row as `Connection row N, <cell>: …`. A
+  connection row that does not parse is every net's error: no net can be
+  solved under a spec that is not one. **Two rows MAY share a port** — every net is its own solve, so DQ_P
   (1→3), DQ_N (2→4) and the pair DQ (1,2→3,4) sit side by side, which is the
   comparison this workspace exists for; the first build refused it (carried
   over from the coupling solve, where one port cannot be in two probes at
@@ -249,8 +281,11 @@ and the drawing and the text read the SAME `PiModel` through the SAME
 
 #### One solve per net
 
-Each net is one `build_terminations_coupling([(IN), (OUT)], gnd, nports=)`
-plus one `compute_z_matrix`, on its own. Declaring every net's ends in ONE
+Each net is one `build_terminations_rows(net_mport_rows(row), conn_rows, "",
+nports=)` plus one `compute_z_matrix`, on its own — the ONE row path the RLC
+editor uses (stage 1 used `build_terminations_coupling([(IN), (OUT)], gnd)`).
+The measurement ports are named `IN` / `OUT` (`IN_NAME` / `OUT_NAME`, neither
+in `LEGACY_GROUP_NAMES`). Declaring every net's ends in ONE
 `TerminationSet` would give the same numbers — measurement ports are left
 open, which is what "everything unlisted is OPEN" already means — so the
 split is not about arithmetic. **It is so that a failure belongs to ONE row**:
@@ -262,7 +297,19 @@ solves `pi_2port.s2p` single-ended, `diff_pair_4port.s4p` differential and
 `decap_4port` with GND `3,4`, and compares against the CLI path with
 `np.array_equal` on the 2x2, exact equality on every `PiModel` branch, the
 mode-conversion ratio and the bandwidth table — and line for line against the
-block `cli.main` prints.
+block `cli.main` prints. Since stage 3 those tests pass their GND as
+`ground_rows(...)` with their assertions UNCHANGED.
+
+**Ground-only rows are bit-identical to the old GND field — measured, then
+pinned.** Before the switch: every 2-port and 4-port fixture, every IN / OUT
+assignment (single-ended on each ordered pair, differential on each ordered
+quadruple) under every subset of the remaining ports grounded — **368 cases**
+— gives an `np.array_equal` Zmat through `build_terminations_coupling(...,
+gnd)` and through one ground row. `TestGroundRowIsTheOldGndField` keeps that
+measurement as a test (subsampled every 20th frequency, because the full
+sweeps took 9.7 s, too slow for `FAST_MODULES`; a second test compares full
+sweeps end to end through `solve_net`). Mutation-checked by the implementer:
+a ground row emitted one port short fails it.
 
 **The port-order caveat.** `compute_z_matrix` returns its measurement ports in
 `resolve_meas_ports` order — by LOWEST PORT NUMBER, not by declaration. A net
@@ -275,12 +322,14 @@ SYNTHETIC asymmetric 2-port, because every shipped fixture is symmetric to
 `allclose` on its two ends and no fixture can see the swap.
 Mutation-checked: positional `i, j = 0, 1` fails two tests.
 
-**The imbalance check carries GND, and that removed a GUI/CLI
-disagreement.** The differential pi assumes common mode OPEN at both ends;
-the one-frequency, four-single-ended-probe check says how much that hides.
-The old window ran it with NO ground ports while the CLI ran it with the
-declared ones, so the two surfaces could print different mode-conversion
-ratios for one file. **The workspace follows the CLI.**
+**The imbalance check carries the connection rows (GND in stage 1), and that
+removed a GUI/CLI disagreement.** The differential pi assumes common mode
+OPEN at both ends; the one-frequency, four-single-ended-probe check says how
+much that hides. The old window ran it with NO ground ports while the CLI ran
+it with the declared ones, so the two surfaces could print different
+mode-conversion ratios for one file. **The workspace follows the CLI**: the
+four single-ended probes are solved under the same connection rows the net
+itself was.
 `TestImbalanceCarriesGnd` has a synthetic 6-port pair that reads **1.6e-13**
 with its reference ports open and **0.67** with them grounded — far either
 side of `MODE_CONVERSION_WARN = 0.05`. Mutation-checked: dropping GND from the
@@ -317,7 +366,26 @@ four-port solve fails two tests.
 
 Measured at the **1040x600 minsize** (vista theme, Microsoft YaHei UI 9):
 Summary **101 px** (six lines), schematic canvas **563x190**, response
-**134 px**; the left column uses 378 of 421 px. **Both canvases request 150 /
+**134 px**; the left column used 378 of 421 px in stage 1.
+
+**The left column is a measured budget since the connections table replaced
+the one-line GND field (stage 3)**; the numbers live in
+`TraceModelWorkspace._build_left`'s docstring and
+`TestLeftColumnBudget` re-measures the 1040x600 cases (`diff_pair_4port.s4p`,
+two nets, the 460 px left host). Stage 1 asked 382 px and Calculate all ended
+at 355 of 421 (66 px spare). The naive table (a LabelFrame, the OPEN line and
+its own button row) asked 449 with one ground row — Calculate at 419 of 421 —
+and with three rows asked 507 and **clipped Calculate all** (unmapped). So
+three things: the table's caption and the OPEN line ride in the RowTable's own
+`+ Add` row, and so do the nets table's Duplicate / Remove buttons; the
+connections table shows two rows before it scrolls; and the action row and the
+status line are packed FIRST at the BOTTOM of a column only as tall as it
+asks, so on a short window it is the top that gives, never the button. As
+built: one ground row asks 370 and Calculate ends at 343 of 421 (78 px spare);
+two rows 399 / 372; three or five rows 402 / 406 (the rest scroll); the worst
+case — six nets and every Kind at once — asks 520 against 421 and Calculate
+still ends at 394, with Conditions squeezed off (in stage 1 six nets alone
+clipped Calculate). Widest child: 443 of 460 px. **Both canvases request 150 /
 110 px explicitly**, because Tk's default 265 px request squeezed the Summary
 to 56 px. The Details text opens at only 56 px at the minsize; it is collapsed
 by default and its sash drags.
@@ -326,12 +394,15 @@ by default and its sash drags.
 
 The same rule as the Attribution window and the old `[Recompute]`: **a result
 is never redrawn underneath its reader.** Every `NetResult` carries the
-`net_signature(row, gnd, file_label, freq_hz)` it was solved from (cells
-stripped, GND sorted and deduped). The panel never edits a result: on every
-change it re-derives the display list — a row whose signature has a result
-shows it, any other row shows its last numbers (matched by name) marked
-`stale`, or `stale: not calculated yet`. **Editing one row stales that row
-only; GND or file stale every row.**
+`net_signature(row, conn_rows, file_label, freq_hz)` it was solved from
+(cells stripped; a ground-only table keyed as its sorted, deduped port set —
+so the key is the one stage 1's GND gave — any other table by its live rows'
+cells, disabled and blank rows ignored). The panel never edits a result: on
+every change it re-derives the display list — a row whose signature has a
+result shows it, any other row shows its last numbers (matched by name)
+marked `stale`, or `stale: not calculated yet`. **Editing one row stales that
+row only; a connection row or the file stales every row**
+(`TestConnectionRows::test_a_keystroke_in_a_connection_cell_marks_the_rows_stale`).
 
 **The marker frequency is NOT a staling change** (2026-10-02, owner review of
 the first build): `Z2` is the whole open-circuit sweep and does not depend on
@@ -358,10 +429,16 @@ were, so `rebandwidth` re-runs `bandwidth_table` on the result's own
 #### Session and export
 
 **The workspace's state rides in the session file's `workspaces` block**
-under `"trace"`: `file`, `rows`, `gnd`, `freq_ghz`, `src_ohm`, `load_ff`, and
-nothing at all at the defaults. **Config, never results** — the session
-file's rule — so a loaded workspace shows every row `not calculated yet`
-until Calculate all. A garbled rows list costs the rows only.
+under `"trace"`, at inner version `TRACE_STATE_VERSION = 2`: `version`,
+`file`, `rows`, `conn_rows`, `freq_ghz`, `src_ohm`, `load_ff`, and nothing at
+all at the defaults. **Config, never results** — the session file's rule — so
+a loaded workspace shows every row `not calculated yet` until Calculate all. A
+garbled rows list costs the rows only. **Old sessions keep working**: a
+stage-1 block (no `version`, or 1) has a `gnd` STRING and no `conn_rows`, and
+is read as ONE ground row (`ground_rows`; `"3, 4"` becomes `3-4`, because the
+DSL is whitespace-tokenised) which computes exactly what the field did
+(`TestOldSessions`). A block of a newer version raises, and the switch drops
+only that block with one Log note.
 
 **Export CSV** (`csv_rows`, pure) writes the Summary at `repr()` precision,
 then every net's per-branch values, then every net's bandwidth table.
@@ -434,12 +511,14 @@ the rule for that directory, not an exception made here.
 rather than owed silently.** `--trace-model` is ONE net per invocation: there
 is no table of nets, no Summary, and no CSV of the trace model — the
 workspace's `Export CSV` (Summary, per-branch values, bandwidth tables) has no
-command-line equivalent. The other direction too: the CLI can solve a net
-under `--short` pairs and on a composed network, and the workspace has a GND
-field and nothing else (every other port OPEN), on one file. **Where both
-surfaces can express the same net they must print the same numbers**, and
+command-line equivalent. The other direction too: the CLI can solve a net on
+a composed network, and the workspace works on one file. Since stage 3 the
+workspace's connection rows hold ground, vdd and short rows (the CLI's
+`--gnd` / `--vdd` / `--short`) and also R / L / C elements and named nodes,
+which the CLI has no flag for. **Where both surfaces can express the same net
+they must print the same numbers**, and
 `tests/test_tracenets.py::TestMatchesTheCli` is what holds them to it — it is
-the reason the imbalance check now carries GND on both. A future
+the reason the imbalance check now carries the declared ground on both. A future
 `--trace-model` that takes several nets should call
 `pkg_rlc.services.tracenets.solve_nets` and `summary_table_lines` rather than
 grow a second loop.

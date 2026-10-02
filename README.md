@@ -39,7 +39,7 @@ Basic flow:
 5. Set **RLC Freq (GHz)** for single-point extraction, optionally enter a **Band Fit** range and model.
 6. Click **Calculate All & Plot**. Results appear in the right pane and overlay on the multi-subplot view. **Calculate This Trace**, in the editor's footer, recomputes only the selected trace — the fast path when you are iterating on one port spec with several traces loaded.
 
-**Two tasks, one window.** The strip under the menu bar switches the window between **RLC extraction** (everything above) and **Trace model** ([what IS this routed trace, as a circuit](#trace-model-what-is-this-routed-trace-as-a-circuit)). The Loaded Files list is shared; the rest of the window belongs to the task, and switching back leaves the RLC side exactly as it was.
+**Three tasks, one window.** The strip under the menu bar switches the window between **RLC extraction** (everything above), **Trace model** ([what IS this routed trace, as a circuit](#trace-model-what-is-this-routed-trace-as-a-circuit)) and **Compare files** ([is this run the same as that one](#compare-files-is-this-run-the-same-as-that-one)). The Loaded Files list is shared; the rest of the window belongs to the task, and switching back leaves each one exactly as it was.
 
 **Edits apply as you type.** There is no *Apply* step: whatever is in the editor is what the selected trace holds, and the Traces list updates live. A trace whose spec has changed since it was last computed carries a trailing `*` in that list.
 
@@ -957,23 +957,28 @@ not "what is `Z11`" but **"what is this thing, and what does it load my driver w
    list stays; the rest of the window becomes the workspace.
 2. Under **Nets**, pick the **File**, press **+ Add net**, and fill one row per net: a **Name**,
    the **IN+** and **OUT+** ports (and **IN-** / **OUT-** for a differential pair).
-3. List the ground ports under **GND** — every other port is left OPEN — and set **Freq** (GHz).
+3. Under **Other ports**, say what is done with the ports that are not ends of a net — the RLC
+   editor's own connections table (`ground`, `vdd`, `open`, `short`, R / L / C rows); usually one
+   `ground` row with the ground pins. *Ports not listed anywhere are OPEN.* Set **Freq** (GHz).
 4. **Calculate all.** The **Summary** gets one line per net: `R_ser L_ser C_in C_out f_3dB lumped`.
 5. Click a Summary line to draw that net's pi and its response; **Export CSV** writes them all.
 
 Nothing is named or picked for you, and nothing is inferred from the Traces list. A problem in a
-row — no name, a duplicate name, a port used twice, a port that is also in GND, a port past the
-file's port count — is marked **in that cell** as you type, with the reason under the table; there
-is no dialog, and a bad row does not stop the others being solved. Edit a row, the GND list, the
-file or the frequency and the rows it affects are marked `stale` and keep their old numbers until
-you press Calculate all again — the picture never quietly becomes a picture of something else.
-`Calculate all` re-solves only the stale rows.
+row — no name, a duplicate name, a port used twice, an `IN+` / `OUT+` port in a ground row, a short
+tying two ends of one net, a port past the file's port count — is marked **in that cell** as you
+type, with the reason under the table; a grounded `−` port is amber (that end is then measured
+single-ended, to GND); there is no dialog, and a bad row does not stop the others being solved.
+Edit a row, a connection row or the file and the rows it affects are marked `stale` and keep their
+old numbers until you press Calculate all again — the picture never quietly becomes a picture of
+something else. `Calculate all` re-solves only the stale rows. Ground-only connection rows compute
+exactly what the old GND box did (bit for bit, over 368 cases), and a config saved with a GND box
+loads it as one ground row.
 
 Under the drawing, **Details** (collapsed until you open it) puts the three things you need before
 believing any value: each branch's `|Q|` and whether to read it as R, L or C; the same pi re-read
 at the bottom of the sweep, so you can see whether it is one lumped element across your band; and,
-for a pair, how much differential energy it converts to common mode — measured with the GND ports
-grounded, exactly as the command line does.
+for a pair, how much differential energy it converts to common mode — measured under the same
+connection rows, exactly as the command line does with its `--gnd`.
 
 The workspace and its table are saved with the config; the results are not, as everywhere else in
 this tool.
@@ -1097,6 +1102,42 @@ Two things the differential report does that the single-ended one cannot:
   the four ports single-ended, transforms to mixed mode and prints `max|Ydc| / max|Ydd|`; above
   5 % it says the pair is imbalanced and that the pi is the differential part only. There is no
   reference node in a differential drawing, and the drawing says that too.
+
+---
+
+## Compare files: is this run the same as that one?
+
+You extracted an inductor to 30 GHz, then again to 50 and 80 GHz. An EM solver sizes its mesh from
+the highest frequency it is asked for, so the three are three discretisations of one layout — inside
+the band they share, are they the same? Press **Compare files** on the strip under the menu bar.
+
+1. **Files to compare:** the **Reference** starts as the file with the LOWEST top frequency (the one
+   whose sweep lies inside the others'); pick another if you like. Tick every file to check against
+   it — each pair is compared on its own overlap band, on the coarser file's points, and nothing is
+   extrapolated.
+2. **What to compare:** *Raw S-parameters only*, or *Extracted L/Q/R under this setup* — the same two
+   tables as the RLC editor (measurement ports + connections, with the Template box). **There is no
+   default setup**: with the tables empty the extracted part says `No setup defined` and only S is
+   judged. **Copy setup from trace…** copies a trace's setup into the tables once; nothing links them
+   afterwards. A setup problem is marked in its cell, never in a dialog, and a refused setup is not
+   solved.
+3. **Same if within** S 1 % (of full scale, i.e. −40 dB), L 1 %, Q 5 % — defaults for your margin to
+   change — and the workspace's own **Marker** (GHz); then **Compare**.
+
+The **verdict strip** gives one line per compared file: `✓` the same within your limits, `✗` not
+the same with the first thing over its limit in words, `?` could not be compared and why. Under it,
+ΔS / ΔL / ΔQ / ΔR (%) with one curve per file and the limits drawn; **Details** (collapsed) has the
+full reading of each pair, answer first. Changing a limit re-judges and moving the marker (type it,
+or click / drag on the plot) re-reads, both without recomputing; changing the files, the reference or
+the setup marks the results **out of date** until you press Compare again.
+
+Three things are kept out of the verdict, shaded grey where they are a region and always counted:
+L and Q above 85 % of the self-resonance (a 1 % shift of the resonance would read as hundreds of
+percent of L); Q and R where the reference is lossless (`|Re Z|` under 0.1 % of `|Z|`, i.e. Q above
+about 1000 — there `Re Z` is the file's rounding and Q is that rounding inverted, which used to plot
+as a ±100 % square wave); and any point where the reference's own value is under 1 % of its median.
+The full rules, with the measurements behind each threshold, are in
+`docs/conventions/compare_files.md`; the in-app Help has a **Compare files** tab.
 
 ---
 
@@ -1303,6 +1344,8 @@ SNP_RLC_Extractor/
                              coupling plus one term per declared termination, answers
                              the exact what-if, and carries the four-step cold-start
                              port screen. Imports core only (acyclic)
+      similarity.py          Are two files the same network over the band they
+                             share? |dS|, and dL / dQ / dR of one extracted Z
     model/                   L1  the shared data model, and the spec logic over it
       trace.py               TraceConfig / FileEntry / SolveNetwork, the signatures,
                              the frequency snap and the whole run record
@@ -1311,11 +1354,14 @@ SNP_RLC_Extractor/
       session.py             The JSON session file, as a pure dict <-> model trip
       run.py                 What a Calculate actually RUNS
       tracenets.py           The Trace model workspace's engine: per-cell checks,
-                             one solve per net, bandwidth re-read without a solve
+                             one solve per net under the connection rows,
+                             bandwidth re-read without a solve
     present/                 L3  turning a result into text
       report.py              The three results views and every formatter under them
       csv.py                 The CSV export blocks
       attrib_report.py       The attribution report as text, for both front ends
+      compare_report.py      Compare files as text: one reference against N files,
+                             the verdict strip and the reading, with no App
       conntable.py           The connections table's shape and column budget
       help.py                In-app Help window (prose lives in docs/help/*.md)
     widgets/                 L4  generic Tk widgets that know nothing about this app
@@ -1330,10 +1376,15 @@ SNP_RLC_Extractor/
       files_gui.py           The "Files in this trace..." window
       attrib_gui.py          The Attribution window (Analyze -> Attribution...):
                              a modeless Toplevel over physics/attrib.py
+      setup_tables.py        The shared setup component: measurement ports +
+                             connections tables, painted in the cell
       workspaces.py          The strip under the menu bar that switches the
-                             window between tasks (RLC extraction / Trace model)
+                             window between tasks (RLC extraction / Trace model /
+                             Compare files)
       ws_tracemodel.py       The Trace model workspace: nets table, Summary,
                              schematic and response canvases
+      ws_compare.py          The Compare files workspace: one reference against
+                             N files, verdict strip, curves, Details
     frontend/                L6  the App itself and the argv entry point
       app.py                 Tkinter GUI: file / trace management, Calculate, menus
       cli.py                 The argparser, the refusals, the CSV writers, the

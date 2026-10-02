@@ -28,13 +28,21 @@ S-parameters of an N-port linear network, the tool:
   7. Draws a routed trace as its exact pi circuit (series R, L;
      a shunt at each end) with its bandwidth. Press "Trace model"
      on the strip under the menu bar, add one row per net (Name,
-     IN+ and OUT+, plus IN- and OUT- for a pair), list the ground
-     ports under GND, and press Calculate all. Full account on the
-     "Trace model" tab.
-  8. Says whether two files are the same network over the band
-     they share -- an inductor extracted to 30 GHz and again to
-     80 GHz, say. Analyze -> Compare files... ; see the "Compare
-     files" tab.
+     IN+ and OUT+, plus IN- and OUT- for a pair), put the ground
+     pins in a ground row of the "Other ports" connections table,
+     and press Calculate all. Full account on the "Trace model"
+     tab.
+  8. Says whether files are the same network over the band they
+     share -- an inductor extracted to 30 GHz and again to 50 and
+     80 GHz, say: one reference against as many files as you
+     tick. Press "Compare files" on the strip under the menu bar;
+     see the "Compare files" tab.
+
+The strip under the menu bar switches the window between three
+tasks: "RLC extraction" (everything this tab describes from here
+on), "Trace model" and "Compare files". The Loaded Files list is
+shared by all three; the rest of the window belongs to the task,
+and switching back leaves each one exactly as it was.
 
 Universal assumptions (apply to every setup)
 --------------------------------------------

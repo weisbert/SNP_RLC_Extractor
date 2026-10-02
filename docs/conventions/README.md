@@ -36,11 +36,16 @@ The Attribution window: every pixel budget, the four refusals, `[Recompute]`-not
 - The Attribution window (`pkg_rlc/panels/attrib_gui.py`)
 - The two attribution reports (`pkg_rlc/present/attrib_report.py`)
 
-## [`compare_files.md`](compare_files.md) — 3k
+## [`compare_files.md`](compare_files.md) — 23k
 
-Two files over the band they share: the S-level and the L/Q/R-level difference, why the grid is the COARSER file's, the near-zero exclusion, and the reference being the lower-band file.
+The Compare files WORKSPACE (stage 3, 2026-10-03; it replaced the Compare window): one reference against N files, each pair on its own band and the COARSER file's grid; the S-level and the L/Q/R-level difference under a setup the user DEFINES (no default, a one-shot copy from a trace); the three not-judged rules — median near-zero, 85 % of the resonance, and the measured `RE_JUDGE_FRAC` for a lossless reference; staleness, the workspace's own marker, the verdict strip; the reading written for someone deciding; the session block.
 
-- Compare files — two files over the band they share
+- Compare files — one reference against N files, over the band each pair shares
+- No default setup, and a setup is the user's own
+- The workspace (stage 3; replaces the window's surface rules)
+- Q and R are not judged where the reference is lossless (`RE_JUDGE_FRAC`)
+- The reading is written for someone DECIDING (2026-09-30, second pass)
+- Session
 
 ## [`cli_report.md`](cli_report.md) — 4k
 
@@ -122,7 +127,7 @@ spelled.
 
 ## [`trace_model.md`](trace_model.md)
 
-Why the pi comes out EXACT rather than fitted, why differential needs no new mathematics and no new flag, the two capacitance conventions a differential shunt is ambiguous between, the three bandwidths, and the Trace model workspace: the net table's per-cell rules, one solve per net, the port-order caveat, GND in the imbalance check, staleness by signature, and what the CLI does not have.
+Why the pi comes out EXACT rather than fitted, why differential needs no new mathematics and no new flag, the two capacitance conventions a differential shunt is ambiguous between, the three bandwidths, and the Trace model workspace: the net table's per-cell rules, the "Other ports" connections table that replaced the GND field in stage 3 (bit-identical over 368 cases for ground-only rows), one solve per net, the port-order caveat, the connection rows in the imbalance check, the left column's measured budget, staleness by signature, the session block (an old `gnd` string read as one ground row), and what the CLI does not have.
 
 - The trace pi model (`pkg_rlc/physics/tracemodel.py`, `pkg_rlc/present/tracemodel_report.py`)
 - Bandwidth — THREE numbers, and conflating them is the trap

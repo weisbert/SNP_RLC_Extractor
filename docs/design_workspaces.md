@@ -3,7 +3,37 @@
 > 状态：owner 已批准（2026-10-02）。**阶段一已落地**（规则见 `docs/conventions/trace_model.md`
 > 与 `rejected_ui.md` 的 Superseded 注）；**阶段二已落地**（规则见
 > `docs/conventions/editor_and_tables.md` §"The one row model"、`session_and_help.md`、
-> `results_pane.md`；Help 已按 §3.7 重排为 9 页，backlog TASK-017 随之关闭）；阶段三待做。
+> `results_pane.md`；Help 已按 §3.7 重排为 9 页）；**阶段三已落地**（2026-10-03；规则见
+> `docs/conventions/compare_files.md` 与 `trace_model.md` §"The Trace model workspace"；
+> `compare_gui.py` 及其菜单项、Files 右键项、refresh 调用已删；Help 的 Compare files /
+> Trace model 两页按工作区重写，backlog TASK-017 关闭）。三个阶段至此全部落地。
+>
+> 阶段三落地时与本文 §4 / §8 的出入：
+> - **ε 实测定为 1e-3**（§8 第 5 条要报给 owner 的数）：无损文件的 |Re Z|/|Z| 是文件精度噪声——
+>   10 位有效数字 ≤ 9e-8，6 位 ≤ 2.0e-4，S 上 1e-5 / 1e-4 相对噪声 ≤ 3.5e-4 / 1.4e-3；1e-3 把 10 位、
+>   6 位的无损环路和纯 L 全部清掉（1e-4 噪声下 200 点剩 3 个孤点，不再是方波），真实损耗（测试用
+>   RLC、耦合 4 口线圈 R +3 %、Q = 30 / 100 / 300 且 R +5 %）一个点都不排除；代价是 Q = 1000 时半个频段
+>   不判。治不了的：6 位 diff pair 近开路单端探针仍有 3/150 点（|dQ| 到 221 %），任何可用 ε 都去不掉。
+>   常量 `similarity.RE_JUDGE_FRAC`，测量写在它的注释里。
+> - 判定条多了第三个标记 `?`（无法比较，如无重叠频段）；本文只写了 ✓/✗。
+> - 只有连接行、没有测量端口行也算 "No setup defined"（什么都没测）。
+> - 倍数写法只用于 L/Q/R 的有符号相对差（≥ +100 % 写成 "3.8 × A"，变号写 "(the sign flipped)"）；
+>   S 仍是满量程百分比（|ΔS| 至多 200 %，不是比值）。
+> - setup 被拒（红格）时不交给求解器；若 S 在限值内，该行仍是 ✓，句子写 "raw S-parameters only --
+>   the setup is refused -- …"。
+> - 左栏布局：两个单选放一行、Limits 不加带标题的 LabelFrame（"Same if within S [1] % L [1] % Q [5] %
+>   Marker [ ] GHz" 一行），"Copy setup from trace…" 挂在测量端口表自己的 "+ Add" 行里，Template 框在
+>   SetupTables 内——首稿宽出 18 px、表格被压到 145 px，实测见 `ws_compare.py` `_build_left`。右侧多一个
+>   "Log frequency axis" 勾选。
+> - session：compare 块随 `workspaces` 块读写（`WorkspaceSwitch` 的 state_get/state_set），
+>   `pkg_rlc/services/session.py` 未改；trace 块升到内层版本 2（`conn_rows`），旧的 `gnd` 字符串读成一条
+>   ground 行。
+> - 走线模型的"其余端口"（§8 第 2 条）按"接"落地：GND 框换成共享的 `ConnectionsTable`；仅 ground 行时与旧
+>   GND 框逐位相同（368 个 case 实测，已固化为测试）；另加两条逐端口规则看不到的拒绝（short 把一个 net 的
+>   两端连在一起；short 把探针 + 端连到接地端口）。
+> - **RLC 编辑器仍用自己的两张表**；改用共享组件（`setup_tables.py`）留作后续。
+> - 已知未修：`_num` 在 10 以下保留两位有效数字，1.04 % / 5.04 % 印成 "1 %" / "5 %"，紧贴在同值限值旁却判
+>   OVER（S 表里是 "1*"）——窗口时代 dB 表的同一个矛盾，记在 `compare_files.md`。
 >
 > 阶段二落地时与本文的出入：模板的具体填法本文未写，按工作单定为 Port to GND `[P1 +1]`、
 > Between two ports `[P1 +1 −2]`、Loop with shorted far end `[P1 +1 −2]` + `short "3,4"`、
@@ -366,4 +396,4 @@ backlog TASK-017（Help 没提 Compare）随之关闭。
    ——草稿按"修正 + Log 说明"写。
 4. 走线模型是否需要**跨文件拼接**（封装 + PCB 两个文件组成一条走线）——建议本计划不做，
    有真实需求再加。
-5. 对比工作区 ε（Q/R 不可判定阈值）先按 1e-3，实测后报给你再定。
+5. 对比工作区 ε（Q/R 不可判定阈值）先按 1e-3，实测后报给你再定。——**已实测（2026-10-03）：保持 1e-3**，数字见文首阶段三说明与 `compare_files.md`。

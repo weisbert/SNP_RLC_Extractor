@@ -44,7 +44,10 @@ from pkg_rlc.panels.ws_tracemodel import (  # noqa: E402
 from pkg_rlc.present.tracemodel_report import (  # noqa: E402
     RESPONSE_DB_CEIL, branch_value_lines, summary_table_lines,
 )
-from pkg_rlc.services.tracenets import NetRow, solve_net, validate_nets  # noqa: E402
+from pkg_rlc.physics.core import ConnectionRow  # noqa: E402
+from pkg_rlc.services.tracenets import (  # noqa: E402
+    NetRow, ground_rows, solve_net, validate_nets,
+)
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 FIXTURE = FIXTURES / "diff_pair_4port.s4p"
@@ -124,7 +127,7 @@ class TestIssueLines(unittest.TestCase):
 
     def test_errors_first_and_rows_named(self):
         rows = [NetRow("x", "1", "", "2", ""), NetRow("x", "1", "", "", "")]
-        issues = validate_nets(rows, "", 4)
+        issues = validate_nets(rows, [], 4)
         lines = issue_lines(issues, rows)
         self.assertTrue(all(l.startswith("Row 2 'x'") for l in lines), lines)
         self.assertTrue(any("Duplicate net name" in l for l in lines))
@@ -132,15 +135,16 @@ class TestIssueLines(unittest.TestCase):
 
     def test_a_warning_is_labelled_and_sorted_after_errors(self):
         rows = [NetRow("d", "1,2", "3", "4", "5"), NetRow("", "6", "", "7", "")]
-        issues = validate_nets(rows, "", 8)
+        issues = validate_nets(rows, [], 8)
         lines = issue_lines(issues, rows)
         self.assertTrue(lines[0].startswith("Row 2, Name: Name required"))
         self.assertTrue(lines[-1].startswith("Row 1 'd', IN+: warning:"))
 
-    def test_the_gnd_field_is_named(self):
-        lines = issue_lines(validate_nets([], "x", 4), [])
+    def test_a_connection_row_is_named(self):
+        lines = issue_lines(validate_nets([], ground_rows("x"), 4), [])
         self.assertEqual(len(lines), 1)
-        self.assertTrue(lines[0].startswith("GND: GND 'x' is not a port spec"))
+        self.assertTrue(lines[0].startswith(
+            "Connection row 1, Port: first token 'x' is not a port"), lines)
 
 
 class TestCsvRows(unittest.TestCase):
@@ -225,8 +229,9 @@ class _WsCase(unittest.TestCase):
         self.ws.calculate_all()
         self._settle()
 
-    def _expected(self, row, gnd=(), f=F_HZ, src=1.0, load=0.0):
-        return solve_net(self.fe.ts.freqs, self.fe.Y, 4, row, list(gnd), f,
+    def _expected(self, row, gnd=(), f=F_HZ, src=1.0, load=0.0, conn=None):
+        conn = ground_rows(list(gnd)) if conn is None else conn
+        return solve_net(self.fe.ts.freqs, self.fe.Y, 4, row, conn, f,
                          self.fe.label, src, load)
 
     def _canvas_texts(self):
@@ -255,7 +260,7 @@ class TestTheFileAndTheTable(_WsCase):
         self.assertEqual(self.ws.freq_var.get(), DEFAULT_FREQ_GHZ)
         self.assertEqual(self.ws.src_var.get(), "1")
         self.assertEqual(self.ws.load_var.get(), "0")
-        self.assertEqual(self.ws.gnd_var.get(), "")
+        self.assertEqual(self.ws.conn_rows(), [])
         self.assertEqual(self.ws.rows(), [])
 
     def test_a_picked_dropdown_entry_is_stored_as_its_port_number(self):
@@ -301,13 +306,14 @@ class TestCalculateAll(_WsCase):
         self.assertEqual(self.ws.status_lbl.cget("text"),
                          "1 solved, 1 skipped (see the Summary).")
 
-    def test_a_bad_gnd_entry_fails_every_row_in_the_summary(self):
+    def test_a_bad_connection_row_fails_every_row_in_the_summary(self):
         self.ws.set_rows([P, N])
-        self.ws.gnd_var.set("x")
+        self.ws.set_conn_rows(ground_rows("x"))
         self.ws.calculate_all()
         for line in self.ws.summary_lines()[1:]:
-            self.assertIn("error: GND 'x' is not a port spec", line)
-        self.assertEqual(str(self.ws.gnd_entry.cget("foreground")), ERROR_FG)
+            self.assertIn("error: first token 'x' is not a port", line)
+        self.assertEqual(str(self.ws.conn_table.data_row_widget(
+            0, "ports").cget("foreground")), ERROR_FG)
 
     def test_without_a_file_or_a_net_the_status_line_says_so(self):
         self.ws.calculate_all()
@@ -349,15 +355,16 @@ class TestValidationIsInTheTableNotADialog(_WsCase):
         self.assertIn("Duplicate net name 'p'", self.ws.issues_lbl.cget("text"))
         self.assertEqual(str(self.ws.issues_lbl.cget("foreground")), ERROR_FG)
 
-    def test_a_port_in_gnd_paints_that_port_cell_red(self):
+    def test_a_port_in_a_ground_row_paints_that_port_cell_red(self):
         self.ws.set_rows([P, N])
-        self.ws.gnd_var.set("3")
+        self.ws.set_conn_rows(ground_rows("3"))
         self._settle(1)
         self.assertEqual(str(self.ws.table.data_row_widget(0, "out_p").cget(
             "foreground")), ERROR_FG)
         self.assertEqual(str(self.ws.table.data_row_widget(1, "out_p").cget(
             "foreground")), "")
-        self.assertIn("Port 3 is also in GND", self.ws.issues_lbl.cget("text"))
+        self.assertIn("Port 3 is on the '+' side of 'OUT' and in a ground row",
+                      self.ws.issues_lbl.cget("text"))
 
     def test_fixing_the_cell_clears_the_colour(self):
         self.ws.set_rows([P, NetRow("p", "2", "", "4", "")])
@@ -514,11 +521,14 @@ class TestStaleness(_WsCase):
         self.assertEqual(self.ws.results[1].status, "ok")
         self.assertIn("STALE -- press Calculate all", self._canvas_texts())
 
-    def test_gnd_and_file_mark_every_row_stale(self):
+    def test_connections_and_file_mark_every_row_stale(self):
         self._two_nets()
-        self.ws.gnd_var.set("4")
+        self.ws.set_conn_rows([ConnectionRow("short", "2,4")])
         self.assertEqual([r.status for r in self.ws.results], ["stale", "stale"])
-        self.ws.gnd_var.set("")
+        self.ws.set_conn_rows([])
+        self.assertEqual([r.status for r in self.ws.results], ["ok", "ok"])
+        # A row switched OFF is not in the spec: nothing goes stale.
+        self.ws.set_conn_rows([ConnectionRow("short", "2,4", enabled=False)])
         self.assertEqual([r.status for r in self.ws.results], ["ok", "ok"])
         self.ws.file_var.set("other.s4p")
         self.ws._on_file_changed()
@@ -694,19 +704,27 @@ class TestSession(_WsCase):
 
     def test_state_shape_and_round_trip(self):
         self.ws.set_rows([P, NetRow("d", "1", "2", "3", "4")])
-        self.ws.gnd_var.set("4")
+        self.ws.set_conn_rows([ConnectionRow("ground", "4"),
+                               ConnectionRow("short", "2,4", enabled=False)])
         self.ws.freq_var.set("0.25")
         self.ws.src_var.set("5")
         self.ws.load_var.set("30")
         self.ws.calculate_all()
         state = self.ws.state_get()
         self.assertEqual(state, {
+            "version": wsm.TRACE_STATE_VERSION,
             "file": self.fe.label,
             "rows": [{"name": "p", "in_p": "1", "in_n": "", "out_p": "3",
                       "out_n": ""},
                      {"name": "d", "in_p": "1", "in_n": "2", "out_p": "3",
                       "out_n": "4"}],
-            "gnd": "4", "freq_ghz": "0.25", "src_ohm": "5", "load_ff": "30"})
+            "conn_rows": [
+                {"kind": "ground", "ports": "4", "to": "", "R": "", "L": "",
+                 "C": "", "net": "", "enabled": True},
+                {"kind": "short", "ports": "2,4", "to": "", "R": "", "L": "",
+                 "C": "", "net": "", "enabled": False}],
+            "freq_ghz": "0.25", "src_ohm": "5", "load_ff": "30"})
+        self.assertEqual(wsm.TRACE_STATE_VERSION, 2)
         self.assertNotIn("results", json.dumps(state))
 
         from pkg_rlc.services.session import session_from_dict, session_to_dict
@@ -729,10 +747,12 @@ class TestSession(_WsCase):
             self.assertIn("stale: not calculated yet", line)
 
     def test_a_garbled_rows_list_costs_only_the_rows(self):
-        self.ws.state_set({"file": self.fe.label, "rows": "nope",
-                           "gnd": "2", "freq_ghz": "0.3"})
+        self.ws.state_set({"version": 2, "file": self.fe.label,
+                           "rows": "nope", "conn_rows": [{"kind": "ground",
+                                                          "ports": "2"}],
+                           "freq_ghz": "0.3"})
         self.assertEqual(self.ws.rows(), [])
-        self.assertEqual(self.ws.gnd_var.get(), "2")
+        self.assertEqual(self.ws.conn_rows(), [ConnectionRow("ground", "2")])
         self.assertEqual(self.ws.freq_var.get(), "0.3")
         self.ws.state_set({"rows": [{"name": "p", "in_p": "1", "out_p": "3"},
                                     "junk"]})
@@ -766,6 +786,27 @@ class TestFileChanges(_WsCase):
         self.ws.calculate_all()
         self.assertIn("Load a Touchstone file", self.ws.status_lbl.cget("text"))
 
+    def test_a_different_file_under_the_same_label_is_stale(self):
+        # Review finding (2026-10-03): results were keyed by the LABEL only,
+        # so a file removed and another loaded under the same name kept the
+        # old numbers as 'ok' and Calculate all re-solved nothing.
+        self._two_nets()
+        self.assertEqual([r.status for r in self.ws.results], ["ok", "ok"])
+        other = _load("decap_4port.s4p")
+        other.label = self.fe.label
+        self.app.files[self.app.files.index(self.fe)] = other
+        self.app._refresh_file_list()
+        self.app._refresh_file_combobox()
+        self._settle()
+        self.assertEqual(self.ws.file_var.get(), self.fe.label)
+        self.assertEqual([r.status for r in self.ws.results],
+                         ["stale", "stale"])
+        self.ws.calculate_all()
+        exp = solve_net(other.ts.freqs, other.Y, 4, P, [], F_HZ,
+                        self.ws._file_key(other))
+        self.assertTrue(np.array_equal(self.ws.results[0].Z2, exp.Z2,
+                                       equal_nan=True))
+
     def test_removing_another_file_keeps_the_chosen_one(self):
         second = _load("decap_4port.s4p")
         self.app.files.append(second)
@@ -776,7 +817,8 @@ class TestFileChanges(_WsCase):
         self.ws.file_var.set(second.label)
         self.ws._on_file_changed()
         self._two_nets()
-        exp = solve_net(second.ts.freqs, second.Y, 4, P, [], F_HZ, second.label)
+        exp = solve_net(second.ts.freqs, second.Y, 4, P, [], F_HZ,
+                        self.ws._file_key(second))
         self.assertTrue(np.array_equal(self.ws.results[0].Z2, exp.Z2,
                                        equal_nan=True))
         self.assertEqual(self.ws.results[0].signature, exp.signature)
@@ -826,11 +868,190 @@ class TestExport(_WsCase):
         self.assertIn("Exported 2 net(s)", self.ws.status_lbl.cget("text"))
 
 
+class TestConnectionRows(_WsCase):
+    """Stage 3: the GND field is the shared connections table (design § 8
+    item 2), and every kind of row reaches the engine."""
+
+    def test_the_table_offers_the_files_ports_and_the_open_line(self):
+        self.assertEqual(self.ws.conn_table.column_values("ports"),
+                         ("1  in_p", "2  in_n", "3  out_p", "4  out_n"))
+        self.assertEqual(self.ws.conn_table.note_lbl.cget("text"),
+                         "Ports not listed anywhere are OPEN.")
+        self.assertEqual(self.ws.conn_table.caption_lbl.cget("text"),
+                         "Other ports:")
+        self.assertTrue(self.ws.conn_table.note_lbl.winfo_manager())
+
+    def test_a_picked_port_is_stored_as_its_number(self):
+        self.ws.set_conn_rows([ConnectionRow("ground", "1")])
+        w = self.ws.conn_table.data_row_widget(0, "ports")
+        w.delete(0, "end")
+        w.insert(0, "4  out_n")
+        self._settle(1)
+        self.assertEqual(self.ws.conn_rows(), [ConnectionRow("ground", "4")])
+
+    def test_a_ground_row_reaches_the_engine(self):
+        self.ws.set_rows([P])
+        self.ws.set_conn_rows(ground_rows("4"))
+        self.ws.calculate_all()
+        exp = self._expected(P, gnd=[4])
+        got = self.ws.results[0]
+        self.assertEqual(got.status, "ok", got.error)
+        self.assertTrue(np.array_equal(got.Z2, exp.Z2))
+        self.assertFalse(np.array_equal(got.Z2, self._expected(P).Z2))
+
+    def test_a_short_row_reaches_the_engine(self):
+        short = [ConnectionRow("short", "2,4")]
+        self.ws.set_rows([P])
+        self.ws.set_conn_rows(short)
+        self.ws.calculate_all()
+        got = self.ws.results[0]
+        self.assertEqual(got.status, "ok", got.error)
+        self.assertTrue(np.array_equal(got.Z2,
+                                       self._expected(P, conn=short).Z2))
+        self.assertFalse(np.array_equal(got.Z2, self._expected(P).Z2))
+
+    def test_a_grounded_minus_side_is_amber_and_solved_single_ended(self):
+        D = NetRow("d", "1", "2", "3", "4")
+        self.ws.set_rows([D])
+        self.ws.set_conn_rows(ground_rows("2"))
+        self.assertEqual(str(self.ws.table.data_row_widget(0, "in_n").cget(
+            "foreground")), WARN_CELL_FG)
+        self.assertIn("single-ended", self.ws.issues_lbl.cget("text"))
+        self.ws.calculate_all()
+        res = self.ws.results[0]
+        self.assertEqual(res.status, "ok", res.error)
+        self.assertFalse(res.differential)
+
+    def test_a_bad_value_is_red_on_its_own_cell_and_listed(self):
+        self.ws.set_rows([P])
+        self.ws.set_conn_rows([ConnectionRow("rlc_gnd", "4", R="5 m")])
+        self.assertEqual(str(self.ws.conn_table.data_row_widget(
+            0, "R").cget("foreground")), ERROR_FG)
+        self.assertEqual(str(self.ws.conn_table.data_row_widget(
+            0, "ports").cget("foreground")), "")
+        self.assertIn("Connection row 1, R: R '5 m' contains a space",
+                      self.ws.issues_lbl.cget("text"))
+
+    def test_a_keystroke_in_a_connection_cell_marks_the_rows_stale(self):
+        self._two_nets()
+        self.ws.set_conn_rows([ConnectionRow("ground", "")])
+        self.assertEqual([r.status for r in self.ws.results], ["ok", "ok"])
+        w = self.ws.conn_table.table._rows[0]["_widgets"][2]   # Port cell
+        w.insert(0, "4")
+        self._settle(1)
+        self.assertEqual(self.ws.conn_rows(), [ConnectionRow("ground", "4")])
+        self.assertEqual([r.status for r in self.ws.results], ["stale", "stale"])
+        # N ends on port 4: its OUT+ is now grounded, and says so in red.
+        self.assertEqual(str(self.ws.table.data_row_widget(1, "out_p").cget(
+            "foreground")), ERROR_FG)
+
+
+class TestOldSessions(_WsCase):
+    """A stage-1 trace block carries a `gnd` STRING: it reads as one ground
+    row, and solves to exactly what the GND field solved to."""
+
+    OLD = {"file": "", "rows": [{"name": "p", "in_p": "1", "in_n": "",
+                                 "out_p": "3", "out_n": ""}],
+           "gnd": "4", "freq_ghz": "0.1", "src_ohm": "1", "load_ff": "0"}
+
+    def test_a_gnd_string_becomes_one_ground_row(self):
+        old = dict(self.OLD, file=self.fe.label)
+        self.ws.state_set(old)
+        self.assertEqual(self.ws.conn_rows(), [ConnectionRow("ground", "4")])
+        self.assertEqual(self.ws.rows(), [P])
+        self.ws.calculate_all()
+        # The old field's arithmetic, written out: the CLI's --gnd path.
+        from pkg_rlc.physics.core import (build_terminations_coupling,
+                                          compute_z_matrix)
+        term = build_terminations_coupling([("IN", [1], []), ("OUT", [3], [])],
+                                           [4], (), nports=4)
+        Zmat, names, _w = compute_z_matrix(self.fe.Y, self.fe.ts.freqs, term)
+        sel = np.array([names.index("IN"), names.index("OUT")])
+        self.assertTrue(np.array_equal(self.ws.results[0].Z2,
+                                       Zmat[:, sel[:, None], sel[None, :]]))
+        # Saved again, it is the new shape: conn_rows, a version, no gnd.
+        state = self.ws.state_get()
+        self.assertNotIn("gnd", state)
+        self.assertEqual(state["version"], wsm.TRACE_STATE_VERSION)
+        self.assertEqual(state["conn_rows"][0]["ports"], "4")
+
+    def test_a_spaced_gnd_string_still_parses(self):
+        self.ws.state_set(dict(self.OLD, file=self.fe.label, gnd="2, 4"))
+        self.assertEqual(self.ws.conn_rows(), [ConnectionRow("ground", "2,4")])
+        self.assertEqual([i for i in self.ws.issues if i.is_error][:1], [])
+
+    def test_a_block_from_a_newer_build_is_refused_whole(self):
+        self.ws.set_rows([P])
+        from pkg_rlc.panels.workspaces import (
+            WORKSPACES_SESSION_VERSION, apply_workspaces_session_state)
+        notes = apply_workspaces_session_state(self.app.workspaces, {
+            "version": WORKSPACES_SESSION_VERSION, "active": "trace",
+            "trace": dict(self.OLD, version=99, rows=[])})
+        self.assertEqual(len(notes), 1)
+        self.assertIn("newer than this build", notes[0])
+        self.assertEqual(self.ws.rows(), [P], "nothing was half-applied")
+
+
+class TestLeftColumnBudget(_WsCase):
+    """
+    The connections table took the place of a one-line GND field, so the
+    left column's height is re-measured here (the numbers are in
+    `TraceModelWorkspace._build_left`'s docstring).  Calculate all must be
+    on screen at the 1040x600 minimum: in typical use with room to spare,
+    and in the worst case still mapped, with Conditions giving way first.
+    """
+
+    def _measure(self):
+        self._map()
+        host = self.app.trace_ws_left.master
+        b = self.ws.calc_btn
+        bottom = b.winfo_rooty() + b.winfo_height() - host.winfo_rooty()
+        return bool(b.winfo_ismapped()), bottom, host.winfo_height()
+
+    def test_two_nets_and_two_connection_rows_fit_with_room(self):
+        self.ws.set_rows([P, N])
+        self.ws.set_conn_rows([ConnectionRow("short", "2,3"),
+                               ConnectionRow("rlc_between", "1", "4", R="50")])
+        self.assertEqual(self.ws.issues, [])
+        mapped, bottom, host_h = self._measure()
+        self.assertEqual(host_h, 421)
+        self.assertTrue(mapped)
+        self.assertLessEqual(bottom + 30, host_h, (bottom, host_h))
+        self.assertTrue(self.ws.freq_entry.winfo_ismapped())
+        # With room to spare the button sits right under Conditions, not at
+        # the bottom of a tall column.
+        self.app.geometry("1500x900")
+        self._settle()
+        gap = (self.ws.calc_btn.winfo_rooty()
+               - (self.ws.freq_entry.winfo_rooty()
+                  + self.ws.freq_entry.winfo_height()))
+        self.assertTrue(0 < gap < 30, gap)
+
+    def test_the_worst_case_squeezes_conditions_not_calculate(self):
+        self.ws.set_rows([NetRow(f"n{i}", "1", "", "3", "") for i in range(6)])
+        self.ws.set_conn_rows([ConnectionRow("ground", "4"),
+                               ConnectionRow("short", "2,3", net="t"),
+                               ConnectionRow("rlc_between", "2", "3", R="1"),
+                               ConnectionRow("rlc_gnd", "2", L="1n")])
+        mapped, bottom, host_h = self._measure()
+        self.assertGreater(self.ws._col.winfo_reqheight(), host_h)
+        self.assertTrue(mapped)
+        self.assertLessEqual(bottom, host_h)
+        # ... and it is still BELOW everything it acts on.
+        self.assertGreater(self.ws.calc_btn.winfo_rooty(),
+                           self.ws.conn_table.winfo_rooty()
+                           + self.ws.conn_table.winfo_height() - 1)
+        # Every Kind at once is the connections table's widest shape; it
+        # still fits the column.
+        self.assertLessEqual(self.ws._col.winfo_reqwidth(),
+                             self.app.trace_ws_left.winfo_width())
+
+
 class TestTheSwitchStillHandsThePlotItsKeys(_WsCase):
 
     def test_a_round_trip_through_the_workspace_focuses_the_plot_canvas(self):
         self._map()
-        self.ws.gnd_entry.focus_set()
+        self.ws.freq_entry.focus_set()
         self._settle()
         self.app.show_workspace("rlc")
         self._settle()

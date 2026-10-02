@@ -20,9 +20,14 @@ Step by step
      or picked for you: the port cells offer the file's port
      numbers (with the file's own port names beside them when it
      has any), and what goes in a cell is your choice.
-  2. Other ports: list the ground ports under GND.  Every port
-     not in a net row and not in GND is left OPEN, which the line
-     beside the box says.
+  2. Other ports: one row per thing done to the ports that are
+     not ends of a net -- the same connections table as the RLC
+     editor ("Setting up a measurement" tab): ground, vdd, open,
+     short, or an R / L / C to ground or between two ports.  Most
+     of the time that is one ground row listing the ground pins.
+     Every port not in a net row and not in a connection row is
+     left OPEN, which the line beside the table says: "Ports not
+     listed anywhere are OPEN."
   3. Conditions: the marker Freq (GHz), and the Source (ohm) and
      Load (fF) the bandwidth table is read against.
   4. Calculate all.  The Summary gets one row per net; click a
@@ -37,11 +42,24 @@ reason under the table, and there is no dialog:
 
   * red    -- no name (once a port is typed), a duplicate name, the
               reserved names A / B, a port on both sides of one
-              net, a port that is also in GND, a port past the
-              file's port count, or a differential net with only
-              one of its two minus cells filled;
+              net, a port past the file's port count, a
+              differential net with only one of its two minus
+              cells filled, an IN+ or OUT+ port in a ground (or
+              vdd) row -- a grounded node has nothing to measure --
+              a short row that ties two ends of one net together,
+              or a short that ties an IN+ / OUT+ port to a grounded
+              port;
   * amber  -- a differential side that ties several ports: the pair
-              is solved, but the imbalance check below is skipped.
+              is solved, but the imbalance check below is skipped;
+              a MINUS port in a ground row: that whole side is at
+              ground, so that end is measured single-ended (to
+              GND) and the imbalance check is skipped; an open or
+              element row over a probe port.
+
+A connection row that is wrong (a port the file does not have, a
+value that is not a number) is red on its own cell and listed as
+"Connection row N, <cell>: ...".  While a connection row is red no
+net is solved -- none can be, under a setup that is not one.
 
 A completely blank row is left unpainted: it is the row you type
 into next.
@@ -67,7 +85,8 @@ What the workspace shows
 
 Each net is solved on its own: one bad row does not stop the
 others.  Nothing is redrawn underneath you.  Editing a row marks
-THAT row stale; changing GND or the file marks EVERY row stale;
+THAT row stale; changing a connection row or the file marks EVERY
+row stale;
 a stale row keeps its old numbers, says "stale", and waits for
 Calculate all -- because a picture that quietly became a picture of
 something else is worse than no picture.  Calculate all re-solves
@@ -80,10 +99,12 @@ Two inputs are not like that, because they need no new solve:
   * Source and Load.  They only pick rows of the bandwidth table,
     which is re-read from the same sweep.
 
-The workspace's rows, GND and conditions are saved with the session
-(Save Config), like everything else you typed.  The numbers are not:
-after a load every row reads "not calculated yet" until Calculate
-all.
+The workspace's rows, connection rows and conditions are saved with
+the session (Save Config), like everything else you typed.  The
+numbers are not: after a load every row reads "not calculated yet"
+until Calculate all.  A config saved before the connections table
+(with a GND box) still loads: its GND list becomes one ground row,
+which computes exactly what the box did.
 
 FROM THE COMMAND LINE
 ---------------------
@@ -93,7 +114,9 @@ One net at a time, through the coupling mode:
     --gnd 3 --freq 0.1 --trace-model in,out
 
 It is the same arithmetic, bit for bit: the workspace and the CLI
-print the same numbers for the same net.
+print the same numbers for the same net.  --gnd, --vdd and --short
+are ground, vdd and short rows; the workspace's R / L / C rows have
+no command-line flag.
 
 IT IS NOT A FIT
 ---------------

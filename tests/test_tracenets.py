@@ -30,6 +30,17 @@ Two of the tests exist because of a measured divergence:
 Both were mutation-checked: with `names.index(IN_NAME)` replaced by `0` the
 first fails, and with `gnd_ports` dropped from the four-port solve the second
 fails.
+
+STAGE 3: THE GND FIELD IS CONNECTION ROWS.  The engine now takes the RLC
+editor's `ConnectionRow`s for the other ports.  Every CLI-equality test above
+keeps its assertions and passes its GND as `ground_rows(...)`, and
+`TestGroundRowIsTheOldGndField` is the measurement that made the switch safe:
+over every fixture, every IN/OUT assignment and every grounded subset (368
+cases) the old `build_terminations_coupling(..., gnd)` and a ground row give
+`np.array_equal` matrices.  The per-net probe rules (an IN+ / OUT+ in a ground
+row is red, a grounded '-' side amber and solved single-ended), the
+connection rows' own cells, and the two short-row cases the probe rules
+cannot see are under `TestValidation`.
 """
 
 from __future__ import annotations
@@ -50,7 +61,8 @@ from pkg_rlc.physics.core import (
 )
 from pkg_rlc.present import tracemodel_report as tmr
 from pkg_rlc.services import tracenets as tn
-from pkg_rlc.services.tracenets import CellIssue, NetRow
+from pkg_rlc.physics.core import ConnectionRow, build_terminations_rows, MeasPortRow
+from pkg_rlc.services.tracenets import CellIssue, NetRow, ground_rows
 
 FIX = "tests/fixtures"
 F_TARGET = 1e9
@@ -117,23 +129,23 @@ class TestValidation(unittest.TestCase):
 
     def test_a_clean_table_has_no_issues(self):
         rows = [_ok("x", "1", "", "2", ""), _ok("y", "3", "", "4", "")]
-        self.assertEqual(tn.validate_nets(rows, "", 4), [])
+        self.assertEqual(tn.validate_nets(rows, [], 4), [])
 
     def test_blank_rows_are_ignored(self):
         rows = [NetRow(), _ok("x", "1", "", "2", ""), NetRow("", "  ", "", "", "")]
-        self.assertEqual(tn.validate_nets(rows, "", 4), [])
+        self.assertEqual(tn.validate_nets(rows, [], 4), [])
         self.assertTrue(NetRow().is_blank())
         self.assertFalse(NetRow(name="x").is_blank())
 
     def test_name_is_required_and_no_default_is_invented(self):
-        issues = tn.validate_nets([_ok("", "1", "", "2", "")], "", 4)
+        issues = tn.validate_nets([_ok("", "1", "", "2", "")], [], 4)
         errs = _errors(issues, "name", 0)
         self.assertEqual(len(errs), 1)
         self.assertIn("Name required", errs[0].message)
 
     def test_duplicate_names(self):
         rows = [_ok("dq", "1", "", "2", ""), _ok("dq", "3", "", "4", "")]
-        issues = tn.validate_nets(rows, "", 4)
+        issues = tn.validate_nets(rows, [], 4)
         self.assertEqual(_errors(issues, "name", 0), [])
         errs = _errors(issues, "name", 1)
         self.assertEqual(len(errs), 1)
@@ -141,34 +153,34 @@ class TestValidation(unittest.TestCase):
 
     def test_a_and_b_are_reserved_case_insensitively(self):
         for name in ("A", "b", "a", "B"):
-            issues = tn.validate_nets([_ok(name, "1", "", "2", "")], "", 4)
+            issues = tn.validate_nets([_ok(name, "1", "", "2", "")], [], 4)
             errs = _errors(issues, "name", 0)
             self.assertEqual(len(errs), 1, name)
             self.assertIn("reserved", errs[0].message)
 
     def test_a_port_spec_that_does_not_parse(self):
-        issues = tn.validate_nets([_ok("n", "x", "", "2", "")], "", 4)
+        issues = tn.validate_nets([_ok("n", "x", "", "2", "")], [], 4)
         errs = _errors(issues, "in_p", 0)
         self.assertEqual(len(errs), 1)
         self.assertIn("not a port spec", errs[0].message)
-        issues = tn.validate_nets([_ok("n", "1", "", "2:3", "")], "", 4)
+        issues = tn.validate_nets([_ok("n", "1", "", "2:3", "")], [], 4)
         self.assertEqual(len(_errors(issues, "out_p", 0)), 1)
 
     def test_a_port_beyond_nports(self):
-        issues = tn.validate_nets([_ok("n", "1", "", "7", "")], "", 4)
+        issues = tn.validate_nets([_ok("n", "1", "", "7", "")], [], 4)
         errs = _errors(issues, "out_p", 0)
         self.assertEqual(len(errs), 1)
         self.assertIn("beyond this file's 4 ports", errs[0].message)
 
     def test_no_file_loaded_skips_the_range_check(self):
-        self.assertEqual(tn.validate_nets([_ok("n", "1", "", "70", "")], "", 0), [])
+        self.assertEqual(tn.validate_nets([_ok("n", "1", "", "70", "")], [], 0), [])
 
     def test_port_numbers_are_one_based(self):
-        issues = tn.validate_nets([_ok("n", "0", "", "2", "")], "", 4)
+        issues = tn.validate_nets([_ok("n", "0", "", "2", "")], [], 4)
         self.assertEqual(len(_errors(issues, "in_p", 0)), 1)
 
     def test_a_port_repeated_inside_a_row(self):
-        issues = tn.validate_nets([_ok("n", "1", "", "1", "")], "", 4)
+        issues = tn.validate_nets([_ok("n", "1", "", "1", "")], [], 4)
         errs = _errors(issues, "out_p", 0)
         self.assertEqual(len(errs), 1)
         self.assertIn("twice in this net", errs[0].message)
@@ -179,46 +191,147 @@ class TestValidation(unittest.TestCase):
         differential pair of one PN signal belong in one table."""
         rows = [_ok("DQ_P", "1", "", "3", ""), _ok("DQ_N", "2", "", "4", ""),
                 _ok("DQ", "1", "2", "3", "4")]
-        self.assertEqual(tn.validate_nets(rows, "", 4), [])
+        self.assertEqual(tn.validate_nets(rows, [], 4), [])
         ts, Y = _load("diff_pair_4port.s4p")
-        out = tn.solve_nets(ts.freqs, Y, 4, rows, "", F_TARGET)
+        out = tn.solve_nets(ts.freqs, Y, 4, rows, [], F_TARGET)
         self.assertEqual([r.status for r in out], ["ok", "ok", "ok"])
         for res, row in zip(out, rows):
             alone = tn.solve_net(ts.freqs, Y, 4, row, [], F_TARGET)
             self.assertTrue(np.array_equal(res.Z2, alone.Z2))
 
-    def test_a_probe_port_also_in_gnd(self):
-        issues = tn.validate_nets([_ok("n", "1", "", "2", "")], "2,3", 4)
+    def test_a_plus_port_in_a_ground_row_is_red_on_that_cell(self):
+        """The unified probe rule (design 3.3): a '+' port at GND is refused."""
+        issues = tn.validate_nets([_ok("n", "1", "", "2", "")],
+                                  ground_rows("2,3"), 4)
         errs = _errors(issues, "out_p", 0)
         self.assertEqual(len(errs), 1)
-        self.assertIn("also in GND", errs[0].message)
+        self.assertIn("ground row", errs[0].message)
+        self.assertEqual(errs[0].table, "nets")
+        issues = tn.validate_nets([_ok("n", "1", "", "2", "")],
+                                  [ConnectionRow("vdd", "1")], 4)
+        self.assertEqual(len(_errors(issues, "in_p", 0)), 1)
 
-    def test_the_gnd_field_itself(self):
-        issues = tn.validate_nets([_ok()], "x", 4)
-        self.assertEqual([(i.row, i.column) for i in issues], [(-1, "gnd")])
-        issues = tn.validate_nets([_ok()], "9", 4)
-        self.assertEqual(len(_errors(issues, "gnd", -1)), 1)
-        self.assertIn("beyond", issues[0].message)
-        self.assertEqual(tn.validate_nets([_ok()], "3-4", 4), [])
+    def test_a_grounded_minus_side_is_amber_and_solved_single_ended(self):
+        row = _ok("d", "1", "2", "3", "4")
+        issues = tn.validate_nets([row], ground_rows("2"), 4)
+        self.assertEqual(_errors(issues), [])
+        self.assertEqual([(i.column, i.severity) for i in issues],
+                         [("in_n", "warning")])
+        self.assertIn("single-ended", issues[0].message)
+        ts, Y = _load("diff_pair_4port.s4p")
+        res = tn.solve_net(ts.freqs, Y, 4, row, ground_rows("2"), F_TARGET)
+        self.assertEqual(res.status, "ok", res.error)
+        self.assertFalse(res.differential)
+        self.assertIsNone(res.mode_conversion)
+        self.assertIn("single-ended", res.mc_note)
+        # What it computes is what the row path says it means: IN's '-' side
+        # folded into ground.
+        term = build_terminations_rows(
+            [MeasPortRow("IN", "1"), MeasPortRow("OUT", "3", "4")],
+            ground_rows("2"), "", nports=4)
+        from pkg_rlc.physics.core import compute_z_matrix as czm
+        Zmat, names, _w = czm(Y, ts.freqs, term)
+        i, j = names.index("IN"), names.index("OUT")
+        self.assertTrue(np.array_equal(
+            res.Z2, Zmat[:, np.array([i, j])[:, None], np.array([i, j])[None, :]]))
+
+    def test_an_open_row_over_a_probe_port_is_amber(self):
+        issues = tn.validate_nets([_ok("n", "1", "", "2", "")],
+                                  [ConnectionRow("open", "2")], 4)
+        self.assertEqual([(i.column, i.severity) for i in issues],
+                         [("out_p", "warning")])
+
+    def test_a_short_tying_two_ends_is_refused_on_the_cell_1_based(self):
+        """The solver refuses this too, but at solve time and naming
+        0-based ports ('Ports [1, 2] merged via short'); the cell says it
+        first, 1-based."""
+        row = _ok("d", "1", "2", "3", "4")
+        conn = [ConnectionRow("short", "2,3")]
+        errs = _errors(tn.validate_nets([row], conn, 4))
+        self.assertEqual([(e.column, e.row) for e in errs], [("out_p", 0)])
+        self.assertIn("ties ports 2,3", errs[0].message)
+        ts, Y = _load("diff_pair_4port.s4p")
+        res = tn.solve_net(ts.freqs, Y, 4, row, conn, F_TARGET)
+        self.assertEqual(res.status, "error")
+        self.assertIn("ties ports 2,3", res.error)
+
+    def test_a_probe_shorted_to_a_grounded_port_is_refused(self):
+        """The solver's merge keeps the probe and drops the ground with no
+        word; the node is at 0 V, the same case as a '+' port in a ground
+        row."""
+        row = _ok("p", "1", "", "3", "")
+        conn = [ConnectionRow("short", "1,4"), ConnectionRow("ground", "4")]
+        errs = _errors(tn.validate_nets([row], conn, 4))
+        self.assertEqual([e.column for e in errs], ["in_p"])
+        self.assertIn("grounded port 4", errs[0].message)
+        ts, Y = _load("diff_pair_4port.s4p")
+        self.assertEqual(tn.solve_net(ts.freqs, Y, 4, row, conn,
+                                      F_TARGET).status, "error")
+        # A short among ports the net does not probe is fine.
+        self.assertEqual(tn.validate_nets(
+            [row], [ConnectionRow("short", "2,4"),
+                    ConnectionRow("ground", "4")], 4), [])
+
+    def test_connection_rows_are_checked_on_their_own_cells(self):
+        rows = [_ok()]
+        issues = tn.validate_nets(rows, ground_rows("x"), 4)
+        self.assertEqual([(i.table, i.row, i.column) for i in issues],
+                         [("conn", 0, "ports")])
+        self.assertNotIn("Line 1", issues[0].message)
+        issues = tn.validate_nets(rows, [ConnectionRow("ground", "3"),
+                                         ConnectionRow("ground", "9")], 4)
+        self.assertEqual([(i.table, i.row) for i in _errors(issues)],
+                         [("conn", 1)])
+        self.assertIn("outside this file's 4 ports", issues[0].message)
+        self.assertEqual(tn.validate_nets(rows, ground_rows("3-4"), 4), [])
+        # A bad VALUE is red on its own cell, not on the port.
+        issues = tn.conn_row_issues([ConnectionRow("rlc_gnd", "3", R="5 m"),
+                                     ConnectionRow("rlc_gnd", "4", L="abc")], 4)
+        self.assertEqual([(i.row, i.column) for i in issues],
+                         [(0, "R"), (1, "L")])
+        # A row naming a node an EARLIER row created parses, as in the solve.
+        self.assertEqual(tn.conn_row_issues(
+            [ConnectionRow("short", "3,4", net="tap"),
+             ConnectionRow("ground", "tap")], 4), [])
+        # The two strip warnings: no Port, and an element with no value.
+        issues = tn.conn_row_issues([ConnectionRow("rlc_gnd", "", R="5"),
+                                     ConnectionRow("rlc_gnd", "3")], 4)
+        self.assertEqual([(i.row, i.column, i.severity) for i in issues],
+                         [(0, "ports", "warning"), (1, "R", "warning")])
+        # A switched-off row is not in the spec and is not checked; no file
+        # (nports 0) skips the range check.
+        self.assertEqual(tn.conn_row_issues(
+            [ConnectionRow("ground", "x", enabled=False)], 4), [])
+        self.assertEqual(tn.conn_row_issues([ConnectionRow("ground", "70")], 0),
+                         [])
+
+    def test_ground_rows_reads_the_old_gnd_field(self):
+        self.assertEqual(ground_rows(""), [])
+        self.assertEqual(ground_rows("  "), [])
+        self.assertEqual(ground_rows([]), [])
+        self.assertEqual(ground_rows("4-3"), [ConnectionRow("ground", "4-3")])
+        self.assertEqual(ground_rows("3, 4"), [ConnectionRow("ground", "3-4")])
+        self.assertEqual(ground_rows([5, 6]), [ConnectionRow("ground", "5,6")])
+        self.assertEqual(ground_rows("x y"), [ConnectionRow("ground", "x y")])
 
     def test_differential_needs_both_minus_cells_or_neither(self):
-        issues = tn.validate_nets([_ok("n", "1", "2", "3", "")], "", 4)
+        issues = tn.validate_nets([_ok("n", "1", "2", "3", "")], [], 4)
         errs = _errors(issues, "out_n", 0)
         self.assertEqual(len(errs), 1)
         self.assertIn("both IN- and OUT-", errs[0].message)
         self.assertEqual(_errors(issues, "in_n", 0), [])
-        issues = tn.validate_nets([_ok("n", "1", "", "3", "4")], "", 4)
+        issues = tn.validate_nets([_ok("n", "1", "", "3", "4")], [], 4)
         self.assertEqual(len(_errors(issues, "in_n", 0)), 1)
         self.assertEqual(_errors(issues, "out_n", 0), [])
-        self.assertEqual(tn.validate_nets([_ok("n", "1", "2", "3", "4")], "", 4), [])
+        self.assertEqual(tn.validate_nets([_ok("n", "1", "2", "3", "4")], [], 4), [])
 
     def test_in_plus_and_out_plus_are_required(self):
-        issues = tn.validate_nets([_ok("n", "", "", "", "")], "", 4)
+        issues = tn.validate_nets([_ok("n", "", "", "", "")], [], 4)
         self.assertEqual(sorted(i.column for i in _errors(issues)),
                          ["in_p", "out_p"])
 
     def test_a_multi_port_side_on_a_pair_is_a_warning_not_an_error(self):
-        issues = tn.validate_nets([_ok("n", "1,2", "3", "4", "5")], "", 6)
+        issues = tn.validate_nets([_ok("n", "1,2", "3", "4", "5")], [], 6)
         self.assertEqual(_errors(issues), [])
         self.assertEqual([(i.column, i.severity) for i in issues],
                          [("in_p", "warning")])
@@ -226,7 +339,7 @@ class TestValidation(unittest.TestCase):
 
     def test_every_message_is_english_and_names_the_fix(self):
         rows = [_ok("", "x", "9", "1", ""), _ok("A", "1", "", "1", "")]
-        issues = tn.validate_nets(rows, "q", 4)
+        issues = tn.validate_nets(rows, ground_rows("q"), 4)
         self.assertGreaterEqual(len(issues), 5)
         for i in issues:
             self.assertIsInstance(i, CellIssue)
@@ -326,7 +439,7 @@ class TestMatchesTheCli(unittest.TestCase):
     def test_single_ended_with_gnd_on_decap_4port(self):
         ts, Y = _load("decap_4port.s4p")
         res = tn.solve_net(ts.freqs, Y, ts.nports, _ok("sig", "1", "", "2", ""),
-                           [3, 4], F_TARGET, "decap_4port.s4p")
+                           ground_rows([3, 4]), F_TARGET, "decap_4port.s4p")
         self._assert_same_model(res, _cli_z2(ts, Y, [1], [], [2], [], gnd=[3, 4]),
                                 False)
         self._assert_same_report(res, self._cli_text(
@@ -342,7 +455,7 @@ class TestMatchesTheCli(unittest.TestCase):
     def test_solve_nets_goes_through_the_same_path(self):
         ts, Y = _load("decap_4port.s4p")
         rows = [NetRow(), _ok("sig", "1", "", "2", "")]
-        out = tn.solve_nets(ts.freqs, Y, ts.nports, rows, "4-3", F_TARGET,
+        out = tn.solve_nets(ts.freqs, Y, ts.nports, rows, ground_rows("4-3"), F_TARGET,
                             "decap_4port.s4p")
         self.assertEqual(len(out), 1)
         self.assertTrue(np.array_equal(
@@ -369,6 +482,132 @@ class TestMatchesTheCli(unittest.TestCase):
         self.assertEqual(res.freq_snap.requested_hz, off)
         self.assertEqual(res.freq_snap.actual_hz, res.model.freq_hz)
         self.assertEqual(res.model.requested_hz, off)
+
+
+# ============================================================================
+# A ground row IS the old GND field, bit for bit
+# ============================================================================
+
+def _touchstone_fixtures():
+    import glob
+    import os
+    out = []
+    for path in sorted(glob.glob(f"{FIX}/*")):
+        if os.path.isdir(path) or path.endswith((".npz", ".json")):
+            continue
+        out.append(path)
+    return out
+
+
+def _nets_of(nports):
+    """Every IN/OUT assignment: single-ended on every ordered port pair,
+    and differential on every ordered quadruple."""
+    import itertools
+    ports = range(1, nports + 1)
+    nets = [([a], [], [b], []) for a, b in itertools.permutations(ports, 2)]
+    if nports >= 4:
+        nets += [([q[0]], [q[1]], [q[2]], [q[3]])
+                 for q in itertools.permutations(ports, 4)]
+    return nets
+
+
+def _subsets(ports):
+    import itertools
+    ports = list(ports)
+    return [list(c) for k in range(len(ports) + 1)
+            for c in itertools.combinations(ports, k)]
+
+
+class TestGroundRowIsTheOldGndField(unittest.TestCase):
+    """
+    Stage 3 replaced the GND field with connection rows.  The promise: a
+    table of ground rows computes EXACTLY what the GND field did.  Measured
+    over every Touchstone fixture with two or more ports, every IN/OUT
+    assignment (single-ended on each ordered pair, differential on each
+    ordered quadruple), and every subset of the remaining ports grounded:
+    the old arithmetic (`build_terminations_coupling(..., gnd)`, the CLI's
+    `--gnd`) and the new (`ground_rows(gnd)` through the row path) give
+    `np.array_equal` matrices.  368 cases.  Mutation-checked: with the
+    ground row's ports emitted one short (`ports[:-1]`) the matrix test
+    fails.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.files = []
+        for path in _touchstone_fixtures():
+            ts = parse_touchstone(path)
+            if ts.nports >= 2:
+                cls.files.append((path, ts, s_to_y(ts.s, ts.z0)))
+
+    def test_there_is_something_to_compare(self):
+        self.assertGreaterEqual(len(self.files), 6)
+        self.assertTrue(any(ts.nports >= 4 for _p, ts, _y in self.files))
+
+    def test_every_fixture_every_net_every_gnd_set(self):
+        n_cases = 0
+        for path, ts, Y in self.files:
+            n = ts.nports
+            # Every 20th point (5 to 21 per file): the solve is per
+            # frequency, so a subsample is the same comparison made fewer
+            # times -- 9.7 s on the whole sweeps, too slow for FAST_MODULES.
+            # The full sweeps are compared in the test below.
+            fs, Ys = ts.freqs[::20], Y[::20]
+            for ip, im, op, om in _nets_of(n):
+                used = set(ip + im + op + om)
+                for gnd in _subsets(p for p in range(1, n + 1)
+                                    if p not in used):
+                    old = build_terminations_coupling(
+                        [("IN", ip, im), ("OUT", op, om)], gnd, (), nports=n)
+                    new = build_terminations_rows(
+                        tn.net_mport_rows(_ok("n", *(",".join(map(str, s))
+                                                     for s in (ip, im, op, om)))),
+                        ground_rows(gnd), "", nports=n)
+                    Z_old, n_old, _w = compute_z_matrix(Ys, fs, old)
+                    Z_new, n_new, _w = compute_z_matrix(Ys, fs, new)
+                    with self.subTest(path=path, net=(ip, im, op, om), gnd=gnd):
+                        self.assertEqual(n_old, n_new)
+                        self.assertTrue(np.array_equal(Z_old, Z_new,
+                                                       equal_nan=True))
+                    n_cases += 1
+        self.assertEqual(n_cases, 368)
+
+    def test_the_old_gnd_string_through_solve_net(self):
+        """The engine end to end: an old session's GND STRING read as a
+        ground row gives the CLI's 2x2 and its imbalance number exactly."""
+        for path, ts, Y in self.files:
+            n = ts.nports
+            nets = [_ok("se", "1", "", "2", "")]
+            if n >= 4:
+                nets.append(_ok("df", "1", "2", "3", "4"))
+            for row in nets:
+                used = {int(c) for c in (row.in_p, row.in_n, row.out_p,
+                                         row.out_n) if c}
+                rest = [p for p in range(1, n + 1) if p not in used]
+                for gnd in ([], rest[:1], rest):
+                    text = ",".join(map(str, gnd))
+                    with self.subTest(path=path, net=row.name, gnd=text):
+                        res = tn.solve_net(ts.freqs, Y, n, row,
+                                           ground_rows(text), F_TARGET)
+                        self.assertEqual(res.status, "ok", res.error)
+                        cells = [[int(c)] if c else [] for c in
+                                 (row.in_p, row.in_n, row.out_p, row.out_n)]
+                        self.assertTrue(np.array_equal(
+                            res.Z2, _cli_z2(ts, Y, *cells, gnd=gnd),
+                            equal_nan=True))
+                        if row.in_n:
+                            k = int(np.argmin(np.abs(ts.freqs - F_TARGET)))
+                            four = [("IN_p", [1], []), ("IN_n", [2], []),
+                                    ("OUT_p", [3], []), ("OUT_n", [4], [])]
+                            t4 = build_terminations_coupling(four, gnd, (),
+                                                             nports=n)
+                            Z4, _n, _w = compute_z_matrix(
+                                Y[k:k + 1], ts.freqs[k:k + 1], t4)
+                            mc = tm.mode_conversion_ratio(Z4[0])
+                            self.assertTrue(
+                                res.mode_conversion == mc
+                                or (math.isnan(mc)
+                                    and math.isnan(res.mode_conversion)))
 
 
 # ============================================================================
@@ -429,7 +668,7 @@ class TestPortOrder(unittest.TestCase):
     def test_against_the_cli_arithmetic_directly(self):
         ts, Y = _load("diff_pair_4port.s4p")
         res = tn.solve_net(ts.freqs, Y, ts.nports,
-                           _ok("n", "3", "", "1", ""), [2], F_TARGET)
+                           _ok("n", "3", "", "1", ""), ground_rows([2]), F_TARGET)
         self.assertEqual(res.status, "ok", res.error)
         self.assertTrue(np.array_equal(
             res.Z2, _cli_z2(ts, Y, [3], [], [1], [], gnd=[2])))
@@ -492,14 +731,16 @@ class TestImbalanceCarriesGnd(unittest.TestCase):
 
     def test_grounded_reference_reads_imbalanced(self):
         """The GND ports reach the four-port solve.  Mutation-checked."""
-        res = tn.solve_net(self.freqs, self.Y, 6, self.row, [5, 6], F_TARGET)
+        res = tn.solve_net(self.freqs, self.Y, 6, self.row, ground_rows([5, 6]),
+                           F_TARGET)
         self.assertEqual(res.status, "ok", res.error)
         self.assertGreater(res.mode_conversion, tmr.MODE_CONVERSION_WARN)
         self.assertEqual(res.mc_note,
                          "differential nodes: IN = (1)-(2), OUT = (3)-(4)")
 
     def test_it_is_one_frequency_of_the_clis_four_port_solve(self):
-        res = tn.solve_net(self.freqs, self.Y, 6, self.row, [5, 6], F_TARGET)
+        res = tn.solve_net(self.freqs, self.Y, 6, self.row, ground_rows([5, 6]),
+                           F_TARGET)
         k = int(np.argmin(np.abs(self.freqs - F_TARGET)))
         four = [("IN_p", [1], []), ("IN_n", [2], []),
                 ("OUT_p", [3], []), ("OUT_n", [4], [])]
@@ -527,7 +768,7 @@ class TestIsolation(unittest.TestCase):
 
     def test_a_bad_row_beside_a_good_one(self):
         rows = [_ok("good", "1", "", "2", ""), _ok("bad", "3", "", "x", "")]
-        out = tn.solve_nets(self.ts.freqs, self.Y, self.ts.nports, rows, "",
+        out = tn.solve_nets(self.ts.freqs, self.Y, self.ts.nports, rows, [],
                             F_TARGET)
         self.assertEqual([r.status for r in out], ["ok", "error"])
         self.assertIn("not a port spec", out[1].error)
@@ -537,17 +778,17 @@ class TestIsolation(unittest.TestCase):
 
     def test_a_table_rule_marks_only_its_row(self):
         rows = [_ok("x", "1", "", "2", ""), _ok("x", "3", "", "4", "")]
-        out = tn.solve_nets(self.ts.freqs, self.Y, self.ts.nports, rows, "",
+        out = tn.solve_nets(self.ts.freqs, self.Y, self.ts.nports, rows, [],
                             F_TARGET)
         self.assertEqual([r.status for r in out], ["ok", "error"])
         self.assertIn("Duplicate net name", out[1].error)
 
-    def test_a_bad_gnd_entry_errors_every_row(self):
-        rows = [_ok("x", "1", "", "2", "")]
-        out = tn.solve_nets(self.ts.freqs, self.Y, self.ts.nports, rows, "zz",
-                            F_TARGET)
-        self.assertEqual(out[0].status, "error")
-        self.assertIn("GND", out[0].error)
+    def test_a_bad_connection_row_errors_every_row(self):
+        rows = [_ok("x", "1", "", "2", ""), _ok("y", "3", "", "4", "")]
+        out = tn.solve_nets(self.ts.freqs, self.Y, self.ts.nports, rows,
+                            ground_rows("zz"), F_TARGET)
+        self.assertEqual([r.status for r in out], ["error", "error"])
+        self.assertIn("'zz' is not a port number", out[0].error)
 
     def test_solve_net_never_raises(self):
         cases = [
@@ -567,7 +808,7 @@ class TestIsolation(unittest.TestCase):
             self.assertTrue(res.error, row)
             self.assertIsNone(res.model)
         res = tn.solve_net(self.ts.freqs, self.Y, self.ts.nports,
-                           _ok("n", "1", "", "2", ""), [2], F_TARGET)
+                           _ok("n", "1", "", "2", ""), ground_rows([2]), F_TARGET)
         self.assertEqual(res.status, "error")
         self.assertIn("ground", res.error)
         # Garbage arrays are an error result too, not a traceback.
@@ -578,19 +819,38 @@ class TestIsolation(unittest.TestCase):
 
     def test_the_error_result_still_carries_its_signature(self):
         row = _ok("n", "1", "", "x", "")
-        res = tn.solve_net(self.ts.freqs, self.Y, 4, row, [3], F_TARGET, "f")
-        self.assertEqual(res.signature, tn.net_signature(row, [3], "f", F_TARGET))
+        res = tn.solve_net(self.ts.freqs, self.Y, 4, row, ground_rows([3]),
+                           F_TARGET, "f")
+        self.assertEqual(res.signature,
+                         tn.net_signature(row, ground_rows([3]), "f", F_TARGET))
 
     def test_signature_normalises_what_does_not_change_the_answer(self):
-        a = tn.net_signature(_ok(" n ", "1 ", "", " 2", ""), "4,3", "f", 1e9)
-        b = tn.net_signature(_ok("n", "1", "", "2", ""), [3, 4, 3], "f", 1e9)
+        a = tn.net_signature(_ok(" n ", "1 ", "", " 2", ""),
+                             ground_rows("4,3"), "f", 1e9)
+        b = tn.net_signature(_ok("n", "1", "", "2", ""),
+                             ground_rows([3, 4, 3]), "f", 1e9)
         self.assertEqual(a, b)
+        # Two ground rows are the same setting as one with both ports, and a
+        # blank or switched-off row changes nothing.
+        c = tn.net_signature(_ok("n", "1", "", "2", ""),
+                             [ConnectionRow("ground", "4"), ConnectionRow(),
+                              ConnectionRow("ground", "3"),
+                              ConnectionRow("short", "1,2", enabled=False)],
+                             "f", 1e9)
+        self.assertEqual(a, c)
         self.assertNotEqual(a, tn.net_signature(_ok("n", "1", "", "2", ""),
-                                                [3], "f", 1e9))
+                                                ground_rows([3]), "f", 1e9))
         self.assertNotEqual(a, tn.net_signature(_ok("n", "1", "", "2", ""),
-                                                [3, 4], "g", 1e9))
+                                                ground_rows([3, 4]), "g", 1e9))
         self.assertNotEqual(a, tn.net_signature(_ok("n", "1", "", "2", ""),
-                                                [3, 4], "f", 2e9))
+                                                ground_rows([3, 4]), "f", 2e9))
+        # Any other kind keys on the rows themselves.
+        d = tn.net_signature(_ok("n", "1", "", "2", ""),
+                             [ConnectionRow("short", "3,4")], "f", 1e9)
+        self.assertNotEqual(a, d)
+        self.assertNotEqual(d, tn.net_signature(
+            _ok("n", "1", "", "2", ""),
+            [ConnectionRow("rlc_gnd", "3", R="50")], "f", 1e9))
 
 
 # ============================================================================
@@ -608,7 +868,7 @@ class TestRetarget(unittest.TestCase):
     CASES = (
         ("pi_2port.s2p", _ok("se", "1", "", "2", ""), []),
         ("diff_pair_4port.s4p", _ok("df", "1", "2", "3", "4"), []),
-        ("decap_4port.s4p", _ok("dg", "1", "", "2", ""), [3, 4]),
+        ("decap_4port.s4p", _ok("dg", "1", "", "2", ""), ground_rows([3, 4])),
     )
     F1, F2 = 1e8, 3e9
 

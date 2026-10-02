@@ -460,12 +460,6 @@ from pkg_rlc.panels.attrib_gui import (
 # it at module level for the reference-node strip.  Nothing on the CLI path
 # pays it at all: pkg_rlc_extractor imports pkg_rlc_gui only inside the
 # GUI-launch branch.
-# Compare two files over the band they share (the 30 GHz vs 80 GHz question).
-from pkg_rlc.panels.compare_gui import (
-    COMPARE_MENU_LABEL,
-    open_compare_window,
-    refresh_compare_windows,
-)
 from pkg_rlc.panels.files_gui import (
     FILES_MENU_LABEL,
     FILES_TITLE,
@@ -514,6 +508,11 @@ from pkg_rlc.panels.workspaces import (
 # two frames `_build_ui` owns, registered on the strip, refreshed from
 # `_refresh_file_combobox` whenever the loaded files change.
 from pkg_rlc.panels.ws_tracemodel import TraceModelWorkspace
+# The Compare files workspace (docs/design_workspaces.md § 4): one reference
+# against N files, built and refreshed exactly as the Trace model one.  It
+# replaced the modeless Compare window (compare_gui, deleted in stage 3), and
+# with it the Analyze menu item and the Files right-click item.
+from pkg_rlc.panels.ws_compare import CompareWorkspace
 # `StylePicker` and the editor's own constants moved WITH the form they belong
 # to, and are RE-EXPORTED here, the same rule again.  StylePicker in
 # particular could not stay: it draws from COLORS / LINESTYLES, which are
@@ -1287,6 +1286,11 @@ class App(tk.Tk):
         self.trace_ws_right = ttk.Frame(outer)
         self.trace_ws = TraceModelWorkspace(self, self.trace_ws_left,
                                             self.trace_ws_right)
+        # The Compare files workspace's two containers -- the same shape.
+        self.compare_ws_left = ttk.Frame(self._ws_left_host)
+        self.compare_ws_right = ttk.Frame(outer)
+        self.compare_ws = CompareWorkspace(self, self.compare_ws_left,
+                                           self.compare_ws_right)
 
         # THE WORKSPACE STRIP.  Measured on this box (vista theme, Microsoft
         # YaHei UI 9, tk scaling 1.333): the strip is 25 px tall, and at the
@@ -1312,8 +1316,12 @@ class App(tk.Tk):
             on_enter=self.trace_ws.on_enter,
             state_get=self.trace_ws.state_get,
             state_set=self.trace_ws.state_set)
-        # Stage 3 registers "compare" here with one more call; no button for
-        # it is shown until then.
+        self.workspaces.register(
+            "compare", "Compare files", self.compare_ws_left,
+            self.compare_ws_right,
+            on_enter=self.compare_ws.on_enter,
+            state_get=self.compare_ws.state_get,
+            state_set=self.compare_ws.state_set)
         self.workspaces.show(DEFAULT_WORKSPACE)
 
     def show_workspace(self, key: str) -> None:
@@ -1384,10 +1392,8 @@ class App(tk.Tk):
         # 45 px there.  No accelerator, for the reason above this cascade.
         analyze_menu.add_command(label=FILES_MENU_LABEL,
                                  command=self._on_files_window)
-        # About two FILES, not the selected trace -- appended last so the
-        # two per-trace windows keep their positions.
-        analyze_menu.add_command(label=COMPARE_MENU_LABEL,
-                                 command=self._on_compare_files)
+        # Compare files is no longer here: it is a workspace of its own, the
+        # third button on the strip (docs/design_workspaces.md § 4.3).
         menubar.add_cascade(label="Analyze", menu=analyze_menu)
 
         self.config(menu=menubar)
@@ -1676,15 +1682,7 @@ class App(tk.Tk):
             self._replot_from_cache()
             refresh_attribution_windows(self)
             refresh_files_windows(self)
-            refresh_compare_windows(self)
         return mapping
-
-    def _on_compare_files(self) -> None:
-        """Open (or raise) the Compare files window.  The refusal -- fewer than
-        two files loaded -- lives in `compare_gui`, so both routes to it say
-        the same thing."""
-        self._flush_editor_sync()
-        open_compare_window(self)
 
     def _load_one_file(self, path: str) -> TouchstoneData | None:
         return self._files_panel._load_one_file(path)
@@ -3332,10 +3330,15 @@ class App(tk.Tk):
         # Every path that changes the loaded files -- add, remove, relabel,
         # clear, Clear All, session load -- comes through here, so this is
         # where the Trace model workspace learns its File list moved and
-        # marks the rows that read a file that is gone.
-        ws = getattr(self, "trace_ws", None)
-        if ws is not None:
-            ws.refresh_files()
+        # marks the rows that read a file that is gone -- and where the
+        # Compare files workspace re-reads its reference and its ticks and
+        # drops the pairs of a file that is gone (the old window's two bugs:
+        # it compared from arrays it had kept, and Clear All / a session load
+        # never told it).
+        for name in ("trace_ws", "compare_ws"):
+            ws = getattr(self, name, None)
+            if ws is not None:
+                ws.refresh_files()
 
     def _file_by_label(self, label: str) -> Optional[FileEntry]:
         for fe in self.files:

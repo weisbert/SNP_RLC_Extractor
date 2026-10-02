@@ -149,9 +149,9 @@ class TestTheBlockIsReadForgivingly(unittest.TestCase):
     def test_an_unknown_active_key_falls_back_with_a_note(self):
         sw = _FakeSwitch()
         notes = apply_workspaces_session_state(
-            sw, {"version": WORKSPACES_SESSION_VERSION, "active": "compare"})
+            sw, {"version": WORKSPACES_SESSION_VERSION, "active": "nope"})
         self.assertEqual(len(notes), 1)
-        self.assertIn("compare", notes[0])
+        self.assertIn("nope", notes[0])
         self.assertEqual(sw.active, DEFAULT_WORKSPACE)
 
     def test_a_state_is_handed_to_its_workspace(self):
@@ -167,9 +167,9 @@ class TestTheBlockIsReadForgivingly(unittest.TestCase):
         sw = _FakeSwitch()
         notes = apply_workspaces_session_state(
             sw, {"version": WORKSPACES_SESSION_VERSION, "active": "rlc",
-                 "compare": {"a": 1}})
+                 "nope": {"a": 1}})
         self.assertEqual(len(notes), 1)
-        self.assertIn("compare", notes[0])
+        self.assertIn("nope", notes[0])
         self.assertEqual(sw.active, "rlc")
 
     def test_a_garbled_state_costs_only_itself(self):
@@ -289,9 +289,12 @@ class TestTheStrip(_AppCase):
         self.assertLessEqual(self.app.workspaces.winfo_height(), 26)
         self.assertGreater(self.app.workspaces.winfo_height(), 0)
 
-    def test_two_toolbuttons_and_no_compare_yet(self):
-        self.assertEqual(self.app.workspaces.keys(), ["rlc", "trace"])
-        for key, title in (("rlc", "RLC extraction"), ("trace", "Trace model")):
+    def test_three_toolbuttons_in_task_order(self):
+        """Stage 3 added Compare files as the third (design § 1.1)."""
+        self.assertEqual(self.app.workspaces.keys(),
+                         ["rlc", "trace", "compare"])
+        for key, title in (("rlc", "RLC extraction"), ("trace", "Trace model"),
+                           ("compare", "Compare files")):
             btn = self.app.workspaces.button(key)
             self.assertEqual(btn.winfo_class(), "TRadiobutton")
             self.assertEqual(str(btn.cget("style")), "Toolbutton")
@@ -312,7 +315,7 @@ class TestTheStrip(_AppCase):
 
     def test_an_unregistered_key_is_refused(self):
         with self.assertRaises(KeyError):
-            self.app.show_workspace("compare")
+            self.app.show_workspace("nope")
         self.assertEqual(self.app.workspaces.active, "rlc")
 
 
@@ -533,24 +536,26 @@ class TestTheSessionRoundTrip(_AppCase):
 
 
 class TestTheRegistrationPoint(_AppCase):
-    """Stage 3 adds 'compare' with one call, and nothing else moves."""
+    """A workspace is added with one call, and nothing else moves -- the
+    way stage 3 added 'compare'; a fourth is registered here to prove the
+    point is still open."""
 
     def test_one_register_call_adds_a_workspace_and_its_button(self):
         self._map()
         outer, _ = self._outer_and_right()
         left = ttk.Frame(self.app._ws_left_host)
         right = ttk.Frame(outer)
-        ws = self.app.workspaces.register("compare", "Compare files",
-                                          left, right)
-        self.assertEqual(self.app.workspaces.keys(), ["rlc", "trace", "compare"])
-        self.assertEqual(self.app.workspaces.button("compare").cget("text"),
-                         "Compare files")
-        self.app.show_workspace("compare")
+        ws = self.app.workspaces.register("extra", "Extra", left, right)
+        self.assertEqual(self.app.workspaces.keys(),
+                         ["rlc", "trace", "compare", "extra"])
+        self.assertEqual(self.app.workspaces.button("extra").cget("text"),
+                         "Extra")
+        self.app.show_workspace("extra")
         self._settle()
-        self.assertEqual(self.app.workspaces.active, "compare")
+        self.assertEqual(self.app.workspaces.active, "extra")
         self.assertEqual(outer.panes()[1], str(right))
         self.assertTrue(left.winfo_ismapped())
-        self.assertIs(self.app.workspaces.workspace("compare"), ws)
+        self.assertIs(self.app.workspaces.workspace("extra"), ws)
         self.app.show_workspace("rlc")
         self._settle()
         self.assertEqual(outer.sashpos(0), 460)

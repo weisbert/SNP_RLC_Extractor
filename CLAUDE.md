@@ -45,11 +45,11 @@ pkg_rlc/physics/    L0   touchstone  spec  solve  core  compose  attrib
 pkg_rlc/model/      L1   trace  validate
 pkg_rlc/services/   L2   session  run  tracenets
 pkg_rlc/present/    L3   report  csv  attrib_report  tracemodel_report
-                         conntable  help
+                         compare_report  conntable  help
 pkg_rlc/widgets/    L4   widgets  plot
 pkg_rlc/panels/     L5   panels_files  panels_traces  panels_results
-                         panels_editor  files_gui  attrib_gui  compare_gui
-                         workspaces  ws_tracemodel
+                         panels_editor  files_gui  attrib_gui
+                         setup_tables  workspaces  ws_tracemodel  ws_compare
 pkg_rlc/frontend/   L6   app  cli
 ```
 
@@ -107,7 +107,7 @@ row changes.
 | `pkg_rlc/physics/solve.py` | **The arithmetic**: `s_to_y` / `y_to_s`, `compute_z_matrix` / `compute_z` / `_probe_impedance`, the extractors, the fit models, the tolerances. Imports `spec` + two names from `touchstone`; nothing imports it back. |
 | `pkg_rlc/physics/attrib.py` | **Port attribution**: the exact signed decomposition of `Z_ab`, the exact what-if, the cold-start screen (CLI-only), the composed-network gauge. Imports `pkg_rlc.physics.core` ONLY (acyclic), no scipy. |
 | `pkg_rlc/physics/compose.py` | **Several Touchstone files measured as ONE network**: k files stacked into one `Y`, every cross-file link an ordinary `ShortPair` / `LumpedBetween` handed to the SAME `compute_z_matrix`. Imports `pkg_rlc.physics.core` ONLY. |
-| `pkg_rlc/physics/similarity.py` | **Are two files the same network over the band they share?** The largest `\|S_B - S_A\|` in dB, and the signed L / Q / R difference of one extracted Z, on the COARSER file's grid inside the overlap. Imports `core` and `compose` ONLY. |
+| `pkg_rlc/physics/similarity.py` | **Are two files the same network over the band they share?** The largest `\|S_B - S_A\|` in dB, and the signed L / Q / R difference of one extracted Z, on the COARSER file's grid inside the overlap; Q and R are not judged where the reference is lossless (`RE_JUDGE_FRAC = 1e-3`, measured). Imports `core` and `compose` ONLY. |
 | `pkg_rlc/physics/tracemodel.py` | **A routed trace as a pi model, read EXACTLY**, plus its BANDWIDTH — three separate numbers (model band, branch corners, −3 dB), where the last is a property of trace PLUS source PLUS load and is therefore swept, never printed as one figure.: `Y_series = -Ym`, `Y_shunt = Yii + Ym` off the inverse of a 2x2 `Zmat` block — an identity, not a fit — plus the differential imbalance check. Imports `pkg_rlc.physics.core` ONLY (acyclic). |
 
 ### L1 — `pkg_rlc/model/` (the shared data model, and the spec logic over it)
@@ -123,7 +123,7 @@ row changes.
 |---|---|
 | `pkg_rlc/services/session.py` | **The session file** (L2): Save / Load / on-exit autosave as a pure dict <-> model round trip, with no Tk in it and never any. Imports `core` and `trace` only. |
 | `pkg_rlc/services/run.py` | **What a Calculate actually RUNS** (L2): the network, the spec, and the checks and reductions over both. No Tk — `log` / `files` / `cache` are INJECTED rather than reached for. |
-| `pkg_rlc/services/tracenets.py` | **The Trace model workspace's engine** (L2, no Tk): `validate_nets` (every complaint as a `CellIssue` on one CELL), `solve_net` / `solve_nets` (one `compute_z_matrix` per net, IN / OUT picked by the RETURNED `port_names`, imbalance check WITH the GND ports — the CLI's rule), `rebandwidth` (no re-solve), `net_signature`. Imports `core`, `tracemodel` and `snap_to_grid` only. |
+| `pkg_rlc/services/tracenets.py` | **The Trace model workspace's engine** (L2, no Tk): `validate_nets` (every complaint as a `CellIssue` on one CELL), `solve_net` / `solve_nets` (one `build_terminations_rows` + `compute_z_matrix` per net under the CONNECTION ROWS — ground-only rows bit-identical to the old GND field over 368 cases — IN / OUT picked by the RETURNED `port_names`, imbalance check WITH the same rows — the CLI's rule), `rebandwidth` (no re-solve), `net_signature`, `ground_rows` (an old `gnd` string as one ground row), `conn_row_issues`. Imports `core`, `tracemodel` and `snap_to_grid` only. |
 
 ### L3 — `pkg_rlc/present/` (turning a result into text)
 
@@ -133,6 +133,7 @@ row changes.
 | `pkg_rlc/present/csv.py` | **The CSV export blocks** (L3). Beside `report.py` rather than inside it: the pane is a measured 144-column budget, the CSV is every value at full precision. Imports `core` and `trace` only. |
 | `pkg_rlc/present/attrib_report.py` | **The attribution report as TEXT**: the thirteen `_attr_print_*` / `_cold_print_*` sections, RETURNING `list[str]`. Imports `attrib`, `core` and `report` and nothing else — no tkinter, no matplotlib. |
 | `pkg_rlc/present/tracemodel_report.py` | **The trace pi model as TEXT**: the drawing (whose layout is computed from the value strings), the per-branch `\|Q\|` verdict, the lumped check and the imbalance qualifier, RETURNING `list[str]`. Imports `tracemodel`, `core` and `report` — no tkinter, no matplotlib. |
+| `pkg_rlc/present/compare_report.py` | **Compare files as TEXT, and one (reference, compared file) pair computed with no App**: `compare_pair` / `compare_against` (the user's setup through `build_terminations_rows` on each file; none defined = `No setup defined`, S only), `verdict_strip_lines` (one ✓ / ✗ / ? line per file), `compare_summary_lines`, `s_matrix_lines`, `line_tags`, `pct_view_span`, `not_judged_spans`, `copy_trace_setup`. Imports `similarity`, `core` and `model.validate` — no tkinter, no matplotlib. |
 | `pkg_rlc/present/conntable.py` | **The connections table's SHAPE, and the RowTable vocabulary it is spoken in** (L3), including `ColumnSpec` / `TableLayout` / `identity_layout`. Imports `pkg_rlc.physics.core` only. |
 | `pkg_rlc/present/help.py` | In-app Help window content — 140 lines, because the 2648 lines of prose are ten plain-text files under `docs/help/`, read at import time. May reach no further than L1. |
 
@@ -153,8 +154,9 @@ row changes.
 | `pkg_rlc/panels/panels_editor.py` | **The editor** (L5): `EditorPanel` — the pinned footer, the one form (Template, both `RowTable`s with the probe-rule cell colours — no modes since 2026-10-02), the strips, the text hatch, the auto-apply sync chain, and `StylePicker`. Imports L0–L4 only. |
 | `pkg_rlc/panels/files_gui.py` | **Which FILES a trace is made of** (round 3): the `Files in this trace…` window, the port-cell scope rules and the GUI rendering of the reference-node check. **It imports `pkg_rlc.frontend.app` NOT AT ALL.** |
 | `pkg_rlc/panels/workspaces.py` | **The workspace switch** — the strip of `ttk.Radiobutton`s under the menubar: `WorkspaceSwitch.register` / `show`, swapping the left region under the shared Loaded Files and the outer PanedWindow's second pane, and the session file's `workspaces` block. Entering RLC hands the plot canvas focus. Imports `pkg_rlc.frontend.app` NOT AT ALL. |
-| `pkg_rlc/panels/ws_tracemodel.py` | **The Trace model workspace** — `TraceModelWorkspace(app, left, right)`: the nets `RowTable`, GND, Conditions, a sortable monospace Summary, the schematic and response `tk.Canvas`es, Details. Errors are painted in the CELL, never a dialog; stale by signature, never auto-refreshed. Every coordinate from L3, every solve from `tracenets`. Imports `pkg_rlc.frontend.app` NOT AT ALL. |
-| `pkg_rlc/panels/compare_gui.py` | **The Compare files window** — modeless `Toplevel` over `pkg_rlc.physics.similarity`: two files, one port setup applied to both, editable limits, the verdict and the curves it was read off. Imports `pkg_rlc.frontend.app` NOT AT ALL. |
+| `pkg_rlc/panels/setup_tables.py` | **The shared SETUP COMPONENT** — `ConnectionsTable` (the editor's connection columns, layout and `Ports not listed anywhere are OPEN.`, `paint(issues)`) and `SetupTables` (Template box + measurement-port table + `ConnectionsTable` + issues line; `get` / `set` / `set_nports` / `issues` / `set_editable`). Cells painted red / amber, never a dialog. Used by both workspaces; the RLC editor still builds its own tables (deferred). Imports `pkg_rlc.frontend.app` NOT AT ALL. |
+| `pkg_rlc/panels/ws_tracemodel.py` | **The Trace model workspace** — `TraceModelWorkspace(app, left, right)`: the nets `RowTable`, the "Other ports" `ConnectionsTable` (the stage-1 GND field until 2026-10-03), Conditions, a sortable monospace Summary, the schematic and response `tk.Canvas`es, Details. Errors are painted in the CELL, never a dialog; stale by signature, never auto-refreshed. Every coordinate from L3, every solve from `tracenets`. Imports `pkg_rlc.frontend.app` NOT AT ALL. |
+| `pkg_rlc/panels/ws_compare.py` | **The Compare files workspace** — `CompareWorkspace(app, left, right)`: one reference against N ticked files, each pair on its own band and grid; a `SetupTables` setup the user DEFINES (no default; "Copy setup from trace…" is a one-shot copy); limits and its own marker; a verdict strip, ΔS / ΔL / ΔQ / ΔR curves with the not-judged regions grey, Details. Stale, never auto-recomputed; limits and marker re-read the cache. Replaced `compare_gui.py` (deleted 2026-10-03 with its menu items). Imports `pkg_rlc.frontend.app` NOT AT ALL. |
 | `pkg_rlc/panels/attrib_gui.py` | **The Attribution window** — a modeless `Toplevel` over `pkg_rlc.physics.attrib` — plus the pure formatters it is testable through with no display. **It imports NOTHING back and has no deferred imports left.** |
 
 ### L6 — `pkg_rlc/frontend/` (the App itself and the argv entry point)
@@ -206,7 +208,7 @@ cross-reference of the form ``CLAUDE.md § <title>`` — there are several, in
 | [`cli_report.md`](docs/conventions/cli_report.md) | The CLI's printed report (`tests/fixtures/cli_reference/`) |
 | [`editor_and_tables.md`](docs/conventions/editor_and_tables.md) | The one row model (stage 2, 2026-10-02) — read this before the rest · Connection table (the Mode 5 / Mode 6 row editor) · Per-kind row shape, nets, and the parallel stamp (round 1) · Auto-apply, the style picker, plot visibility · Port names, roles, and the Ports & Roles window |
 | [`multifile.md`](docs/conventions/multifile.md) | Composition — several files as ONE network (`pkg_rlc/physics/compose.py`, round 2) · The two-file GUI — schema, namespace, engine (round 3) |
-| [`compare_files.md`](docs/conventions/compare_files.md) | Compare files — two files over the band they share |
+| [`compare_files.md`](docs/conventions/compare_files.md) | Compare files — one reference against N files, over the band each pair shares · No default setup, and a setup is the user's own · The workspace (stage 3; replaces the window's surface rules) · Q and R are not judged where the reference is lossless (`RE_JUDGE_FRAC`) · The reading is written for someone DECIDING (2026-09-30, second pass) · Session |
 | [`plot_panel.md`](docs/conventions/plot_panel.md) | The plot panel's axes (what range they show, what unit they say) · The plot panel's control strip · Cursor readout (the plot's marker / V-line labels) |
 | [`reading_files.md`](docs/conventions/reading_files.md) | Reading files (robustness, diagnosis, refusal) |
 | [`results_pane.md`](docs/conventions/results_pane.md) | Freeze as trace (the before/after comparison) · The run snapshot (what a finished Calculate leaves behind) · The Results pane notebook (the Log tab and its badge) · The three results views (`detail` / `summary` / `compare`) · The Digits control (how many significant digits a value is printed to) · Run history (the run tabs after the Log) |
@@ -416,7 +418,7 @@ commit message nobody will find.
 
 ```bash
 python tests/run_parallel.py            # the whole suite -- use this
-python tests/run_parallel.py --fast     # ~10 s, 1222 tests, the twenty-two no-Tk modules
+python tests/run_parallel.py --fast     # ~10 s, 1295 tests, the twenty-three no-Tk modules
 python tests/run_parallel.py -m attrib coupling core    # substring on module name
 ```
 
@@ -427,7 +429,9 @@ below — same eighteen modules, same count, wall-clock noise. Re-measured 2026-
 after `test_tracemodel` and `test_tracenets` joined it: twenty modules, 1170 tests,
 6.5 s. And again the same day after `test_trace_path_golden` and `test_probe_rules`
 joined it: twenty-two modules, 1222 tests, 10.2 s wall at 6 workers — with other
-agents on the box, so the clock is contention, not the suite.** (The historical figures the runner's docstring
+agents on the box, so the clock is contention, not the suite. And on 2026-10-03 after
+`test_compare_report` joined it (stage 3): twenty-three modules, 1295 tests, 7.4 s wall at 8
+workers.** (The historical figures the runner's docstring
 opens with — 293 s serial against 108 s parallel over 906 tests — are what justified the
 runner and are kept as such.) The full number tracks CONTENTION as much as anything: 120 s
 on an idle box and 339 s with another agent competing for the same cores have both been

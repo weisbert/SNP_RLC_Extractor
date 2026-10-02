@@ -276,6 +276,12 @@ FAST_MODULES = (
     # (`TestNoTk`).  Measured on this box, serially: 39 tests / 0.21 s
     # (0.44 s of process wall, three runs).
     "test_probe_rules",
+    # Compare files, the pure half: `pkg_rlc.physics.similarity` (L0) and
+    # `pkg_rlc.present.compare_report` (L3, reaches L0 + L1 only); `TestNoTk`
+    # asserts in a child process that neither tkinter nor matplotlib entered
+    # sys.modules.  Measured on this box, serially: 56 tests / 0.71 s
+    # (0.89 / 0.89 / 0.92 s of process wall, three runs).
+    "test_compare_report",
 )
 
 _RAN_RE = re.compile(r"Ran (\d+) test")
@@ -625,9 +631,24 @@ def _hidden_desktop(show_windows: bool):
         return None
     if not iso.available():
         return None
+    # The desktop launcher reads a child's output back as UTF-8 (it has no
+    # pipe to decode on the fly), so the children must WRITE UTF-8: on this
+    # box the console code page is GBK, and a failure message with a '±' or
+    # a '✓' came back as U+FFFD -- which then crashed this runner's own
+    # print of the failing shard (measured 2026-10-03).  The children
+    # inherit this environment.
+    os.environ["PYTHONIOENCODING"] = "utf-8"
     d = iso.desktop()
     d.__enter__()
     return d
+
+
+def _print_safely(text: str) -> None:
+    """print(), but a character this console cannot encode is replaced
+    rather than raised: a failing shard's output is exactly the text the
+    reader needs, and losing ALL of it to one glyph is the worst outcome."""
+    enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+    print(text.encode(enc, errors="replace").decode(enc, errors="replace"))
 
 
 def run_shard(name: str, desk=None) -> tuple[str, float, int, bool, str]:
@@ -725,7 +746,7 @@ def _run(args: argparse.Namespace, registry: RunRegistry) -> int:
           f"({len(shards)} shards, {jobs} workers)")
 
     for name, _, _, _, err in bad:
-        print(f"\n{'=' * 70}\nFAILED SHARD {name}\n{'=' * 70}\n{err}")
+        _print_safely(f"\n{'=' * 70}\nFAILED SHARD {name}\n{'=' * 70}\n{err}")
     if bad:
         print(f"\nFAILED: {len(bad)} of {len(shards)} shards")
         return 1

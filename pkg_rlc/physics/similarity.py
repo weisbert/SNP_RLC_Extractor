@@ -42,9 +42,9 @@ from pkg_rlc.physics.core import format_freq, s_to_y, y_to_s
 __all__ = [
     "SimilarityError", "CommonAxis", "SCompare", "ZCompare",
     "common_axis", "compare_s", "compare_z", "err_db", "self_resonance",
-    "db_to_pct", "pct_to_db", "SRF_JUDGE_FRAC",
+    "db_to_pct", "pct_to_db", "SRF_JUDGE_FRAC", "RE_JUDGE_FRAC",
     "DEFAULT_S_LIMIT_DB", "DEFAULT_L_LIMIT_PCT", "DEFAULT_Q_LIMIT_PCT",
-    "NEAR_ZERO_FRAC", "GRID_RTOL",
+    "NEAR_ZERO_FRAC", "GRID_RTOL", "LOSS_MARGIN",
 ]
 
 #: The default "same" limits.  Defaults only -- the window lets the reader set
@@ -61,6 +61,44 @@ DEFAULT_Q_LIMIT_PCT = 5.0
 #: median, not the maximum: R climbs by four decades into a self-resonance,
 #: and 1% of THAT peak threw away every ordinary low-frequency R point.
 NEAR_ZERO_FRAC = 0.01
+
+#: Q and R are NOT JUDGED where the reference is (almost) lossless:
+#: |Re Z_A| < RE_JUDGE_FRAC * |Z_A|, which is |Q_A| above about 1000.  There
+#: Re Z is whatever the file's precision and the solver's noise left in it, Q
+#: = Im/Re is that noise inverted, and the relative difference of two noises
+#: is the +-100 %-and-beyond SQUARE WAVE the owner saw on the Compare plot
+#: (the sign of Re Z flips from point to point).  Those points are nan in
+#: dq_pct / dr_pct, kept out of every worst case and verdict, and COUNTED
+#: (`ZCompare.n_not_judged`) -- separately from NEAR_ZERO_FRAC's count.  L is
+#: Im Z / w and does not care, so it is judged as before.
+#:
+#: MEASURED 2026-10-02 (scratchpad st3/c1/measure_eps.py; |Re Z|/|Z| of the
+#: reference, then the points eps excludes and the worst |dQ| left judged):
+#:   * LOSSLESS files -- diff_pair_4port's loop (P1 +1 -2, short 3,4), a pure
+#:     1 nH, each against B with L +0.4 % -- are a square wave today: dQ up to
+#:     2e5 %, sign flipping at ~half the points.  Their noise floor is set by
+#:     the written precision: |Re Z|/|Z| <= 9e-8 at 10 significant digits,
+#:     <= 2.0e-4 at 6 digits; with 1e-5 relative noise on S (EM-like)
+#:     <= 3.5e-4, with 1e-4 noise <= 1.4e-3.
+#:   * eps = 1e-3 clears every 10- and 6-digit case completely, and leaves 3
+#:     isolated points of 200 (no longer a wave) at 1e-4 S noise; 3e-4 still
+#:     leaves 12 points up to 6e4 % there, 1e-4 leaves the 6-digit wave.
+#:   * REAL losses are untouched at 1e-3: the synthetic RLC of the tests
+#:     (|Re|/|Z| >= 9.3e-3, 30 GHz vs 80 GHz meshes), the coupled 4-port coil
+#:     (>= 4.9e-3; an R +3 % in B still reads dQ -2.9 %, dR +3 %), a 1 nH at
+#:     Q = 30 / 100 / 300 (at 5 GHz) with R +5 % in B: 0 points excluded,
+#:     dQ -4.76 % caught every time.  The cost: at Q = 1000 half the band is
+#:     not judged (the low half still catches the -4.76 %); a 5 % change of a
+#:     loss that is 0.1 % of |Z| is below what a 6-digit file resolves.
+#:   * 3e-3 would start hiding a Q = 300 inductor's top band; 1e-2 hides half
+#:     of an ordinary Q = 100 one and of the coupled coil.
+RE_JUDGE_FRAC = 1e-3
+
+#: Where A is lossless (not judged) and B's |Re Z| is at least this many
+#: times RE_JUDGE_FRAC of its |Z| -- Q_B below about 100 -- B HAS loss that
+#: A does not, and that is reported as a difference (`ZCompare.n_b_lossy`).
+#: 10x keeps it clear of the worst noise floor measured above (1.4e-3).
+LOSS_MARGIN = 10.0
 
 #: L and Q are JUDGED only below this fraction of the lower self-resonance.
 #: Past the resonance the part is a capacitor and "L" is a formula applied to
@@ -262,6 +300,27 @@ class ZCompare:
     # resonance moving, not the inductance -- which the window says in words.
     srf_a: float = float("nan")
     srf_b: float = float("nan")
+    # Per grid point: True where Q and R are NOT JUDGED because the reference
+    # is almost lossless there (RE_JUDGE_FRAC).  None on a ZCompare built by
+    # hand, which reads as "nothing excluded".
+    qr_not_judged: Optional[np.ndarray] = None
+    # Points where A is lossless (not judged) but B clearly is not: a real
+    # difference the ratio cannot express.  None on a hand-built ZCompare.
+    b_lossy: Optional[np.ndarray] = None
+
+    @property
+    def n_b_lossy(self) -> int:
+        """Not-judged points where B has clear loss (Q_B below ~100)."""
+        if self.b_lossy is None:
+            return 0
+        return int(np.count_nonzero(self.b_lossy))
+
+    @property
+    def n_not_judged(self) -> int:
+        """How many points RE_JUDGE_FRAC kept Q and R out of the verdict."""
+        if self.qr_not_judged is None:
+            return 0
+        return int(np.count_nonzero(self.qr_not_judged))
 
     def usable_limit(self) -> float:
         """The top of the band where L and Q still MEAN inductance and its
@@ -291,12 +350,31 @@ class ZCompare:
 
 def self_resonance(f: np.ndarray, z: np.ndarray) -> float:
     """The first frequency where Im(Z) crosses from inductive (+) to
-    capacitive (-), linearly interpolated; nan if it never does."""
-    im = np.asarray(z).imag
+    capacitive (-), interpolated; nan if it never does.
+
+    An inductor's self-resonance is a PARALLEL one: Z goes through a POLE
+    there, and a straight line through two Im Z samples either side of a
+    pole lands wherever the grid puts them -- measured in the stage-3
+    review, three files of ONE network on three grids read 26.991 / 26.858 /
+    26.922 GHz against a true 26.902, and the reading said the resonance had
+    "moved 0.65 %".  Im(Y) = Im(1/Z) is smooth through a pole, so the zero
+    is interpolated there when both samples sit above the band's median
+    |Z| (a pole); a series zero of Z keeps the Im Z line, which is smooth
+    there instead."""
+    zz = np.asarray(z)
+    im = zz.imag
     f = np.asarray(f, dtype=float)
     ok = np.isfinite(im)
+    mag = np.abs(zz)
+    med = float(np.median(mag[np.isfinite(mag)])) if ok.any() else 0.0
     for k in range(len(im) - 1):
         if ok[k] and ok[k + 1] and im[k] > 0 >= im[k + 1] and f[k] > 0:
+            if (min(mag[k], mag[k + 1]) > med and zz[k] != 0
+                    and zz[k + 1] != 0):
+                ya, yb = (1.0 / zz[k]).imag, (1.0 / zz[k + 1]).imag
+                if ya < 0 <= yb:
+                    t = -ya / (yb - ya)
+                    return float(f[k] + t * (f[k + 1] - f[k]))
             t = im[k] / (im[k] - im[k + 1])
             return float(f[k] + t * (f[k + 1] - f[k]))
     return float("nan")
@@ -327,7 +405,8 @@ def compare_z(fa, za, fb, zb) -> ZCompare:
 
     Signed, so "B reads 0.4% MORE inductance" survives to the reader; the
     worst case is the largest MAGNITUDE.  DC is dropped: L and Q are not
-    defined at w = 0.
+    defined at w = 0.  Q and R are not judged where A is almost lossless
+    (RE_JUDGE_FRAC); those points are nan and counted in `qr_not_judged`.
     """
     ax = common_axis(fa, fb)
     a = _on_axis(ax, "A", np.asarray(fa, float), np.asarray(za))
@@ -342,10 +421,26 @@ def compare_z(fa, za, fb, zb) -> ZCompare:
         qb = np.where(ok, b.imag / b.real, np.nan)
         ra = np.where(ok, a.real, np.nan)
         rb = np.where(ok, b.real, np.nan)
+        # Decided on the REFERENCE: where A is lossless its Q is noise and a
+        # relative difference against it is the square wave.  Set to nan
+        # BEFORE _rel_pct, so the median rule neither sees these points nor
+        # counts them as its own.
+        lossless = ok & (np.abs(a.real) < RE_JUDGE_FRAC * np.abs(a))
+        # ...but a B that clearly HAS loss there is a real difference, and
+        # must not hide behind A's noise (stage-3 review: A lossless, B at
+        # Q = 100 or 300 read ✓, and ✗ with the files swapped).  "Clearly"
+        # is LOSS_MARGIN times the threshold, i.e. Q_B below ~100, well clear
+        # of the 1.4e-3 noise floor measured above.  Counted, not ratioed:
+        # there is no meaningful percentage against a zero.
+        b_lossy = lossless & (np.abs(b.real) >=
+                              LOSS_MARGIN * RE_JUDGE_FRAC * np.abs(b))
+    qa = np.where(lossless, np.nan, qa)
+    ra = np.where(lossless, np.nan, ra)
     dl, xl = _rel_pct(la, lb)
     dq, xq = _rel_pct(qa, qb)
     dr, xr = _rel_pct(ra, rb)
     return ZCompare(axis=ax, dl_pct=dl, dq_pct=dq, dr_pct=dr,
                     l=_worst(dl, f, xl), q=_worst(dq, f, xq),
                     r=_worst(dr, f, xr),
-                    srf_a=self_resonance(f, a), srf_b=self_resonance(f, b))
+                    srf_a=self_resonance(f, a), srf_b=self_resonance(f, b),
+                    qr_not_judged=lossless, b_lossy=b_lossy)

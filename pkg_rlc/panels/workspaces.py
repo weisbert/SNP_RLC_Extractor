@@ -83,7 +83,8 @@ class WorkspaceSwitch(ttk.Frame):
     `outer` is the horizontal PanedWindow whose second pane is swapped;
     `left_host` is the frame under the shared Files panel that a workspace's
     left frame is packed into.  Register every workspace, then `show` one.
-    Stage 3 adds its workspace with one more `register` call.
+    The App registers three: "rlc", "trace" and "compare" (stage 3 added
+    the last with one more `register` call and nothing else here moved).
     """
 
     def __init__(self, master, outer: ttk.PanedWindow, left_host: tk.Widget,

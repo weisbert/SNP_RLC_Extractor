@@ -154,8 +154,8 @@ became four task tabs, nine in all, in this reading order:
 | Save / Load | `save_load.md` | the session file, incl. configs from older builds |
 | Setting up a measurement | `setup.md` | the ONE table: measurement ports (`+` / `-`), connections, templates, the probe rules, the old modes written as rows, Edit as text, a second file, migration |
 | Coupling | `coupling.md` | two or more measurement ports: M, k, M/L, C_c, attribution, cold start, `--compose` (was most of `mode6.md`) |
-| Trace model | `trace_model.md` | the stage-1 workspace and the pi / bandwidth reading (was the tail of `mode6.md`) |
-| Compare files | `compare_files.md` | today's Compare files window (closed backlog TASK-017) |
+| Trace model | `trace_model.md` | the Trace model workspace (nets, the connections table, Calculate all) and the pi / bandwidth reading (was the tail of `mode6.md`) |
+| Compare files | `compare_files.md` | the Compare files workspace: one reference against N files (closed backlog TASK-017) |
 | Input syntax | `input_syntax.md` | port ranges, tags, node names, the `--short` / `--mport` spellings |
 | Worked examples | `worked_examples.md` | every example written as rows |
 
