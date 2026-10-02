@@ -258,9 +258,14 @@ FAST_MODULES = (
     # reaches no further than L3, and the end-to-end cases drive
     # `pkg_rlc.frontend.cli.main` through argv, which never imports tkinter.
     # Measured on this box, serially: 48 tests / 0.088 s.
-    # `test_tracemodel_window` is deliberately NOT here -- it drives a real
-    # App and imports tkinter, which is the one property this list is about.
     "test_tracemodel",
+    # The Trace model workspace's engine, `pkg_rlc.services.tracenets` (L2,
+    # imports L0 + `snap_to_grid` only) and the summary table in
+    # `pkg_rlc.present.tracemodel_report`.  Its CLI-equality cases drive
+    # `pkg_rlc.frontend.cli.main` through argv like `test_tracemodel`'s, and
+    # `TestNoTk` asserts tkinter never entered sys.modules.  Measured on this
+    # box, serially: 50 tests / 0.55 s.
+    "test_tracenets",
 )
 
 _RAN_RE = re.compile(r"Ran (\d+) test")

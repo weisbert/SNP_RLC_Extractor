@@ -171,6 +171,12 @@ class LoadedSession:
     # number.  A second reader here is how the two come to disagree about what
     # a key means.
     attribution: dict = field(default_factory=dict)
+    # Which workspace was showing and what each one had typed, carried the
+    # same way: `workspaces_session_state` builds it and
+    # `apply_workspaces_session_state` (pkg_rlc.panels.workspaces) reads it,
+    # version number and all.  Empty for a session saved before workspaces
+    # existed, which the reader takes as the default workspace.
+    workspaces: dict = field(default_factory=dict)
 
 
 def _config_trace_fields() -> list[str]:
@@ -367,9 +373,17 @@ def resolve_session_file(ref: dict, base_dir: str) -> tuple[str, bool]:
 def session_to_dict(files: Sequence, traces: Sequence, controls: dict,
                     plot_state: dict, base_dir: Optional[str] = None,
                     saved_utc: Optional[str] = None,
-                    attribution: Optional[dict] = None) -> dict:
+                    attribution: Optional[dict] = None,
+                    workspaces: Optional[dict] = None) -> dict:
     """
     The whole session as a JSON-ready dict.
+
+    `workspaces` is the active workspace plus whatever a workspace has to
+    remember (`docs/design_workspaces.md` § 1.3).  Same footing and same
+    rule as `attribution`: a session-level block with its own inner version
+    number, written only when it says something the defaults do not, and
+    `SESSION_VERSION` does not move for it -- an older reader ignores a
+    top-level key it does not know.
 
     `base_dir` is the directory the file is about to be written into, and is
     None for the autosave -- that one never moves, so a path relative to it
@@ -398,6 +412,8 @@ def session_to_dict(files: Sequence, traces: Sequence, controls: dict,
     }
     if attribution:
         out["attribution"] = attribution
+    if workspaces:
+        out["workspaces"] = workspaces
     return out
 
 
@@ -470,4 +486,12 @@ def session_from_dict(data, base_dir: str = "") -> LoadedSession:
             sess.attribution = attribution
         else:
             warn("'attribution' is not an object; ignored")
+    # Same contract for the workspaces block: an object is handed over
+    # opaquely, anything else costs this block alone.
+    workspaces = data.get("workspaces")
+    if workspaces is not None:
+        if isinstance(workspaces, dict):
+            sess.workspaces = workspaces
+        else:
+            warn("'workspaces' is not an object; ignored")
     return sess

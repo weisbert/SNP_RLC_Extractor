@@ -1035,11 +1035,27 @@ class TestFooterIsARoute(_EditorCase):
     def test_it_looks_clickable(self):
         self.assertEqual(str(self.app.ed_footer_strip.cget("cursor")), "hand2")
 
+    def _viewport_that_fits_a_row(self) -> None:
+        """
+        Re-measured 2026-10-02, when the workspace strip landed
+        (`pkg_rlc/panels/workspaces.py`): it is 25 px tall and comes out of
+        the left column too, so at 1040x600 the Mode 5 editor viewport is
+        20 px where it was 45 -- and a row widget is 23 px, so NO row can be
+        wholly on screen there (nor the validation strip) and `_on_screen`
+        can never be true.  25 px taller gives back the 45 px viewport the
+        three route tests below were written against; the claim they make
+        is about the route, not about the minsize, and the minsize
+        consequence is recorded with the strip.
+        """
+        self.app.geometry("1040x625")
+        self._settle()
+
     def test_clicking_scrolls_the_offending_row_into_view_and_focuses_it(self):
         """
         The precondition is asserted first: without it a test that happens to
         start with the row already on screen passes with no route at all.
         """
+        self._viewport_that_fits_a_row()
         # Ports 3/4, never 1/2: grounding a probe is a V_WRONG_NUMBER message
         # with no row to anchor to, and the route would (correctly) go to the
         # strip instead -- which is a different test than this one.
@@ -1070,6 +1086,7 @@ class TestFooterIsARoute(_EditorCase):
         scrolling the editor canvas alone cannot bring row 7 on screen --
         measured, it landed 37 px ABOVE the editor viewport.
         """
+        self._viewport_that_fits_a_row()
         self._rows([ConnectionRow(kind="ground", ports="3" if i % 2 else "4")
                     for i in range(8)]
                    + [ConnectionRow(kind="rlc_gnd", ports="", R="50")])
@@ -1093,6 +1110,7 @@ class TestFooterIsARoute(_EditorCase):
         not follow some LOWER-priority message's anchor -- that would answer a
         different question than the one the footer is counting.
         """
+        self._viewport_that_fits_a_row()
         self.app.ed_mp_table.set_rows([])
         self._rows([ConnectionRow(kind="rlc_gnd", ports="", R="50")])
         self.app._ed_canvas.yview_moveto(0.0)

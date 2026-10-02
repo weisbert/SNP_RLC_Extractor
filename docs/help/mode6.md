@@ -1190,32 +1190,43 @@ can never be recalculated or edited by accident.
 
 
 ===========================================================
-THE TRACE MODEL  (Analyze -> Trace model...)
+THE TRACE MODEL  (the Trace model workspace)
 ===========================================================
 
 "What IS this routed trace, as a circuit, and what are its
-element values?"  Give it the two measurement ports that are the
-two ENDS of the trace and it draws the pi -- series R and L, and
-the shunt at each end -- with every value on the drawing.
+element values?"  Give it the two ports that are the two ENDS of
+the trace and it draws the pi -- series R and L, and the shunt at
+each end -- with every value on the drawing.
 
-IN THE WINDOW
--------------
-  1. Set the trace to Mode 6 and declare EXACTLY TWO measurement
-     ports: the IN end and the OUT end.
-  2. Calculate.
-  3. Analyze -> Trace model..., or right-click the trace in the
-     Traces list, or follow the pointer line the Results pane
-     prints under the coupling block.
+IN THE GUI
+----------
+It is a workspace of its own, not a trace mode: press
+"Trace model" on the strip under the menu bar.  The Loaded Files
+panel stays where it is; the rest of the window is the workspace.
 
-Two ports means no picker -- they ARE the two ends, in the order
-you declared them.  More than two is a coupling study and the
-window says so rather than guessing which two you meant.
+  1. Nets: pick the File, then "+ Add net" and fill one row per
+     net -- a Name, and the IN+ and OUT+ ports.  For a
+     differential pair fill IN- and OUT- too.  Nothing is named
+     or picked for you.
+  2. Other ports: list the ground ports under GND.  Every port
+     not in a net row and not in GND is left OPEN.
+  3. Conditions: the marker Freq (GHz), and the Source (ohm) and
+     Load (fF) the bandwidth table is read against.
+  4. Calculate all.  The Summary gets one row per net; click a
+     row to draw that net's pi and its response below it.
 
-The window is modeless: keep it open beside the main window while
-you edit.  It does NOT silently redraw when you change the spec --
-it tells you the spec has moved and waits for you to press
-Recompute, because a picture that quietly became a picture of
-something else is worse than no picture.
+A problem with a row -- no name, a duplicate name, a port used
+twice, a port that is also in GND, a port past the file's port
+count -- is marked in that cell as you type, with the reason under
+the table.  There is no dialog.
+
+Each net is solved on its own: one bad row does not stop the
+others.  Editing a row, the GND list, the file or the frequency
+does NOT silently redraw anything -- the rows it affects are marked
+stale and keep their old numbers until you press Calculate all
+again, because a picture that quietly became a picture of
+something else is worse than no picture.  Export CSV writes the
+Summary and every net's branch values at full precision.
 
 FROM THE COMMAND LINE
 ---------------------
@@ -1234,8 +1245,8 @@ the Z matrix the coupling report above it just printed.
 DIFFERENTIAL: NOTHING EXTRA TO TURN ON
 --------------------------------------
 Give each measurement port a MINUS side and you get the
-differential pi.  In the window that is the '-' column of the
-measurement-port table; on the command line it is the '/':
+differential pi.  In the workspace that is the IN- and OUT-
+cells of the net's row; on the command line it is the '/':
 
     --mport "in = 1 / 2" --mport "out = 3 / 4" --gnd 5 \
     --freq 0.1 --trace-model in,out
@@ -1278,10 +1289,10 @@ BANDWIDTH: THREE NUMBERS, KEPT APART
 That last point is why the report prints a TABLE and not a
 number.  On a real routed line the load capacitance alone moves
 the answer 7.3x (15.31 GHz open, 2.09 GHz into 200 fF), and the
-source resistance another 1.9x.  The two fields at the top of
-the window -- source (ohm) and extra load (fF) -- pin the row
-you care about, and the curve under the schematic is drawn from
-the same numbers.
+source resistance another 1.9x.  The Source (ohm) and Load (fF)
+fields under Conditions pin the row you care about, and the
+Response curve under the schematic is drawn from the same
+numbers.
 
 The "vs marker" column is the useful one: "6.3 GHz" is a fact,
 "82x your working frequency" is an answer.

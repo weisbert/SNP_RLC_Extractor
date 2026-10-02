@@ -39,6 +39,8 @@ Basic flow:
 5. Set **RLC Freq (GHz)** for single-point extraction, optionally enter a **Band Fit** range and model.
 6. Click **Calculate All & Plot**. Results appear in the right pane and overlay on the multi-subplot view. **Calculate This Trace**, in the editor's footer, recomputes only the selected trace — the fast path when you are iterating on one port spec with several traces loaded.
 
+**Two tasks, one window.** The strip under the menu bar switches the window between **RLC extraction** (everything above) and **Trace model** ([what IS this routed trace, as a circuit](#trace-model-what-is-this-routed-trace-as-a-circuit)). The Loaded Files list is shared; the rest of the window belongs to the task, and switching back leaves the RLC side exactly as it was.
+
 **Edits apply as you type.** There is no *Apply* step: whatever is in the editor is what the selected trace holds, and the Traces list updates live. A trace whose spec has changed since it was last computed carries a trailing `*` in that list.
 
 **Showing and hiding curves.** Every trace has a `☑` / `☐` in the Traces list. Toggle it with the **Show/Hide** button, with the space bar on the list, or with **Plot: this trace** in the editor — a hidden trace comes off the plot immediately, without recomputing anything and without disturbing the `V` cursors you have placed. The checkbox governs every output, not just the picture: a hidden trace comes off the results table and out of the CSV export too — the table says what is on the plot, and a row for a curve that is not drawn reads as a duplicate of the one that is. It is still measured: one line under the table names it, and its numbers stay in memory, so showing it again costs no Calculate (tick it back on and export again to get it into a file). This is the way to compare two of five traces without deleting the other three.
@@ -319,7 +321,7 @@ Beside the modes there is one **post-processing layer**, which is not a mode and
 | Layer | Module | Surface | What it answers |
 |-------|--------|---------|-----------------|
 | Port attribution | `pkg_rlc/physics/attrib.py` | **Analyze → Attribution…** (`pkg_rlc/panels/attrib_gui.py`), or `--attribute` | Of the `Z_ab` a mode just produced, how much is the bare EM coupling and how much is each termination you declared — and what the answer would be if any of them were different. Exact both ways. See [Port attribution](#port-attribution-where-a-coupling-number-comes-from). |
-| Trace model | `pkg_rlc/physics/tracemodel.py` | **Analyze → Trace model…** (`pkg_rlc/panels/tracemodel_gui.py`), the Traces right-click, or `--trace-model` | What a routed trace IS, as a circuit: the exact pi between two measurement ports, drawn with R / L / C on it, single-ended or differential. Not a fit — a two-port's Y matrix and a pi are the same object. See [Trace model](#trace-model-what-is-this-routed-trace-as-a-circuit). |
+| Trace model | `pkg_rlc/physics/tracemodel.py` | The **Trace model** workspace (the strip under the menu bar; `pkg_rlc/panels/ws_tracemodel.py`), or `--trace-model` | What a routed trace IS, as a circuit: the exact pi between two measurement ports, drawn with R / L / C on it, single-ended or differential. Not a fit — a two-port's Y matrix and a pi are the same object. See [Trace model](#trace-model-what-is-this-routed-trace-as-a-circuit). |
 | Cold-start port screen | `pkg_rlc/physics/attrib.py` | `--cold-start` (CLI only) | Which ports matter *before* a spec exists. A bracket, a two-column ranking of every undeclared port, a pair scan, and a greedy cumulative curve — all from **all-open**, all exact. See [Cold start](#cold-start-which-ports-matter-before-you-have-a-spec). |
 
 ### Mode 4 is retired: VDD ports go into the GND field
@@ -910,23 +912,32 @@ on purpose rather than by default.
 You have an `.sNp` of a routed trace — an input, an output, a ground pin — and the question is
 not "what is `Z11`" but **"what is this thing, and what does it load my driver with?"**
 
-### In the GUI
+### In the GUI — the Trace model workspace
 
-1. Load the file, set the trace to **Mode 6**, and declare **exactly two** measurement ports —
-   the IN end and the OUT end. (For a differential trace give each one a minus side too.)
-2. **Calculate.**
-3. **Analyze → Trace model…**, or right-click the trace, or follow the pointer line the Results
-   pane prints under the coupling block.
+1. Load the file, then press **Trace model** on the strip under the menu bar. The Loaded Files
+   list stays; the rest of the window becomes the workspace.
+2. Under **Nets**, pick the **File**, press **+ Add net**, and fill one row per net: a **Name**,
+   the **IN+** and **OUT+** ports (and **IN-** / **OUT-** for a differential pair).
+3. List the ground ports under **GND** — every other port is left OPEN — and set **Freq** (GHz).
+4. **Calculate all.** The **Summary** gets one line per net: `R_ser L_ser C_in C_out f_3dB lumped`.
+5. Click a Summary line to draw that net's pi and its response; **Export CSV** writes them all.
 
-The window draws the circuit with every element value on it, and under the drawing puts the three
-things you need before believing any of them: each branch's `|Q|` and whether to read it as R, L
-or C; the same pi re-read at the bottom of the sweep, so you can see whether it is one lumped
-element across your band; and, for a pair, how much differential energy it converts to common
-mode. It is modeless — keep it open beside the main window while you edit — and it tells you when
-the spec has moved underneath it rather than quietly redrawing.
+Nothing is named or picked for you, and nothing is inferred from the Traces list. A problem in a
+row — no name, a duplicate name, a port used twice, a port that is also in GND, a port past the
+file's port count — is marked **in that cell** as you type, with the reason under the table; there
+is no dialog, and a bad row does not stop the others being solved. Edit a row, the GND list, the
+file or the frequency and the rows it affects are marked `stale` and keep their old numbers until
+you press Calculate all again — the picture never quietly becomes a picture of something else.
+`Calculate all` re-solves only the stale rows.
 
-Two measurement ports means no picker: they *are* the two ends, in the order you declared them.
-More than two is a coupling study, and the window says so instead of guessing.
+Under the drawing, **Details** (collapsed until you open it) puts the three things you need before
+believing any value: each branch's `|Q|` and whether to read it as R, L or C; the same pi re-read
+at the bottom of the sweep, so you can see whether it is one lumped element across your band; and,
+for a pair, how much differential energy it converts to common mode — measured with the GND ports
+grounded, exactly as the command line does.
+
+The workspace and its table are saved with the config; the results are not, as everywhere else in
+this tool.
 
 ### The same thing from the command line
 
@@ -979,7 +990,7 @@ frequency only. Both points are already in the sweep, so it costs nothing.
 
 ### Bandwidth: three numbers, kept apart
 
-The window also answers "how fast can this trace go?" — but **"the bandwidth of a trace" names
+The workspace also answers "how fast can this trace go?" — but **"the bandwidth of a trace" names
 three unrelated things, and only two of them are properties of the trace**:
 
 ```
@@ -999,8 +1010,9 @@ three unrelated things, and only two of them are properties of the trace**:
 **The −3 dB figure is not a property of the trace.** It belongs to trace + source + load, and on
 the line above the *load alone* moves it by **7.3×** (15.31 GHz open against 2.09 GHz into
 200 fF) with another 1.9× from a 200 Ω source. So the report sweeps the load instead of printing
-one number, and the two fields on the window (`source` Ω, `extra load` fF) pin the row you care
-about. A curve of `|H(f)|` is drawn under the schematic, from the same numbers.
+one number, and the **Source** (Ω) and **Load** (fF) fields under Conditions pin the row you care
+about — changing them redraws the bandwidth without re-solving anything. The **Response** curve of
+`|H(f)|` under the schematic is drawn from the same numbers; tick other nets to overlay them.
 
 The `vs marker` column is what turns the table into an answer: *"6.3 GHz"* is a fact, *"82× your
 working frequency"* is a verdict.
@@ -1259,6 +1271,8 @@ SNP_RLC_Extractor/
     services/                L2  services over the model
       session.py             The JSON session file, as a pure dict <-> model trip
       run.py                 What a Calculate actually RUNS
+      tracenets.py           The Trace model workspace's engine: per-cell checks,
+                             one solve per net, bandwidth re-read without a solve
     present/                 L3  turning a result into text
       report.py              The three results views and every formatter under them
       csv.py                 The CSV export blocks
@@ -1277,6 +1291,10 @@ SNP_RLC_Extractor/
       files_gui.py           The "Files in this trace..." window
       attrib_gui.py          The Attribution window (Analyze -> Attribution...):
                              a modeless Toplevel over physics/attrib.py
+      workspaces.py          The strip under the menu bar that switches the
+                             window between tasks (RLC extraction / Trace model)
+      ws_tracemodel.py       The Trace model workspace: nets table, Summary,
+                             schematic and response canvases
     frontend/                L6  the App itself and the argv entry point
       app.py                 Tkinter GUI: file / trace management, Calculate, menus
       cli.py                 The argparser, the refusals, the CSV writers, the

@@ -34,12 +34,15 @@ visible in the tree instead of living only in that file:
 
 ```
 pkg_rlc/physics/    L0   touchstone  spec  solve  core  compose  attrib
+                         similarity  tracemodel
 pkg_rlc/model/      L1   trace  validate
-pkg_rlc/services/   L2   session  run
-pkg_rlc/present/    L3   report  csv  attrib_report  conntable  help
+pkg_rlc/services/   L2   session  run  tracenets
+pkg_rlc/present/    L3   report  csv  attrib_report  tracemodel_report
+                         conntable  help
 pkg_rlc/widgets/    L4   widgets  plot
 pkg_rlc/panels/     L5   panels_files  panels_traces  panels_results
-                         panels_editor  files_gui  attrib_gui
+                         panels_editor  files_gui  attrib_gui  compare_gui
+                         workspaces  ws_tracemodel
 pkg_rlc/frontend/   L6   app  cli
 ```
 
@@ -113,6 +116,7 @@ row changes.
 |---|---|
 | `pkg_rlc/services/session.py` | **The session file** (L2): Save / Load / on-exit autosave as a pure dict <-> model round trip, with no Tk in it and never any. Imports `core` and `trace` only. |
 | `pkg_rlc/services/run.py` | **What a Calculate actually RUNS** (L2): the network, the spec, and the checks and reductions over both. No Tk — `log` / `files` / `cache` are INJECTED rather than reached for. |
+| `pkg_rlc/services/tracenets.py` | **The Trace model workspace's engine** (L2, no Tk): `validate_nets` (every complaint as a `CellIssue` on one CELL), `solve_net` / `solve_nets` (one `compute_z_matrix` per net, IN / OUT picked by the RETURNED `port_names`, imbalance check WITH the GND ports — the CLI's rule), `rebandwidth` (no re-solve), `net_signature`. Imports `core`, `tracemodel` and `snap_to_grid` only. |
 
 ### L3 — `pkg_rlc/present/` (turning a result into text)
 
@@ -141,7 +145,8 @@ row changes.
 | `pkg_rlc/panels/panels_results.py` | **The Results pane** (L5): `ResultsPanel` — the header strip, the notebook, the Log tab and its badge, the run pages with keep / evict, both menus, `_tag_swatch_rows`. Imports L0–L4 only. |
 | `pkg_rlc/panels/panels_editor.py` | **The editor** (L5): `EditorPanel` — the pinned footer, the mode-aware form, both `RowTable`s, the strips, the text hatch, the auto-apply sync chain, and `StylePicker`. Imports L0–L4 only. |
 | `pkg_rlc/panels/files_gui.py` | **Which FILES a trace is made of** (round 3): the `Files in this trace…` window, the port-cell scope rules and the GUI rendering of the reference-node check. **It imports `pkg_rlc.frontend.app` NOT AT ALL.** |
-| `pkg_rlc/panels/tracemodel_gui.py` | **The Trace Model window** — a modeless `Toplevel` over `pkg_rlc.physics.tracemodel` whose schematic is a `tk.Canvas` (the ONE form `rejected_ui.md` sanctions), plus the pure formatters it is testable through with no display. **Every coordinate comes from L3; it authors no geometry.** Imports `pkg_rlc.frontend.app` NOT AT ALL. |
+| `pkg_rlc/panels/workspaces.py` | **The workspace switch** — the strip of `ttk.Radiobutton`s under the menubar: `WorkspaceSwitch.register` / `show`, swapping the left region under the shared Loaded Files and the outer PanedWindow's second pane, and the session file's `workspaces` block. Entering RLC hands the plot canvas focus. Imports `pkg_rlc.frontend.app` NOT AT ALL. |
+| `pkg_rlc/panels/ws_tracemodel.py` | **The Trace model workspace** — `TraceModelWorkspace(app, left, right)`: the nets `RowTable`, GND, Conditions, a sortable monospace Summary, the schematic and response `tk.Canvas`es, Details. Errors are painted in the CELL, never a dialog; stale by signature, never auto-refreshed. Every coordinate from L3, every solve from `tracenets`. Imports `pkg_rlc.frontend.app` NOT AT ALL. |
 | `pkg_rlc/panels/compare_gui.py` | **The Compare files window** — modeless `Toplevel` over `pkg_rlc.physics.similarity`: two files, one port setup applied to both, editable limits, the verdict and the curves it was read off. Imports `pkg_rlc.frontend.app` NOT AT ALL. |
 | `pkg_rlc/panels/attrib_gui.py` | **The Attribution window** — a modeless `Toplevel` over `pkg_rlc.physics.attrib` — plus the pure formatters it is testable through with no display. **It imports NOTHING back and has no deferred imports left.** |
 
@@ -199,7 +204,7 @@ cross-reference of the form ``CLAUDE.md § <title>`` — there are several, in
 | [`reading_files.md`](docs/conventions/reading_files.md) | Reading files (robustness, diagnosis, refusal) |
 | [`results_pane.md`](docs/conventions/results_pane.md) | Freeze as trace (the before/after comparison) · The run snapshot (what a finished Calculate leaves behind) · The Results pane notebook (the Log tab and its badge) · The three results views (`detail` / `summary` / `compare`) · The Digits control (how many significant digits a value is printed to) · Run history (the run tabs after the Log) |
 | [`session_and_help.md`](docs/conventions/session_and_help.md) | The session file (Save Config / Load Config / autosave) · The Help window's prose lives in `docs/help/`, not in Python |
-| [`trace_model.md`](docs/conventions/trace_model.md) | The trace pi model (`pkg_rlc/physics/tracemodel.py`, `pkg_rlc/present/tracemodel_report.py`) · Why the schematic is TEXT, and what would let it be a Canvas · What the CLI surface owes |
+| [`trace_model.md`](docs/conventions/trace_model.md) | The trace pi model (`pkg_rlc/physics/tracemodel.py`, `pkg_rlc/present/tracemodel_report.py`) · Bandwidth — THREE numbers, and conflating them is the trap · Why `\|H(f)\|` is NOT a `PLOT_TYPES` entry · The Trace model workspace (`pkg_rlc/panels/ws_tracemodel.py`, `pkg_rlc/services/tracenets.py`) · Why the schematic was TEXT first, then a Canvas, then a workspace · What the CLI surface owes |
 | [`standalone_and_deploy.md`](docs/conventions/standalone_and_deploy.md) | `reduce_snp.py` specifics · `deploy/` specifics (red-zone pipeline) · Hiding the GUI tests (`tests/_isolated_desktop.py`) |
 | [`test_suite_map.md`](docs/conventions/test_suite_map.md) | `tests/` — the suite, in the order it grew · Index — one line per file (**the one-liners live at the top of that file now**) · Shard priority |
 | [`rejected_ui.md`](docs/conventions/rejected_ui.md) | Rejected UI proposals (do not re-propose these) |
@@ -387,6 +392,10 @@ the MAIN results table; a unicode bar chart of `|k|`; a large-type KPI strip
 above the plot; a FOUR-TAB notebook inside the Attribution window; a
 `ttk.Treeview` for the Attribution window's contribution table; an eleventh
 Help tab.
+The first is marked **Superseded 2026-10-02**, not reversed: the trace pi
+schematic is a `tk.Canvas` filling its own WORKSPACE (a whole-window switch
+by task), not a tab beside the RLC plot — the note there says how the strip's
+25 px and the plot's focus are handled.
 **Each was designed, measured and turned
 down; the reasons are in `docs/conventions/rejected_ui.md`, VERBATIM — do not
 re-propose them.** They keep coming back because they sound good in one
@@ -397,14 +406,16 @@ commit message nobody will find.
 
 ```bash
 python tests/run_parallel.py            # the whole suite -- use this
-python tests/run_parallel.py --fast     # 4.5 s, 1044 tests, the eighteen no-Tk modules
+python tests/run_parallel.py --fast     # 6.5 s, 1170 tests, the twenty no-Tk modules
 python tests/run_parallel.py -m attrib coupling core    # substring on module name
 ```
 
 **Re-measured on this box after the package move and the layering-gate rewrite:
 2618 tests / 465 shards in 442.2 s at `-j 4` (the agreed budget while the user is on the
 box). `--fast` is unmoved at 1044 tests, and re-ran in 4.8 s against the 4.5 s recorded
-below — same eighteen modules, same count, wall-clock noise.** (The historical figures the runner's docstring
+below — same eighteen modules, same count, wall-clock noise. Re-measured 2026-10-02
+after `test_tracemodel` and `test_tracenets` joined it: twenty modules, 1170 tests,
+6.5 s.** (The historical figures the runner's docstring
 opens with — 293 s serial against 108 s parallel over 906 tests — are what justified the
 runner and are kept as such.) The full number tracks CONTENTION as much as anything: 120 s
 on an idle box and 339 s with another agent competing for the same cores have both been

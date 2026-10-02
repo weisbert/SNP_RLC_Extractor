@@ -29,9 +29,48 @@ recorded here rather than in a commit message nobody will find.
   **Followed, 2026-09-14** (`docs/conventions/trace_model.md`): the trace pi
   model draws its schematic BOTH sanctioned ways and neither rejected one — as
   TEXT returning `list[str]` (CLI and Results pane, zero plot height), and as
-  a **`tk.Canvas` in a Toplevel**, `pkg_rlc/panels/tracemodel_gui.py`, exactly
+  a **`tk.Canvas` in a Toplevel**, `pkg_rlc/panels/tracemodel_gui.py` (deleted
+  2026-10-02, see below), exactly
   as the sentence above prescribes. Both read one `PiModel`. What stays
   rejected is this entry as written: the tab and the matplotlib.
+  **Superseded 2026-10-02** (`docs/design_workspaces.md` § 1.2): the Toplevel
+  is gone and the Canvas schematic now fills the right side of its own
+  **workspace**, picked from a strip of `ttk.Radiobutton`s under the menubar
+  (`pkg_rlc/panels/workspaces.py`, `pkg_rlc/panels/ws_tracemodel.py`). That
+  is not this entry coming back. **What was rejected** is a schematic TAB
+  inside the RLC plot area — a picture beside the RLC numbers, paid for in
+  that plot's height and that plot's focus on every session. **What was
+  built** is a whole-window switch by TASK: the strip swaps the left column
+  below the shared Loaded Files panel and the entire right side, so the RLC
+  workspace's plot is never sharing its pane with a schematic. Each of the
+  three measured costs, as it now stands:
+  - *Height.* The strip is a real cost and is measured, not denied: **25 px
+    tall**, and at the 1040x600 minsize the plot pane went from **422 to
+    397 px** (its canvas 360 to 335) — the ~26 px this entry priced a tab
+    strip at, accepted as the known cost of switching tasks in the main
+    window. The outer sash (460), the editor viewport width (431) and the
+    results sash (173) did not move, and a round trip through the other
+    workspace gives every one back. The same 25 px also comes out of the
+    LEFT column: at the minsize the Mode 5 editor viewport is 20 px against a
+    23 px row, so no row is wholly on screen there — an open question for the
+    owner (raise the minsize to 1040x625, or recover 25 px in the left
+    column), and the three `TestFooterIsARoute` tests that need a whole row
+    now map at 1040x625.
+  - *Focus.* Entering the RLC workspace hands the plot canvas focus
+    explicitly (`on_enter = App._focus_plot_canvas`, which calls
+    `canvas.get_tk_widget().focus_set()`).
+    `tests/test_workspaces.py::TestThePlotKeysSurviveARoundTrip` sends REAL
+    M / V / Delete key events after switching away and back and asserts the
+    marker and V-line stacks moved; mutation-checked by registering the RLC
+    workspace with `on_enter=None`, which leaves focus on the Files list and
+    fails it.
+  - *Redraw cost.* Still not matplotlib: both canvases in the workspace are
+    `tk.Canvas`, fed coordinates by `pkg_rlc/present/tracemodel_report.py`,
+    and they redraw on the workspace's own edits, `Calculate all`, a change
+    to the loaded files, and a resize — never from the RLC editor's variable
+    traces, so a keystroke in the RLC editor costs the schematic nothing.
+  **Still rejected, unchanged:** a schematic tab (or any second tab) in the
+  RLC workspace's plot area, and a matplotlib schematic anywhere.
 - **A `ttk.Treeview` for the MAIN results table.** It destroys the `aligned`
   units mode outright — that mode exists so digits line up column-wise in a
   monospace `Text`, and a Treeview lays out per cell in a proportional font; it

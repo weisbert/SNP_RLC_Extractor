@@ -1,6 +1,7 @@
 # The trace model (`--trace-model`)
 
-*New area, added 2026-09-14. `CLAUDE.md`'s pointer table and
+*New area, added 2026-09-14; the GUI half rewritten on 2026-10-02, when the
+Trace Model window became the Trace model workspace. `CLAUDE.md`'s pointer table and
 `docs/conventions/README.md` both point here. **These rules are exactly as
 binding as the ones in `CLAUDE.md`.***
 
@@ -105,8 +106,8 @@ Ls 1.69 nH, Cp 33.2 fF/end): the answer moves from **15.31 GHz at C_load = 0 to
 2.09 GHz at 200 fF** — 7.3× from the load alone, and another 1.9× from a 200 Ω
 source. A single figure is one arbitrary point on that curve presented as a
 fact. `bandwidth_table` sweeps `DEFAULT_LOADS_F` and the report prints the
-sensitivity; the two termination fields on the window pin the row you care
-about. This is `attrib`'s answer to `attrib`'s question: show the what-if
+sensitivity; the workspace's Source (Ω) and Load (fF) fields pin the row you
+care about. This is `attrib`'s answer to `attrib`'s question: show the what-if
 rather than bury the assumption.
 
 **H(f) comes from the RAW 2×2, never from the pi.**
@@ -155,94 +156,243 @@ way would silently be drawn for different terminations than the table beside
 it names. **That is the two-surfaces-disagree failure this whole area is built
 to avoid.**
 
-Drawn in the Trace Model window instead, beside the two fields that define it,
-it reads the same `Bandwidth` objects the table does. Three incidental costs
+Drawn in the Trace model workspace's Response canvas instead, beside the two
+fields that define it, it reads the same `Bandwidth` objects the table does. Three incidental costs
 also avoided: `plot_panel.md` says *"Re-measure before adding a fourteenth
 control"*, `format_si` renders 0.02 dB as **"20 mdB"** in the readout, and the
 y-log switch is global with no per-type hook. **Do not move it to the plot
 panel without solving the terminations problem first.**
 
-### The Trace Model window (`pkg_rlc/panels/tracemodel_gui.py`)
+### The Trace model workspace (`pkg_rlc/panels/ws_tracemodel.py`, `pkg_rlc/services/tracenets.py`)
 
-**GUI is this project's acceptance criterion, so a trace-model that only
-reached the CLI was not finished.** The window is the deliverable; the
-`--trace-model` flag is the same analysis reached another way.
+*Replaced the modeless Trace Model window on 2026-10-02.
+`pkg_rlc/panels/tracemodel_gui.py`, `tests/test_tracemodel_window.py`, the
+Analyze menu entry, the Traces right-click entry and the Results-pane pointer
+line were deleted in the same change. The plan and its reasons are
+`docs/design_workspaces.md` §§ 0–2; this section is what is true now.*
 
-**Three routes in, and they are the Attribution window's three, for the
-reasons `app.py` gives beside them**: the Analyze menubar (discoverable), the
-Traces right-click (already under the pointer), and one line in the Results
-pane footer (reaches the reader who is staring at a number). All three land in
-`open_trace_model_window`, which owns the ONLY refusal logic — so they cannot
-start refusing different things — and **none of them is ever greyed out**,
-because the window names its five refusals and a disabled menu entry names
-none of them.
+**Why the window went.** Measured in a real GUI walk-through on 2026-10-02:
+reaching a trace model took **five steps, three with nothing on screen saying
+so**; the refusal said "Mode 6", which no widget on screen says; and it gave
+the same refusal with the ports filled in and only Calculate missing. The
+owner's words: he wanted the loading of one PN signal in one `.sNp`, clicked
+Trace model, and got "a warning I could not make head or tail of". The window
+answered a question about a TRACE — a `TraceConfig` with exactly two
+measurement ports, already calculated. The question asked is about a NET in a
+FILE. So the workspace asks for exactly that: which file, which nets, which
+ports are ground, at what frequency. **Nothing is inferred from the Traces
+list, and no name or end is invented.**
 
-**The window authors NO geometry.** Every coordinate comes from
-`pi_canvas_items` at L3 and this module hands each item to `Canvas.create_*`
-with a colour and a font. Two reasons: the geometry is then assertable with no
-display, in `FAST_MODULES`, which is where "where things are" can be checked
-cheaply; and the window and the text block read the SAME `PiModel` through the
-SAME `branch_value_lines`, so they cannot print different numbers for one
-measurement. **Do not compute a coordinate in the panel module.**
+**GUI is still the acceptance criterion.** The workspace is the deliverable;
+`--trace-model` is ONE net of it reached another way.
 
-**Nothing is re-solved for the pi.** `Calculate` already caches `Zmat`
-(nfreqs, G, G) on the `TraceConfig` and it is the open-circuit matrix, so the
-2x2 sub-block over the two measurement ports is read directly. The one solve
-the window ever runs is the differential imbalance check, one frequency wide.
-**`RunSnapshot` is NOT the source here and must not become one**: it keeps
-only the marker-frequency `Z_matrix` and `tests/test_run_snapshot.py` pins
-that the total reachable array size stays ≤ 64 whatever the sweep length.
+**Three modules, one job each, and the panel computes nothing.**
 
-**The two termination fields are window-local on purpose.** `source` (Ω) and
-`extra load` (fF) are what-if knobs, not spec: putting them on `TraceConfig`
-would make them session state and owe a migration for two numbers that mean
-nothing without the window open. A bad entry falls back to the default and
-redraws rather than blanking the window — a knob that goes empty mid-keystroke
-is worse than one showing the default.
+- `pkg_rlc/services/tracenets.py` (L2, no Tk; imports `pkg_rlc.physics.core`,
+  `pkg_rlc.physics.tracemodel` and `pkg_rlc.model.trace.snap_to_grid` only):
+  `validate_nets`, `solve_net` / `solve_nets`, `rebandwidth`, `net_signature`.
+  `tests/test_tracenets.py::TestNoTk` asserts it pulls in no tkinter.
+- `pkg_rlc/present/tracemodel_report.py` (L3): every line of text and every
+  canvas coordinate, now including `summary_table_lines` / `summary_order` /
+  `SUMMARY_COLUMNS`.
+- `pkg_rlc/panels/ws_tracemodel.py` (L5): `TraceModelWorkspace(app, left,
+  right)` builds into two frames the App owns and hands items to
+  `Canvas.create_*` with a colour and a font. **It imports
+  `pkg_rlc.frontend.app` NOT AT ALL** (`TestNoAppImport` reads the source),
+  and there is no `messagebox` call anywhere in it.
 
-**Two measurement ports means no picker, and more than two is refused.** A pi
-has two nodes; a trace declaring exactly two ports IS a trace, in the order
-declared, and one declaring more is a coupling study. `resolve_ends` reads the
-differential flag off `MeasPortRow.minus` being non-blank — which is exactly
-what makes `compute_z_matrix` return the differential 2x2 — so **no session
-field was added and no migration is owed**.
+**Do not compute a coordinate, or call the solver, in the panel module.** The
+reason is the old window's: the geometry is then assertable with no display,
+and the drawing and the text read the SAME `PiModel` through the SAME
+`branch_value_lines`, so they cannot print different numbers.
 
-**Staleness, never auto-refresh.** Same rule as the Attribution window: the
-result is frozen at open time with the spec signature and run number stamped
-on it, `refresh_banner` compares them against the live trace, and `[Recompute]`
-is the user's move. `refresh_trace_model_windows` is registered at all eight
-sites the Attribution refresh is, and like it, **never raises** — it sits on a
-keystroke handler, a session load and Clear All.
+#### The net table
 
-**The drawing's labels are part of its correctness, on the Canvas too.** A
-single-ended pi ends in a ground symbol and the word `reference`; a
-differential pi ends in a plain rail and says `across the pair — no reference
-node`, because its shunt goes between the two conductors and there is no
-reference node to draw.
-`tests/test_tracemodel_window.py::TestTheDifferentialWindow::test_there_is_NO_ground_under_a_differential_pi`
-pins it on the widget and `tests/test_tracemodel.py` pins it on the geometry.
+- **A `RowTable`, not a `ttk.Treeview`** — `editor_and_tables.md`'s rule for an
+  editable table. Columns `Name | IN+ | IN- | OUT+ | OUT-`. A port cell is a
+  combobox that also takes typed text; the dropdown offers `N  portname` when
+  the file names its ports, and a pick is stored as `N` through RowTable's
+  existing `from_cells` hook (no `widgets.py` change was needed).
+  **What goes in a cell is the user's choice entirely.**
+- **Name is required, and nothing invents one.** A row with any port typed
+  and no name is red. A FULLY blank row is not painted: the table always
+  keeps one blank row to type into, and `validate_nets` skips blank rows, so
+  painting it would leave a permanently red empty row on screen.
+- Single-ended leaves both minus cells empty. Differential needs BOTH; one
+  alone marks the empty one red.
+- **The rules are `build_terminations_coupling`'s own refusals restated per
+  CELL**, so the table and the builder cannot refuse different things:
+  reserved names (`A` / `B`, `LEGACY_GROUP_NAMES`, case-insensitive), duplicate
+  names (exact match — the builder's own rule), a port on both sides of one
+  net, 1-based numbering, a probe port that is also in GND. **Plus the
+  table-level rule a per-net solve cannot see**: a port beyond the file's port
+  count. **Two rows MAY share a port** — every net is its own solve, so DQ_P
+  (1→3), DQ_N (2→4) and the pair DQ (1,2→3,4) sit side by side, which is the
+  comparison this workspace exists for; the first build refused it (carried
+  over from the coupling solve, where one port cannot be in two probes at
+  once) and the owner-scenario walkthrough caught it
+  (`test_rows_may_share_ports`). A differential side that ties
+  several ports is a WARNING (amber), not an error: the pair is solved, but
+  the imbalance check is skipped, because a side of several ports has no
+  four-port form.
+- **Validation is live and in the cell — never a dialog.** Every edit runs
+  `validate_nets`; the offending cell goes `ERROR_FG` (`#b00020`) or amber
+  (`WARN_FG`) through `configure(foreground=...)`, measured to work on
+  `ttk.Entry` and `ttk.Combobox` in the vista theme, and the reasons are
+  listed under the table as `Row N 'name', COL: message`. A dialog interrupts
+  the typing it complains about, and the owner's original complaint WAS a
+  dialog. `tests/test_ws_tracemodel.py` patches `messagebox` and asserts it is
+  never called, in every Tk case.
+- **Changing the file does not clear the table.** Cells out of the new file's
+  range go red; removing the chosen file empties the File box and stales every
+  row, but keeps the rows.
 
-**What only driving the real App could catch.** The module imported, the
-layering gate was green and every pure test passed while `compute_trace_model`
-still reached for `file_entry.data` — an attribute `FileEntry` does not have.
-The Tk half of `tests/test_tracemodel_window.py` exists for that class of
-defect, and the fixture values (`R = 1 Ω`, `L = 1 nH`, `C = 1 fF`,
-`L = 8 nH`) are asserted **off the canvas items**, not off the model.
+#### One solve per net
 
-### Why the schematic was TEXT first, and how the Canvas got here
+Each net is one `build_terminations_coupling([(IN), (OUT)], gnd, nports=)`
+plus one `compute_z_matrix`, on its own. Declaring every net's ends in ONE
+`TerminationSet` would give the same numbers — measurement ports are left
+open, which is what "everything unlisted is OPEN" already means — so the
+split is not about arithmetic. **It is so that a failure belongs to ONE row**:
+a row that does not validate becomes an error result reading `error: <why>`
+and the rows beside it are still answered. `solve_net` never raises.
+
+**It is the CLI's arithmetic, bit for bit.** `tests/test_tracenets.py::TestMatchesTheCli`
+solves `pi_2port.s2p` single-ended, `diff_pair_4port.s4p` differential and
+`decap_4port` with GND `3,4`, and compares against the CLI path with
+`np.array_equal` on the 2x2, exact equality on every `PiModel` branch, the
+mode-conversion ratio and the bandwidth table — and line for line against the
+block `cli.main` prints.
+
+**The port-order caveat.** `compute_z_matrix` returns its measurement ports in
+`resolve_meas_ports` order — by LOWEST PORT NUMBER, not by declaration. A net
+whose OUT end is on a lower port than its IN end comes back as (OUT, IN), and
+reading it positionally swaps the two ends with **no symptom at all on a
+symmetric trace** and a wrong shunt assignment on an asymmetric one. So IN and
+OUT are picked by the RETURNED `port_names`, exactly as
+`cli._run_trace_model` does. `TestPortOrder` declares OUT below IN on a
+SYNTHETIC asymmetric 2-port, because every shipped fixture is symmetric to
+`allclose` on its two ends and no fixture can see the swap.
+Mutation-checked: positional `i, j = 0, 1` fails two tests.
+
+**The imbalance check carries GND, and that removed a GUI/CLI
+disagreement.** The differential pi assumes common mode OPEN at both ends;
+the one-frequency, four-single-ended-probe check says how much that hides.
+The old window ran it with NO ground ports while the CLI ran it with the
+declared ones, so the two surfaces could print different mode-conversion
+ratios for one file. **The workspace follows the CLI.**
+`TestImbalanceCarriesGnd` has a synthetic 6-port pair that reads **1.6e-13**
+with its reference ports open and **0.67** with them grounded — far either
+side of `MODE_CONVERSION_WARN = 0.05`. Mutation-checked: dropping GND from the
+four-port solve fails two tests.
+
+#### The four result regions
+
+- **Summary** — a monospace `tk.Text` from `summary_table_lines`, one line per
+  net: `Net  R_ser  L_ser  C_in  C_out  f_3dB (open)  lumped`. Body lines are
+  **91 characters**; a name past **14** is truncated in the Net column. Not a
+  Treeview: it is a table of signed numbers (`rejected_ui.md`). A header click
+  sorts by that column and a second click reverses it (` ^` / ` v`, ASCII);
+  NaN cells and rows with no model sort last whatever the direction. A row
+  click draws that net below. **Every row states its condition** —
+  `error: <why>`, `stale`, `stale: not calculated yet` — never a blank line.
+  The `f_3dB` cell follows `bandwidth_lines`' four cases (`--`, `peaks`, a
+  value, `> top`); `lumped` is `ok`, `warn NN %` or `--` from `lumped_drift`.
+- **Schematic** — a `tk.Canvas` from `pi_canvas_items`. A differential net
+  draws no reference rail (`test_a_differential_net_draws_no_reference`); an
+  error net says why on the canvas; a stale net reads `STALE -- press
+  Calculate all`. Redraws on `<Configure>`.
+- **Response** — a `tk.Canvas` from `response_canvas_items`, with one tick per
+  solved net that overlays it dashed in a muted colour. **Two defects of the
+  old window are fixed here, each pinned and mutation-checked**: the curves
+  are clipped to `[RESPONSE_DB_FLOOR, RESPONSE_DB_CEIL]` BEFORE the geometry
+  sees them (a peak above +3 dB used to run off the top of the canvas), and
+  the load labels are a **110 px legend column** beside the plot instead of
+  text written over the curves. **The marker drags here**: a ghost line follows
+  the pointer and the release writes Freq, snapped to the nearest sweep point
+  (`test_dragging_the_marker_moves_freq_to_a_sweep_point`).
+- **Details** — collapsed by default (▸ / ▾): `pi_report_lines` +
+  `bandwidth_lines` for the selected net, plus the solver's own warnings,
+  which ride on `NetResult.warnings` and which the Summary does not print.
+
+Measured at the **1040x600 minsize** (vista theme, Microsoft YaHei UI 9):
+Summary **101 px** (six lines), schematic canvas **563x190**, response
+**134 px**; the left column uses 378 of 421 px. **Both canvases request 150 /
+110 px explicitly**, because Tk's default 265 px request squeezed the Summary
+to 56 px. The Details text opens at only 56 px at the minsize; it is collapsed
+by default and its sash drags.
+
+#### Staleness by signature, never auto-refresh
+
+The same rule as the Attribution window and the old `[Recompute]`: **a result
+is never redrawn underneath its reader.** Every `NetResult` carries the
+`net_signature(row, gnd, file_label, freq_hz)` it was solved from (cells
+stripped, GND sorted and deduped). The panel never edits a result: on every
+change it re-derives the display list — a row whose signature has a result
+shows it, any other row shows its last numbers (matched by name) marked
+`stale`, or `stale: not calculated yet`. **Editing one row stales that row
+only; GND or file stale every row.**
+
+**The marker frequency is NOT a staling change** (2026-10-02, owner review of
+the first build): `Z2` is the whole open-circuit sweep and does not depend on
+it, so a row whose only change is Freq is re-read by `tracenets.retarget` —
+`extract_pi_at` on the cached sweep, plus the one-frequency imbalance solve on
+a differential net — and cached under the new signature. `TestRetarget` holds
+the result EQUAL to a fresh `solve_net` at the new frequency and asserts that
+nothing solves more than one frequency; mutation-checked (skipping the
+imbalance re-solve, and skipping the retarget in the panel, each fail).
+That is what lets the Freq field and the marker drag answer at once.
+
+**`Calculate all` solves ONLY the rows without a current `ok` result.** Error
+rows always re-run, because a table-level error depends on other rows;
+results whose signature has left the table are pruned. Mutation-checked both
+ways — re-solving everything, and never marking stale, each fail their test.
+
+**Source and Load are not in the signature and never re-solve.** They are
+what-if knobs on the bandwidth table, exactly as the old window's two fields
+were, so `rebandwidth` re-runs `bandwidth_table` on the result's own
+`freqs` / `Z2`; `test_source_and_load_rebandwidth_without_a_solve` patches
+`compute_z_matrix` to RAISE. A bad entry falls back to the default (1 Ω,
+0 fF) rather than blanking the table.
+
+#### Session and export
+
+**The workspace's state rides in the session file's `workspaces` block**
+under `"trace"`: `file`, `rows`, `gnd`, `freq_ghz`, `src_ohm`, `load_ff`, and
+nothing at all at the defaults. **Config, never results** — the session
+file's rule — so a loaded workspace shows every row `not calculated yet`
+until Calculate all. A garbled rows list costs the rows only.
+
+**Export CSV** (`csv_rows`, pure) writes the Summary at `repr()` precision,
+then every net's per-branch values, then every net's bandwidth table.
+
+### Why the schematic was TEXT first, then a Canvas, then a workspace
 
 `rejected_ui.md` turned down a matplotlib schematic in a tab beside the plot
-on three measurements, and ends with the sentence that governs this area:
+on three measurements, and ended with the sentence that governed this area:
 
 > "If a schematic is ever built, it is a `tk.Canvas` in a Toplevel, like the
 > Ports & Roles window."
 
-**So a schematic was never banned — the tab and the matplotlib were.** The
-text form shipped first because it costs zero pixels, serves the CLI and the
-pane from one code path, and needs no Tk, which is what keeps
-`test_tracemodel` in `FAST_MODULES`. **The `tk.Canvas` Toplevel landed on
-2026-09-14 and reads the SAME `PiModel`**, so the two surfaces cannot disagree
-about a number. It must not become a tab, and it must not be matplotlib.
+**So a schematic was never banned — the tab beside the plot and the
+matplotlib were.** The text form shipped first because it costs zero pixels,
+serves the CLI and the pane from one code path, and needs no Tk, which is
+what keeps `test_tracemodel` in `FAST_MODULES`. The `tk.Canvas` Toplevel
+landed on 2026-09-14 and read the SAME `PiModel`.
+
+**On 2026-10-02 the Toplevel became a WORKSPACE, and that entry is marked
+Superseded, not reversed.** What was rejected was a schematic TAB inside the
+RLC plot area, paying plot height and plot focus for a picture beside the
+RLC numbers. What was built is a whole-window switch by TASK: the strip under
+the menubar swaps the left column (below the shared Loaded Files) and the
+whole right side, and the schematic fills the right side of its own
+workspace. The two measured costs are handled, not waved away — the strip is
+**25 px** and the plot pane at the minsize went from **422 to 397 px** (canvas
+360 to 335), accepted as the known cost; and entering the RLC workspace
+hands the plot canvas focus explicitly, pinned by
+`tests/test_workspaces.py::TestThePlotKeysSurviveARoundTrip` with real
+M / V / Delete key events. The full note is in `rejected_ui.md`. **It is
+still not matplotlib, and the RLC plot area still gets no schematic tab.**
 
 **The drawing's labels are part of its correctness.** The single-ended and
 differential drawings share one skeleton because they ARE one topology, and
@@ -279,3 +429,17 @@ reference that froze only the drawing could not let the arithmetic drift
 underneath it. Adding the flag moved `--help`, so
 `tests/fixtures/cli_reference/` was regenerated in the same commit — which is
 the rule for that directory, not an exception made here.
+
+**What the CLI does NOT have that the workspace does (2026-10-02), recorded
+rather than owed silently.** `--trace-model` is ONE net per invocation: there
+is no table of nets, no Summary, and no CSV of the trace model — the
+workspace's `Export CSV` (Summary, per-branch values, bandwidth tables) has no
+command-line equivalent. The other direction too: the CLI can solve a net
+under `--short` pairs and on a composed network, and the workspace has a GND
+field and nothing else (every other port OPEN), on one file. **Where both
+surfaces can express the same net they must print the same numbers**, and
+`tests/test_tracenets.py::TestMatchesTheCli` is what holds them to it — it is
+the reason the imbalance check now carries GND on both. A future
+`--trace-model` that takes several nets should call
+`pkg_rlc.services.tracenets.solve_nets` and `summary_table_lines` rather than
+grow a second loop.

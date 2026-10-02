@@ -438,12 +438,6 @@ from pkg_rlc.physics.core import _collect_nets
 #     needs the label at build time), and a menu path spelled in two places is
 #     exactly the drift the "Show Ports needed five pointers" history warns
 #     about.
-from pkg_rlc.panels.tracemodel_gui import (
-    TRACE_MODEL_MENU_LABEL,
-    live_windows as trace_model_windows,
-    open_trace_model_window,
-    refresh_trace_model_windows,
-)
 from pkg_rlc.panels.attrib_gui import (
     ATTRIB_MENU_LABEL,
     apply_attribution_session_state,
@@ -508,6 +502,19 @@ from pkg_rlc.panels.panels_traces import (
 # results-pane renderer that is NOT a formatter -- it WRITES INTO a Tk Text --
 # which is why it never went to pkg_rlc_report with the others.
 from pkg_rlc.panels.panels_results import ResultsPanel, RunTab, _tag_swatch_rows
+# The workspace strip (docs/design_workspaces.md § 1): one main window, one
+# task at a time.  The App registers its workspaces in `_build_ui` and
+# carries the block through the session file beside `attribution`.
+from pkg_rlc.panels.workspaces import (
+    DEFAULT_WORKSPACE,
+    WorkspaceSwitch,
+    apply_workspaces_session_state,
+    workspaces_session_state,
+)
+# The Trace model workspace (docs/design_workspaces.md § 2): built into the
+# two frames `_build_ui` owns, registered on the strip, refreshed from
+# `_refresh_file_combobox` whenever the loaded files change.
+from pkg_rlc.panels.ws_tracemodel import TraceModelWorkspace
 # `StylePicker` and the editor's own constants moved WITH the form they belong
 # to, and are RE-EXPORTED here, the same rule again.  StylePicker in
 # particular could not stay: it draws from COLORS / LINESTYLES, which are
@@ -1255,9 +1262,10 @@ class App(tk.Tk):
     # ------------------------------------------------------------------ UI
 
     def _build_ui(self) -> None:
-        # Outer horizontal split
+        # Outer horizontal split.  Created first and PACKED LAST: the workspace
+        # strip below is packed before it so that it lands above, under the
+        # menubar, and pack order is call order.
         outer = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
-        outer.pack(fill=tk.BOTH, expand=True)
 
         left = ttk.Frame(outer, width=460)
         outer.add(left, weight=0)
@@ -1265,8 +1273,58 @@ class App(tk.Tk):
         right = ttk.PanedWindow(outer, orient=tk.VERTICAL)
         outer.add(right, weight=1)
 
-        self._build_left_panel(left)
+        # The left column: the SHARED Files panel on top, then the host frame
+        # a workspace's own left frame is packed into.  The RLC workspace's
+        # frame carries today's Traces / Edit Selected Trace / Global Controls
+        # exactly as they were, one wrapper frame deeper -- a frame with no
+        # border or padding, so the measured 460 / 431 widths do not move.
+        rlc_left = self._build_left_panel(left)
         self._build_right_panel(right)
+
+        # The Trace model workspace's two containers, and the panel that
+        # builds into them.  The right one is a child of `outer` so that, as
+        # a forgotten pane, its master is still the outer PanedWindow -- the
+        # same property the RLC pane's tests read.
+        self.trace_ws_left = ttk.Frame(self._ws_left_host)
+        self.trace_ws_right = ttk.Frame(outer)
+        self.trace_ws = TraceModelWorkspace(self, self.trace_ws_left,
+                                            self.trace_ws_right)
+
+        # THE WORKSPACE STRIP.  Measured on this box (vista theme, Microsoft
+        # YaHei UI 9, tk scaling 1.333): the strip is 25 px tall, and at the
+        # 1040x600 minsize the plot pane went from 422 to 397 px (its canvas
+        # from 360 to 335) -- the ~26 px `docs/design_workspaces.md` § 1.2
+        # accepts as the known cost of switching in the main window.  The
+        # outer sash (460), the editor viewport (431) and the results sash
+        # (173) did not move, and a trace -> rlc round trip gives every one
+        # of those numbers back (tests/test_workspaces.py).
+        self.workspaces = WorkspaceSwitch(self, outer=outer,
+                                          left_host=self._ws_left_host)
+        self.workspaces.pack(side=tk.TOP, fill=tk.X)
+        outer.pack(fill=tk.BOTH, expand=True)
+
+        self.workspaces.register(
+            "rlc", "RLC extraction", rlc_left, right,
+            # Every entry hands the plot canvas focus: the M / V / Delete keys
+            # depend on it, and whatever had focus in the other workspace
+            # does not give it back on its own.
+            on_enter=self._focus_plot_canvas)
+        self.workspaces.register(
+            "trace", "Trace model", self.trace_ws_left, self.trace_ws_right,
+            on_enter=self.trace_ws.on_enter,
+            state_get=self.trace_ws.state_get,
+            state_set=self.trace_ws.state_set)
+        # Stage 3 registers "compare" here with one more call; no button for
+        # it is shown until then.
+        self.workspaces.show(DEFAULT_WORKSPACE)
+
+    def show_workspace(self, key: str) -> None:
+        """Switch to a workspace programmatically -- what the strip does."""
+        self.workspaces.show(key)
+
+    def _focus_plot_canvas(self) -> None:
+        """The plot's M / V / Delete keys go to the widget with focus."""
+        self.plot.canvas.get_tk_widget().focus_set()
 
     def _build_menubar(self) -> None:
         """
@@ -1326,12 +1384,10 @@ class App(tk.Tk):
         # four buttons already asking 364, and a fifth row inside Global
         # Controls comes straight out of an editor viewport that is down to
         # 45 px there.  No accelerator, for the reason above this cascade.
-        analyze_menu.add_command(label=TRACE_MODEL_MENU_LABEL,
-                                 command=self._on_trace_model)
         analyze_menu.add_command(label=FILES_MENU_LABEL,
                                  command=self._on_files_window)
         # About two FILES, not the selected trace -- appended last so the
-        # three per-trace windows keep their positions.
+        # two per-trace windows keep their positions.
         analyze_menu.add_command(label=COMPARE_MENU_LABEL,
                                  command=self._on_compare_files)
         menubar.add_cascade(label="Analyze", menu=analyze_menu)
@@ -1350,17 +1406,33 @@ class App(tk.Tk):
         # application is a document; open-line has no use here.
         self.unbind_class("Text", "<Control-o>")
 
-    def _build_left_panel(self, parent: ttk.Frame) -> None:
+    def _build_left_panel(self, parent: ttk.Frame) -> ttk.Frame:
+        """
+        The left column: the shared Files panel, then the RLC workspace's
+        own frame.  Returns that frame, for `WorkspaceSwitch.register`.
+        """
         parent.pack_propagate(False)
 
         # --- Files section ---
         # Built by FilesPanel, in this position and in this pack order.  The
         # widget alias below is what keeps `app.files_lb` resolving for every
         # existing caller and test -- the same rule as re-exporting a moved
-        # symbol from the module it came out of.
+        # symbol from the module it came out of.  SHARED by every workspace:
+        # it is packed into the column itself, above the host, and the switch
+        # never touches it.
         self._files_panel = FilesPanel(parent, self)
         self.files_lb = self._files_panel.files_lb
 
+        # --- The swappable region ---
+        # One host, into which the active workspace's left frame is packed.
+        self._ws_left_host = ttk.Frame(parent)
+        self._ws_left_host.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        rlc_left = ttk.Frame(self._ws_left_host)
+        self._build_rlc_left(rlc_left)
+        return rlc_left
+
+    def _build_rlc_left(self, parent: ttk.Frame) -> None:
+        """Traces, Global Controls and the editor, in that pack order."""
         # --- Traces section ---
         # Built by TracesPanel, in this position and in this pack order; the
         # widget alias is what keeps `app.traces_lb` resolving.  Same rule as
@@ -1599,7 +1671,6 @@ class App(tk.Tk):
             # been carried along with their file.
             self._replot_from_cache()
             refresh_attribution_windows(self)
-            refresh_trace_model_windows(self)
             refresh_files_windows(self)
             refresh_compare_windows(self)
         return mapping
@@ -1960,23 +2031,6 @@ class App(tk.Tk):
         tc = (self.traces[idx]
               if idx is not None and idx < len(self.traces) else None)
         open_attribution_window(self, tc)
-
-    def _on_trace_model(self) -> None:
-        """
-        Open the Trace Model window on the SELECTED trace.
-
-        Same shape as `_on_attribution`, and deliberately so: no refusal logic
-        here either.  `open_trace_model_window` flushes the editor, resolves
-        the file, asks `trace_model_refusal` and shows whatever it returns --
-        including for `trace=None`, which is why no selection is not
-        special-cased.  One decision in one place, so the menubar entry and
-        the right-click entry cannot start refusing different things.
-        """
-        idx = self._sel_idx(self.traces_lb)
-        tc = (self.traces[idx]
-              if idx is not None and idx < len(self.traces) else None)
-        open_trace_model_window(self, tc)
-
 
     def _migrate_trace(self, tc: TraceConfig) -> None:
         """
@@ -2714,7 +2768,16 @@ class App(tk.Tk):
             plot_state=self.plot.view_state(),
             base_dir=base_dir,
             attribution=self._attribution_state(),
+            workspaces=self._workspaces_state(),
         )
+
+    def _workspaces_state(self) -> dict:
+        """The active workspace and what each one keeps, or {}.  Wrapped
+        for the same reason as `_attribution_state`."""
+        try:
+            return workspaces_session_state(self.workspaces)
+        except Exception:
+            return {}
 
     def _attribution_state(self) -> dict:
         """
@@ -2857,7 +2920,6 @@ class App(tk.Tk):
         # away and cannot re-read its way out of that; the Ports & Roles window
         # can, and re-reads to an empty list.
         refresh_attribution_windows(self)
-        refresh_trace_model_windows(self)
         refresh_files_windows(self)
         self._refresh_port_roles_window()
         self._append_result("Cleared " + ", ".join(bits) + ".")
@@ -3028,7 +3090,6 @@ class App(tk.Tk):
         # that holds a result cannot re-read its way out of that, it has to be
         # told, or it carries on offering [Recompute] on a trace that is gone.
         refresh_attribution_windows(self)
-        refresh_trace_model_windows(self)
         refresh_files_windows(self)
         # Second: what the SAVED windows were reading.  Nothing is reopened --
         # `attribution_refusal` turns away a trace with no numbers, and a
@@ -3039,6 +3100,12 @@ class App(tk.Tk):
         # the notes say so out loud -- a restore that silently drops part of
         # what was saved is the failure mode this pane exists to prevent.
         for note in apply_attribution_session_state(self, sess.attribution):
+            self._append_result(f"  {note}", LOG_WARN)
+        # Third: which workspace was showing.  A session with no block -- one
+        # saved before workspaces existed -- lands on the default, and a
+        # block this build cannot read costs itself and one Log line.
+        for note in apply_workspaces_session_state(self.workspaces,
+                                                   sess.workspaces):
             self._append_result(f"  {note}", LOG_WARN)
 
         for label, path in missing:
@@ -3258,6 +3325,13 @@ class App(tk.Tk):
 
     def _refresh_file_combobox(self) -> None:
         self.ed_file_cbo["values"] = [fe.label for fe in self.files]
+        # Every path that changes the loaded files -- add, remove, relabel,
+        # clear, Clear All, session load -- comes through here, so this is
+        # where the Trace model workspace learns its File list moved and
+        # marks the rows that read a file that is gone.
+        ws = getattr(self, "trace_ws", None)
+        if ws is not None:
+            ws.refresh_files()
 
     def _file_by_label(self, label: str) -> Optional[FileEntry]:
         for fe in self.files:

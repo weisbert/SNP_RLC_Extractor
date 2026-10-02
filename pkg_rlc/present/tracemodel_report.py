@@ -62,6 +62,8 @@ __all__ = [
     "CanvasItem", "pi_canvas_items", "CANVAS_W", "CANVAS_H",
     "response_canvas_items", "RESPONSE_DB_FLOOR",
     "MODE_CONVERSION_WARN",
+    "SUMMARY_COLUMNS", "SUMMARY_KEYS", "summary_table_lines", "summary_order",
+    "summary_sort_value",
 ]
 
 # Above this, a differential pair is imbalanced enough that the differential
@@ -295,12 +297,12 @@ def pi_report_lines(model: PiModel, freq_snap=None,
 # The drawn schematic, as GEOMETRY -- no Tk
 # ============================================================================
 #
-# `rejected_ui.md` allows exactly one form of schematic in this tool: "a
-# `tk.Canvas` in a Toplevel, like the Ports & Roles window".  This is the half
-# of that which can be tested without a display.
+# The schematic is a `tk.Canvas` (never matplotlib -- `rejected_ui.md`), and
+# since 2026-10-02 it lives in the Trace model WORKSPACE rather than a
+# Toplevel.  This is the half of it which can be tested without a display.
 #
 # `pi_canvas_items` returns primitives -- lines, rectangles and texts, in
-# canvas coordinates -- and `pkg_rlc/panels/tracemodel_gui.py` does nothing
+# canvas coordinates -- and `pkg_rlc/panels/ws_tracemodel.py` does nothing
 # but hand each one to `Canvas.create_*`.  Keeping the geometry HERE, at L3,
 # is what lets the drawing be asserted with no Tk root at all (the layout
 # tests run in `FAST_MODULES`, where a widget test could not), and it is the
@@ -643,3 +645,206 @@ def response_canvas_items(freqs, curves, width: int, height: int,
             "text", (x1, y0 + height * 0.075 * (ci + 1) - height * 0.03),
             text=label, role=role, anchor="e"))
     return items
+
+
+# ============================================================================
+# The workspace's SUMMARY table -- one line per net, sortable by column
+# ============================================================================
+#
+# A monospace `tk.Text`, not a Treeview (`editor_and_tables.md`): the values
+# are signed and the table has to read as one block of numbers.  The column
+# geometry is published as `SUMMARY_COLUMNS` so the panel can turn a click on
+# the header line into a sort key without re-deriving the layout, and the
+# display order as `summary_order` so a click on a body line maps back to its
+# `NetResult`.  Every value cell goes through `format_si`, the same formatter
+# the drawing and the CLI print with -- one formatter, not a second copy.
+
+#: (key, header, width, align) -- the one table the header, the body and
+#: `SUMMARY_COLUMNS` are all derived from.
+_SUMMARY_LAYOUT = (
+    ("net", "Net", 14, "<"),
+    ("r_ser", "R_ser", 10, ">"),
+    ("l_ser", "L_ser", 10, ">"),
+    ("c_in", "C_in", 10, ">"),
+    ("c_out", "C_out", 10, ">"),
+    ("f_3db", "f_3dB (open)", 13, ">"),
+    ("lumped", "lumped", 12, "<"),
+)
+_SUMMARY_GAP = 2
+#: The sort markers, ASCII on purpose -- red-zone X11 fonts.
+_SORT_MARK = {False: " ^", True: " v"}
+
+
+def _summary_columns() -> tuple:
+    cols = []
+    start = 0
+    for key, header, width, _align in _SUMMARY_LAYOUT:
+        cols.append((key, header, start, start + width))
+        start += width + _SUMMARY_GAP
+    return tuple(cols)
+
+
+#: (key, header, start_char, end_char) per column, `[start, end)` on the
+#: header line and on every body line.  A click at character `c` belongs to
+#: the column with `start <= c < end`.
+SUMMARY_COLUMNS = _summary_columns()
+SUMMARY_KEYS = tuple(c[0] for c in SUMMARY_COLUMNS)
+
+
+def _lumped_worst(res) -> float:
+    """The largest finite |drift| over the three branches, or NaN."""
+    model, reference = res.model, res.reference
+    if model is None or reference is None:
+        return float("nan")
+    if reference.freq_hz == model.freq_hz:
+        return float("nan")
+    finite = [abs(v) for v in lumped_drift(model, reference).values()
+              if math.isfinite(v)]
+    return max(finite) if finite else float("nan")
+
+
+def _lumped_cell(res) -> str:
+    worst = _lumped_worst(res)
+    if not math.isfinite(worst):
+        return "--"
+    if worst <= LUMPED_DRIFT_WARN:
+        return "ok"
+    return f"warn {worst * 100:.0f} %"
+
+
+def _f3db_open(res) -> tuple[str, float]:
+    """
+    The open-load row of the sensitivity table as (cell, sort value).
+
+    The same four cases `bandwidth_lines` prints, in the same order: no
+    passband -> '--', a peak -> 'peaks', a crossing -> the frequency, and a
+    sweep that never fell 3 dB -> '> <top>' (nothing is extrapolated past the
+    file; the sort value is the top of the sweep, which the answer is at
+    least).
+    """
+    nan = float("nan")
+    bw = next((b for b in (res.bw_table or ()) if b.c_load_farad == 0.0), None)
+    if bw is None or not bw.passband_ok:
+        return ("--", nan)
+    if bw.peak_db > PEAK_WARN_DB and math.isfinite(bw.peak_hz):
+        return ("peaks", nan)
+    if bw.crossed:
+        return (format_si(bw.f_3db_hz, "Hz"), float(bw.f_3db_hz))
+    try:
+        top = float(np.asarray(res.freqs, dtype=float)[-1])
+    except (TypeError, IndexError, ValueError):
+        return ("--", nan)
+    return ("> " + format_si(top, "Hz"), top)
+
+
+def summary_sort_value(res, key: str):
+    """
+    What one net sorts BY under `key`: its name (lower-cased) for 'net', the
+    element value for the four value columns, the open-load -3 dB point for
+    'f_3db', the worst drift for 'lumped'.  None when the net has no model,
+    NaN when it has one but that cell is empty; both sort last.
+    """
+    if res.model is None:
+        return None
+    m = res.model
+    if key == "net":
+        return str(res.name).lower()
+    if key == "r_ser":
+        return m.series.R_ohm
+    if key == "l_ser":
+        return m.series.L_henry
+    if key == "c_in":
+        return m.shunt_in.C_farad
+    if key == "c_out":
+        return m.shunt_out.C_farad
+    if key == "f_3db":
+        return _f3db_open(res)[1]
+    if key == "lumped":
+        return _lumped_worst(res)
+    raise ValueError(f"Unknown summary column '{key}'; one of {SUMMARY_KEYS}")
+
+
+def summary_order(results, sort_key: str | None = None,
+                  descending: bool = False) -> list[int]:
+    """
+    Indices into `results` in DISPLAY order.  Line `k + 1` of
+    `summary_table_lines` (after the header) is `results[order[k]]`.
+
+    No key: table order.  With a key: the nets that have a value, sorted on
+    it (stable, so ties keep table order), then the nets whose cell is empty
+    (NaN), then the nets with no model at all -- an error row has nothing to
+    sort by and goes to the bottom whichever way the column is sorted.
+    """
+    idx = list(range(len(results)))
+    if sort_key is None:
+        return idx
+    valued, empty, missing = [], [], []
+    for i in idx:
+        v = summary_sort_value(results[i], sort_key)
+        if v is None:
+            missing.append(i)
+        elif isinstance(v, float) and not math.isfinite(v):
+            empty.append(i)
+        else:
+            valued.append((v, i))
+    valued.sort(key=lambda t: t[0], reverse=bool(descending))
+    return [i for _v, i in valued] + empty + missing
+
+
+def _summary_row_cells(res) -> list[str]:
+    m = res.model
+    return [
+        str(res.name),
+        format_si(m.series.R_ohm, OHM),
+        format_si(m.series.L_henry, "H"),
+        format_si(m.shunt_in.C_farad, "F"),
+        format_si(m.shunt_out.C_farad, "F"),
+        _f3db_open(res)[0],
+        "stale" if res.status == "stale" else _lumped_cell(res),
+    ]
+
+
+def _summary_line(cells: list[str]) -> str:
+    parts = []
+    for (key, _header, width, align), text in zip(_SUMMARY_LAYOUT, cells):
+        text = text[:width]
+        parts.append(f"{text:{align}{width}}")
+    return (" " * _SUMMARY_GAP).join(parts).rstrip()
+
+
+def summary_table_lines(results, sort_key: str | None = None,
+                        descending: bool = False) -> list[str]:
+    """
+    One header line, then one line per net, columns per `SUMMARY_COLUMNS`:
+    Net | R_ser | L_ser | C_in | C_out | f_3dB (open) | lumped.
+
+    A net that has no numbers says WHY in place of them rather than leaving
+    the line blank: 'error: <message>' on an error row, 'stale: ...' on a
+    stale row that was never solved.  A stale row that still carries its old
+    numbers prints them with 'stale' in the lumped column, because a number
+    that was right when it was computed looks exactly like one that still is.
+    The sorted column's header carries ' ^' or ' v'.
+    """
+    cells = []
+    for key, header, _width, _align in _SUMMARY_LAYOUT:
+        if sort_key is not None and key == sort_key:
+            header = header + _SORT_MARK[bool(descending)]
+        cells.append(header)
+    lines = [_summary_line(cells)]
+    net_w = _SUMMARY_LAYOUT[0][2]
+    gap = " " * _SUMMARY_GAP
+    for i in summary_order(results, sort_key, descending):
+        res = results[i]
+        if res.model is None:
+            name = str(res.name)[:net_w]
+            if res.status == "error":
+                why = res.error or "not solved"
+                lines.append(f"{name:<{net_w}}{gap}error: {why}")
+            elif res.status == "stale":
+                lines.append(f"{name:<{net_w}}{gap}stale: not calculated "
+                             "yet -- press Calculate all")
+            else:
+                lines.append(f"{name:<{net_w}}{gap}{res.status}: no model")
+            continue
+        lines.append(_summary_line(_summary_row_cells(res)))
+    return lines

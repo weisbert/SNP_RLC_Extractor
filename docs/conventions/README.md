@@ -84,7 +84,9 @@ Seven UI proposals that were designed, measured and turned down — the plot-tab
 schematic, two `ttk.Treeview` tables, the `|k|` bar chart, the KPI strip, the
 Attribution notebook and the eleventh Help tab. Each entry carries the
 measurement that refused it, so the refusal is re-checkable rather than
-remembered.
+remembered. The plot-tab schematic carries a **Superseded 2026-10-02** note:
+what was built instead (a workspace switch by task) and how each of its
+measured costs is now handled.
 
 - Rejected UI proposals (do not re-propose these)
 
@@ -119,10 +121,13 @@ spelled.
 
 ## [`trace_model.md`](trace_model.md)
 
-Why the pi comes out EXACT rather than fitted, why differential needs no new mathematics and no new flag, the two capacitance conventions a differential shunt is ambiguous between, and the one sentence in `rejected_ui.md` that lets a schematic exist at all.
+Why the pi comes out EXACT rather than fitted, why differential needs no new mathematics and no new flag, the two capacitance conventions a differential shunt is ambiguous between, the three bandwidths, and the Trace model workspace: the net table's per-cell rules, one solve per net, the port-order caveat, GND in the imbalance check, staleness by signature, and what the CLI does not have.
 
 - The trace pi model (`pkg_rlc/physics/tracemodel.py`, `pkg_rlc/present/tracemodel_report.py`)
-- Why the schematic is TEXT, and what would let it be a Canvas
+- Bandwidth — THREE numbers, and conflating them is the trap
+- Why `|H(f)|` is NOT a `PLOT_TYPES` entry
+- The Trace model workspace (`pkg_rlc/panels/ws_tracemodel.py`, `pkg_rlc/services/tracenets.py`)
+- Why the schematic was TEXT first, then a Canvas, then a workspace
 - What the CLI surface owes
 
 ## [`standalone_and_deploy.md`](standalone_and_deploy.md) — 18k

@@ -316,7 +316,9 @@ class RowTable(ttk.Frame):
         # --- add button (outside the scroll area) ---
         head = ttk.Frame(self)
         head.pack(side=tk.TOP, fill=tk.X)
-        self._add_btn = ttk.Button(head, text=add_text, width=8,
+        # Never narrower than its label: "+ Add net" at width=8 read "+ Add ne".
+        self._add_btn = ttk.Button(head, text=add_text,
+                                   width=max(8, len(add_text) + 1),
                                    command=self.add_row)
         self._add_btn.pack(side=tk.RIGHT, padx=1)
 

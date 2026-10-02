@@ -22,6 +22,12 @@ S-parameters of an N-port linear network, the tool:
      way and ranks the ports you have NOT declared anything for.
      Both are on the "Mode 6 (Coupling)" tab, under "Where the
      number came from".
+  7. Draws a routed trace as its exact pi circuit (series R, L;
+     a shunt at each end) with its bandwidth. Press "Trace model"
+     on the strip under the menu bar, add one row per net (Name,
+     IN+ and OUT+, plus IN- and OUT- for a pair), list the ground
+     ports under GND, and press Calculate all. Full account on the
+     Coupling tab, under "THE TRACE MODEL".
 
 Universal assumptions (apply to ALL modes)
 ------------------------------------------

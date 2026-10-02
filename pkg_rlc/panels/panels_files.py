@@ -36,9 +36,6 @@ from pkg_rlc.physics.core import (
 )
 from pkg_rlc.present.report import LOG_INFO, LOG_WARN, _trunc_str
 from pkg_rlc.model.validate import trace_file_labels
-from pkg_rlc.panels.tracemodel_gui import (
-    refresh_trace_model_windows,
-)
 from pkg_rlc.panels.attrib_gui import refresh_attribution_windows
 from pkg_rlc.panels.compare_gui import (
     COMPARE_MENU_LABEL, refresh_compare_windows,
@@ -255,7 +252,6 @@ class FilesPanel:
         # were dropped above, and a window on a trace bound to it resolves its
         # file through _file_by_label, which now returns None.
         refresh_attribution_windows(app)
-        refresh_trace_model_windows(app)
         # And the same for the file windows, which is the LOUDER case here:
         # this is the one path that can remove a file a surviving trace still
         # composes with, so an open window would keep listing a file that is
@@ -331,7 +327,6 @@ class FilesPanel:
         # subject by identity and neither can re-read its way out of a subject
         # that no longer exists.
         refresh_attribution_windows(app)
-        refresh_trace_model_windows(app)
         refresh_files_windows(app)
         refresh_compare_windows(app)
         app._append_result(f"Cleared all files ({len(labels)})")
