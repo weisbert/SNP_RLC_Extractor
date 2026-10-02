@@ -1,12 +1,18 @@
 """
-pkg_rlc_panels_editor.py  --  the mode-aware editor for the selected trace.
+pkg_rlc_panels_editor.py  --  the editor for the selected trace.
 
 The bottom half of the left-hand column: the pinned footer, the scrollable
-form and every field on it, the two `RowTable`s, the `StylePicker`, both
-scrollbars and the ONE function that decides them, the scrollregion, the
-per-mode visibility, the two strips and the footer route, the "Edit as text…"
-hatch, and the auto-apply sync chain that is this editor instead of an Apply
-button.
+form and every field on it, the Template combobox, the two `RowTable`s, the
+`StylePicker`, both scrollbars and the ONE function that decides them, the
+scrollregion, the two strips and the footer route, the cell colouring from
+the probe rules, the "Edit as text…" hatch, and the auto-apply sync chain
+that is this editor instead of an Apply button.
+
+There are no modes (docs/design_workspaces.md § 3).  Every trace is the same
+two tables -- measurement ports and connections -- and what used to be the
+five mode radios is the Template combobox, which FILLS those tables and is
+then forgotten.  The tables, their hints, the overview, the validation strip
+and the footer strip are always on screen.
 
 HAS-A, NOT IS-A, and here that matters more than anywhere else in the window,
 because nearly everything below is a measured ORDER or a measured FIXED
@@ -20,8 +26,9 @@ POINT:
     cycle that hangs `update()`, i.e. the GUI and the test suite together;
   * `_refresh_editor_scrollregion` defers to `after_idle` and never calls
     `update_idletasks()`, which flushes geometry for the WHOLE application;
-  * `_update_mode_visibility` runs on every TRACE selection as well as every
-    MODE change, and only the second may reset the scroll;
+  * `_update_editor_visibility` runs on every TRACE selection and every
+    table edit, and never resets the scroll (there is no mode change left to
+    make the form a different shape);
   * `_apply_editor_strips` runs from Tk variable traces, once per keystroke,
     must never raise and may write to nothing but its own labels.
 
@@ -31,7 +38,7 @@ Controls being packed side=BOTTOM BEFORE it.
 
 WHAT MOVED WITH IT.  `StylePicker` (it is a field of this form, and it draws
 from pkg_rlc.widgets.plot's palettes, which is L4), and the editor's own constants:
-`MODE_PLACEHOLDERS`, `LABEL_PLACEHOLDER`, `EDITOR_FIELD_CHARS`,
+`LABEL_PLACEHOLDER`, `EDITOR_FIELD_CHARS`,
 `FROZEN_EDITOR_NOTE`, `MP_TABLE_HINT` / `_SHORT`, `MUTUAL_CURVE_HINT` /
 `_SHORT` and `TEXT_DIALOG_NOTE`.  All are re-exported from `pkg_rlc_gui`,
 where every existing caller and test looks for them.
@@ -41,7 +48,7 @@ WHAT THE PANEL OWNS, AND WHAT THE APP STILL OWNS.  The panel owns the WIDGETS
 `app.ed_conn_table`, `app._ed_canvas` and the rest keep resolving.  The
 editor's mutable STATE stays on App -- `_suppress_editor_sync`,
 `_ed_extra_lines`, `_ed_strips_pending`, `_ed_sync_after` / `_ed_sync_target`,
-`_ed_shown_mode`, `_ed_scroll_pending` / `_ed_scroll_preserve` -- for the same
+`_ed_scroll_pending` / `_ed_scroll_preserve` -- for the same
 reason as in pkg_rlc_panels_results: they are reassigned at runtime and read
 straight off `app` by the tests.
 
@@ -64,24 +71,31 @@ from pkg_rlc.physics.core import (
     MeasPortRow,
     build_terminations_rows,
     merged_nodes,
+    probe_display_names,
+    probe_rule_issues,
     resolve_meas_ports,
     rows_to_dsl_text,
 )
 from pkg_rlc.widgets.plot import COLORS, LINESTYLES
 from pkg_rlc.present.conntable import (
+    CONN_OPEN_NOTE,
     CONN_TABLE_COLUMNS,
     CONN_TABLE_HINT,
     CONN_TABLE_HINT_SHORT,
     ColumnSpec,
+    EDITOR_TEMPLATES,
+    TEMPLATE_PROMPT,
     conn_cells_from_row,
     conn_hint_text,
     conn_row_from_cells,
     conn_table_layout,
+    template_rows,
 )
 from pkg_rlc.widgets.widgets import (
     PLACEHOLDER_FG,
     PlaceholderEntry,
     RowTable,
+    WARN_FG,
     _CollapsibleHint,
     _tk_dash,
     editor_scroll_fraction,
@@ -101,10 +115,7 @@ from pkg_rlc.model.validate import (
     scope_echo_messages,
     trace_is_composed,
 )
-from pkg_rlc.panels.attrib_gui import (
-    live_windows as attribution_windows,
-    refresh_attribution_windows,
-)
+from pkg_rlc.panels.attrib_gui import refresh_attribution_windows
 from pkg_rlc.panels.files_gui import refresh_files_windows
 
 
@@ -124,7 +135,7 @@ from pkg_rlc.panels.files_gui import refresh_files_windows
 #    focus_force, no off-screen placement clamp.
 #  * The stored value stays an INDEX into COLORS / LINESTYLES.  A free colour
 #    chooser looks like an upgrade but _coupling_plot_traces derives the colours
-#    of a mode-6 trace's expanded curves as (color_idx + n) % len(COLORS): an
+#    of a coupling trace's expanded curves as (color_idx + n) % len(COLORS): an
 #    arbitrary RGB has no "next colour", so all six curves would come out the
 #    same.  This is a picker change only -- pkg_rlc_plot is untouched.
 #  * All sizes are in units of the default font's linespace, never in pixels.
@@ -138,7 +149,7 @@ class StylePicker(ttk.Frame):
 
     The preview draws the real colour and the real dash pattern, so what is on
     the button is what the plot draws -- with one honest exception it labels
-    itself: a mode 5/6 trace with G measurement ports expands into several
+    itself: a trace with G >= 2 measurement ports expands into several
     curves consuming CONSECUTIVE palette slots, so `set_span(n)` makes the
     preview show the whole run and the '×n'.  Without that, picking a
     distinct-looking colour for a coupling trace tells you nothing about the
@@ -263,7 +274,7 @@ class StylePicker(ttk.Frame):
     # -------- public API --------
 
     def set_span(self, n: int) -> None:
-        """How many curves this trace expands into (mode 5/6). 1 = plain."""
+        """How many curves this trace expands into (coupling). 1 = plain."""
         n = max(1, int(n))
         if n != self._span:
             self._span = n
@@ -328,42 +339,18 @@ class StylePicker(ttk.Frame):
             refresh(preserve=True)
 
 
-# Per-mode placeholder hints for the remaining PlaceholderEntry fields, keyed
-# by (field, mode) -> hint text.  A table-based mode registers NOTHING here: a
-# table cell cannot hold a hint (PlaceholderEntry deletes it on <FocusIn>), so
-# its hint is a _CollapsibleHint label under the table instead.
-MODE_PLACEHOLDERS: dict[str, dict[int, str]] = {
-    "port_a": {
-        1: "e.g.  1   (signal port to drive)",
-        2: "e.g.  1,2   (positive group; ports shorted internally)",
-        3: "e.g.  1,2",
-    },
-    "port_b": {
-        2: "e.g.  3,4   (negative group; ports shorted internally)",
-        3: "e.g.  3,4",
-    },
-    "short_pairs": {
-        3: "e.g.  3-4   or   3-4, 5-6   or   1-2-3-4   (chain dashes to short >2 ports)",
-    },
-    "gnd": {
-        1: "e.g.  5   or   6:1:14   (V=0; put supply/VDD balls here too)",
-        2: "e.g.  5   (optional; V=0 -- supply balls belong here too)",
-        3: "e.g.  5   (optional; V=0 -- supply balls belong here too)",
-        6: "e.g.  5:1:8   (optional; V=0 -- supply balls belong here too)",
-    },
-}
-
 LABEL_PLACEHOLDER = "trace name shown in plot legend (optional)"
 
 # The editor's single-line fields, in characters.  A MEASURED number, not a
-# taste: the form's requested width is the widest label (129 px,
-# "GND / VDD (AC gnd):") plus the widest field plus 8 px of cell padding, and
-# it is checked against a 431 px canvas.  At 42 chars a ttk.Entry asks 300 px
-# and the form asks 437 -- six pixels of overhang, which raises the editor's
-# horizontal scrollbar, which costs 17 px of a 45 px viewport at the 1040x600
-# minsize.  At 40 it asks 286 and the form 423, and modes 1/2/3 keep the whole
-# 45 px.  The fields are sticky="we", so this is only their MINIMUM; at any
-# width where the form fits they look identical.
+# taste: the form's requested width is the widest label plus the widest field
+# plus 8 px of cell padding, and it is checked against a 431 px canvas.  When
+# the form still had a "GND / VDD (AC gnd):" label (129 px), 42 chars asked
+# 300 px and a 437 px form -- six pixels of overhang, which raised the
+# horizontal scrollbar and cost 17 px of the viewport -- and 40 asked 286 and
+# 423.  That label is gone; re-measured 2026-10-02 the widest label is 84 px
+# and the form asks 381 px, so 40 now has 50 px of headroom.  The fields are
+# sticky="we", so this is only their MINIMUM; at any width where the form
+# fits they look identical.
 EDITOR_FIELD_CHARS = 40
 
 # The note that explains why the editor is greyed out.  A named constant
@@ -396,13 +383,28 @@ MP_TABLE_HINT = (
 )
 
 
-# Shown under the mode-6 plot checkboxes: the subplot grid is shared with the
+# Shown under the self / mutual plot checkboxes: the subplot grid is shared with the
 # self curves, so the axis titles need reinterpreting on a mutual curve.
 MUTUAL_CURVE_HINT_SHORT = "on a mutual curve, L(nH) reads as M and C(pF) as C_c"
 MUTUAL_CURVE_HINT = (
     "On a mutual curve the L(nH) subplot IS M in nH and C(pF) IS the coupling "
     "capacitance C_c; the k subplot is filled in for mutual curves only."
 )
+
+
+# The probe rules' cell colours -- the same two the Trace model workspace
+# paints its net table with (pkg_rlc.panels.ws_tracemodel's ERROR_FG /
+# WARN_CELL_FG), so red means "refused" and amber "computed, read this" in
+# every table of the app.  Spelled here rather than imported: ws_tracemodel is
+# a sibling panel, and a panel reaching into another for a colour is the
+# coupling the palette in pkg_rlc.widgets exists to avoid.
+ERROR_CELL_FG = "#b00020"
+WARN_CELL_FG = WARN_FG
+
+#: Asked before a template overwrites rows the user typed.  `{template}` is the
+#: template's name as the combobox lists it.
+TEMPLATE_CONFIRM = ("Replace the measurement ports and connections with the "
+                    "'{template}' template?")
 
 
 # What the "Edit as text…" dialog promises, verbatim. The round trip is
@@ -418,6 +420,36 @@ TEXT_DIALOG_NOTE = (
 )
 
 
+def _rename_legacy_a_rows(mports: Sequence[MeasPortRow]) -> list:
+    """
+    The measurement-port rows the text import produced, with every row named
+    'A' renamed to the first free 'P<n>'.
+
+    'A' / 'B' are the old two-group spelling, and the unified table refuses
+    them as names (`probe_rule_issues`: reserved).  `dsl_text_to_rows`
+    already folds 'B' into A's minus side, so by the time rows land here a
+    legacy text is ONE row named 'A' -- and renaming it changes nothing it
+    measures: `_import_dsl_text` decided the meaning on the text, and a
+    measurement port's name is a label.  Not renaming it would hand the user a
+    red cell for text the tool itself accepted a moment ago.
+    """
+    rows = list(mports)
+    taken = set(probe_display_names(rows)) | {r.name.strip() for r in rows}
+    out = []
+    n = 0
+    for r in rows:
+        if r.name.strip().upper() == "A":
+            while True:
+                n += 1
+                cand = f"P{n}"
+                if cand not in taken:
+                    break
+            taken.add(cand)
+            r = MeasPortRow(name=cand, plus=r.plus, minus=r.minus)
+        out.append(r)
+    return out
+
+
 class EditorPanel:
     """The Edit-Selected-Trace section: the footer, the form, and the sync."""
 
@@ -429,8 +461,7 @@ class EditorPanel:
         """
         Editor = a pinned footer + a scrollable form.
 
-        The form is mode-dependent and in mode 5 it is taller than any laptop
-        screen, so it lives in a Canvas.  The footer button does NOT: it is
+        The form is taller than any laptop screen, so it lives in a Canvas.  The footer button does NOT: it is
         packed side=BOTTOM *first*, outside the scroll region, so the form can
         clip or scroll all it likes and the button stays reachable.  Packing it
         after the expanding body is what made it fall off the bottom.
@@ -444,25 +475,36 @@ class EditorPanel:
         allowed to be empty -- Tk does not reissue a geometry request when a
         master's last slave is removed, so an emptied footer would keep its
         requested height forever.
+
+        THE VIEWPORT, MEASURED 2026-10-02 (the real App, one 4-port file,
+        the default trace, update_idletasks/update until it settles): the
+        editor canvas is 431 x 53 px at the 1040x600 minsize and 431 x 353 at
+        1500x900, against a form that asks 381 x 424 and a table row of
+        23 px -- so at the minsize two rows of the form are wholly on screen.
+        Before this stage it was 20 px at 1040x600 (320 at 1500x900): the
+        workspace strip had taken 25 px out of the left column and no row
+        fitted at all.  Taking the mode radios out of the FORM gave none of
+        it back -- the form is inside a canvas and never sets the viewport;
+        the column's FIXED parts do.  What did: Global Controls lost a grid
+        row (Fit Model moved up beside RLC Freq, 23 px) and its button row's
+        pady went 4 -> 2 (4 px), and this footer's pady went 3 -> 1 (4 px).
+        tests/test_unified_editor.py pins "at least one table row".
         """
         foot = ttk.Frame(parent)
         foot.pack(side=tk.BOTTOM, fill=tk.X)
         ttk.Button(foot, text="Calculate This Trace",
                    command=self.app._on_calculate_selected
-                   ).pack(side=tk.RIGHT, padx=6, pady=3)
+                   ).pack(side=tk.RIGHT, padx=6, pady=1)
         # The one-line summary of the two below-the-fold strips (see
         # FOOTER_STRIP_CHARS).  It shares the button's 33 px row, so it costs
-        # no vertical space at all -- and it is created here but NOT packed:
-        # _update_mode_visibility packs it, because it only has a meaning in
-        # mode 5.  Whenever it is packed it goes in AFTER the button, never
+        # no vertical space at all.  It is packed AFTER the button, never
         # before, since pack unmaps from the END: if the footer is ever
         # squeezed it must be this label that goes, not Calculate This Trace.
         self._ed_foot = foot
         # R1-4: the footer verdict is the only always-visible pixel of the
         # editor, and it used to be a dead end -- measured at the 1040x600
-        # minsize, the messages it counts sit 366 and 387 px below the fold of
-        # a 45 px viewport, and every mode change scrolls the form back to the
-        # top.  Clicking it scrolls to the row it is talking about.  It costs
+        # minsize, the messages it counts sat 366 and 387 px below the fold of
+        # a 45 px viewport.  Clicking it scrolls to the row it is talking about.  It costs
         # ZERO pixels: the affordance is the hand cursor plus an underline on
         # hover, and an underline changes no font metric (measured: the
         # label's reqwidth/reqheight are identical with and without it).
@@ -482,6 +524,8 @@ class EditorPanel:
             "<Leave>",
             lambda _e: self.ed_footer_strip.configure(
                 font=self._ed_footer_font))
+        self.ed_footer_strip.pack(side=tk.LEFT, fill=tk.X, expand=True,
+                                  padx=4)
 
         self._ed_body = body = ttk.Frame(parent)
         body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
@@ -606,14 +650,15 @@ class EditorPanel:
         while the scrollregion stayed at 357, so the new rows could not be
         reached by scrolling at all.
 
-        `preserve` says what to do with the scroll offset.  A MODE CHANGE must
-        reset it (preserve=False) or a now-short form stays parked out of
-        sight; a ROW ADD must keep it (preserve=True) or the row the user just
+        `preserve` says what to do with the scroll offset.  preserve=False
+        resets it to the top -- what a MODE CHANGE used to need, when a mode
+        was a differently shaped form; no caller in the editor passes it now.
+        A ROW ADD must keep it (preserve=True) or the row the user just
         created scrolls away and the view jumps back to the File combobox.
 
         Deferred to after_idle, NEVER update_idletasks(). This runs during
         construction too (_build_editor_form ends by calling
-        _update_mode_visibility), and forcing a geometry pass there is exactly
+        _update_editor_visibility), and forcing a geometry pass there is exactly
         what collapsed the Results pane's PanedWindow sash to 2px --
         tests/test_row_table.py::TestResultsPaneVisible caught this very edit.
         """
@@ -652,10 +697,10 @@ class EditorPanel:
         row = 0
         # Why the editor is greyed out.  ROW 0, and gridded/removed rather than
         # packed into the footer: the footer's whole spare budget is one line
-        # and mode 5 already spends it (_footer_strip_text), whereas the form
-        # is inside a Canvas that every mode change scrolls back to the top --
-        # so row 0 is the one place in the editor that is always the first
-        # thing on screen.
+        # and the footer strip already spends it (_footer_strip_text), whereas
+        # row 0 of the form is what is on screen whenever the form has not
+        # been scrolled -- the first thing a reader of a freshly selected
+        # trace sees.
         self.ed_frozen_note = ttk.Label(parent, anchor="w", justify=tk.LEFT,
                                         wraplength=400, foreground="#b04000",
                                         text=FROZEN_EDITOR_NOTE)
@@ -668,77 +713,42 @@ class EditorPanel:
         ttk.Label(parent, text="File:").grid(row=row, column=0, sticky="e", padx=2, pady=1)
         self.ed_file_var = tk.StringVar()
         # width=38, not 40, and it is a MEASURED number.  The editor form's
-        # requested width is the widest LABEL (129 px, "GND / VDD (AC gnd):")
-        # plus the widest FIELD plus 8 px of cell padding, and this combobox
-        # is the widest field in modes 1/2/3 -- 303 px against the 431 px
-        # canvas, for a form of 440.  Nine pixels of overhang bought a
-        # horizontal scrollbar, and at the 1040x600 minsize that scrollbar
-        # costs 17 px of a 45 px editor viewport: the four modes with no table
-        # paid a third of their remaining height to reach 9 px they did not
-        # need, while Mode 5 -- whose column budget was actually measured --
-        # fitted and paid nothing.  It is sticky="we", so this changes only
-        # the minimum; at any width where the form fits it looks identical.
-        # (Mode 6's form is 462 px and still raises the bar. That overhang is
-        # the measurement-port table, not this, and it is real.)
+        # requested width is the widest LABEL plus the widest FIELD plus 8 px
+        # of cell padding, and this combobox is the widest single field --
+        # 289 px.  Back when a 129 px "GND / VDD (AC gnd):" label shared the
+        # column, a 40-char combobox made the form 440 px against the 431 px
+        # canvas, and nine pixels of overhang bought a horizontal scrollbar
+        # that cost 17 px of the viewport.  The label is gone (re-measured
+        # 2026-10-02: widest label 84 px, form 381 px), so this is no longer
+        # tight -- but it is sticky="we", so this changes only the minimum; at
+        # any width where the form fits it looks identical.
         self.ed_file_cbo = ttk.Combobox(parent, textvariable=self.ed_file_var,
                                         state="readonly", width=38)
         self.ed_file_cbo.grid(row=row, column=1, columnspan=3, sticky="we", padx=2, pady=1)
         row += 1
 
-        # Mode radio
-        ttk.Label(parent, text="Mode:").grid(row=row, column=0, sticky="ne", padx=2, pady=1)
-        mode_frame = ttk.Frame(parent)
-        mode_frame.grid(row=row, column=1, columnspan=3, sticky="w")
-        self.ed_mode_var = tk.IntVar(value=1)
-        self._ed_mode_buttons: list = []
-        # Mode 4 ("A ↔ B + VDD/GND") is retired: VDD is an AC ground, so it is
-        # mode 2 with the supply ports merged into GND. Codes stay stable.
-        for v, label in [(1, "Port(s) → GND"),
-                         (2, "A ↔ B"),
-                         (3, "A ↔ B + Short Pairs"),
-                         (6, "+/- Ports / Coupling (M, k)"),
-                         (5, "Custom (advanced)")]:
-            rb = ttk.Radiobutton(mode_frame, text=label,
-                                 variable=self.ed_mode_var, value=v,
-                                 command=self._on_mode_changed)
-            rb.pack(side=tk.TOP, anchor="w")
-            self._ed_mode_buttons.append(rb)
+        # Template -- the five mode radios this editor used to have, as what
+        # they always were underneath: four ways of filling the two tables
+        # below.  Choosing one WRITES ROWS and the combobox goes back to its
+        # prompt; nothing remembers which template it was, so the tables are
+        # the only description of the spec there is (_on_template_selected).
+        ttk.Label(parent, text="Template:").grid(row=row, column=0,
+                                                 sticky="e", padx=2, pady=1)
+        self.ed_template_var = tk.StringVar(value=TEMPLATE_PROMPT)
+        self.ed_template_cbo = ttk.Combobox(
+            parent, textvariable=self.ed_template_var, state="readonly",
+            values=list(EDITOR_TEMPLATES), width=24)
+        self.ed_template_cbo.grid(row=row, column=1, columnspan=3,
+                                  sticky="w", padx=2, pady=1)
+        self.ed_template_cbo.bind("<<ComboboxSelected>>",
+                                  lambda _e: self._on_template_selected())
         row += 1
 
-        # Port A
-        self.ed_porta_lbl = ttk.Label(parent, text="Signal / Port A:")
-        self.ed_porta_lbl.grid(row=row, column=0, sticky="e", padx=2, pady=1)
-        self.ed_porta = PlaceholderEntry(parent, width=EDITOR_FIELD_CHARS,
-                                         placeholder=MODE_PLACEHOLDERS["port_a"][1])
-        self.ed_porta.grid(row=row, column=1, columnspan=3, sticky="we",
-                           padx=2, pady=1)
-        row += 1
-
-        # Port B
-        self.ed_portb_lbl = ttk.Label(parent, text="Port B:")
-        self.ed_portb_lbl.grid(row=row, column=0, sticky="e", padx=2, pady=1)
-        self.ed_portb = PlaceholderEntry(parent, width=EDITOR_FIELD_CHARS,
-                                         placeholder=MODE_PLACEHOLDERS["port_b"][2])
-        self.ed_portb.grid(row=row, column=1, columnspan=3, sticky="we",
-                           padx=2, pady=1)
-        row += 1
-
-        # Short pairs
-        self.ed_short_lbl = ttk.Label(parent, text="Short Pairs:")
-        self.ed_short_lbl.grid(row=row, column=0, sticky="e", padx=2, pady=1)
-        self.ed_short = PlaceholderEntry(parent, width=EDITOR_FIELD_CHARS,
-                                         placeholder=MODE_PLACEHOLDERS["short_pairs"][3])
-        self.ed_short.grid(row=row, column=1, columnspan=3, sticky="we",
-                           padx=2, pady=1)
-        row += 1
-
-        # --- Modes 5 and 6: measurement ports (probe pairs) ---
-        # One table row per measurement port, added with the '+' button. This
-        # replaces two hard-coded ports plus a free-text box for the third
-        # onward -- that cliff (ports 1-2 get fields, port 3+ gets syntax) was
-        # the same disease as the Mode 5 text box, just less obvious.  Mode 5
-        # shows the same table plus the connections table below it, so the
-        # superset relationship is in the layout rather than hidden as a trap.
+        # --- Measurement ports (probe pairs) ---
+        # One table row per measurement port, added with the '+' button.  One
+        # row is a self-impedance measurement; two or more are the coupling
+        # between them -- Calculate routes on that COUNT, never on anything
+        # the user picked.
         self.ed_mp_lbl = ttk.Label(parent, text="Measurement\nports:",
                                    justify=tk.RIGHT)
         self.ed_mp_lbl.grid(row=row, column=0, sticky="ne", padx=2, pady=1)
@@ -762,56 +772,14 @@ class EditorPanel:
                              padx=2, pady=(0, 2))
         row += 1
 
-        # GND / VDD ports (VDD merged in: for AC small-signal they are the same)
-        self.ed_gnd_lbl = ttk.Label(parent, text="GND / VDD (AC gnd):")
-        self.ed_gnd_lbl.grid(row=row, column=0, sticky="e", padx=2, pady=1)
-        self.ed_gnd = PlaceholderEntry(parent, width=EDITOR_FIELD_CHARS,
-                                       placeholder=MODE_PLACEHOLDERS["gnd"][1])
-        self.ed_gnd.grid(row=row, column=1, columnspan=3, sticky="we",
-                         padx=2, pady=1)
-        row += 1
-
-        # What to plot.  "this trace" is the per-trace visibility switch and is
-        # shown in EVERY mode; "self" / "mutual" pick which of a coupling
-        # trace's expanded curves are drawn and stay gated to modes 5/6.  They
-        # share one row because they answer the same question at two scales,
-        # and because the row costs nothing: measured, adding "this trace"
-        # takes the frame from 113 px to 189 px against a 437 px row.
-        # The children are GRIDDED, not packed: grid_remove()/grid() puts a
-        # widget back in the same column, whereas re-packing appends it to the
-        # end and would silently reorder the row.
-        self.ed_plot_lbl = ttk.Label(parent, text="Plot:")
-        self.ed_plot_lbl.grid(row=row, column=0, sticky="e", padx=2, pady=1)
-        self.ed_plot_frame = ttk.Frame(parent)
-        self.ed_plot_frame.grid(row=row, column=1, columnspan=3, sticky="w",
-                                padx=2, pady=1)
-        self.ed_enabled_var = tk.BooleanVar(value=True)
-        self.ed_plot_self_var = tk.BooleanVar(value=True)
-        self.ed_plot_mutual_var = tk.BooleanVar(value=True)
-        self.ed_enabled_cb = ttk.Checkbutton(
-            self.ed_plot_frame, text="this trace",
-            variable=self.ed_enabled_var, command=self._on_enabled_toggled)
-        self.ed_enabled_cb.grid(row=0, column=0, sticky="w", padx=(0, 10))
-        self.ed_plot_self_cb = ttk.Checkbutton(
-            self.ed_plot_frame, text="self", variable=self.ed_plot_self_var)
-        self.ed_plot_self_cb.grid(row=0, column=1, sticky="w", padx=(0, 8))
-        self.ed_plot_mutual_cb = ttk.Checkbutton(
-            self.ed_plot_frame, text="mutual", variable=self.ed_plot_mutual_var)
-        self.ed_plot_mutual_cb.grid(row=0, column=2, sticky="w")
-        row += 1
-
-        self.ed_mutual_hint = _CollapsibleHint(parent, MUTUAL_CURVE_HINT_SHORT,
-                                               MUTUAL_CURVE_HINT)
-        self.ed_mutual_hint.grid(row=row, column=1, columnspan=3, sticky="we",
-                                 padx=2, pady=(0, 2))
-        row += 1
-
-        # --- Mode 5: connections table ---
+        # --- Connections table ---
         # The caption and the 'Edit as text…' button share ONE sub-frame across
         # all four columns, so the button's width cannot influence the grid
         # column widths the table needs.  The table itself spans columns 0-3
         # rather than sitting beside a label: the label column costs 91 px and
-        # the budget is 431.
+        # the budget is 431.  There is no GND field anywhere else on the form:
+        # grounding is a row of this table, and two ways to say one thing are
+        # two places that can come to say different things.
         self.ed_conn_head = ttk.Frame(parent)
         self.ed_conn_head.grid(row=row, column=0, columnspan=4, sticky="we",
                                padx=2, pady=(4, 0))
@@ -844,6 +812,15 @@ class EditorPanel:
         self.ed_conn_table.register_wheel(self.app._register_scrollable)
         row += 1
 
+        # The one rule neither table can show by itself, as a fixed line
+        # rather than behind the hint's triangle: a port nobody listed is an
+        # open circuit, not "unspecified".
+        self.ed_open_note = ttk.Label(parent, text=CONN_OPEN_NOTE, anchor="w",
+                                      foreground=PLACEHOLDER_FG)
+        self.ed_open_note.grid(row=row, column=0, columnspan=4, sticky="we",
+                               padx=2)
+        row += 1
+
         # Direct child of the form, NOT of a sub-frame: _CollapsibleHint._toggle
         # re-renders by walking self.master.winfo_children(), and the expanded
         # flag is class-level, so a hint one level down desynchronises its arrow
@@ -863,6 +840,41 @@ class EditorPanel:
                                        wraplength=400)
         self.ed_validation.grid(row=row, column=0, columnspan=4, sticky="we",
                                 padx=2)
+        row += 1
+
+        # What to plot.  "this trace" is the per-trace visibility switch and is
+        # always shown; "self" / "mutual" pick which of a coupling trace's
+        # expanded curves are drawn, and are shown only while the table HAS
+        # two measurement ports (_update_plot_choices) -- with one there is no
+        # mutual curve, and a checkbox that changes nothing is a question the
+        # user cannot answer.
+        # The children are GRIDDED, not packed: grid_remove()/grid() puts a
+        # widget back in the same column, whereas re-packing appends it to the
+        # end and would silently reorder the row.
+        self.ed_plot_lbl = ttk.Label(parent, text="Plot:")
+        self.ed_plot_lbl.grid(row=row, column=0, sticky="e", padx=2, pady=1)
+        self.ed_plot_frame = ttk.Frame(parent)
+        self.ed_plot_frame.grid(row=row, column=1, columnspan=3, sticky="w",
+                                padx=2, pady=1)
+        self.ed_enabled_var = tk.BooleanVar(value=True)
+        self.ed_plot_self_var = tk.BooleanVar(value=True)
+        self.ed_plot_mutual_var = tk.BooleanVar(value=True)
+        self.ed_enabled_cb = ttk.Checkbutton(
+            self.ed_plot_frame, text="this trace",
+            variable=self.ed_enabled_var, command=self._on_enabled_toggled)
+        self.ed_enabled_cb.grid(row=0, column=0, sticky="w", padx=(0, 10))
+        self.ed_plot_self_cb = ttk.Checkbutton(
+            self.ed_plot_frame, text="self", variable=self.ed_plot_self_var)
+        self.ed_plot_self_cb.grid(row=0, column=1, sticky="w", padx=(0, 8))
+        self.ed_plot_mutual_cb = ttk.Checkbutton(
+            self.ed_plot_frame, text="mutual", variable=self.ed_plot_mutual_var)
+        self.ed_plot_mutual_cb.grid(row=0, column=2, sticky="w")
+        row += 1
+
+        self.ed_mutual_hint = _CollapsibleHint(parent, MUTUAL_CURVE_HINT_SHORT,
+                                               MUTUAL_CURVE_HINT)
+        self.ed_mutual_hint.grid(row=row, column=1, columnspan=3, sticky="we",
+                                 padx=2, pady=(0, 2))
         row += 1
 
         # Label
@@ -896,19 +908,21 @@ class EditorPanel:
         # Everything a frozen trace must not let the user change.  Collected
         # once, here, where a new field is added: a walk over
         # parent.winfo_children() would look tidier and would silently stop
-        # covering anything that ends up inside a sub-frame (the mode radios
-        # and the three Plot checkboxes both are).  The two RowTables and the
-        # StylePicker are NOT in this list -- they own children of their own
-        # and have a set_editable() each.
+        # covering anything that ends up inside a sub-frame (the three Plot
+        # checkboxes and the Edit-as-text button all are).  The two RowTables
+        # and the StylePicker are NOT in this list -- they own children of
+        # their own and have a set_editable() each.
         self._ed_lockable = [
-            self.ed_file_cbo, self.ed_porta, self.ed_portb, self.ed_short,
-            self.ed_gnd, self.ed_label, self.ed_enabled_cb,
-            self.ed_plot_self_cb, self.ed_plot_mutual_cb,
+            self.ed_file_cbo, self.ed_template_cbo, self.ed_label,
+            self.ed_enabled_cb, self.ed_plot_self_cb, self.ed_plot_mutual_cb,
             self.ed_edit_text_btn,
-        ] + list(self._ed_mode_buttons)
+        ]
+        # Cells the probe rules have coloured, so the next pass can put them
+        # back (_paint_probe_issues).
+        self._ed_painted: list = []
 
         parent.columnconfigure(1, weight=1)
-        self._update_mode_visibility()
+        self._update_editor_visibility()
 
     def _set_editor_editable(self, editable: bool) -> None:
         """
@@ -941,15 +955,14 @@ class EditorPanel:
         if idx is None:
             return
         tc = self.app.traces[idx]
+        # A trace that reached the list without going through a session load
+        # or _make_default_trace (a test, an old window) is moved into the two
+        # tables here, before they are filled from it.  Idempotent: a trace
+        # already in the row model says nothing and changes nothing.
         self.app._migrate_trace(tc)
         self.app._suppress_editor_sync = True
         try:
             self.ed_file_var.set(tc.file_label)
-            self.ed_mode_var.set(tc.mode)
-            self.ed_porta.set_value(tc.port_a)
-            self.ed_portb.set_value(tc.port_b)
-            self.ed_short.set_value(tc.short_pairs)
-            self.ed_gnd.set_value(tc.gnd_ports)
             self.ed_mp_table.set_rows(tc.mports)
             self.ed_enabled_var.set(bool(tc.enabled))
             self.ed_plot_self_var.set(bool(tc.plot_self))
@@ -959,129 +972,119 @@ class EditorPanel:
             self.ed_conn_table.set_rows(tc.conn_rows)
             self.app._ed_extra_lines = tc.extra_lines
             self._refresh_port_choices()
-            # Before _update_mode_visibility, which ends by re-measuring the
+            # Before _update_editor_visibility, which ends by re-measuring the
             # scrollregion: the frozen note is a gridded row of the form, so it
             # changes the form's height.
             self._set_editor_editable(not tc.frozen)
-            # INSIDE the guard.  _update_mode_visibility calls set_placeholder
-            # on four PlaceholderEntries, and each of those writes its variable
-            # -- four unguarded write traces per selection if it runs after the
-            # finally.  They usually write the same value back, but
-            # _sync_editor_to_trace turns an empty Label into 'trace_<id>', so a
-            # sync fired from there can rename a trace nobody touched.
-            self._update_mode_visibility()
+            # INSIDE the guard: _sync_editor_to_trace turns an empty Label into
+            # 'trace_<id>', so a sync fired from anything this writes could
+            # rename a trace nobody touched.
+            self._update_editor_visibility()
         finally:
             self.app._suppress_editor_sync = False
         self._refresh_editor_strips()
 
+    def _update_editor_visibility(self) -> None:
+        """
+        Re-measure the form after the rows it shows changed shape.
 
-    def _on_mode_changed(self) -> None:
-        self._update_mode_visibility()
+        There is no per-mode visibility any more -- both tables, both hints,
+        the overview, the validation strip and the footer strip are always
+        there.  The one row that still comes and goes is the self / mutual
+        pair (_update_plot_choices), and the scrollregion has to follow it.
 
-    def _update_mode_visibility(self) -> None:
-        mode = self.ed_mode_var.get()
+        The scroll offset is PRESERVED.  It used to be reset whenever the
+        MODE moved, because a different mode was a differently shaped form
+        and a short one must not stay parked out of sight; there is no mode
+        left to move, and resetting on a trace selection threw the reader back
+        to the top on every click (measured at 1500x900: a 728 px form in a
+        345 px viewport, the connections table below the fold at yview 0 --
+        reported as the table having "disappeared from the GUI").
+        _apply_editor_scrollregion re-measures before it re-applies the
+        offset, so a shorter form clamps to its own bottom instead.
+        """
+        self._update_plot_choices()
+        self._refresh_editor_scrollregion(preserve=True)
+        # The tables' on_change does not fire on set_rows, so the strips
+        # would otherwise still show the previous trace's spec.
+        self._refresh_editor_strips()
 
-        def show(widget, on):
+    def _mport_probe_count(self) -> int:
+        """Measurement-port rows the table has with a '+' side -- the rows
+        that measure something."""
+        return len([r for r in self.ed_mp_table.get_rows()
+                    if r.plus.strip()])
+
+    def _update_plot_choices(self) -> None:
+        """
+        Show "self" / "mutual" and the mutual-curve hint only while the table
+        has two or more measurement ports with a '+' side.
+
+        Those are the traces Calculate routes to the coupling path, which is
+        the only path that READS tc.plot_self / tc.plot_mutual
+        (_coupling_plot_traces).  With one measurement port there is one curve
+        and no mutual one, so the two checkboxes would change nothing.
+        Counted from the ROWS, not from a build: a half-typed spec that does
+        not parse must not make the row flicker while it is being typed.
+        """
+        on = self._mport_probe_count() >= 2
+        for w in (self.ed_plot_self_cb, self.ed_plot_mutual_cb,
+                  self.ed_mutual_hint):
             if on:
-                widget.grid()
+                w.grid()
             else:
-                widget.grid_remove()
+                w.grid_remove()
 
-        # Modes 5 and 6 both replace the structured fields with tables: mode 6
-        # is the measurement-port table alone, mode 5 is that table plus the
-        # connections table and the two strips under it.
-        ab_modes = mode in (1, 2, 3)
-        coupling = mode == 6
-        rows_mode = mode in (5, 6)
-        custom = mode == 5
-        show(self.ed_porta_lbl, ab_modes)
-        show(self.ed_porta, ab_modes)
-        show(self.ed_portb_lbl, mode in (2, 3))
-        show(self.ed_portb, mode in (2, 3))
-        show(self.ed_short_lbl, mode == 3)
-        show(self.ed_short, mode == 3)
-        show(self.ed_mp_lbl, rows_mode)
-        show(self.ed_mp_table, rows_mode)
-        show(self.ed_mp_hint, rows_mode)
-        # No GND field in mode 5: grounding there is a connection row, and two
-        # ways to say the same thing is what the table is trying to remove.
-        show(self.ed_gnd_lbl, ab_modes or coupling)
-        show(self.ed_gnd, ab_modes or coupling)
-        # The Plot row itself is unconditional -- "this trace" is the
-        # visibility switch and every mode has one.  Only the self/mutual pair
-        # is mode-gated. They are shown in mode 5 too: _coupling_plot_traces
-        # already READS tc.plot_self / tc.plot_mutual for any trace routed to
-        # the coupling path, mode 5 included, so hiding them left a Mode 5 user
-        # unable to turn either off -- and never shown the hint explaining that
-        # on a mutual curve L(nH) is M and C(pF) is C_c.
-        show(self.ed_plot_self_cb, rows_mode)
-        show(self.ed_plot_mutual_cb, rows_mode)
-        show(self.ed_mutual_hint, rows_mode)
-        show(self.ed_conn_head, custom)
-        show(self.ed_conn_table, custom)
-        show(self.ed_conn_hint, custom)
-        show(self.ed_overview, custom)
-        show(self.ed_validation, custom)
-        # The footer summary is pack-managed (it lives in the pinned footer,
-        # not in the gridded form), so it needs its own show/hide.  Gated on
-        # the same `custom` as the two strips it summarises: outside mode 5 the
-        # connections table is hidden but its rows still exist, and an overview
-        # built from them would count rows the running spec does not use.
-        # winfo_manager() rather than a re-pack: pack() on an already-managed
-        # widget keeps its slot, but asking first makes that independent of Tk.
-        if custom:
-            if not self.ed_footer_strip.winfo_manager():
-                self.ed_footer_strip.pack(side=tk.LEFT, fill=tk.X,
-                                          expand=True, padx=4)
-        else:
-            self.ed_footer_strip.pack_forget()
+    # ---------------------------------------------------------------- template
 
-        # Update placeholders to match the active mode
-        self.ed_porta.set_placeholder(
-            MODE_PLACEHOLDERS["port_a"].get(mode, ""))
-        self.ed_portb.set_placeholder(
-            MODE_PLACEHOLDERS["port_b"].get(mode, ""))
-        self.ed_short.set_placeholder(
-            MODE_PLACEHOLDERS["short_pairs"].get(mode, ""))
-        self.ed_gnd.set_placeholder(
-            MODE_PLACEHOLDERS["gnd"].get(mode, ""))
-        # Neither table needs per-mode placeholders: their hints live
-        # permanently under them (MP_TABLE_HINT / CONN_TABLE_HINT), where --
-        # unlike a PlaceholderEntry -- focus cannot delete them.
+    def _tables_have_rows(self) -> bool:
+        """Is there anything a template would overwrite?  The kept-as-text
+        lines count: they are part of the spec and a template clears them."""
+        return bool(self.ed_mp_table.get_rows()
+                    or self.ed_conn_table.get_rows()
+                    or (self.app._ed_extra_lines or "").strip())
 
-        # Which rows exist just changed, so the scroll region is stale. The
-        # inner frame's <Configure> does NOT cover this -- see the docstring.
-        #
-        # preserve=False ONLY when the MODE actually moved.  That is the case
-        # the reset exists for: a now-short form must not stay parked out of
-        # sight, and every field the view is scrolled past has been replaced
-        # anyway.  But this function also runs on every TRACE SELECTION, where
-        # the mode is usually the SAME and the form is the same shape -- and
-        # resetting there threw the reader back to the top of the form on every
-        # click.  Measured at 1500x900 on a mode-5 trace: the form is 728 px
-        # against a 345 px viewport, so the connections table is BELOW THE FOLD
-        # at yview 0.  The reader scrolls to 0.35 to reach it (220 px of table
-        # on screen), clicks the other trace to compare the two specs -- the
-        # whole point of having two traces -- and lands back at yview 0.0 with
-        # ZERO px of it visible.  Nothing was hidden and the spec still
-        # computed, which is exactly how it was reported: the Connections table
-        # "disappeared from the GUI" while "the calculation is still fine".
-        #
-        # Preserving is safe here in a way it was not when this was written:
-        # _apply_editor_scrollregion re-measures the scrollregion BEFORE
-        # re-applying the offset, so a shorter form clamps to its own bottom
-        # instead of parking past the end.  The stale-scrollregion failure the
-        # unconditional reset was guarding against cannot come back through
-        # this call.
-        moved = getattr(self.app, "_ed_shown_mode", None) != mode
-        self.app._ed_shown_mode = mode
-        self._refresh_editor_scrollregion(preserve=not moved)
-        if self._strips_wanted():
-            # The tables' on_change does not fire on set_rows, so the strips
-            # would otherwise still show the previous mode's spec.
-            self._refresh_editor_strips()
+    def _on_template_selected(self) -> None:
+        name = self.ed_template_var.get()
+        # Back to the prompt FIRST, whatever happens next: a template is an
+        # action, and a combobox still reading 'Between two ports' after the
+        # user has edited the rows into something else would be a second,
+        # stale description of the spec.
+        self.ed_template_var.set(TEMPLATE_PROMPT)
+        if name in EDITOR_TEMPLATES:
+            self.apply_template(name)
 
-    # ------------------------------------------------- Mode 5 editor plumbing
+    def apply_template(self, name: str) -> bool:
+        """
+        Fill the two tables from the template `name`.  Returns True when the
+        tables were written.
+
+        Asks first (messagebox.askyesno) when either table has a row, or
+        lines are kept as text: what is there was typed by someone, and this
+        replaces all of it.  Refuses on a frozen trace, like every other
+        write.  The rows go in through set_rows, which does not notify, so the
+        sync is scheduled here -- the same route a keystroke takes from there
+        on (auto-apply, the stale marker, the strips).
+        """
+        if name not in EDITOR_TEMPLATES:
+            return False
+        tc = self._selected_trace()
+        if tc is not None and tc.frozen:
+            return False
+        if self._tables_have_rows() and not messagebox.askyesno(
+                "Replace the tables?",
+                TEMPLATE_CONFIRM.format(template=name), parent=self.app):
+            return False
+        mports, conn = template_rows(name, self._editor_nports())
+        self.ed_mp_table.set_rows(mports)
+        self.ed_conn_table.set_rows(conn)
+        self.app._ed_extra_lines = ""
+        self._refresh_port_choices()
+        self._update_editor_visibility()
+        self._schedule_editor_sync()
+        return True
+
+    # ------------------------------------------------------ table plumbing
 
     def _editor_nports(self) -> Optional[int]:
         """Port count of the file the editor currently points at, or None."""
@@ -1118,52 +1121,25 @@ class EditorPanel:
         self.ed_conn_table.set_column_values("ports", values)
         self.ed_conn_table.set_column_values("to", values)
 
-    def _strips_wanted(self) -> bool:
-        """
-        Is a strip refresh worth an idle pass?
-
-        Mode 5 owns the two Labels, mode 6 needs the style preview's curve
-        span -- and an OPEN Ports & Roles window needs it in every mode, since
-        it is the same after_idle-coalesced pass that feeds it.  Without that
-        clause the window would go stale the moment the user edited a
-        mode-1 GND field, which is precisely the edit it exists to check.
-
-        An open ATTRIBUTION window is the same clause for the same reason, and
-        it is not covered by either of the first two: an attribution needs two
-        measurement ports, so its trace is a mode 6 one in the normal case, and
-        mode 6 alone does NOT reach here -- `_apply_editor_sync` asks this
-        question before scheduling anything.  Measured without this clause: an
-        open window on a mode-6 trace, edit the GND field, and the banner still
-        read "from run #1 @ 5.1 GHz" with no staleness warning while the trace
-        was already marked stale and [Recompute] was already answering about a
-        different network.  The banner is the ONE thing that makes that button
-        honest, so a banner that does not update is the whole hook not working.
-        `attribution_windows` prunes dead windows and returns a list, so an
-        empty one is falsey and a closed window costs nothing again.  Measured
-        on this machine, per call: 0.6 us for the whole predicate with no
-        window open (0.2 us of it the pruning walk) and 2.1 us with one -- the
-        extra 1.5 us is a single `winfo_exists` round trip to Tcl.  What the
-        clause really buys back is the strip pass itself, 137 us per keystroke
-        in mode 6, which is the price of the window being right rather than
-        stale and is the same price an open Ports & Roles window already pays.
-        """
-        return (self.ed_mode_var.get() == 5
-                or self.app._port_roles_win is not None
-                or bool(attribution_windows(self.app)))
-
     def _on_editor_file_changed(self) -> None:
         self._refresh_port_choices()
-        if self._strips_wanted():
-            self._refresh_editor_strips()
+        self._refresh_editor_strips()
 
     def _on_editor_rows_changed(self) -> None:
-        """RowTable on_change: fires on EVERY keystroke in EVERY cell."""
+        """
+        RowTable on_change: fires on EVERY keystroke in EVERY cell.
+
+        The strips are refreshed whether or not a trace is selected: they are
+        always on screen now, and they describe the TABLES, which can be
+        typed into before there is a trace to sync them to.  Coalesced to one
+        idle pass with the sync's own refresh (_refresh_editor_strips).
+        """
         if self.app._suppress_editor_sync:
             return
+        self._update_plot_choices()
         self._refresh_editor_scrollregion(preserve=True)
-        self._schedule_editor_sync()    # also refreshes the strips
-        if self.ed_mode_var.get() == 6 or self.app._port_roles_win is not None:
-            self._refresh_editor_strips()   # for the style preview's span
+        self._schedule_editor_sync()
+        self._refresh_editor_strips()
 
     def _refresh_editor_strips(self) -> None:
         """Queue a strip refresh for the next idle moment, coalescing repeats."""
@@ -1205,6 +1181,12 @@ class EditorPanel:
                 term = None
             msgs = _validation_messages(mports, conn, extra, nports, names,
                                         echoes)
+            # The probe rules, cell by cell: the offending cell turns red
+            # (refused -- Calculate skips the trace) or amber (computed, but
+            # not what the row seems to say), and each reason is a line of the
+            # validation strip.  Never a dialog.
+            msgs = self._paint_probe_issues(mports, conn, extra, nports,
+                                            msgs)
             self.ed_style.set_span(self._editor_curve_span(term))
             self.ed_overview.configure(
                 text=_port_overview_text(term, nports))
@@ -1250,8 +1232,10 @@ class EditorPanel:
         # form, which redraws the tables and the sweep -- a 200x difference,
         # and the reason the default is the cheap one on a path that fires from
         # a Tk variable trace.  It never raises, same contract as this
-        # function.  `_strips_wanted` is what gets us here at all in mode 6;
-        # see the note there.
+        # function.  It is reached on every strip pass, which is every table
+        # edit and every sync: an attribution needs two measurement ports,
+        # and a banner that missed an edit to such a trace is the hook not
+        # working (tests/test_attrib_gui_integration.py).
         refresh_attribution_windows(self.app)
         # The file windows get the whole picture rather than a banner, because
         # unlike an Attribution table nothing in them is a computed NUMBER:
@@ -1261,6 +1245,55 @@ class EditorPanel:
         # the try above for the same reason the Ports & Roles refresh is: a
         # window failure must not blank the strips.
         refresh_files_windows(self.app)
+
+    def _paint_probe_issues(self, mports, conn, extra, nports,
+                            msgs: list) -> list:
+        """
+        Colour the cells `probe_rule_issues` names and return `msgs` with each
+        issue's message in front of it (once -- a message the validation pass
+        already carries, e.g. the builder's first error, is not repeated).
+
+        `mports` / `conn` are the LIVE rows (blanks dropped, scoped on a
+        composition), so an issue's `row` is the index `data_row_widget`
+        counts in.  The previous pass's colours are put back first: a cell
+        the user has just fixed must not stay red until something else
+        repaints it.  Never raises -- same contract as _apply_editor_strips.
+        """
+        for w in self._ed_painted:
+            try:
+                if w.winfo_exists():
+                    w.configure(foreground="")
+            except Exception:                               # noqa: BLE001
+                pass
+        self._ed_painted = []
+        try:
+            issues = probe_rule_issues(mports, conn, extra, nports)
+        except Exception:                                   # noqa: BLE001
+            return msgs
+        worst: dict = {}
+        for iss in issues:
+            table = (self.ed_mp_table if iss.table == "mports"
+                     else self.ed_conn_table)
+            w = table.data_row_widget(iss.row, iss.column)
+            if w is None:
+                continue
+            if str(w) in worst and worst[str(w)][1]:
+                continue                    # already red; amber cannot win
+            worst[str(w)] = (w, iss.is_error)
+        for w, is_error in worst.values():
+            try:
+                w.configure(foreground=ERROR_CELL_FG if is_error
+                            else WARN_CELL_FG)
+                self._ed_painted.append(w)
+            except Exception:                               # noqa: BLE001
+                pass
+        lead = []
+        for iss in issues:
+            if any(iss.message in m for m in msgs) or any(
+                    iss.message in m for m in lead):
+                continue
+            lead.append(f"⚠ {iss.message}")
+        return lead + list(msgs)
 
     def _editor_spec_inputs(self) -> tuple:
         """
@@ -1389,27 +1422,25 @@ class EditorPanel:
         A coupling trace with G measurement ports draws G self curves and
         G*(G-1)/2 mutual ones, each taking the NEXT colour
         (_coupling_plot_traces), so the style preview would otherwise show one
-        line for something that arrives as six. Returns 1 whenever that cannot
-        be answered -- an unresolvable spec is not the preview's problem.
+        line for something that arrives as six.  G is what the spec RESOLVES
+        to; when it does not build (a refused or half-typed spec), the rows
+        with a '+' side are counted instead, so the preview does not flick
+        back to one curve while a cell is being typed.  One measurement port
+        is one curve whatever the checkboxes say -- that trace takes the
+        single-curve path, which reads neither of them.
         """
-        mode = self.ed_mode_var.get()
-        if mode == 6:
-            # Mode 6 is one measurement port per table row, so count the rows.
-            # NOT through build_terminations_rows: that goes via the DSL, where
-            # 'b' is the legacy alias for the minus side of 'A', so two rows
-            # named a/b resolve to ONE measurement port and the preview would
-            # show a span of 1 for a trace Calculate refuses outright.
-            G = len([r for r in self.ed_mp_table.get_rows()
-                     if r.plus.strip() or r.minus.strip()])
-        elif mode == 5 and term is not None:
+        G = None
+        if term is not None:
             try:
                 G = len(resolve_meas_ports(term, self._editor_nports() or 0))
             except Exception:
-                return 1
-        else:
+                G = None
+        if G is None:
+            G = self._mport_probe_count()
+        if G < 2:
             return 1
         n = (G if self.ed_plot_self_var.get() else 0)
-        if self.ed_plot_mutual_var.get() and G >= 2:
+        if self.ed_plot_mutual_var.get():
             n += G * (G - 1) // 2
         return max(1, n)
 
@@ -1511,12 +1542,11 @@ class EditorPanel:
                 + (_ordering_diff_summary(text) or "(the resolved spec differs)")
                 + "\n\nIt still computes exactly what it computed before.")
         else:
-            self.ed_mp_table.set_rows(mports)
+            self.ed_mp_table.set_rows(_rename_legacy_a_rows(mports))
             self.ed_conn_table.set_rows(conn)
             self.app._ed_extra_lines = extra
         self._refresh_port_choices()
-        self._refresh_editor_strips()
-        self._refresh_editor_scrollregion(preserve=True)
+        self._update_editor_visibility()
 
     # ------------------------------------------------------------- auto-apply
     #
@@ -1604,8 +1634,7 @@ class EditorPanel:
         self.app._refresh_trace_list()
         if self.app._draw_signature(tc) != before_draw:
             self.app._replot_from_cache()
-        if self._strips_wanted():
-            self._refresh_editor_strips()
+        self._refresh_editor_strips()
 
     def _on_style_changed(self) -> None:
         self._schedule_editor_sync()
@@ -1625,11 +1654,10 @@ class EditorPanel:
         tc.enabled = bool(self.ed_enabled_var.get())
         tc.color_idx, tc.ls_idx = self.ed_style.get()
         tc.file_label = self.ed_file_var.get()
-        tc.mode = int(self.ed_mode_var.get())
-        tc.port_a = self.ed_porta.get_value()
-        tc.port_b = self.ed_portb.get_value()
-        tc.short_pairs = self.ed_short.get_value()
-        tc.gnd_ports = self.ed_gnd.get_value()
+        # No mode, no Port A / Port B / Short Pairs / GND: the two tables are
+        # the whole spec.  The trace was moved into them when it was selected
+        # (_on_trace_selected -> App._migrate_trace), so there is nothing left
+        # in those fields for this to keep in step.
         tc.mports = self.ed_mp_table.get_rows()
         tc.plot_self = bool(self.ed_plot_self_var.get())
         tc.plot_mutual = bool(self.ed_plot_mutual_var.get())

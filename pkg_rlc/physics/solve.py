@@ -826,18 +826,19 @@ def compute_z(Y_full: np.ndarray, freqs: np.ndarray,
     """
     Zmat, _names, warnings_out = compute_z_matrix(Y_full, freqs, terminations)
     if len(_names) > 1:
-        # Only Mode 5 can get here (the named builders can only ever produce
-        # one measurement port), and Mode 5 is exactly the free-text mode where
-        # a typo -- 'signal V' for 'signal B' -- silently defines a second
-        # measurement port.  Returning port 1's self impedance without saying
+        # Only a free-text / row spec can get here (the named builders can
+        # only ever produce one measurement port, and the App routes two or
+        # more to compute_z_matrix), and free text is exactly where a typo --
+        # 'signal V' for 'signal B' -- silently defines a second measurement
+        # port.  Returning port 1's self impedance without saying
         # so is a wrong number with no visible difference.
         others = ", ".join(f"'{nm}'" for nm in _names[1:])
         warnings_out = list(warnings_out) + [
             f"{len(_names)} measurement ports are defined "
             f"({', '.join(_names)}), but this result is the self impedance of "
-            f"'{_names[0]}' alone; {others} are ignored here. Use Mode 6 / "
-            "compute_z_matrix for the mutual terms, or check the signal group "
-            "names for a typo."
+            f"'{_names[0]}' alone; {others} are ignored here. Use the "
+            "coupling result (compute_z_matrix) for the mutual terms, or "
+            "check the signal group names for a typo."
         ]
     return Zmat[:, 0, 0], warnings_out
 

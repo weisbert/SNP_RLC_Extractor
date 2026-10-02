@@ -291,7 +291,9 @@ class TestMode5PortDescriptor(unittest.TestCase):
     def test_rows_are_summarised(self):
         tc = TraceConfig(mode=5, mports=[MeasPortRow("tank", "1", "2")],
                          conn_rows=[ConnectionRow(kind="ground", ports="3")])
-        self.assertEqual(tc.port_descriptor(), "M5: tank:1/2 C:1")
+        # No mode number (docs/design_workspaces.md § 3.6): the descriptor
+        # names what is probed and what is grounded.
+        self.assertEqual(tc.port_descriptor(), "tank:1/2 GND:[3]")
 
     def test_a_spec_that_lives_entirely_in_extra_lines_is_shown(self):
         """
@@ -340,12 +342,16 @@ class TestValidationMessages(unittest.TestCase):
         msgs = _validation_messages([MeasPortRow("m1", "", "2")], [])
         self.assertTrue(any("no '+' side" in m for m in msgs), msgs)
 
-    def test_flags_two_rows_that_collapse_into_one_measurement_port(self):
+    def test_flags_names_that_would_collapse_two_rows_into_one_port(self):
+        """
+        'A' + 'B' (the legacy plus / minus groups) and a repeated name used to
+        merge two rows into one measurement port in silence.  The one probe
+        rule set refuses both, by name (`probe_rule_issues`).
+        """
         legacy = _validation_messages(
             [MeasPortRow("A", "1", ""), MeasPortRow("B", "3", "")], [])
-        self.assertEqual(len(legacy), 1)
-        self.assertIn("'A'", legacy[0])
-        self.assertIn("'B'", legacy[0])
+        self.assertTrue(any("'A' is reserved" in m for m in legacy), legacy)
+        self.assertTrue(any("'B' is reserved" in m for m in legacy), legacy)
 
         dupe = _validation_messages(
             [MeasPortRow("tank", "1", ""), MeasPortRow("tank", "3", "")], [])
@@ -354,18 +360,14 @@ class TestValidationMessages(unittest.TestCase):
 
     def test_flags_a_probe_port_that_is_also_a_ground_row(self):
         """
-        Legal and pinned -- the rows path lets ground win, exactly as
-        build_terminations_mode1/2/3 always have. The strip is where Mode 5
-        makes that visible; it must not raise the way Mode 6's builder does.
+        Refused now, for every trace (docs/design_workspaces.md § 3.3): a
+        '+' port at 0 V has nothing to measure.  The rows path used to let
+        the ground win in silence while Mode 6 refused -- one table, one rule.
         """
         msgs = _validation_messages([MeasPortRow("m1", "3", "")],
                                     [ConnectionRow(kind="ground", ports="3")])
-        self.assertEqual(len(msgs), 2)
-        self.assertIn("port 3", msgs[0])
-        self.assertIn("ground row wins", msgs[0])
-        # ...and the consequence, under the cause: the only probe was grounded,
-        # so nothing is measured and Calculate would raise.
-        self.assertIn("no measurement port defined", msgs[1])
+        self.assertIn("Port 3 is on the '+' side of 'm1'", msgs[0])
+        self.assertTrue(msgs[0].startswith("⚠"), msgs)
 
     def test_echoes_parsed_rlc_values(self):
         """'5m' and '5M' are one shift key and nine orders of magnitude apart."""
@@ -707,55 +709,11 @@ class TestMode5EditorWiring(_EditorCase):
         self.assertEqual(body.count("has values but no Port"), 5)
 
 
-@unittest.skipUnless(TK_OK, "no Tk display available")
-class TestModeVisibility(_EditorCase):
-    CONN_WIDGETS = ("ed_conn_head", "ed_conn_table", "ed_conn_hint",
-                    "ed_overview", "ed_validation")
-
-    def _gridded(self, name) -> bool:
-        return bool(getattr(self.app, name).grid_info())
-
-    def _set_mode(self, mode):
-        self.app.ed_mode_var.set(mode)
-        self.app._on_mode_changed()
-        self._settle()
-
-    def test_mode5_shows_both_tables_and_the_strips(self):
-        self._set_mode(5)
-        for name in ("ed_mp_lbl", "ed_mp_table", "ed_mp_hint") + self.CONN_WIDGETS:
-            self.assertTrue(self._gridded(name), name)
-        # Grounding in mode 5 is a connection row; a second way to say it is
-        # exactly what the table is removing.
-        self.assertFalse(self._gridded("ed_gnd"))
-        self.assertFalse(self._gridded("ed_porta"))
-
-    def test_mode6_is_unchanged(self):
-        """Mode 6 shipped and is on main. It must not move."""
-        self._set_mode(6)
-        for name in ("ed_mp_lbl", "ed_mp_table", "ed_mp_hint", "ed_gnd",
-                     "ed_gnd_lbl", "ed_plot_frame", "ed_mutual_hint"):
-            self.assertTrue(self._gridded(name), name)
-        for name in self.CONN_WIDGETS:
-            self.assertFalse(self._gridded(name), name)
-
-    def test_mode1_shows_none_of_the_tables(self):
-        self._set_mode(1)
-        for name in ("ed_mp_table", "ed_mp_hint") + self.CONN_WIDGETS:
-            self.assertFalse(self._gridded(name), name)
-        self.assertTrue(self._gridded("ed_porta"))
-
-    def test_switching_from_mode5_to_mode1_resets_the_scroll(self):
-        self.app.deiconify()
-        self.app.geometry("1200x800")
-        self._set_mode(5)
-        self.app._ed_canvas.yview_moveto(1.0)
-        self._settle()
-        self.assertGreater(self.app._ed_canvas.yview()[0], 0.0)
-        self._set_mode(1)
-        self.assertEqual(self.app._ed_canvas.yview()[0], 0.0)
-        _x0, _y0, _x1, y1 = [int(v) for v in
-                             self.app._ed_canvas.cget("scrollregion").split()]
-        self.assertGreaterEqual(y1, self.app._ed_form.winfo_reqheight())
+# TestModeVisibility was DELETED with the modes (docs/design_workspaces.md
+# § 3): every one of its four tests was about which widgets a mode radio showed
+# or hid, and about the scroll reset a mode change did.  There is no radio and
+# no per-mode visibility left; "both tables and every strip are always shown"
+# is pinned in tests/test_unified_editor.py::TestNoModeWidgetsExist.
 
 
 @unittest.skipUnless(TK_OK, "no Tk display available")
@@ -768,48 +726,54 @@ class TestEditorLayout(_EditorCase):
     has already been misled once by a screenshot of stale pixels.
     """
 
+    ONE_PROBE = [MeasPortRow("tank", "1", "2")]
+    TWO_PROBES = [MeasPortRow("tank", "1", "2"), MeasPortRow("vco", "3", "4")]
+
     def setUp(self):
         super().setUp()
         self.app.deiconify()
-        self.tc.mports = [MeasPortRow("tank", "1", "2")]
+        self.tc.mports = list(self.ONE_PROBE)
         self.tc.conn_rows = [ConnectionRow(kind="ground", ports="3"),
                              ConnectionRow(kind="rlc_gnd", ports="4", R="5m")]
 
-    def _mode(self, mode, geom="1500x900"):
+    def _geom(self, geom="1500x900", mports=None):
+        """Size the window and reload the editor from the trace."""
+        if mports is not None:
+            self.tc.mports = list(mports)
         self.app.geometry(geom)
-        self.app.ed_mode_var.set(mode)
-        self.app._on_mode_changed()
+        self._select()
         self._settle()
 
-    def _fits_or_scrolls(self, mode, geom):
-        self._mode(mode, geom)
+    def _fits_or_scrolls(self, geom, mports=None):
+        self._geom(geom, mports)
         form = self.app._ed_form.winfo_reqwidth()
         canvas = self.app._ed_canvas.winfo_width()
         self.assertTrue(
             form <= canvas or self.app._ed_hsb.winfo_ismapped() == 1,
-            f"mode {mode} at {geom}: form asks {form}px of a {canvas}px canvas "
+            f"at {geom}: form asks {form}px of a {canvas}px canvas "
             "and there is no horizontal scrollbar, so the overflow is "
             "unreachable")
 
     def test_connections_table_fits_or_scrolls_horizontally(self):
         for geom in ("1500x900", "1200x800"):
             with self.subTest(geom=geom):
-                self._fits_or_scrolls(5, geom)
+                self._fits_or_scrolls(geom)
 
-    def test_mode6_no_longer_clips_horizontally(self):
+    def test_two_measurement_ports_never_clip_horizontally(self):
         """
-        Pre-existing defect, fixed by the same scrollbar: mode 6's form asked
-        463px of a 431px canvas, xview (0.0, 0.962) -- 32px of the ✕ column
-        unreachable with no way to scroll to it.
+        Pre-existing defect, fixed by the same scrollbar: the old coupling
+        form asked 463px of a 431px canvas, xview (0.0, 0.962) -- 32px of the
+        ✕ column unreachable with no way to scroll to it.  Two measurement
+        ports is the shape that had it.
         """
         for geom in ("1500x900", "1200x800"):
             with self.subTest(geom=geom):
-                self._fits_or_scrolls(6, geom)
+                self._fits_or_scrolls(geom, self.TWO_PROBES)
 
-    def test_global_controls_and_footer_stay_mapped_in_mode_5(self):
+    def test_global_controls_and_footer_stay_mapped(self):
         """
         pack UNMAPS what does not fit, starting from the END. This is what left
-        Calculate All & Plot / Export CSV / Help off screen in mode 6.
+        Calculate All & Plot / Export CSV / Help off screen once.
 
         The editor footer holds "Calculate This Trace"; it held "Apply to
         Trace" before the editor started applying itself.  The property under
@@ -818,11 +782,16 @@ class TestEditorLayout(_EditorCase):
         gc = _by_text(self.app, "TLabelframe", "Global Controls")
         foot_btn = _by_text(self.app, "TButton", "Calculate This Trace")
         for geom in ("1500x900", "1040x600"):
-            with self.subTest(geom=geom):
-                self._mode(5, geom)
-                self.assertEqual(gc.winfo_ismapped(), 1, "Global Controls")
-                self.assertEqual(foot_btn.winfo_ismapped(), 1,
-                                 "editor footer button")
+            for mports in (self.ONE_PROBE, self.TWO_PROBES):
+                with self.subTest(geom=geom, n=len(mports)):
+                    self._geom(geom, mports)
+                    self.assertEqual(gc.winfo_ismapped(), 1,
+                                     "Global Controls")
+                    self.assertEqual(foot_btn.winfo_ismapped(), 1,
+                                     "editor footer button")
+                    self.assertEqual(
+                        self.app.ed_footer_strip.winfo_ismapped(), 1,
+                        "footer strip")
 
     def test_nothing_invisible_reserves_height_under_the_canvas(self):
         """
@@ -830,14 +799,13 @@ class TestEditorLayout(_EditorCase):
         left in place. Tk does not reissue a geometry request when a master's
         LAST slave is removed, so the empty host kept a 17 px requested height
         FOREVER once the first layout pass had packed and unpacked the
-        scrollbar -- 17 px off the editor viewport in every mode, including
-        1/2/3 which never raise the scrollbar. Measured at 1040x600: 45 px of
-        viewport became 28.
+        scrollbar -- 17 px off the editor viewport even when the bar was never
+        raised. Measured at 1040x600: 45 px of viewport became 28.
         """
         for geom in ("1500x900", "1200x800", "1040x600"):
-            for mode in (1, 5):
-                with self.subTest(geom=geom, mode=mode):
-                    self._mode(mode, geom)
+            for mports in (self.ONE_PROBE, self.TWO_PROBES):
+                with self.subTest(geom=geom, n=len(mports)):
+                    self._geom(geom, mports)
                     if self.app._ed_hsb.winfo_ismapped():
                         continue        # it is really there; it may cost 17 px
                     self.assertEqual(
@@ -846,48 +814,13 @@ class TestEditorLayout(_EditorCase):
                         "something invisible is reserving height below the "
                         "editor canvas")
 
-    def test_a_table_free_mode_does_not_pay_for_a_scrollbar_it_barely_needs(
-            self):
-        """
-        The horizontal bar costs 17 px of a 45 px editor viewport at the
-        1040x600 minsize -- more than a third of what is left.  Modes 1/2/3
-        have no table and no measured column budget, so they must simply fit.
-
-        Measured before this: form 440 px against a 431 px canvas, xview
-        (0, 0.98), canvas height 28 -- the four modes with nothing wide in them
-        paid a third of their remaining height to reach 9 px of overhang, while
-        Mode 5, whose CONN_TABLE_COLUMNS budget WAS measured, fitted at 417 and
-        paid nothing.  The 9 px came from the File combobox (303 px) beside the
-        129 px "GND / VDD (AC gnd):" label, and 6 more from the 42-character
-        entry fields.  Both are sticky="we", so shrinking their minimum changes
-        nothing visible.
-
-        Mode 6 is deliberately NOT in this list: its measurement-port table
-        genuinely overhangs (462 px), and test_mode6_no_longer_clips_
-        horizontally pins that it gets the bar.
-        """
-        for geom in ("1500x900", "1200x800", "1040x600"):
-            for mode in (1, 2, 3):
-                with self.subTest(geom=geom, mode=mode):
-                    self._mode(mode, geom)
-                    form = self.app._ed_form.winfo_reqwidth()
-                    canvas = self.app._ed_canvas.winfo_width()
-                    self.assertLessEqual(
-                        form, canvas,
-                        f"mode {mode} at {geom}: the form asks {form}px of a "
-                        f"{canvas}px canvas, so the editor raises a horizontal "
-                        "scrollbar it does not need")
-                    self.assertEqual(self.app._ed_hsb.winfo_ismapped(), 0)
-
-    def test_the_minsize_viewport_is_not_eaten_by_that_scrollbar(self):
-        """The number that matters to a reader: how much editor is on screen."""
-        heights = {}
-        for mode in (1, 2, 3, 5):
-            self._mode(mode, "1040x600")
-            heights[mode] = self.app._ed_canvas.winfo_height()
-        self.assertEqual(
-            len(set(heights.values())), 1,
-            f"the modes disagree about how much editor is visible: {heights}")
+    # test_a_table_free_mode_does_not_pay_for_a_scrollbar_it_barely_needs and
+    # test_the_minsize_viewport_is_not_eaten_by_that_scrollbar were DELETED
+    # with the modes: the first pinned that modes 1/2/3 -- the forms with NO
+    # table -- fitted 431 px, and the second that the modes agreed on the
+    # minsize viewport.  There is no table-free form and no second mode to
+    # agree with.  The viewport itself is pinned in
+    # tests/test_unified_editor.py::TestTheMinsizeViewport.
 
     def test_the_two_scrollbars_settle_instead_of_flip_flopping(self):
         """
@@ -900,9 +833,9 @@ class TestEditorLayout(_EditorCase):
         fixed point.
         """
         for geom in ("1500x900", "1200x800", "1040x600"):
-            for mode in (1, 5, 6):
-                with self.subTest(geom=geom, mode=mode):
-                    self._mode(mode, geom)
+            for mports in (self.ONE_PROBE, self.TWO_PROBES):
+                with self.subTest(geom=geom, n=len(mports)):
+                    self._geom(geom, mports)
                     seen = set()
                     for _ in range(4):
                         self.app._apply_editor_scrollbars()
@@ -913,7 +846,7 @@ class TestEditorLayout(_EditorCase):
                                      f"scrollbars never settle: {seen}")
 
     def test_row_add_extends_the_scrollregion_without_jumping_to_the_top(self):
-        self._mode(5, "1200x800")
+        self._geom("1200x800")
         self.app._ed_canvas.yview_moveto(1.0)
         self._settle()
         before = self.app._ed_canvas.yview()[0]
@@ -931,7 +864,7 @@ class TestEditorLayout(_EditorCase):
         # that just grew. What matters is that the view did not jump to the top.
         self.assertAlmostEqual(self.app._ed_canvas.yview()[0], before, delta=0.02)
 
-    def test_results_pane_still_usable_in_mode_5(self):
+    def test_results_pane_still_usable_with_both_tables(self):
         """
         TestResultsPaneVisible's assertion, repeated with a SECOND RowTable
         built. update_idletasks() during construction is what collapsed this
@@ -951,8 +884,7 @@ class TestEditorLayout(_EditorCase):
         app.geometry("1200x800")
         app.deiconify()
         app.update()
-        app.ed_mode_var.set(5)
-        app._on_mode_changed()
+        app._update_editor_visibility()
         for _ in range(3):
             app.update_idletasks()
             app.update()
@@ -1085,11 +1017,11 @@ class TestTextDialog(_EditorCase):
 
 @unittest.skipUnless(TK_OK, "no Tk display available")
 class TestCsvExport(_EditorCase):
-    def test_two_probe_mode5_trace_exports_the_coupling_block(self):
+    def test_a_two_probe_trace_exports_the_coupling_block(self):
         """
-        The CSV gate is on tc.Zmat, not on tc.mode == 6.
+        The CSV gate is on tc.Zmat, not on a mode number.
 
-        Gated on the mode, a Mode 5 trace with two probes exported a complete,
+        Gated on the mode, a Custom trace with two probes exported a complete,
         well-formed R/L/C/Q table for measurement port 1's self impedance only,
         headed '# Mode: Custom', with every mutual term, every M and every k
         silently absent.
@@ -1186,7 +1118,7 @@ class TestGroundReferencedProbeThroughTheEditor(_EditorCase):
         single most common thing anyone measures.  Checked on BOTH ways into
         the tables, because they refresh the strips through different paths:
         typing goes via _on_editor_rows_changed, selecting a trace via
-        _update_mode_visibility.
+        _update_editor_visibility.
         """
         for how in (self._fill, self._load):
             with self.subTest(how=how.__name__):
@@ -1257,8 +1189,6 @@ class TestWheelRouting(_EditorCase):
     def _overflowing_table(self):
         self.app.deiconify()
         self.app.geometry("1200x800")
-        self.app.ed_mode_var.set(5)
-        self.app._on_mode_changed()
         self.app.ed_conn_table.set_rows(
             [ConnectionRow(kind="ground", ports=str(i)) for i in range(1, 11)])
         self._settle()

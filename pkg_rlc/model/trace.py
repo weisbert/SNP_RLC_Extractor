@@ -38,6 +38,7 @@ import numpy as np
 
 from pkg_rlc.physics.core import (
     MeasPortRow,
+    probe_display_names,
     TouchstoneData,
     s_to_y,
 )
@@ -46,6 +47,7 @@ from pkg_rlc.model.validate import (
     _mport_more_lines,
     _port_descriptor,
     _union_port_specs,
+    migrate_trace_to_rows,
     trace_file_aliases,
     trace_file_labels,
     trace_file_scope,
@@ -253,6 +255,11 @@ class TraceConfig:
     # whose meaning the table would change -- see migrate_legacy_custom_text).
     conn_rows: list = field(default_factory=list)   # list[ConnectionRow]
     extra_lines: str = ""
+    # 1 once the trace is in the ONE row model (see migrate_to_rows): every
+    # old mode's fields moved into the two tables above, `mode` 5.  0 is
+    # every trace written before the merge, which is what lets the
+    # migration run once and never "repair" a spec the user is editing.
+    table_version: int = 0
     plot_self: bool = True
     plot_mutual: bool = True
     # Drawn or not.  This gates the PLOT ONLY: a hidden trace is still
@@ -307,6 +314,8 @@ class TraceConfig:
     # this attribute name.
     reference_checks: Optional[list] = None
 
+    # Only the migration and its Log lines name a mode now; nothing on
+    # screen does (docs/design_workspaces.md § 3.6).
     MODE_NAMES = {1: "GND", 2: "A↔B", 3: "A↔B+Short",
                   4: "A↔B+VDD (retired)", 5: "Custom", 6: "+/- Coupling"}
 
@@ -338,8 +347,28 @@ class TraceConfig:
         more = f" +{extra}" if extra > 0 else ""
         return (f"{'☑' if self.enabled else '☐'} "
                 f"[{self.id}] {self.label}  |  "
-                f"{self.file_label}{more}  {self.MODE_NAMES.get(self.mode, '?')}"
+                f"{self.file_label}{more}  {self.probe_summary()}"
                 f"{' *' if self.stale else ''}{frozen}")
+
+    def probe_summary(self, limit: int = 16) -> str:
+        """
+        The measurement ports by name -- 'in, out' -- for the Traces list,
+        where the mode name used to be.  A mode said which form was used;
+        the names say what is measured, which is what tells two traces on one
+        file apart.  Capped at `limit` characters with '…', so a coupling
+        trace with eight ports cannot push the stale '*' off the line.
+        """
+        tc = self
+        if tc.mode != 5 or tc.table_version < 1:
+            tc = replace(tc)               # described as it WILL read, no
+            tc.migrate_to_rows()           # side effect on the real trace
+        names = [n for n, r in zip(probe_display_names(tc.mports),
+                                   tc.mports)
+                 if n and r.plus.strip()]
+        if not names:
+            return "(text)" if (tc.extra_lines or "").strip() else "(no probe)"
+        text = ", ".join(names)
+        return text if len(text) <= limit else text[:limit - 1] + "…"
 
     def port_descriptor(self) -> str:
         """Compact one-line port-config descriptor for the results table."""
@@ -347,6 +376,11 @@ class TraceConfig:
 
     def mode_name(self) -> str:
         return self.MODE_NAMES.get(self.mode, f"mode{self.mode}")
+
+    def migrate_to_rows(self) -> list[str]:
+        """Move this trace into the one row model, in place, and return the
+        Log lines saying what moved.  See `migrate_trace_to_rows`."""
+        return migrate_trace_to_rows(self)
 
     def migrate_legacy_mode(self) -> bool:
         """
@@ -524,8 +558,10 @@ def _config_signature(tc: "TraceConfig") -> tuple:
     plot checkboxes change the picture and are handled by _draw_signature,
     which triggers a replot from cache rather than marking anything stale.
     """
-    return (tc.file_label, tc.mode, tc.port_a, tc.port_b, tc.short_pairs,
-            tc.gnd_ports, tc.extra_lines,
+    # No mode / port A / port B / short / GND: after the one-row-model
+    # migration they are always 5 and empty, and a field that cannot change
+    # is a run-diff line that can only ever say nothing.
+    return (tc.file_label, tc.extra_lines,
             tuple((r.name, r.plus, r.minus) for r in tc.mports),
             tuple(astuple(r) for r in tc.conn_rows),
             # The file SET, as one element, so this stays one-for-one with
@@ -559,19 +595,46 @@ def _draw_signature(tc: "TraceConfig") -> tuple:
 # tests/test_run_history.py::TestSignatureFieldsCoverConfigSignature pins that
 # -- a new field that changes the answer must show up here too, or a run tab
 # will claim nothing changed when the numbers did.
+def _signature_mports(rows) -> str:
+    """'P1 +1 -2; out +3' -- each measurement port by the name it is SOLVED
+    under (a blank one is P1, P2, ...), so a run diff never reads '=1/'."""
+    out = []
+    for name, r in zip(probe_display_names(rows), rows):
+        if not name:
+            continue
+        body = f"{name} +{r.plus.strip()}"
+        if r.minus.strip():
+            body += f" -{r.minus.strip()}"
+        out.append(body)
+    return "; ".join(out)
+
+
+def _signature_connections(rows) -> str:
+    """'ground 6-14 | short 3 to 4 | rlc_gnd 5 R=50 (off)' -- one row per
+    '|', the values the user typed, and '(off)' for a disabled row instead
+    of the bare 'True' / 'False' a plain astuple would print."""
+    out = []
+    for r in rows:
+        if r.is_blank():
+            continue
+        bits = [r.kind, r.ports.strip()]
+        if r.to.strip():
+            bits.append(f"to {r.to.strip()}")
+        bits += [f"{k}={getattr(r, k).strip()}" for k in ("R", "L", "C")
+                 if getattr(r, k).strip()]
+        if r.net.strip():
+            bits.append(f"as {r.net.strip()}")
+        text = " ".join(b for b in bits if b)
+        out.append(text if getattr(r, "enabled", True) else f"{text} (off)")
+    return " | ".join(out)
+
+
 _SIGNATURE_FIELDS: tuple = (
     ("file", lambda tc: tc.file_label),
-    ("mode", lambda tc: tc.mode_name()),
-    ("port A", lambda tc: tc.port_a),
-    ("port B", lambda tc: tc.port_b),
-    ("short", lambda tc: tc.short_pairs),
-    ("gnd", lambda tc: tc.gnd_ports),
     ("text", lambda tc: " / ".join(
         ln for ln in (tc.extra_lines or "").splitlines() if ln.strip())),
-    ("mports", lambda tc: "; ".join(
-        f"{r.name}={r.plus}/{r.minus}" for r in tc.mports)),
-    ("connections", lambda tc: " | ".join(
-        " ".join(str(v) for v in astuple(r) if str(v)) for r in tc.conn_rows)),
+    ("mports", lambda tc: _signature_mports(tc.mports)),
+    ("connections", lambda tc: _signature_connections(tc.conn_rows)),
     # Which files this trace is built from -- '' for a single-file trace that
     # has not tagged its own file, i.e. for everything that predates
     # composition, so no existing run page gains a line.

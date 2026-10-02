@@ -1,22 +1,25 @@
 Worked examples
 ===============
 
+Every example is the same two tables (see the "Setting up a
+measurement" tab). "P1: + 1  - 2" is one row of the Measurement
+ports table; "ground: 5" is one row of the Connections table.
+Where a Template gets you most of the way, it is named.
+
 Example A: DCO spiral inductor characterization
 -----------------------------------------------
 File:    1- or 2-port S-parameters of a spiral inductor from EMX
 Goal:    Extract L and Q over the operating band
 
-If 1-port:
-   Mode = 1 (Port -> GND)
-   Signal/Port A = 1
-   GND Ports = (blank)
+If 1-port:                       (Template: Port to GND)
+   Measurement ports = P1: + 1
+   Connections       = (none -- the file has no ground port)
    RLC Freq = your operating frequency, e.g. 5.0 GHz
    Fit Model = inductor
    Fit f_min/f_max = e.g. 1.0 / 10.0 GHz
 
-If 2-port (P, N):
-   Mode = 2 (A <-> B)
-   Port A = 1, Port B = 2
+If 2-port (P, N):                (Template: Between two ports)
+   Measurement ports = P1: + 1   - 2
    Fit Model = inductor
 
 Reads:   L (nH), Q at center, R_dc, R_ac (skin)
@@ -28,11 +31,10 @@ File:    5-port diff pair (in_p=1, in_n=2, out_p=3, out_n=4, gnd=5)
 Goal:    Effective loop L when far end is shorted (e.g. terminated
          on-die)
 
-   Mode = 3 (A <-> B + Short Pairs)
-   Port A      = 1
-   Port B      = 2
-   Short Pairs = 3-4
-   GND Ports   = 5
+   (Template: Loop with shorted far end)
+   Measurement ports = P1: + 1   - 2
+   Connections       = short: 3,4
+                       ground: 5
    RLC Freq    = your operating frequency
    Fit Model   = inductor
 
@@ -44,10 +46,8 @@ Example C: Differential trace inter-pair capacitance
 Same file as Example B.
 Goal:    Total C between in_p and in_n with far end open
 
-   Mode = 2 (A <-> B)
-   Port A     = 1
-   Port B     = 2
-   GND Ports  = 5
+   Measurement ports = P1: + 1   - 2
+   Connections       = ground: 5
    (out_p=3 and out_n=4 left unlisted -- automatically open)
    Fit Model  = capacitor
    Fit f_min/f_max = pick a band well below SRF (e.g. 0.01 / 1 GHz)
@@ -62,10 +62,8 @@ Goal:    Impedance seen from the top mounting plane after the cap
          is installed (modeled as a short between bot_signal and
          bot_return)
 
-   Mode = 3
-   Port A      = 1   (top_signal)
-   Port B      = 2   (top_return)
-   Short Pairs = 3-4
+   Measurement ports = P1: + 1 (top_signal)   - 2 (top_return)
+   Connections       = short: 3,4
    Fit Model   = capacitor (or auto)
 
 
@@ -74,7 +72,6 @@ Example E: Custom termination -- trace with 50-ohm load
 File:    2-port trace
 Goal:    Driving-point impedance with realistic 50-ohm far-end load
 
-   Mode = 5 (Custom)
    Measurement ports table:
         Name    + ports    - ports
         m1      1
@@ -95,12 +92,12 @@ File:    6-port PKG file (wire A: die=1, ball=2;
                           wire B: die=3, ball=4;  gnd = 5,6)
 Goal:    M and k between the two loops at 1 GHz
 
-   Mode        = 6 (+/- Ports / Coupling)
+   (Template: Several nets (coupling), then fill the "-" ports)
    Measurement ports table:
         Name    + ports    - ports
         wA      1          2
         wB      3          4
-   GND Ports   = 5,6
+   Connections = ground: 5,6
    RLC Freq    = 1.0 GHz
 
 Reads:   L_wA = 1.8 nH, L_wB = 1.9 nH
@@ -109,22 +106,22 @@ Reads:   L_wA = 1.8 nH, L_wB = 1.9 nH
          lot of flux, so they need spacing or a ground wire between
          them.
 
-See the "Mode 6 (Coupling)" tab for what each number means and for
-the layout-iteration loop.
+See the "Coupling" tab for what each number means and for the
+layout-iteration loop.
 
 
 Example F2: how much of that M is the GND field?
 -------------------------------------------------
-Same file as Example F. You changed "GND Ports = 5,6" to
-"GND Ports = 5" and M moved by several dB, and now you need to
-know which reading to defend.
+Same file as Example F. You changed the ground row from "5,6" to
+"5" and M moved by several dB, and now you need to know which
+reading to defend.
 
 That is what "Where the number came from" at the bottom of the
-Mode 6 tab is for, and the window is Analyze -> Attribution... on
+Coupling tab is for, and the window is Analyze -> Attribution... on
 the calculated trace (or right-click it in the Traces list). It
 splits the extracted M into
 
-      bare EM coupling  +  one signed term per GND / short /
+      bare EM coupling  +  one signed term per ground / short /
                            lumped row you declared
 
 with the terms summing to the total EXACTLY (superposition, not an
@@ -149,7 +146,7 @@ A fresh 153-port package export. You know the aggressor and the
 victim and nothing else, and Example F2's table is empty because
 you have declared nothing for it to rank.
 
-Run the cold-start screen instead (Mode 6 tab, "Start here"):
+Run the cold-start screen instead (Coupling tab, "Start here"):
 
       python pkg_rlc_extractor.py --cli <file> --mode coupling \
           --mport "dco = 1" --mport "rx = 2" --freq 5.0 \
@@ -174,7 +171,7 @@ and read it in the order it prints.
   STEP 3 grounds them cumulatively, best first, re-ranking as it
      goes, and says how many actually matter.
 
-Then write the GND rows the screen justifies, calculate, and use
+Then write the ground rows the screen justifies, calculate, and use
 Example F2's window to check what those rows are now worth. That
 is the loop: cold start to decide what to declare, attribution to
 audit what you declared.
@@ -185,10 +182,10 @@ Example G: PDN impedance with mixed VDD/GND balls
 File:    package model with many VDD and GND balls
 Goal:    AC impedance from a die signal pin to its die return
 
-   Mode        = 2 (A <-> B)
-   Port A      = die signal pin
-   Port B      = die return pin
-   GND Ports   = all GND balls AND all VDD balls
+   Measurement ports = P1: + die signal pin   - die return pin
+   Connections       = ground: all GND balls
+                       vdd:    all VDD balls
 
-An ideal supply is an AC short, so VDD balls belong in the GND Ports
-field. (This replaces the old Mode 4, which did exactly this.)
+An ideal supply is an AC short, so a vdd row is exactly a ground
+row; it is there so the table says which balls are which. One
+ground row holding both sets computes the same number.

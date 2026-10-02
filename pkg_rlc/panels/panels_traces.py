@@ -435,7 +435,7 @@ class TracesPanel:
             # trace keeps the grey: it has no curve to be tied to, and grey
             # is the state, not the style.
             #
-            # A mode-6 trace expands into several curves taking consecutive
+            # A coupling trace expands into several curves taking consecutive
             # palette slots (_coupling_plot_traces), so this is its FIRST
             # colour -- the same one the style preview shows.
             self.traces_lb.itemconfig(

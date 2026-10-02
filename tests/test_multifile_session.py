@@ -25,6 +25,9 @@ it is:
   * BYTE IDENTITY.  A trace with no extra file serialises to exactly the bytes
     the previous build wrote -- no 'file_labels' key at all.  The reference
     below was captured by running the build immediately before this change.
+    The one key added since is the row-model merge's `table_version` (an int
+    written on every trace), and the reference AFTER it is pinned as exactly
+    that one insertion, so a 'file_labels' sneaking in still fails.
   * THE LIST-ALIASING TRAP, third field.  Duplicate and Freeze must COPY
     `file_labels`, or two traces silently share one file set.
   * NOTHING SILENTLY SINGLE-FILE.  Calculate now COMBINES the files (the engine
@@ -148,6 +151,27 @@ BYTES_BEFORE = (
     '"plot_mutual": true, "enabled": true, "frozen": false, "label": "t1", '
     '"color_idx": 0, "ls_idx": 0}')
 
+# The same trace after the editor's modes merged into one row model, which added
+# ONE field to every trace: `table_version` (0 = written before the merge, 1 =
+# migrated).  It is written on every trace, the 0 included -- the merge's work
+# order puts it in the session file, and pkg_rlc.services.session does not list
+# it in _OPTIONAL_TRACE_FIELDS -- so the bytes moved by exactly that key and
+# nothing else.  Written out in full for the reason BYTES_BEFORE is; the test
+# below proves it is BYTES_BEFORE plus that one key.
+#
+# `_plain()` is an UNMIGRATED trace (mode 1, table_version 0).  The bare
+# trace_to_dict / trace_from_dict pair does not migrate -- the App's
+# _apply_session does, eagerly, after the load -- so a mode-1 trace still
+# writes as mode 1 here.
+BYTES_AFTER_MERGE = (
+    '{"id": 1, "file_label": "coil.s4p", "mode": 1, "port_a": "1", '
+    '"port_b": "", "short_pairs": "", "gnd_ports": "2-4", "mports": [], '
+    '"conn_rows": [], "extra_lines": "", "table_version": 0, '
+    '"plot_self": true, '
+    '"plot_mutual": true, "enabled": true, "frozen": false, "label": "t1", '
+    '"color_idx": 0, "ls_idx": 0}')
+_MERGE_KEY = '"table_version": 0, '
+
 
 def _dump_load(data: dict) -> dict:
     return json.loads(json.dumps(data))
@@ -159,13 +183,27 @@ def _dump_load(data: dict) -> dict:
 
 class TestSingleFileIsUntouched(unittest.TestCase):
 
+    def test_the_only_key_added_since_is_the_row_model_s_table_version(self):
+        """
+        What keeps the next test honest: BYTES_AFTER_MERGE is BYTES_BEFORE
+        with ONE key inserted, at the place the field is declared, and no
+        other byte moved.  The multi-file feature still added nothing.
+        """
+        self.assertEqual(BYTES_AFTER_MERGE.count(_MERGE_KEY), 1)
+        self.assertEqual(BYTES_AFTER_MERGE.replace(_MERGE_KEY, ""),
+                         BYTES_BEFORE)
+        self.assertNotIn("file_labels", BYTES_AFTER_MERGE)
+
     def test_a_single_file_trace_serialises_to_exactly_the_old_bytes(self):
         """
         Key ORDER included: the assertion is on the JSON string, not on a dict
         comparison, because dicts compare equal however the keys are ordered
         and the point of _OPTIONAL_TRACE_FIELDS is that the file does not move.
+        "The old bytes" are the pre-multi-file bytes plus the row-model
+        merge's one key (see BYTES_AFTER_MERGE).
         """
-        self.assertEqual(json.dumps(trace_to_dict(_plain())), BYTES_BEFORE)
+        self.assertEqual(json.dumps(trace_to_dict(_plain())),
+                         BYTES_AFTER_MERGE)
 
     def test_the_new_field_appears_nowhere_in_an_uncomposed_session(self):
         text = json.dumps(session_to_dict([], [_plain()], {}, {},
@@ -184,8 +222,14 @@ class TestSingleFileIsUntouched(unittest.TestCase):
                          "an old file must not warn about its own contents")
 
     def test_an_old_trace_re_saves_to_the_bytes_it_arrived_as(self):
+        """
+        Plus the row-model merge's `table_version`, read as 0 (an old trace)
+        because the file did not carry it -- and nothing else: no
+        'file_labels', no other key, no reordering.
+        """
         back = trace_from_dict(json.loads(BYTES_BEFORE), lambda m: None)
-        self.assertEqual(json.dumps(trace_to_dict(back)), BYTES_BEFORE)
+        self.assertEqual(back.table_version, 0)
+        self.assertEqual(json.dumps(trace_to_dict(back)), BYTES_AFTER_MERGE)
 
 
 class TestSessionVersion(unittest.TestCase):
@@ -547,12 +591,18 @@ class TestResultsTableProvenance(unittest.TestCase):
         """
         'F1+F2' is 5 characters against a 4-wide header, and a cell wider than
         its column throws every column to the right of it out of line.
+
+        The anchors are the first text of each row's port descriptor, which
+        starts the Ports cell: the composed row's measurement port is named
+        'coil' and the plain row's -- unnamed, so it reads as P1 -- 'P1'.
+        (They used to be the mode tokens 'M5' / 'M1'; the descriptor carries
+        no mode number since the editor's modes merged into one row model.)
         """
         rows = [_row(_composed(), "die.s6p"), _row(_plain(), "coil.s4p")]
         lines = _format_results_table(rows, "smart").splitlines()
         header, first, second = lines[1], lines[2], lines[3]
-        self.assertEqual(header.index("Ports"), first.index("M5"))
-        self.assertEqual(first.index("M5"), second.index("M1"))
+        self.assertEqual(header.index("Ports"), first.index("coil:1/5"))
+        self.assertEqual(first.index("coil:1/5"), second.index("P1:1"))
 
     def test_a_record_written_before_the_field_existed_still_renders(self):
         """

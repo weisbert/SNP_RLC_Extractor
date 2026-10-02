@@ -20,6 +20,14 @@ block-diagonal stack silently welds the two files' reference nodes together, and
 that same disconnection makes the §13 baseline report a confident, exactly-zero, perfectly
 reconciled wrong answer.
 
+**A note on the word "mode".** Sections 4-8 are titled by the GUI's historical modes (Mode 1
+port-to-ground, Mode 2 port-to-port, Mode 3 with shorted pairs, Mode 6 measurement ports). The
+mathematics in them is unchanged and so are the L0 builders that implement it, which the CLI
+still reaches as `--mode gnd | p2p | coupling`. **The GUI has had no modes since
+2026-10-02**: every trace is two tables — measurement ports (`+` / `−` sides) and connections
+— and each old mode is one way of filling them (§9.1). Read "Mode 2" below as "one
+measurement port with a `+` and a `−` side", and so on.
+
 ---
 
 ## 1. What is a Touchstone file?
@@ -210,16 +218,16 @@ V_dd = V_DC + v_ac     and     v_ac(VDD) = 0
 So `vdd` and `ground` produce identical reductions — a VDD ball and a GND ball impose the
 same boundary condition, `V = 0`. The old Mode 4 therefore computed *exactly* what Mode 2
 computes when both sets are listed as ground ports: there was never a numerical difference,
-only a label. Mode 4 is retired for that reason. Supply pins go into the GND field, a saved
-mode-4 trace is migrated to mode 2 with its VDD ports folded into GND, and `--vdd` on the CLI
-is a deprecated alias that unions into `--gnd`.
+only a label. Mode 4 is retired for that reason. Supply pins go into a `ground` or `vdd` row
+of the connections table, a saved mode-4 trace is migrated into the tables with its VDD ports
+in the ground row, and `--vdd` on the CLI is a deprecated alias that unions into `--gnd`.
 
-The `Vdd` termination class survives in the core (and `vdd` in the Mode 5 DSL) so that intent
+The `Vdd` termination class survives in the core (and `vdd` in the DSL) so that intent
 stays documentable in a spec; it is evaluated identically to `Ground`. Mode codes are never
 renumbered, so 4 stays reserved.
 
-If you need to model a non-ideal supply, use Mode 5 with `lumped_to_gnd(...)` to attach a
-finite supply impedance.
+If you need to model a non-ideal supply, use an `rlc_gnd` row (`lumped_to_gnd(...)` in the
+text form) to attach a finite supply impedance.
 
 ---
 
@@ -665,6 +673,37 @@ The named modes lower into this dispatch:
 All of these take **1-based** port numbers and emit 0-based ones: the builders are the
 GUI/CLI boundary, and nothing deeper converts.
 
+### 9.1 The GUI's one row model, and the probe rule by side
+
+Since 2026-10-02 the GUI reaches this dispatch through ONE builder, `build_terminations_rows`
+(row 5 of the table above): every trace is a measurement-port table plus a connections table,
+serialised to the DSL and parsed. The other rows of the table are what the CLI calls and what
+`golden_legacy.npz` pins. An old trace is migrated into the tables (only the fields its mode
+actually used) and computes `np.array_equal` what it did before, with one exception, below —
+pinned over 368 cases by `tests/test_trace_path_golden.py`.
+
+The exception is the one place where the old modes disagreed with the physics. A probe side is
+**one node** (section 8.1: ports on a side are tied together), so a port that is both a probe
+and grounded grounds its whole side:
+
+* a `+` port in a ground row puts the red probe on `V = 0` — there is nothing to measure, and
+  the rows are refused;
+* a `−` port in a ground row puts the whole `−` side at `V = 0`, which is exactly the
+  single-ended measurement of the `+` side to ground. The builder folds the `−` side into the
+  ground row and solves that. When the whole `−` side was listed as ground this is
+  bit-identical to the old answer; when only PART of it was, the old "ground wins" precedence
+  deleted the grounded port from the probe and solved a different, physically wrong network —
+  measured at 1 GHz with `+1 −3,4` and ground `3`: −12635 nH where the physical reading gives
+  5.001 nH on `diff_pair_4port.s4p`, and NaN where it gives 0 nH on `coupled_4port_float.s4p`
+  (from the design review, `docs/design_workspaces.md` § 3.3).
+
+A differential measurement is solved directly from its `−` side, never as two single-ended
+probes combined by `Z11 + Z22 − Z12 − Z21`. The two are the same algebra (section 8.6), but the
+combination subtracts large numbers to get a small one: on `decap_4port.s4p` the single-ended
+self impedance of port 1 is −12642 nH at 1 GHz while the 1 ↔ 2 differential is 1.000 nH, and
+the combined route differs from the direct one by up to 1.5e-8 relative over the sweep
+(measured 2026-10-02).
+
 ---
 
 ## 10. RLC extraction at a single frequency
@@ -726,12 +765,14 @@ The fitted curve is overlaid on the Re/Im/|Z| subplots in the band region.
 
 ## 12. Use case examples
 
-The same tool, the same modes — only the port assignment changes.
+The same tool, the same two tables — only what goes in them changes. (Each example names the
+old mode it used to be, for a reader holding an old config.)
 
 ### A. DCO / spiral inductor (2-port: P, N)
 
 ```
-Mode 2 (A<->B):  A = P, B = N, GND = (none if no GND port)
+Measurement ports:  + P   - N            (was Mode 2, A = P, B = N)
+Connections:        (none if no GND port)
 Fit:             Inductor model over [f_min, f_max]
 Reports:         L, R_dc, R_ac, Q@f_center, SRF
 ```
@@ -739,8 +780,8 @@ Reports:         L, R_dc, R_ac, Q@f_center, SRF
 ### B. Differential trace — loop inductance (5-port: inp, inn, outp, outn, gnd)
 
 ```
-Mode 3 (A<->B + Short Pairs):
-   A = inp,  B = inn,  Short Pairs = "outp-outn",  GND = gnd_port
+Measurement ports:  + inp   - inn        (was Mode 3)
+Connections:        short outp,outn;  ground gnd_port
 Why:    Shorting the far end forces the signal to return through the trace,
         exposing the differential loop inductance.
 Fit:    Inductor model
@@ -750,9 +791,9 @@ Reports: L_loop (TOTAL, in nH — not per unit length), R_dc, Q
 ### C. Differential trace — differential capacitance
 
 ```
-Mode 2 (A<->B):
-   A = inp,  B = inn,  GND = gnd_port
-   (outp, outn left default open -> Schur-eliminated)
+Measurement ports:  + inp   - inn        (was Mode 2)
+Connections:        ground gnd_port
+   (outp, outn not listed -> open -> Schur-eliminated)
 Why:    Open far end isolates the inter-trace capacitance.
 Fit:    Capacitor model
 Reports: C_diff (total)
@@ -761,11 +802,12 @@ Reports: C_diff (total)
 ### D. Decap with two mounting pads shorted
 
 ```
-Mode 3:  A = pad1_top, B = gnd_top, Short Pairs = "pad1_bot-gnd_bot"
+Measurement ports:  + pad1_top   - gnd_top     (was Mode 3)
+Connections:        short pad1_bot,gnd_bot
 Reports: ESR, ESL, C as seen at the top mounting plane
 ```
 
-### E. Custom — signal through a 50 ohm termination (Mode 5)
+### E. Signal through a 50 ohm termination (was Mode 5, Custom)
 
 ```
 Measurement ports:            Connections:
@@ -787,12 +829,14 @@ parser sees — "Edit as text…" shows it verbatim:
 Rows and text are the same thing, not two ways of specifying the same thing:
 `build_terminations_rows` *is* `parse_custom_termination_text(rows_to_dsl_text(...))`.
 Measurement ports are emitted before connections, which is why a later `ground`
-row wins over a probe on the same port.
+row would win over a probe on the same port in the DSL — and why the rows are checked
+first (§9.1): a grounded `+` port is refused, a grounded `−` side becomes `+` to GND.
 
-### F. Two floating coils — M and k (Mode 6, 4-port)
+### F. Two floating coils — M and k (two measurement ports, 4-port)
 
 ```
-Mode 6:  "c1 = 1 / 2",  "c2 = 3 / 4",  GND = (blank; the coils float)
+Measurement ports:  c1: + 1  - 2;   c2: + 3  - 4      (was Mode 6)
+Connections:        (none; the coils float)
 Why:     Each coil gets its own probe pair, so the off-diagonal of the 2x2 Z
          matrix is the open-circuit mutual impedance between them.
 Reports: L_c1, L_c2 on the diagonal; M, k, C_c, M/L_c1, M/L_c2 off it.
@@ -812,10 +856,11 @@ M/L_c2 = 0.267  (-11.48 dB)     <- the budget number if c2 is the victim
 reciprocity error = 7.18e-16    (healthy)
 ```
 
-### G. Aggressor -> victim on a package bus (Mode 6, ground-referenced)
+### G. Aggressor -> victim on a package bus (two ground-referenced measurement ports)
 
 ```
-Mode 6:  "vic = 1",  "agg = 2",  GND = "3:1:16"
+Measurement ports:  vic: + 1;   agg: + 2              (was Mode 6)
+Connections:        ground 3:1:16
 Why:     Both probes are ground-referenced (empty "-" side), which is legal
          precisely because the GND balls give the return current a path.
          Omit the GND ports and the answer is meaningless — the tool reports
@@ -1174,7 +1219,7 @@ reconciled, whatever model is in force, is the **declared** configuration throug
 machinery (§13.6), which checks the arithmetic the modelled total came out of; the modelled
 number itself is this module's alone and every surface that prints it says so.
 
-The same physics is expressible in the Mode 5 table today with no new code: one `short`
+The same physics is expressible in the connections table today with no new code: one `short`
 row tying the ground set together, then **one** `lumped_to_gnd` on that node —
 
 ```
@@ -1416,7 +1461,7 @@ deficiency in `U` — the same port written `ground` twice through overlapping r
 as "genuinely unattributable physics" would be the worst available outcome. It is tested
 structurally on integer port-index sets first, with the offending elements named; only then
 is `cond(G)` looked at. Elements whose `u` is the zero vector after probe-side merging are
-dropped as already inert — the same class `inert_lumped_messages` reports on the Mode 5
+dropped as already inert — the same class `inert_lumped_messages` reports on the editor's
 validation strip.
 
 ### 13.14 The cold-start screen — which ports matter before a spec exists

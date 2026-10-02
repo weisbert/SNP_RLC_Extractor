@@ -5,54 +5,63 @@ What this tool does
 Given a Touchstone (.sNp / .txt / any-extension) file containing
 S-parameters of an N-port linear network, the tool:
   1. Converts S to Y (admittance).
-  2. Applies user-specified port boundary conditions (terminations).
+  2. Applies the port boundary conditions you describe in two
+     tables: the measurement ports (where the probes go) and the
+     connections (ground, shorts, lumped elements). See the
+     "Setting up a measurement" tab.
   3. Reduces the network via Schur complement to the chosen
      measurement terminals.
   4. Reports R, L, C, Q at a single frequency, or fits a broadband
      equivalent circuit (inductor model or capacitor model).
-  5. With more than one measurement port (Mode 6), also reports the
+  5. With two or more measurement ports, also reports the
      COUPLING between them: mutual inductance M, coupling factor k,
      the coupling ratio M/L, and the coupling capacitance C_c.
-     See the "Mode 6 (Coupling)" tab.
+     See the "Coupling" tab.
   6. Answers WHERE a coupling number came from, which is a separate
      question from what it is. Analyze -> Attribution... splits an
      extracted Z_ab into the bare EM coupling plus one signed term
      per termination you declared, and says what it would be with
      any of them changed. On the CLI, --cold-start goes the other
      way and ranks the ports you have NOT declared anything for.
-     Both are on the "Mode 6 (Coupling)" tab, under "Where the
-     number came from".
+     Both are on the "Coupling" tab, under "Where the number came
+     from".
   7. Draws a routed trace as its exact pi circuit (series R, L;
      a shunt at each end) with its bandwidth. Press "Trace model"
      on the strip under the menu bar, add one row per net (Name,
      IN+ and OUT+, plus IN- and OUT- for a pair), list the ground
      ports under GND, and press Calculate all. Full account on the
-     Coupling tab, under "THE TRACE MODEL".
+     "Trace model" tab.
+  8. Says whether two files are the same network over the band
+     they share -- an inductor extracted to 30 GHz and again to
+     80 GHz, say. Analyze -> Compare files... ; see the "Compare
+     files" tab.
 
-Universal assumptions (apply to ALL modes)
-------------------------------------------
+Universal assumptions (apply to every setup)
+--------------------------------------------
 1. AC small-signal analysis only. There is no DC operating point.
    "VDD" ports are AC-grounded -- mathematically identical to GND,
-   so supply pins go into the GND Ports field together with the
-   ground pins. (This is why there is no separate VDD mode any
-   more; see the Mode 2 tab.)
+   so supply pins go into a ground (or vdd) row of the connections
+   table together with the ground pins.
 
 2. Ports are 1-based in the GUI/CLI, 0-based internally.
    Conversion happens at the input boundary.
 
-3. UNUSED ports default to OPEN-CIRCUIT (I = 0).
+3. UNUSED ports default to OPEN-CIRCUIT (I = 0). The editor says
+   so under the connections table: "Ports not listed anywhere are
+   OPEN."
    This is the most common source of wrong results: if you forget to
-   list a GND port in the GND Ports field, that port floats. It is
+   list a GND port in a ground row, that port floats. It is
    then eliminated via Schur complement -- which preserves the
    network behavior at kept ports but does NOT tie the floating port
    to ground.
 
 4. Multiple ports on the SAME side of a measurement terminal are
    SHORTED TOGETHER internally before measurement. If you list
-   "1,2,3" as Port A in Mode 1, the tool treats them as one merged
-   terminal carrying the sum of currents at a common voltage. The
-   same is true of the "+" side and of the "-" side of a Mode 6
-   measurement port.
+   "1,2,3" as the "+" ports of a measurement port, the tool treats
+   them as one merged terminal carrying the sum of currents at a
+   common voltage. The same is true of the "-" side -- which is why
+   grounding ONE port of a side grounds the whole side (see "The
+   probe rules" on the "Setting up a measurement" tab).
 
 5. All extracted R, L, C are TOTAL values for the network as seen
    between the chosen terminals, never per-unit-length. Per-length
@@ -82,15 +91,19 @@ Each Calculate prints a single aligned table. Columns:
            underneath instead -- see "Showing and hiding curves".
    Label   user-given trace label (truncated)
    File    only shown when traces span >1 file (alias F1, F2, ...)
-   Ports   compact port-config descriptor:
-              M1: S:[1] G:[2,3]              -- Mode 1 (port-to-GND)
-              M2: 1<->2 G:[]                 -- Mode 2 (port-to-port)
-              M2: 1<->{2,3} G:[4]            -- multi-port terminal
-              M3: 1<->2 G:[] S:[3-4]         -- Mode 3 with shorts
-              M5: tank:1/2 C:3               -- Mode 5 (custom):
-                                                measurement ports, then
-                                                the connection-row count
-              M6: <measurement-port list>    -- Mode 6 (+/- coupling)
+   Ports   compact port-config descriptor: the measurement ports
+           (name:+ports/-ports), the ports a ground or vdd row
+           holds at GND, and how many OTHER connection rows
+           (shorts, elements) the trace has:
+              P1:1 GND:[2-3]                 -- port 1 to ground
+              P1:1/2 GND:[]                  -- port 1 to port 2
+              P1:1/{2,3} GND:[4]             -- a multi-port "-" side
+              P1:1/2 GND:[] +1 conn          -- plus one short row
+              tank:1/2 vco:3/4 GND:[]        -- two measurement
+                                                ports (coupling)
+           "+txt" at the end means lines kept as text are in force
+           too (see "Edit as text..." on the "Setting up a
+           measurement" tab).
    R/L/C/Q numeric values
    Sign    flag column. Always indicates the sign of Im(Z); may also
            carry a non-passive warning. Possible flags:
@@ -307,11 +320,13 @@ first, labelled "#7 10:42".
 Each page carries the report that run produced, and above it:
 
    Run #12 · 14:32:07 · @ 5.000 GHz · 4 traces [1,2,3,5]
-   changed since #11:  [3] gnd 6-14 -> 6-16
+   changed since #11:  [3] file coil_v1.s4p -> coil_v2.s4p
 
 The second line is the useful one -- twenty runs are all at 5 GHz
-and nobody remembers what they were doing at 14:32, but "I widened
-the ground group" is what tells two pages apart.
+and nobody remembers what they were doing at 14:32, but "I switched
+trace 3 to the second extraction" is what tells two pages apart. A
+change to either table is named the same way, as "mports" or
+"connections" with the old and the new rows.
 
 Old pages are dropped automatically, OLDEST FIRST, three at a time
 by default. To stop one being dropped, press "Keep" (or right-click
@@ -349,13 +364,13 @@ Auto              : picks based on Im(Z) sign distribution; if mixed,
 Numerical notes
 ---------------
 - Schur complement uses np.linalg.solve, falls back to lstsq with a
-  warning if Y_oo is singular (most often Mode 3 with very weakly
-  coupled merged ports).
+  warning if Y_oo is singular (most often a short row tying very
+  weakly coupled ports together).
 - Y at a Touchstone frequency where the network is purely lossless
   may be rank-deficient; the tool handles it via lstsq fallback.
 - The final node admittance is inverted with a pseudo-inverse
   whenever it is singular (this applies to a single +/- measurement
-  port too, not just Mode 6). A fully floating structure (e.g. two
+  port too, not only with several). A fully floating structure (e.g. two
   isolated coils, no ground port) is singular by construction -- its
   null direction is the common mode, which the balanced +/- drive
   never excites -- so the "Rank-deficient node admittance" message
@@ -364,7 +379,7 @@ Numerical notes
   ground-referenced probe on a structure with no ground path) has no
   return path for its current. The pseudo-inverse would fabricate a
   plausible finite number, so the tool reports NaN for that
-  measurement port and says so. See the Mode 6 tab.
+  measurement port and says so. See the "Coupling" tab.
 - Where the network is non-degenerate nothing above applies: the
   historical inv()-based expressions run unchanged, which is what
   tests/test_golden_regression.py pins bit-for-bit.

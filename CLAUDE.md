@@ -23,6 +23,13 @@ symbol between modules; the sections below are the rules, that file is the state
 
 Tkinter + Matplotlib desktop tool that extracts R, L, C, Q from Touchstone files via Y-parameter Schur-complement reduction — and, with more than one measurement port defined, the mutual coupling between them (M, k, M/L, C_c). Used for IC packages, EMX layout traces, DCO inductors, decap, and inductor-to-inductor pulling / spur budgeting.
 
+**There are no modes in the GUI (since 2026-10-02).** Every trace is two tables
+— measurement ports (`+` / `−` sides) and connections (ground, vdd, short,
+lumped elements; everything unlisted is OPEN) — filled by hand or from a
+Template; old configs are migrated into them on load. The CLI keeps
+`--mode gnd | p2p | coupling` and the L0 builders under it. The rules are
+`docs/conventions/editor_and_tables.md` § "The one row model".
+
 `pkg_rlc/physics/attrib.py` is a layer on top of that, not a mode: it takes one extracted `Z_ab` apart into the bare EM coupling plus one exact signed term per declared termination, and answers the exact what-if. It exists because the reduction assumption — everything unlisted is OPEN — moved a real answer by 6.07 dB with nothing on screen saying so.
 
 ## Where the modules live: the folders ARE the layers
@@ -96,7 +103,7 @@ row changes.
 |---|---|
 | `pkg_rlc/physics/core.py` | **A FACADE, 169 lines.** Re-exports `touchstone`, `spec` and `solve` BY NAME (not `import *`); still the module to import from unless you are inside one of the three. Imports those three only. |
 | `pkg_rlc/physics/touchstone.py` | **Reading a file and saying what is wrong with it**: the parser, both sniffers, the diagnosis, the descriptive checks, `TouchstoneData` and the `FAULT_*` verdicts. Imports NOTHING from this repo — the bottom of L0. |
-| `pkg_rlc/physics/spec.py` | **What the user DECLARED**: `TerminationSet`, the lumped-admittance helpers, every port/spec-string parser, the merged nodes, the Mode 5 DSL, the row model, the port roles. Imports `format_si` from `touchstone` only. |
+| `pkg_rlc/physics/spec.py` | **What the user DECLARED**: `TerminationSet`, the lumped-admittance helpers, every port/spec-string parser, the merged nodes, the DSL (the editor's text form, historically "the Mode 5 DSL"), the row model and its probe rules (`probe_rule_issues`, by side), the port roles. Imports `format_si` from `touchstone` only. |
 | `pkg_rlc/physics/solve.py` | **The arithmetic**: `s_to_y` / `y_to_s`, `compute_z_matrix` / `compute_z` / `_probe_impedance`, the extractors, the fit models, the tolerances. Imports `spec` + two names from `touchstone`; nothing imports it back. |
 | `pkg_rlc/physics/attrib.py` | **Port attribution**: the exact signed decomposition of `Z_ab`, the exact what-if, the cold-start screen (CLI-only), the composed-network gauge. Imports `pkg_rlc.physics.core` ONLY (acyclic), no scipy. |
 | `pkg_rlc/physics/compose.py` | **Several Touchstone files measured as ONE network**: k files stacked into one `Y`, every cross-file link an ordinary `ShortPair` / `LumpedBetween` handed to the SAME `compute_z_matrix`. Imports `pkg_rlc.physics.core` ONLY. |
@@ -108,7 +115,7 @@ row changes.
 | File | Responsibility |
 |---|---|
 | `pkg_rlc/model/trace.py` | **The shared data model every layer above passes around** (L1): `FileEntry`, `TraceConfig`, the signatures, the frequency snap, the run record. Imports `core` and `validate` only — no Tk, no matplotlib, no `App`. |
-| `pkg_rlc/model/validate.py` | **What a spec SAYS, what it will DO, and what is wrong with it** (L1). Imports `core` and `compose` ONLY, and duck-types the trace rather than importing it. |
+| `pkg_rlc/model/validate.py` | **What a spec SAYS, what it will DO, and what is wrong with it** (L1) — including the descriptor (no mode number) and `migrate_trace_to_rows`, which moves every old mode into the two tables. Imports `core` and `compose` ONLY, and duck-types the trace rather than importing it. |
 
 ### L2 — `pkg_rlc/services/` (services over the model)
 
@@ -143,7 +150,7 @@ row changes.
 | `pkg_rlc/panels/panels_files.py` | **The Loaded Files section** (L5): `FilesPanel` — the frame, its four buttons, the Listbox, the right-click menu and the load / add / remove / check / clear handlers. Imports L0–L4 only. |
 | `pkg_rlc/panels/panels_traces.py` | **The Traces section** (L5): `TracesPanel` — add / remove / duplicate / toggle / freeze / unfreeze / clear all, and the three menu labels that moved with the menu they label. Imports L0–L4 only. |
 | `pkg_rlc/panels/panels_results.py` | **The Results pane** (L5): `ResultsPanel` — the header strip, the notebook, the Log tab and its badge, the run pages with keep / evict, both menus, `_tag_swatch_rows`. Imports L0–L4 only. |
-| `pkg_rlc/panels/panels_editor.py` | **The editor** (L5): `EditorPanel` — the pinned footer, the mode-aware form, both `RowTable`s, the strips, the text hatch, the auto-apply sync chain, and `StylePicker`. Imports L0–L4 only. |
+| `pkg_rlc/panels/panels_editor.py` | **The editor** (L5): `EditorPanel` — the pinned footer, the one form (Template, both `RowTable`s with the probe-rule cell colours — no modes since 2026-10-02), the strips, the text hatch, the auto-apply sync chain, and `StylePicker`. Imports L0–L4 only. |
 | `pkg_rlc/panels/files_gui.py` | **Which FILES a trace is made of** (round 3): the `Files in this trace…` window, the port-cell scope rules and the GUI rendering of the reference-node check. **It imports `pkg_rlc.frontend.app` NOT AT ALL.** |
 | `pkg_rlc/panels/workspaces.py` | **The workspace switch** — the strip of `ttk.Radiobutton`s under the menubar: `WorkspaceSwitch.register` / `show`, swapping the left region under the shared Loaded Files and the outer PanedWindow's second pane, and the session file's `workspaces` block. Entering RLC hands the plot canvas focus. Imports `pkg_rlc.frontend.app` NOT AT ALL. |
 | `pkg_rlc/panels/ws_tracemodel.py` | **The Trace model workspace** — `TraceModelWorkspace(app, left, right)`: the nets `RowTable`, GND, Conditions, a sortable monospace Summary, the schematic and response `tk.Canvas`es, Details. Errors are painted in the CELL, never a dialog; stale by signature, never auto-refreshed. Every coordinate from L3, every solve from `tracenets`. Imports `pkg_rlc.frontend.app` NOT AT ALL. |
@@ -197,7 +204,7 @@ cross-reference of the form ``CLAUDE.md § <title>`` — there are several, in
 | [`attribution_core.md`](docs/conventions/attribution_core.md) | Port attribution (`pkg_rlc/physics/attrib.py`) · The cold-start screen (`--cold-start`, CLI only) |
 | [`attribution_gui.md`](docs/conventions/attribution_gui.md) | The Attribution window (`pkg_rlc/panels/attrib_gui.py`) · The two attribution reports (`pkg_rlc/present/attrib_report.py`) |
 | [`cli_report.md`](docs/conventions/cli_report.md) | The CLI's printed report (`tests/fixtures/cli_reference/`) |
-| [`editor_and_tables.md`](docs/conventions/editor_and_tables.md) | Connection table (the Mode 5 / Mode 6 row editor) · Per-kind row shape, nets, and the parallel stamp (round 1) · Auto-apply, the style picker, plot visibility · Port names, roles, and the Ports & Roles window |
+| [`editor_and_tables.md`](docs/conventions/editor_and_tables.md) | The one row model (stage 2, 2026-10-02) — read this before the rest · Connection table (the Mode 5 / Mode 6 row editor) · Per-kind row shape, nets, and the parallel stamp (round 1) · Auto-apply, the style picker, plot visibility · Port names, roles, and the Ports & Roles window |
 | [`multifile.md`](docs/conventions/multifile.md) | Composition — several files as ONE network (`pkg_rlc/physics/compose.py`, round 2) · The two-file GUI — schema, namespace, engine (round 3) |
 | [`compare_files.md`](docs/conventions/compare_files.md) | Compare files — two files over the band they share |
 | [`plot_panel.md`](docs/conventions/plot_panel.md) | The plot panel's axes (what range they show, what unit they say) · The plot panel's control strip · Cursor readout (the plot's marker / V-line labels) |
@@ -375,7 +382,10 @@ session can see whether the change it is about to make is governed by one:
 - **The `G == 1, no minus side` branch deliberately has NO degeneracy check.**
 - **`SCHUR_COLLAPSE_TOL` is advisory only — it must never produce a NaN.**
 - **Port indices are validated against the file's port count**
-- **A probe port may not also be a GND port (Mode 6 only).**
+- **A probe port may not also be a GND port (Mode 6 only).** (That is the L0
+  builder `build_terminations_coupling`, which the CLI uses. The editor's rows
+  path has ONE rule by side instead — a `+` port grounded is refused, a `−`
+  side grounded is `+` to GND: `editor_and_tables.md` § "The one row model".)
 - **`compute_z` warns when `G > 1`.**
 - **`RECIPROCITY_WARN = 1e-3` lives in `pkg_rlc.physics.solve`**
 - **`M/L` is the Norton injection ratio, NOT the current-transfer ratio.**
@@ -406,7 +416,7 @@ commit message nobody will find.
 
 ```bash
 python tests/run_parallel.py            # the whole suite -- use this
-python tests/run_parallel.py --fast     # 6.5 s, 1170 tests, the twenty no-Tk modules
+python tests/run_parallel.py --fast     # ~10 s, 1222 tests, the twenty-two no-Tk modules
 python tests/run_parallel.py -m attrib coupling core    # substring on module name
 ```
 
@@ -415,7 +425,9 @@ python tests/run_parallel.py -m attrib coupling core    # substring on module na
 box). `--fast` is unmoved at 1044 tests, and re-ran in 4.8 s against the 4.5 s recorded
 below — same eighteen modules, same count, wall-clock noise. Re-measured 2026-10-02
 after `test_tracemodel` and `test_tracenets` joined it: twenty modules, 1170 tests,
-6.5 s.** (The historical figures the runner's docstring
+6.5 s. And again the same day after `test_trace_path_golden` and `test_probe_rules`
+joined it: twenty-two modules, 1222 tests, 10.2 s wall at 6 workers — with other
+agents on the box, so the clock is contention, not the suite.** (The historical figures the runner's docstring
 opens with — 293 s serial against 108 s parallel over 906 tests — are what justified the
 runner and are kept as such.) The full number tracks CONTENTION as much as anything: 120 s
 on an idle box and 339 s with another agent competing for the same cores have both been
@@ -445,7 +457,10 @@ measurement mode" (six steps, L0 to the golden regression) and "How to add a
 new fit model" (five). Read the first before picking a mode number: **the next
 unused integer, never a renumbering** (4 is retired, not free — saved trace
 configs carry the integer), and the files it names are named by their PATH,
-because the path is the layer.
+because the path is the layer. **Since 2026-10-02 that recipe is for the CLI's
+`--mode` and the L0 builders only**: the GUI has no modes, every trace is saved
+with `mode` 5, and a new GUI setup is a TEMPLATE that fills the two tables
+(`docs/conventions/editor_and_tables.md` § "The one row model").
 
 ## Don'ts
 

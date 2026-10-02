@@ -932,7 +932,7 @@ class TestTableWidth(_TableCase):
 
 
 class _EditorCase(unittest.TestCase):
-    """An App with one file and one mode-5 trace, mapped."""
+    """An App with one file and one trace, mapped, at the 1040x600 minsize."""
 
     @classmethod
     def setUpClass(cls):
@@ -971,10 +971,9 @@ class _EditorCase(unittest.TestCase):
 @unittest.skipUnless(TK_OK, "no Tk display available")
 class TestEditorStillFits(_EditorCase):
     """
-    Nothing may overflow that was not overflowing before.  Modes 1/2/3 have no
-    table and must simply fit (the horizontal scrollbar costs 17 px of a 45 px
-    viewport at this size); mode 5's form is 417 px against a 431 px canvas
-    whatever the Kinds are.
+    Nothing may overflow that was not overflowing before.  The form fits the
+    431 px canvas whatever the Kinds are (a horizontal scrollbar would cost
+    17 px of a 53 px viewport at the minsize).
     """
 
     MIXES = {
@@ -985,7 +984,7 @@ class TestEditorStillFits(_EditorCase):
                        for k in CONN_KINDS],
     }
 
-    def test_mode5_fits_the_canvas_for_every_kind_mix(self):
+    def test_the_form_fits_the_canvas_for_every_kind_mix(self):
         for geom in ("1040x600", "1500x900"):
             self.app.geometry(geom)
             for name, rows in self.MIXES.items():
@@ -999,12 +998,23 @@ class TestEditorStillFits(_EditorCase):
                         f"{name} at {geom}: form asks {form} px of a {canvas} "
                         "px canvas with no horizontal scrollbar")
 
-    def test_the_table_never_drives_the_mode5_form_wider(self):
+    def test_no_kind_mix_drives_the_form_past_the_canvas(self):
+        """
+        It used to be pinned that the table never changed the form's width
+        AT ALL -- the form was 417 px whatever the Kinds, because something
+        else on it (the five mode radios, the 129 px GND label) was wider
+        than any table shape.  Those are gone: re-measured 2026-10-02 the form
+        is 381 px with one ground row and 414 px with every Kind, so the
+        table now does set its width.  What a reader sees is unchanged by
+        that -- the canvas window item is max(canvas, form) wide, i.e. 431 px
+        either way -- and the property that matters is the one kept here: no
+        mix reaches past the canvas, so none raises the horizontal bar.
+        """
         widths = set()
         for rows in self.MIXES.values():
             self._rows(rows)
             widths.add(self.app._ed_form.winfo_reqwidth())
-        self.assertEqual(len(widths), 1, widths)
+            self.assertEqual(self.app._ed_hsb.winfo_ismapped(), 0)
         self.assertLessEqual(max(widths), self.app._ed_canvas.winfo_width())
 
 
@@ -1012,9 +1022,8 @@ class TestEditorStillFits(_EditorCase):
 class TestFooterIsARoute(_EditorCase):
     """
     R1-4.  The footer verdict is the only always-visible pixel of the editor,
-    and measured at this size the messages it counts sit 366 and 387 px below
-    the fold of a 45 px viewport with every mode change scrolling back to the
-    top.  Clicking it goes there.  Zero pixels: the affordance is the hand
+    and measured at this size the messages it counts sat 366 and 387 px below
+    the fold of a 45 px viewport.  Clicking it goes there.  Zero pixels: the affordance is the hand
     cursor and a hover underline.
     """
 
@@ -1037,18 +1046,24 @@ class TestFooterIsARoute(_EditorCase):
 
     def _viewport_that_fits_a_row(self) -> None:
         """
-        Re-measured 2026-10-02, when the workspace strip landed
-        (`pkg_rlc/panels/workspaces.py`): it is 25 px tall and comes out of
-        the left column too, so at 1040x600 the Mode 5 editor viewport is
-        20 px where it was 45 -- and a row widget is 23 px, so NO row can be
-        wholly on screen there (nor the validation strip) and `_on_screen`
-        can never be true.  25 px taller gives back the 45 px viewport the
-        three route tests below were written against; the claim they make
-        is about the route, not about the minsize, and the minsize
-        consequence is recorded with the strip.
+        The minsize, 1040x600, and it is asserted rather than assumed.
+
+        History: when the workspace strip landed (25 px out of the left
+        column) the editor viewport at 1040x600 fell to 20 px against a 23 px
+        row, so no row could be wholly on screen and these tests ran at
+        1040x625 instead.  Stage 2 gave the pixels back -- Global Controls
+        lost a grid row and two paddings shrank -- and re-measured 2026-10-02
+        the viewport is 53 px (pkg_rlc/panels/panels_editor.py,
+        `_build_editor`).  So they are back at the minsize, with the
+        precondition checked: a route test that cannot put its row on screen
+        proves nothing.
         """
-        self.app.geometry("1040x625")
+        self.app.geometry("1040x600")
         self._settle()
+        row = self.app.ed_mp_table.data_row_widget(0)
+        self.assertGreaterEqual(self.app._ed_canvas.winfo_height(),
+                                row.winfo_height(),
+                                "the minsize viewport cannot hold one row")
 
     def test_clicking_scrolls_the_offending_row_into_view_and_focuses_it(self):
         """

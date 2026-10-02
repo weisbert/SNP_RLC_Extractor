@@ -45,7 +45,7 @@ def _coupling_k_array(Zmat: np.ndarray, freqs: np.ndarray,
 
 def _write_coupling_csv(fh, writer, tc: "TraceConfig", freqs) -> None:
     """
-    Mode-6 CSV block: Re/Im of every Z_ij, then M_nH and k for every unordered
+    Coupling CSV block: Re/Im of every Z_ij, then M_nH and k for every unordered
     pair, one row per frequency.  Every value keeps its physical sign; nothing
     is clipped to NaN except where it is genuinely undefined.
 

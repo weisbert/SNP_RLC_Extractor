@@ -323,6 +323,32 @@ class TestFrozenInfoString(unittest.TestCase):
 # ============================================================================
 
 
+def _type_plus(app, ports: str) -> None:
+    """Type `ports` into the '+' cell of the editor's first measurement-port
+    row through the cell's own variable -- which queues the deferred
+    auto-apply exactly as a keystroke does.  The 'Port A' field this replaces
+    is gone: every trace is the two tables now."""
+    table = app.ed_mp_table
+    if not table._rows:
+        table.add_row()
+    table._rows[0]["_vars"]["plus"].set(ports)
+
+
+def _type_gnd(app, ports: str) -> None:
+    """The same for the ground row (the GND field is a connection row)."""
+    table = app.ed_conn_table
+    for entry in table._rows:
+        if entry["_vars"]["kind"].get() == "ground":
+            entry["_vars"]["ports"].set(ports)
+            return
+    table.add_row({"kind": "ground", "ports": ports})
+
+
+def _plus(tc) -> str:
+    """The '+' side of a trace's first measurement port."""
+    return tc.mports[0].plus if tc.mports else ""
+
+
 class _Case(unittest.TestCase):
     """An App with one file and one calculated trace, selected."""
 
@@ -409,11 +435,14 @@ class TestFreezingFromTheApp(_Case):
     def test_an_edited_trace_cannot_be_frozen_until_it_is_recalculated(self):
         """
         End to end, through the editor, the way it actually happens: type a
-        different port into the field, do NOT press Calculate, right-click ->
+        different port into the ground row, do NOT press Calculate, right-click ->
         Freeze.  _on_freeze_trace flushes the editor first, which guarantees
         the freshest -- and unmeasured -- spec is the one that would be copied.
         """
-        self.app.ed_porta.set_value("2")
+        # Port 2 out of the ground row: a spec that will measure, and a
+        # different one.  (Typing it into the '+' cell instead would be a
+        # '+' port in a ground row, which the probe rules refuse.)
+        _type_gnd(self.app, "3-4")
         self.app._flush_editor_sync()
         self._settle()
         self.assertTrue(self.tc.stale, "the edit did not mark the trace stale")
@@ -432,7 +461,7 @@ class TestFreezingFromTheApp(_Case):
 
     def test_recalculating_makes_it_freezable_again(self):
         """The refusal has to be a step, not a wall."""
-        self.app.ed_porta.set_value("2")
+        _type_gnd(self.app, "3-4")
         self.app._flush_editor_sync()
         self._settle()
         self.app._on_calculate()
@@ -441,7 +470,8 @@ class TestFreezingFromTheApp(_Case):
         frozen = self._freeze()
         self.assertEqual(len(self.app.traces), 2)
         # And the snapshot's spec really is the one that produced its numbers.
-        self.assertEqual(frozen.port_a, "2")
+        self.assertEqual([(r.kind, r.ports) for r in frozen.conn_rows],
+                         [("ground", "3-4")])
         self.assertFalse(frozen.stale)
 
     def test_it_lands_in_the_results_table_straight_away(self):
@@ -475,8 +505,8 @@ class TestCalculateSkipsAFrozenTrace(_Case):
         """
         frozen = self._freeze()
         before = frozen.Z.copy()
-        self.app.ed_porta.set_value("2")
-        self.app.ed_gnd.set_value("1,3,4")
+        _type_plus(self.app, "2")
+        _type_gnd(self.app, "1,3,4")
         self._settle()
         self.app._on_calculate()
         self._settle()
@@ -544,9 +574,9 @@ class TestTheEditorCannotWriteAFrozenTrace(_Case):
         self._select(1)             # the snapshot
 
     def test_typing_a_port_does_not_reach_it(self):
-        self.app.ed_porta.set_value("3")
+        _type_plus(self.app, "3")
         self._settle()
-        self.assertEqual(self.frozen.port_a, "1")
+        self.assertEqual(_plus(self.frozen), "1")
 
     def test_typing_a_label_does_not_reach_it(self):
         keep = self.frozen.label
@@ -560,16 +590,16 @@ class TestTheEditorCannotWriteAFrozenTrace(_Case):
         the one that forgot would relabel a snapshot with whatever the editor
         happened to be showing.
         """
-        self.app.ed_porta.set_value("4")
+        _type_plus(self.app, "4")
         self.app._sync_editor_to_trace(self.frozen)
-        self.assertEqual(self.frozen.port_a, "1")
+        self.assertEqual(_plus(self.frozen), "1")
 
     def test_calculate_does_not_sync_it_either(self):
-        self.app.ed_porta.set_value("3")
+        _type_plus(self.app, "3")
         self._settle()
         self.app._on_calculate()
         self._settle()
-        self.assertEqual(self.frozen.port_a, "1")
+        self.assertEqual(_plus(self.frozen), "1")
 
     def test_the_note_is_on_screen_and_says_what_to_do(self):
         self.assertTrue(self.app.ed_frozen_note.winfo_manager(),
@@ -595,8 +625,9 @@ class TestTheEditorCannotWriteAFrozenTrace(_Case):
         """
         It is a row of the FORM, which is inside a Canvas and is already many
         times taller than its viewport -- NOT a line in the footer, whose whole
-        spare budget is one line and mode 5 already spends it.  Measured at the
-        1040x600 minsize: the canvas stays mapped and the footer does not grow.
+        spare budget is one line and the summary strip already spends it.
+        Measured at the 1040x600 minsize: the canvas stays mapped and the
+        footer does not grow.  One form now -- there are no modes to walk.
         """
         self.app.deiconify()
         self.app.geometry("1040x600")
@@ -604,18 +635,13 @@ class TestTheEditorCannotWriteAFrozenTrace(_Case):
         foot = self.app._ed_foot
         button = [w for w in foot.winfo_children()
                   if w.winfo_class() == "TButton"][0]
-        for mode in (1, 2, 3, 5, 6):
-            with self.subTest(mode=mode):
-                self.app.ed_mode_var.set(mode)
-                self.app._on_mode_changed()
-                self._settle()
-                self.assertEqual(self.app._ed_canvas.winfo_ismapped(), 1,
-                                 f"mode {mode}: the editor form disappeared")
-                self.assertGreater(self.app._ed_canvas.winfo_height(), 0)
-                self.assertEqual(button.winfo_ismapped(), 1)
-                self.assertLessEqual(foot.winfo_reqheight(),
-                                     button.winfo_reqheight() + 6,
-                                     "the footer grew a row")
+        self.assertEqual(self.app._ed_canvas.winfo_ismapped(), 1,
+                         "the editor form disappeared")
+        self.assertGreater(self.app._ed_canvas.winfo_height(), 0)
+        self.assertEqual(button.winfo_ismapped(), 1)
+        self.assertLessEqual(foot.winfo_reqheight(),
+                             button.winfo_reqheight() + 6,
+                             "the footer grew a row")
 
     def test_selecting_a_live_trace_puts_the_editor_back(self):
         self._select(0)
@@ -623,9 +649,9 @@ class TestTheEditorCannotWriteAFrozenTrace(_Case):
                          "the frozen note stayed on a live trace")
         for w in self.app._ed_lockable:
             self.assertNotIn("disabled", w.state(), str(w))
-        self.app.ed_porta.set_value("2")
+        _type_plus(self.app, "2")
         self._settle()
-        self.assertEqual(self.tc.port_a, "2")
+        self.assertEqual(_plus(self.tc), "2")
 
 
 @unittest.skipUnless(TK_OK, "no Tk display available")
@@ -767,9 +793,9 @@ class TestTheContextMenu(_Case):
         self._settle()
         self.assertFalse(frozen.frozen)
         self.assertFalse(self.app.ed_frozen_note.winfo_manager())
-        self.app.ed_porta.set_value("2")
+        _type_plus(self.app, "2")
         self._settle()
-        self.assertEqual(frozen.port_a, "2",
+        self.assertEqual(_plus(frozen), "2",
                          "the editor is still refusing an unfrozen trace")
 
     def test_an_unfrozen_trace_is_recomputed_again(self):

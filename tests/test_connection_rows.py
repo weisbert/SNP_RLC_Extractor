@@ -263,23 +263,55 @@ class TestRoundTripIdempotent(unittest.TestCase):
         by definition (resolve_meas_ports applies exactly that alias), so the
         raw dataclasses differ while the meaning does not.  Asserting on the
         resolved ports is the comparison that means something.
+
+        'A' is a RESERVED name in the table since the modes were merged (the
+        probe rules refuse it), so the rows are renamed the way the editor's
+        'Edit as text…' import renames them -- to the first free P<n> --
+        before they are built.  The name is a label; the comparison maps it.
         """
         for spec in self.SPECS:
             with self.subTest(spec=spec):
                 direct = parse_custom_termination_text(spec)
-                viarows = build_terminations_rows(*dsl_text_to_rows(spec))
+                mports, conn, extra = dsl_text_to_rows(spec)
+                renamed, alias = _rename_legacy_a(mports)
+                viarows = build_terminations_rows(renamed, conn, extra)
                 self.assertEqual(direct.per_port.keys(), viarows.per_port.keys())
                 for port, term in direct.per_port.items():
                     other = viarows.per_port[port]
                     self.assertIs(type(term), type(other), f"port {port}")
                 self.assertEqual(
-                    [(mp.name, mp.plus, mp.minus)
+                    [(alias.get(mp.name, mp.name), mp.plus, mp.minus)
                      for mp in resolve_meas_ports(direct, 16)],
                     [(mp.name, mp.plus, mp.minus)
                      for mp in resolve_meas_ports(viarows, 16)])
                 self.assertEqual(
                     [(c.port_i, c.port_j) for c in direct.couplings],
                     [(c.port_i, c.port_j) for c in viarows.couplings])
+
+    def test_an_imported_A_row_is_refused_until_it_is_renamed(self):
+        """The rule the rename above exists for, stated on its own."""
+        mports, conn, extra = dsl_text_to_rows(self.SPECS[0])
+        self.assertEqual([r.name for r in mports], ["A"])
+        with self.assertRaises(ValueError) as cm:
+            build_terminations_rows(mports, conn, extra)
+        self.assertIn("'A' is reserved", str(cm.exception))
+
+
+def _rename_legacy_a(mports) -> tuple:
+    """(rows with 'A' renamed to the first free P<n>, {'A': that name}).
+    The editor does the same on 'Edit as text…' import; this is a Tk-free
+    copy for the text-level tests, not the implementation under test."""
+    taken = {r.name.strip() for r in mports}
+    n = 1
+    while f"P{n}" in taken:
+        n += 1
+    out, alias = [], {}
+    for r in mports:
+        if r.name.strip().upper() == "A":
+            alias[r.name.strip()] = f"P{n}"
+            r = MeasPortRow(name=f"P{n}", plus=r.plus, minus=r.minus)
+        out.append(r)
+    return out, alias
 
 
 class TestRowsReproduceNamedModes(unittest.TestCase):
@@ -288,6 +320,13 @@ class TestRowsReproduceNamedModes(unittest.TestCase):
 
     These are the cases the golden reference cannot see: it calls the builders
     directly, so a table that diverges here would leave every golden case green.
+
+    Since the editor's modes were merged (docs/design_workspaces.md § 3) the
+    rows are what the migration WRITES for each old mode: the measurement port
+    is called 'P1' ('A' is reserved now), and the old "ground wins" overlap on
+    the '+' side is refused by the probe rules -- the migration drops the
+    grounded port from the '+' cell instead, which is exactly what ground
+    winning did, so the number is the same.  Bit for bit: np.array_equal.
     """
 
     @classmethod
@@ -299,41 +338,49 @@ class TestRowsReproduceNamedModes(unittest.TestCase):
     def _assert_same_Z(self, term_a, term_b, msg=""):
         Za, _ = compute_z(self.Y, self.ts.freqs, term_a)
         Zb, _ = compute_z(self.Y, self.ts.freqs, term_b)
-        err = float(np.max(np.abs(Za - Zb)))
-        self.assertLess(err, 1e-15, f"{msg}: max|dZ| = {err:.3e}")
+        np.testing.assert_array_equal(Za, Zb, err_msg=msg)
 
     def test_reproduces_mode1(self):
         self._assert_same_Z(
             build_terminations_mode1([1], [2, 3, 4]),
-            build_terminations_rows([MeasPortRow("A", "1", "")],
+            build_terminations_rows([MeasPortRow("P1", "1", "")],
                                     [ConnectionRow(kind="ground", ports="2,3,4")]),
             "mode1")
 
     def test_reproduces_mode1_with_a_range(self):
         self._assert_same_Z(
             build_terminations_mode1([1], [2, 3, 4]),
-            build_terminations_rows([MeasPortRow("A", "1", "")],
+            build_terminations_rows([MeasPortRow("P1", "1", "")],
                                     [ConnectionRow(kind="ground", ports="2-4")]),
             "mode1 range")
 
-    def test_reproduces_mode1_ground_wins_overlap(self):
-        """Port 2 is in BOTH the signal group and GND. Ground must win."""
+    def test_mode1_overlap_is_refused_and_migrates_to_the_same_Z(self):
+        """Port 2 is in BOTH the signal group and GND.  Mode 1 let ground win;
+        the table refuses the overlap, and the migrated row (port 2 dropped
+        from '+') computes what ground winning computed."""
+        with self.assertRaises(ValueError) as cm:
+            build_terminations_rows([MeasPortRow("P1", "1,2", "")],
+                                    [ConnectionRow(kind="ground", ports="2,3")])
+        self.assertIn("Port 2", str(cm.exception))
         self._assert_same_Z(
             build_terminations_mode1([1, 2], [2, 3]),
-            build_terminations_rows([MeasPortRow("A", "1,2", "")],
+            build_terminations_rows([MeasPortRow("P1", "1", "")],
                                     [ConnectionRow(kind="ground", ports="2,3")]),
             "mode1 overlap")
 
     def test_reproduces_mode2(self):
         self._assert_same_Z(
             build_terminations_mode2([1, 2], [3, 4], []),
-            build_terminations_rows([MeasPortRow("A", "1,2", "3,4")], []),
+            build_terminations_rows([MeasPortRow("P1", "1,2", "3,4")], []),
             "mode2")
 
-    def test_reproduces_mode2_ground_wins_overlap(self):
+    def test_mode2_overlap_is_refused_and_migrates_to_the_same_Z(self):
+        with self.assertRaises(ValueError):
+            build_terminations_rows([MeasPortRow("P1", "1,2", "3")],
+                                    [ConnectionRow(kind="ground", ports="2,4")])
         self._assert_same_Z(
             build_terminations_mode2([1, 2], [3], [2, 4]),
-            build_terminations_rows([MeasPortRow("A", "1,2", "3")],
+            build_terminations_rows([MeasPortRow("P1", "1", "3")],
                                     [ConnectionRow(kind="ground", ports="2,4")]),
             "mode2 overlap")
 
@@ -341,7 +388,7 @@ class TestRowsReproduceNamedModes(unittest.TestCase):
         self._assert_same_Z(
             build_terminations_mode3([1], [2], [], parse_short_pairs("3-4")),
             build_terminations_rows(
-                [MeasPortRow("A", "1", "2")],
+                [MeasPortRow("P1", "1", "2")],
                 [ConnectionRow(kind="short", ports="3", to="4")]),
             "mode3")
 
@@ -349,7 +396,7 @@ class TestRowsReproduceNamedModes(unittest.TestCase):
         self._assert_same_Z(
             build_terminations_mode3([1], [4], [], parse_short_pairs("1-2-3")),
             build_terminations_rows(
-                [MeasPortRow("A", "1", "4")],
+                [MeasPortRow("P1", "1", "4")],
                 [ConnectionRow(kind="short", ports="1", to="2,3")]),
             "mode3 chained short")
 
@@ -360,13 +407,13 @@ class TestRowsReproduceNamedModes(unittest.TestCase):
             "1 signal A\n2 signal B\n3 lumped_to_gnd R=50\n"
             "3 lumped_between 4 R=0.01 L=0.1n C=1p\n")
         rows = build_terminations_rows(
-            [MeasPortRow("A", "1", "2")],
+            [MeasPortRow("P1", "1", "2")],
             [ConnectionRow(kind="rlc_gnd", ports="3", R="50"),
              ConnectionRow(kind="rlc_between", ports="3", to="4",
                            R="0.01", L="0.1n", C="1p")])
         Za, _ = compute_z(Y, ts.freqs, hand)
         Zb, _ = compute_z(Y, ts.freqs, rows)
-        self.assertLess(float(np.max(np.abs(Za - Zb))), 1e-15)
+        np.testing.assert_array_equal(Za, Zb)
 
 
 class TestRowsValidation(unittest.TestCase):

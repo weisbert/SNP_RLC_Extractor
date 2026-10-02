@@ -50,8 +50,9 @@ Two files over the band they share: the S-level and the L/Q/R-level difference, 
 
 ## [`editor_and_tables.md`](editor_and_tables.md) — 59k
 
-The Mode 5 / Mode 6 row editor, per-kind row shape, named nets and the parallel-stamp refusal, auto-apply and the style picker, and the Ports & Roles window.
+The ONE row model (no modes since 2026-10-02: templates, the probe rules by side, migration with `table_version`), the connection-table editor, per-kind row shape, named nets and the parallel-stamp refusal, auto-apply and the style picker, and the Ports & Roles window.
 
+- The one row model (stage 2, 2026-10-02) — read this before the rest
 - Connection table (the Mode 5 / Mode 6 row editor)
 - Per-kind row shape, nets, and the parallel stamp (round 1)
 - Auto-apply, the style picker, plot visibility
@@ -103,7 +104,7 @@ The Log tab and its badge, the three views and the 144-column budget, the Digits
 
 ## [`session_and_help.md`](session_and_help.md) — 12k
 
-The session file as a pure dict round trip (config never results), and the Help window whose prose lives in `docs/help/`.
+The session file as a pure dict round trip (config never results; every old trace migrated eagerly on load, `table_version`, `mode` always 5), and the Help window whose prose lives in `docs/help/` — nine task tabs since 2026-10-02.
 
 - The session file (Save Config / Load Config / autosave)
 - The Help window's prose lives in `docs/help/`, not in Python

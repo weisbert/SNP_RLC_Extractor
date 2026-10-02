@@ -29,6 +29,7 @@ from pkg_rlc.physics.core import (
     CONN_KINDS_WITH_NET,
     CONN_KINDS_WITH_RLC,
     ConnectionRow,
+    MeasPortRow,
 )
 
 
@@ -503,3 +504,77 @@ def conn_hint_text(rows: Sequence, tagged: bool = False) -> tuple:
 #: constant because the Help text and the tests both want "all of it" and
 #: neither has rows to hand.
 CONN_TABLE_HINT = conn_hint_text(())[1]
+
+
+# ============================================================================
+# The editor's templates -- the old modes, as rows (docs/design_workspaces.md
+# § 3.2)
+# ============================================================================
+#
+# There is ONE editor now: a measurement-port table and a connections table.
+# The five mode radios it used to have are four ways of FILLING those two
+# tables, and what a template leaves behind is the table itself -- nothing is
+# remembered about which template it was, so there is no second description
+# of the spec that can drift from the rows.
+
+#: The fixed line under the connections table.  The one rule the tables cannot
+#: show by themselves: a port with no row is not "unspecified", it is an open
+#: circuit, and the reduction eliminates it as one.
+CONN_OPEN_NOTE = "Ports not listed anywhere are OPEN."
+
+#: The Template combobox's resting text.  It goes back to this after every
+#: use, because a template is an action, not a state of the trace.
+TEMPLATE_PROMPT = "choose…"
+
+TEMPLATE_PORT_TO_GND = "Port to GND"
+TEMPLATE_BETWEEN = "Between two ports"
+TEMPLATE_SHORTED_LOOP = "Loop with shorted far end"
+TEMPLATE_COUPLING = "Several nets (coupling)"
+
+#: In the order the combobox lists them.
+EDITOR_TEMPLATES = (TEMPLATE_PORT_TO_GND, TEMPLATE_BETWEEN,
+                    TEMPLATE_SHORTED_LOOP, TEMPLATE_COUPLING)
+
+
+def _ports_that_exist(ports: Sequence[int], nports) -> str:
+    """'3,4' with the ports past the file's count dropped; '' when none is
+    left, so a template on a small file leaves the cell to fill rather than
+    writing a port the file does not have.  No limit when `nports` is None
+    (no file yet)."""
+    keep = [p for p in ports if nports is None or p <= int(nports)]
+    return ",".join(str(p) for p in keep)
+
+
+def template_rows(name: str, nports=None) -> tuple:
+    """
+    (measurement-port rows, connection rows) the template `name` fills the
+    editor with, for a file of `nports` ports.  Raises KeyError for a name
+    that is not in EDITOR_TEMPLATES.
+
+    * Port to GND: `P1 +1`, no connections (the table's own blank row is
+      where the ground goes).
+    * Between two ports: `P1 +1 -2`.
+    * Loop with shorted far end: `P1 +1 -2` and ONE short row tying 3 and 4
+      (the single-cell spelling, `ports='3,4'`, `to` empty).
+    * Several nets (coupling): `P1 +1` and `P2 +2`.
+    """
+    def mp(nm, plus, minus=()):
+        return MeasPortRow(name=nm, plus=_ports_that_exist(plus, nports),
+                           minus=_ports_that_exist(minus, nports))
+
+    if name == TEMPLATE_PORT_TO_GND:
+        return [mp("P1", (1,))], []
+    if name == TEMPLATE_BETWEEN:
+        return [mp("P1", (1,), (2,))], []
+    if name == TEMPLATE_SHORTED_LOOP:
+        tied = _ports_that_exist((3, 4), nports)
+        # A one-port "short" ties nothing, so on a file too small for both
+        # far-end ports the row is still there -- its Kind says what goes in
+        # it -- with the port cell left for the user to fill.
+        if "," not in tied:
+            tied = ""
+        return [mp("P1", (1,), (2,))], [ConnectionRow(kind="short",
+                                                      ports=tied)]
+    if name == TEMPLATE_COUPLING:
+        return [mp("P1", (1,)), mp("P2", (2,))], []
+    raise KeyError(name)

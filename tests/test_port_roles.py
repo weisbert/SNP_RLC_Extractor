@@ -49,10 +49,12 @@ from pkg_rlc.physics.core import (  # noqa: E402
     name_prefix,
     open_name_clusters,
     open_port_name_messages,
+    parse_custom_termination_text,
     parse_port_range,
     parse_touchstone,
     port_roles,
     row_sources,
+    rows_to_dsl_text,
 )
 from pkg_rlc.frontend.app import (  # noqa: E402
     App,
@@ -483,41 +485,60 @@ class TestValidationMessagesWiring(unittest.TestCase):
 # ============================================================================
 
 class TestTraceRoleRows(unittest.TestCase):
+    """
+    Any trace -> the rows the window classifies.  There are no modes any more
+    (docs/design_workspaces.md § 3): an old-shape trace is read through the
+    one-row-model migration, so its sources are the ROWS the editor now shows
+    it as -- 'probe row 1 (+)', 'conn row 1' -- not the retired field names
+    ('Signal / Port A', 'GND / VDD', 'Short Pairs') that no screen has any
+    more.
+    """
+
     def _roles(self, tc, nports, names=None):
         mports, conn, extra, src = _trace_role_rows(tc)
-        term = build_terminations_rows(mports, conn, extra, nports=nports)
+        try:
+            term = build_terminations_rows(mports, conn, extra, nports=nports)
+        except ValueError:
+            # A REFUSED spec is still shown by the window -- that is the
+            # App's fallback (`_port_roles_data`), the DSL read without the
+            # probe rules, so the refused port is visible and flagged.
+            term = parse_custom_termination_text(
+                rows_to_dsl_text(mports, conn, extra))
         return port_roles(term, nports, names, src), mports
 
-    def test_mode_1(self):
+    def test_an_old_port_to_gnd_trace(self):
         tc = TraceConfig(mode=1, port_a="1", gnd_ports="3-4")
         roles, _ = self._roles(tc, 5)
         self.assertEqual([r.role for r in roles],
                          [ROLE_PROBE_PLUS, ROLE_OPEN, ROLE_GROUND,
                           ROLE_GROUND, ROLE_OPEN])
-        self.assertEqual(roles[0].source, "Signal / Port A")
-        self.assertEqual(roles[2].source, "GND / VDD")
+        self.assertEqual(roles[0].source, "probe row 1 (+)")
+        self.assertEqual(roles[2].source, "conn row 1")
 
-    def test_mode_2_uses_the_minus_side_for_port_B(self):
+    def test_an_old_A_B_trace_uses_the_minus_side_for_port_B(self):
         tc = TraceConfig(mode=2, port_a="1", port_b="2", gnd_ports="4")
         roles, _ = self._roles(tc, 4)
         self.assertEqual([r.role for r in roles],
                          [ROLE_PROBE_PLUS, ROLE_PROBE_MINUS, ROLE_OPEN,
                           ROLE_GROUND])
-        self.assertEqual(roles[1].source, "Port B")
+        self.assertEqual(roles[1].source, "probe row 1 (−)")
 
-    def test_mode_3_short_pairs_become_shorted_ports(self):
+    def test_old_short_pairs_become_shorted_ports(self):
         tc = TraceConfig(mode=3, port_a="1", port_b="2", short_pairs="3-4")
         roles, _ = self._roles(tc, 4)
         self.assertEqual([r.role for r in roles[2:]],
                          [ROLE_SHORTED, ROLE_SHORTED])
-        self.assertEqual(roles[2].source, "Short Pairs")
+        self.assertEqual(roles[2].source, "conn row 1")
 
-    def test_mode_3_survives_a_half_typed_short_field(self):
+    def test_a_half_typed_short_field_migrates_and_does_not_raise(self):
+        """It used to be skipped by the window's own rows; now the migration
+        carries it into a short row as typed, where the editor's strip names
+        it -- and reading the rows must not raise."""
         tc = TraceConfig(mode=3, port_a="1", port_b="2", short_pairs="3-")
-        roles, _ = self._roles(tc, 4)
-        self.assertEqual(roles[0].role, ROLE_PROBE_PLUS)
+        mports, conn, _extra, _src = _trace_role_rows(tc)
+        self.assertEqual([(r.plus, r.minus) for r in mports], [("1", "2")])
 
-    def test_mode_6_reads_the_table_and_the_gnd_field(self):
+    def test_an_old_coupling_trace_reads_the_table_and_the_gnd_field(self):
         tc = TraceConfig(mode=6,
                          mports=[MeasPortRow("a1", "1", "2"),
                                  MeasPortRow("a2", "3", "4")],
@@ -527,48 +548,47 @@ class TestTraceRoleRows(unittest.TestCase):
                          [ROLE_PROBE_PLUS, ROLE_PROBE_MINUS, ROLE_PROBE_PLUS,
                           ROLE_PROBE_MINUS, ROLE_GROUND])
         self.assertEqual(roles[0].source, "probe row 1 (+)")
-        self.assertEqual(roles[4].source, "GND / VDD")
+        self.assertEqual(roles[4].source, "conn row 1")
 
-    def test_mode_6_probe_and_ground_overlap_is_SHOWN_not_refused(self):
+    def test_a_grounded_plus_port_is_SHOWN_and_flagged_as_refused(self):
         """
-        build_terminations_coupling RAISES on this, which is right for
-        Calculate and exactly wrong for a window whose job is to show what was
-        typed.  The window takes the permissive rows path and flags the row.
+        build_terminations_rows RAISES on this, which is right for Calculate
+        and exactly wrong for a window whose job is to show what was typed.
+        The window reads it without the probe rules and flags the row.
         """
-        tc = TraceConfig(mode=6, mports=[MeasPortRow("a1", "1", "2")],
-                         gnd_ports="1")
+        tc = TraceConfig(mode=5, table_version=1,
+                         mports=[MeasPortRow("a1", "1", "2")],
+                         conn_rows=[ConnectionRow(kind="ground", ports="1")])
         roles, mports = self._roles(tc, 2)
         self.assertEqual(roles[0].role, ROLE_GROUND)
-        self.assertEqual(_role_warnings(roles, mports, coupling=True)[1],
+        self.assertEqual(_role_warnings(roles, mports)[1],
                          WARN_PROBE_AND_GROUND_COUPLING)
 
-    def test_mode_6_is_told_that_mode_6_refuses_it(self):
+    def test_the_plus_side_wording_says_it_is_refused(self):
         """
-        Showing it is right; stating the OTHER mode's rule while showing it is
-        not.  Measured: the window said "the ground row wins", which reads as
-        "legal, and I know which side won", and Calculate then refused the
-        trace outright -- "Port(s) 1 are listed both as a probe (measurement
-        port 'c1') and as ground".  Mode 6 has neither a validation strip nor a
-        footer strip, so this row is the only thing on screen about it.
+        Stating a rule the trace does not follow is worse than saying
+        nothing: the window once said "the ground row wins" about a spec
+        Calculate then refused outright.
         """
         msg = WARN_PROBE_AND_GROUND_COUPLING
         self.assertNotIn("the ground row wins", msg)
-        self.assertIn("refuses", msg)
+        self.assertIn("refused", msg)
         # It says what to do, not just that it is broken.
-        self.assertIn("drop it from one list", msg)
+        self.assertIn("drop it from one of the two", msg)
 
-    def test_mode_5_keeps_the_precedence_wording(self):
-        """The two rules are both pinned and intended; the window has to say
-        which one it is showing."""
-        tc = TraceConfig(mode=5, mports=[MeasPortRow("a1", "1", "2")],
-                         conn_rows=[ConnectionRow(kind="ground", ports="1")])
+    def test_a_grounded_minus_side_says_the_whole_side_is_at_gnd(self):
+        """The other side of the one rule: computed, as '+' to GND."""
+        tc = TraceConfig(mode=5, table_version=1,
+                         mports=[MeasPortRow("a1", "1", "2")],
+                         conn_rows=[ConnectionRow(kind="ground", ports="2")])
         roles, mports = self._roles(tc, 2)
-        self.assertEqual(_role_warnings(roles, mports, coupling=False)[1],
+        self.assertEqual(_role_warnings(roles, mports)[2],
                          WARN_PROBE_AND_GROUND)
-        self.assertIn("the ground row wins", WARN_PROBE_AND_GROUND)
+        self.assertNotIn("the ground row wins", WARN_PROBE_AND_GROUND)
 
-    def test_mode_5_is_the_tables_verbatim(self):
-        tc = TraceConfig(mode=5, mports=[MeasPortRow("t", "1", "2")],
+    def test_a_row_model_trace_is_the_tables_verbatim(self):
+        tc = TraceConfig(mode=5, table_version=1,
+                         mports=[MeasPortRow("t", "1", "2")],
                          conn_rows=[ConnectionRow(kind="ground", ports="3")],
                          extra_lines="4 vdd\n")
         mports, conn, extra, src = _trace_role_rows(tc)
@@ -577,7 +597,7 @@ class TestTraceRoleRows(unittest.TestCase):
         self.assertEqual(extra, "4 vdd\n")
         self.assertEqual(src[4], "text line 1")
 
-    def test_an_empty_named_mode_produces_no_rows_at_all(self):
+    def test_an_empty_old_trace_produces_no_rows_at_all(self):
         tc = TraceConfig(mode=1, port_a="", gnd_ports="")
         mports, conn, extra, src = _trace_role_rows(tc)
         self.assertEqual((mports, conn, extra, src), ([], [], "", {}))
@@ -896,30 +916,29 @@ class TestWindowWarnings(_WindowCase):
         win = self._open()
         self.assertIn("warn", win.tree.item("1", "tags"))
 
-    def test_the_overlap_message_follows_the_MODE(self):
+    def test_the_overlap_message_follows_the_SIDE(self):
         """
-        The window renders every mode through the permissive rows path, so it
-        shows the overlap in Mode 6 too -- and then has to state Mode 6's rule,
-        not Mode 5's.  This is the wiring: the mode reaches _role_warnings.
+        One rule now, decided by which side of the measurement port the
+        grounded port is on: '+' is refused, '-' folds the whole side into
+        ground.  The window shows a REFUSED spec too (it reads the rows
+        without the probe rules when the build refuses) -- otherwise the one
+        port the user has to fix would be the one missing from the list.
         """
         self.tc.mports = [MeasPortRow("c1", "9", ""),
                           MeasPortRow("c2", "10", "")]
-        self.tc.conn_rows = []
+        self.tc.conn_rows = [ConnectionRow(kind="ground", ports="9")]
         self.tc.extra_lines = ""
-        self.tc.gnd_ports = "9"
-
-        self.tc.mode = 6
         self.app._on_trace_selected()
         win = self._open()
         win.tree.selection_set("9")
         self._settle()
         self.assertIn(WARN_PROBE_AND_GROUND_COUPLING, win.detail.cget("text"))
 
-        self.tc.mode = 5
-        self.tc.conn_rows = [ConnectionRow(kind="ground", ports="9")]
+        self.tc.mports = [MeasPortRow("c1", "9", "10")]
+        self.tc.conn_rows = [ConnectionRow(kind="ground", ports="10")]
         self.app._on_trace_selected()
         self._settle()
-        win.tree.selection_set("9")
+        win.tree.selection_set("10")
         self._settle()
         self.assertIn(WARN_PROBE_AND_GROUND, win.detail.cget("text"))
 
@@ -948,22 +967,16 @@ class TestWindowLiveUpdate(_WindowCase):
         self.app._refresh_port_roles_window()       # must not raise
         self.assertTrue(win.winfo_exists())
 
-    def test_a_mode_1_trace_keeps_the_window_current(self):
-        """
-        Modes 1/2/3 have no tables, and the strips used to refresh only in
-        mode 5 -- so without _strips_wanted the window froze on the exact edit
-        it exists to check.
-        """
-        self.tc.mode = 1
-        self.app._on_trace_selected()
-        win = self._open()
-        self.app.ed_gnd.set_value("1-8")
-        self._settle()
-        self.assertEqual(win.tree.item("8", "values")[2], ROLE_GROUND)
+    # test_a_mode_1_trace_keeps_the_window_current was DELETED with the
+    # modes: it pinned that typing into the mode-1 GND FIELD (which had no
+    # table, so the strips did not refresh by themselves) still re-rendered
+    # the window.  There is no GND field and no table-free form left; every
+    # edit is a table edit, which test_editing_the_spec_re_renders_the_window
+    # covers.
 
 
 @unittest.skipUnless(TK_OK, "no Tk display available")
-class TestWriteBackMode5(_WindowCase):
+class TestWriteBack(_WindowCase):
     MODE = 5
 
     def test_ground_lands_as_a_collapsed_range_in_a_new_row(self):
@@ -1035,18 +1048,27 @@ class TestWriteBackMode5(_WindowCase):
 
 
 @unittest.skipUnless(TK_OK, "no Tk display available")
-class TestWriteBackOtherModes(_WindowCase):
+class TestWriteBackOnAnOldShapeTrace(_WindowCase):
+    """
+    'Send to ground' / 'Set as probe +' used to write into the GND / Port A
+    FIELDS of a trace in mode 1/2/3/6.  Those fields are gone: an old trace is
+    moved into the tables when it is selected, and the window writes ROWS for
+    it exactly as for any other.
+    """
+
     MODE = 6
 
-    def test_mode_6_ground_lands_in_the_gnd_field(self):
+    def test_ground_lands_in_a_connections_row(self):
         win = self._open()
         win.tree.selection_set("11", "12")
         self._settle()
         win._send("ground")
         self._settle()
-        self.assertEqual(self.app.ed_gnd.get_value(), "1-7,11-12")
+        self.assertIn(("ground", "11-12"),
+                      [(r.kind, r.ports)
+                       for r in self.app.ed_conn_table.get_rows()])
 
-    def test_mode_6_probe_lands_in_the_measurement_port_table(self):
+    def test_probe_lands_in_the_measurement_port_table(self):
         win = self._open()
         win.tree.selection_set("11")
         self._settle()
@@ -1054,21 +1076,28 @@ class TestWriteBackOtherModes(_WindowCase):
         self._settle()
         self.assertIn("11", [r.plus for r in self.app.ed_mp_table.get_rows()])
 
-    def test_mode_1_uses_the_two_fields(self):
+    def test_an_old_port_a_trace_gets_rows_too(self):
         self.tc.mode = 1
+        self.tc.table_version = 0
+        self.tc.port_a = "9"
         self.tc.gnd_ports = ""
+        self.tc.mports = []
+        self.tc.conn_rows = []
         self.app._on_trace_selected()
         win = self._open()
         win.tree.selection_set("1", "2", "3")
         self._settle()
         win._send("ground")
         self._settle()
-        self.assertEqual(self.app.ed_gnd.get_value(), "1-3")
+        self.assertIn(("ground", "1-3"),
+                      [(r.kind, r.ports)
+                       for r in self.app.ed_conn_table.get_rows()])
         win.tree.selection_set("11")
         self._settle()
         win._send("probe+")
         self._settle()
-        self.assertEqual(self.app.ed_porta.get_value(), "9,11")
+        self.assertEqual([r.plus for r in self.app.ed_mp_table.get_rows()],
+                         ["9", "11"])
 
 
 if __name__ == "__main__":

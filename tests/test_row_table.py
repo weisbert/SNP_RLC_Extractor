@@ -268,16 +268,18 @@ class TestLegacyMportMigration(unittest.TestCase):
 
 
 @unittest.skipUnless(TK_OK, "no Tk display available")
-class TestEveryModeKeepsItsFurniture(unittest.TestCase):
+class TestEveryTemplateKeepsItsFurniture(unittest.TestCase):
     """
     pack UNMAPS what does not fit, starting from the END.
 
     A fixed-size section packed after an expand=True sibling does not get
-    clipped -- it disappears, winfo_ismapped() == 0. That is how mode 6 once
-    shipped with Calculate All & Plot / Export CSV / Help entirely off screen
-    while modes 1/2/3/5 looked fine, which made it read as flaky rather than
-    broken. Stage 3 makes the mode-5 form the tallest of the lot, so every mode
-    gets checked, on a MAPPED window (ismapped() is meaningless otherwise).
+    clipped -- it disappears, winfo_ismapped() == 0. That is how the old
+    coupling mode once shipped with Calculate All & Plot / Export CSV / Help
+    entirely off screen while the other modes looked fine, which made it read
+    as flaky rather than broken.  The modes are gone (docs/design_workspaces.md
+    § 3); the four TEMPLATES are what now gives the form its different shapes
+    (one or two measurement-port rows, a short row or none), so every one is
+    checked, on a MAPPED window (ismapped() is meaningless otherwise).
 
     BOTH geometries are needed. Measured, by moving the Global Controls pack()
     back after the editor's: at 1200x800 the left panel is still tall enough
@@ -293,10 +295,14 @@ class TestEveryModeKeepsItsFurniture(unittest.TestCase):
         for child in widget.winfo_children():
             if pred(child):
                 out.append(child)
-            TestEveryModeKeepsItsFurniture._find(child, pred, out)
+            TestEveryTemplateKeepsItsFurniture._find(child, pred, out)
         return out
 
-    def test_every_mode_keeps_global_controls_apply_and_its_tables(self):
+    def test_every_template_keeps_global_controls_the_footer_and_both_tables(
+            self):
+        from unittest import mock
+        import pkg_rlc.panels.panels_editor as panels_editor
+        from pkg_rlc.present.conntable import EDITOR_TEMPLATES
         app = App()
         try:
             app.deiconify()
@@ -311,11 +317,12 @@ class TestEveryModeKeepsItsFurniture(unittest.TestCase):
                                   and str(w.cget("text")) ==
                                   "Calculate This Trace")[0]
             for geom in self.GEOMETRIES:
-                for mode in (1, 2, 3, 5, 6):
-                    with self.subTest(geom=geom, mode=mode):
+                for name in EDITOR_TEMPLATES:
+                    with self.subTest(geom=geom, template=name), (
+                            mock.patch.object(panels_editor.messagebox,
+                                              "askyesno", return_value=True)):
                         app.geometry(geom)
-                        app.ed_mode_var.set(mode)
-                        app._on_mode_changed()
+                        self.assertTrue(app.apply_template(name))
                         for _ in range(3):
                             app.update_idletasks()
                             app.update()
@@ -323,12 +330,10 @@ class TestEveryModeKeepsItsFurniture(unittest.TestCase):
                                          "Global Controls")
                         self.assertEqual(foot_btn.winfo_ismapped(), 1,
                                          "editor footer button")
-                        self.assertEqual(app.ed_mp_table.winfo_ismapped(),
-                                         1 if mode in (5, 6) else 0,
+                        self.assertEqual(app.ed_mp_table.winfo_ismapped(), 1,
                                          "measurement-port table")
                         self.assertEqual(app.ed_conn_table.winfo_ismapped(),
-                                         1 if mode == 5 else 0,
-                                         "connections table")
+                                         1, "connections table")
         finally:
             app.destroy()
 
@@ -404,6 +409,11 @@ class TestLegacyCustomTextMigration(unittest.TestCase):
         """
         The one that matters: whatever route the text takes into the tables,
         the resulting TerminationSet is the same one it produced before.
+
+        Through the WHOLE migration (`migrate_to_rows`), which is what a load
+        runs: a legacy 'A' group comes out renamed to 'P1' -- 'A' / 'B' are
+        reserved names in the one table -- so the measurement ports are
+        compared by what they PROBE, and a name only where it was not 'A'.
         """
         specs = [
             self.FLIPPING,
@@ -420,7 +430,7 @@ class TestLegacyCustomTextMigration(unittest.TestCase):
             with self.subTest(spec=spec):
                 direct = parse_custom_termination_text(spec)
                 tc = TraceConfig(mode=5, custom_text=spec)
-                tc.migrate_legacy_custom_text()
+                tc.migrate_to_rows()
                 viarows = build_terminations_rows(tc.mports, tc.conn_rows,
                                                   tc.extra_lines)
                 self.assertEqual(direct.per_port.keys(), viarows.per_port.keys())
@@ -430,11 +440,13 @@ class TestLegacyCustomTextMigration(unittest.TestCase):
                 self.assertEqual(
                     [(c.port_i, c.port_j) for c in direct.couplings],
                     [(c.port_i, c.port_j) for c in viarows.couplings])
+                was = resolve_meas_ports(direct, 16)
+                now = resolve_meas_ports(viarows, 16)
+                self.assertEqual([(mp.plus, mp.minus) for mp in was],
+                                 [(mp.plus, mp.minus) for mp in now])
                 self.assertEqual(
-                    [(mp.name, mp.plus, mp.minus)
-                     for mp in resolve_meas_ports(direct, 16)],
-                    [(mp.name, mp.plus, mp.minus)
-                     for mp in resolve_meas_ports(viarows, 16)])
+                    [mp.name for mp in was if mp.name != "A"],
+                    [mp.name for mp, w in zip(now, was) if w.name != "A"])
 
     def test_mport_migration_runs_first_so_a_stale_custom_text_is_not_merged(self):
         """

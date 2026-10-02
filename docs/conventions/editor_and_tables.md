@@ -7,12 +7,157 @@ resolves. **These rules are exactly as binding as the ones that stayed.**
 The index is `docs/conventions/README.md` and the pointer table is in
 `CLAUDE.md` under "The rest of the rules live in `docs/conventions/`".*
 
+### The one row model (stage 2, 2026-10-02) — read this before the rest
+
+*Added 2026-10-02 when the editor's modes were merged
+(`docs/design_workspaces.md` § 3, which is the "why"; this is what is true
+now). It is `docs/design_connection_table.md` stage 4 ("modes reframed as
+presets that fill the table"), landed. **Where a bullet further down this file
+talks about Mode 1/2/3/6, `ed_mode_var`, `MODE_PLACEHOLDERS`,
+`_update_mode_visibility` or "ground wins", this section overrides it**; those
+bullets are kept because the measurements in them are still the reason for
+the widths and the scroll rules, and each one that is no longer true carries a
+"Superseded 2026-10-02" note.*
+
+- **Every trace is the two tables, and nothing else.** `mports` (the
+  measurement-port table) + `conn_rows` (GND, VDD, shorts and lumped elements
+  are all ROWS) + `extra_lines` (the kept-as-text escape hatch). No field was
+  invented: this is Mode 5's storage. **There is no separate GND box** — one
+  concept, one view; a GND box beside a ground row would be two places saying
+  different things. `TraceConfig.mode` stays and is ALWAYS `5` (an older build
+  reads a missing mode as 1 and would compute `port_a` to GND); a
+  `table_version` int (`TABLE_VERSION = 1`) marks a trace that is already in
+  the model. `MODE_NAMES` survives for the migration's Log lines only.
+- **The editor, top to bottom:** File · `Template [choose… ▾]` · Measurement
+  ports (`Name | + ports (red) | − ports (black)`, `+ Add`) · Connections
+  (`Type | Port | To | R | L | C`, `Edit as text…`, `+ Add`) with the fixed
+  line **`Ports not listed anywhere are OPEN.`** under it · the overview line
+  and the validation strip · `Plot ☑ this trace ☑ self ☑ mutual` (self /
+  mutual and their hint only with ≥ 2 measurement ports) · Label / Style.
+  Both tables, both hint lines, the overview and the strip are ALWAYS shown.
+  **Gone:** the mode radio buttons, the Port A / Port B / Short Pairs / GND
+  fields, `MODE_PLACEHOLDERS`, and every per-mode branch of
+  `_update_mode_visibility`.
+- **A template FILLS THE TABLES; what you then see IS the table.** Nothing is
+  remembered about which template was used. If either table has a non-blank
+  row the user is asked first (`messagebox.askyesno`, *"Replace the
+  measurement ports and connections with the '<template>' template?"*) —
+  every test that applies a template must patch it — and afterwards the
+  combobox goes back to its prompt. The fills (n = the file's port count; a
+  cell is left blank when the port does not exist):
+
+  | Template | Measurement ports | Connections |
+  |---|---|---|
+  | Port to GND | `P1 +1` | (none; the table shows its blank ground row to fill) |
+  | Between two ports | `P1 +1 −2` | (none) |
+  | Loop with shorted far end | `P1 +1 −2` | `short "3,4"` (a single-field short row) |
+  | Several nets (coupling) | `P1 +1`, `P2 +2` | (none) |
+
+- **ONE set of probe rules, by SIDE, in L0** — `probe_rule_issues(mports,
+  conn, extra, nports=None) -> list[SpecIssue]` in `pkg_rlc/physics/spec.py`
+  (re-exported by `core`). Today's two rule sets (Mode 6 refused a probe port
+  in GND; Mode 1/2/3/5 let the ground silently win by deleting the port from
+  the probe) were BOTH wrong, measured: a probe side is tied together, so
+  grounding one of its ports grounds the whole side, and "ground wins" on a
+  PARTLY grounded `−` side turned `−3,4` into `−4` and computed a physically
+  wrong number with no error (1 GHz, `+1 −3,4`):
+
+  | Spelling | diff_pair | decap | coupled_float |
+  |---|---|---|---|
+  | reference: `+1`, ground `3,4` | 5.001 nH | −12642 nH | 0 nH |
+  | `+1 −3,4`, ground `3,4` (whole `−` side grounded) | bit-identical to the reference | bit-identical | bit-identical |
+  | `+1 −3,4`, ground `3` (PART of it), the old Mode 5 | **−12635 nH** | −12667 nH | **NaN** |
+  | what it means physically: `+1`, ground `3`, short `3–4` | 5.001 nH | −12642 nH | 0 nH |
+
+  (Measured by the design review, `docs/design_workspaces.md` § 3.3; not
+  re-measured for this note.) So:
+  * a **`+` port in a ground / vdd row is an ERROR** — "that node is at 0 V,
+    so there is nothing to measure";
+  * a **`−` port in a ground row is a WARNING** and is SOLVED as `+` to GND:
+    `fold_grounded_minus` moves the whole `−` side into ground before the
+    build, which is bit-identical to the old answer when the whole side was
+    grounded and the physically right one when only part was — **the one
+    place in the merge where a number changes on purpose**;
+  * plus Mode 6's refusals, now everyone's: the name `A` / `B`, a duplicate
+    name, one port on both sides, one port claimed by two measurement ports,
+    a `−` side with no `+`, and (when `nports` is given) a port out of range.
+
+  `SpecIssue(table, row, column, severity, message)` names ONE CELL; `row`
+  indexes the list handed in, blank rows included, so the panel can find the
+  widget. Cells are coloured red (`#b00020`) / amber (`WARN_FG`) — the same
+  two colours as `ws_tracemodel.py` — and the reason is a line in the
+  validation strip. **Never a dialog.** `build_terminations_rows` raises the
+  first ERROR, so a trace with one is skipped by Calculate with the reason in
+  the Log, and the rest of the run goes ahead. `tests/test_probe_rules.py` is
+  the guard.
+- **A differential measurement is the `−` side, solved directly — never two
+  single-ended results combined.** `A ↔ B` (old Mode 2), the row `+1 −2` and
+  the coupling row `P1: +1 −2` are `array_equal` on `diff_pair_4port` /
+  `decap_4port` (GND 3,4) / `coupled_4port_float`. The arithmetically equal
+  `Z11 + Z22 − Z12 − Z21` from two single-ended probes is NOT offered: measured
+  2026-10-02 on `decap_4port.s4p`, it differs from the direct solve by up to
+  **1.49e-8 relative** over the sweep (2.3e-12 at 1 GHz) — two ~12.6 µH-scale
+  open-circuit reactances subtracted to give 1.000 nH. On the same file port 1
+  single-ended reads −12642 nH and 1 ↔ 2 differential 1.000 nH, so single-ended
+  (`+` only) and differential (`+` and `−`) are two different rows and the
+  table cannot confuse them.
+- **Routing is by MEASUREMENT-PORT COUNT, never by a mode.** One measurement
+  port → the self-impedance path (fittable, the ordinary results block); two
+  or more → the coupling block. The numbers do not move (`compute_z` IS
+  `Zmat[:, 0, 0]`). The one visible change: an old Mode 6 trace with a single
+  measurement port now fits and shows the ordinary block. The "same as
+  Mode 6" warning is gone.
+- **Migration** — `migrate_trace_to_rows(tc) -> list[MigrationNote]` in
+  `pkg_rlc/model/validate.py`, exposed as `TraceConfig.migrate_to_rows()`;
+  `App._migrate_trace` logs each note at its level. It runs on EVERY trace at
+  session load (not only the selected one) and is idempotent by
+  `table_version`. Rules: only the LIVE fields of the old mode move (every
+  Mode 5/6 trace carried a default `port_a="1"`, and folding that in would add
+  a probe); port strings lose their whitespace (`"1, 2"` → `1,2`; meaning
+  unchanged, since `parse_port_range` strips each token); Short Pairs become
+  TWO-FIELD short rows (`ports=a, to=b`, like `_trace_role_rows`) and never
+  `"a,b short"`; a `+` port the old ground "won" is dropped from the `+` side
+  EXPLICITLY, so the number is unchanged and the Log says so; a legacy name
+  `A` becomes the first free `P<n>` (not when a `B` row exists — renaming one
+  half of an A/B pair would change the spec; the rules then refuse it by
+  name); hidden fields are cleared; `mode = 5`, `table_version = 1`.
+  **`tests/test_trace_path_golden.py` against
+  `tests/fixtures/golden_trace_paths.npz`** (captured by
+  `tests/_trace_path_capture.py` BEFORE any code moved: 368 cases — every old
+  mode × every fixture, overlaps, whitespace, stale hidden fields, composed
+  traces) replays every case through migrate + the one path and asserts
+  `np.array_equal`, except the one intended change. Do NOT regenerate that
+  fixture to make a change pass — it is the before-picture.
+- **`Edit as text…` renames an imported `A`** to the first free `P<n>` before
+  it lands in the table (the meaning is decided by `_import_dsl_text` on the
+  TEXT, so it does not move).
+- **Mode numbers appear NOWHERE in the GUI.** The results descriptor is
+  `in:1/2 out:3/4 GND:[5-6] +2 conn` (`+txt` when kept text is in force);
+  the Traces list shows `probe_summary()` ("in, out") where the mode name was;
+  the GUI CSV header says `Setup: <descriptor>`; the Log, `report.py`,
+  `attrib_gui` and the validation / role messages name the TASK.
+  **The CLI is unchanged** (`--mode gnd | p2p | coupling`, its 153 reference
+  outputs), and so are the L0 builders `build_terminations_mode1/2/3` /
+  `build_terminations_coupling` it and `golden_legacy.npz` use.
+- **The 1040x600 minsize.** The stage-1 workspace strip cost 25 px and left
+  the editor viewport at 20 px against a 23 px table row.  Removing the mode
+  radios did NOT give it back -- they were inside the scrolled form, and the
+  viewport is set by the column's fixed parts.  What did: Global Controls
+  went from 4 grid rows to 3 (Fit Model beside RLC Freq, 23 px), the button
+  row's pady 4 -> 2 and the editor footer's 3 -> 1 (4 px each).  Measured on
+  the real App: 53 px at 1040x600, 353 px at 1500x900 (20 / 320 before).
+  Pinned >= one table row by `tests/test_unified_editor.py`, and
+  `tests/test_conn_rowshape.py` is back at 1040x600.
+- **The Help window follows the tasks**, not the modes: the five Mode tabs
+  became "Setting up a measurement", "Coupling", "Trace model" and "Compare
+  files" (`session_and_help.md`).
+
 ### Connection table (the Mode 5 / Mode 6 row editor)
 
-Design note: `docs/design_connection_table.md`. Stages 0-3 are done; stage 4
-(modes reframed as presets that seed the table) is specified there and
-deliberately unstarted — it rewrites the editor skeleton and needs a human
-looking at the screen.
+Design note: `docs/design_connection_table.md`. Stages 0-3 were done before
+2026-10-02, and stage 4 (modes reframed as presets that seed the table) landed
+on 2026-10-02 as stage 2 of `docs/design_workspaces.md` — see "The one row
+model" above, which overrides every bullet here that still speaks of modes.
 
 - **The DSL's leading port field takes `parse_port_range`, not `int`.** `6:1:14 ground`
   is one line, which is what lets a table row hold a package's ground balls without
@@ -30,17 +175,28 @@ looking at the screen.
   a probe on the same port — that is the "ground wins" precedence
   `build_terminations_mode1/2/3` have always had. Reversing the order makes a table
   seeded from a named mode answer a different question.
+  *Superseded 2026-10-02 in part: the order is still load-bearing for the DSL, but on
+  the ROWS path a probe port in a ground row no longer reaches it silently —
+  `probe_rule_issues` refuses a `+` port and `fold_grounded_minus` grounds a whole `−`
+  side first (see "The one row model").*
 - **`build_terminations_mode1/2/3` let ground win over a probe; `build_terminations_coupling`
   raises on the same overlap.** Both are intended. **The golden reference does not guard
   this** — `tests/_golden_capture.py` calls the builders directly, so any new path to a
   `TerminationSet` bypasses every golden case. `tests/test_core.py::TestTerminationPrecedence`
   and `tests/test_connection_rows.py::TestRowsReproduceNamedModes` are the guard. Anything
   claiming to reproduce a named mode must satisfy them, including the overlap cases.
+  *Superseded 2026-10-02 for the ROWS path: the builders keep their precedence (the CLI
+  and `golden_legacy.npz` call them), but the editor's one path refuses a grounded `+`
+  port, and `TestTerminationPrecedence::test_named_modes_and_probe_model_disagree_on_purpose`
+  now pins "unified: refused". The bit-for-bit guard for old traces is
+  `tests/test_trace_path_golden.py`.*
 - **The coupling path is chosen by the measurement-port count, not the mode number.**
   A Mode 5 spec with two probes used to go to `compute_z`, which returns `Zmat[:, 0, 0]`
   and warns that the rest were ignored — a wrong number with no visible difference. Once
   both modes share an editor, "I defined two probes" has to mean the same thing in both.
   Single-measurement-port specs still take `compute_z` so they stay bit-identical.
+  *Since 2026-10-02 there is no mode number to choose by at all: `n_mports > 1` is the
+  whole routing rule (see "The one row model").*
 - **`RowTable` is a Canvas plus a grid of real widgets, NOT `ttk.Treeview`.** Treeview has
   no cell editors: it means floating Entry/Combobox widgets over cells and hand-managing
   placement, tab order and scroll offset, and the overlays misalign under Win11 DPI
@@ -72,6 +228,8 @@ looking at the screen.
   frame's `<Configure>` does NOT fire usefully for that: the scrollregion keeps its old
   height and the view stays scrolled down, parking a now-short form out of sight.
   `_refresh_editor_scrollregion` handles it — via `after_idle`, never `update_idletasks`.
+  *Superseded 2026-10-02: there are no modes to change and no per-mode visibility; the
+  scrollregion rule still holds for a row add, a hint toggle and a template fill.*
 - **Never call `update_idletasks()` while the UI is being built.** It flushes geometry for
   the WHOLE application, not just the calling widget. `RowTable` did this to auto-size
   itself, and because `_build_left_panel` runs before `_build_right_panel`, the flush
@@ -90,6 +248,7 @@ looking at the screen.
   that deletion is the mechanical reason nobody could remember the syntax. Do not
   "restore" per-cell placeholders, and do not wire `ColumnSpec.placeholder` into
   anything. A table-based mode therefore registers **no** `MODE_PLACEHOLDERS` entry.
+  (*Since 2026-10-02 `MODE_PLACEHOLDERS` does not exist at all.*)
 - **That hint FOLLOWS THE KINDS IN THE TABLE** (`conn_hint_text` /
   `CONN_KIND_HINTS` / `_CollapsibleHint.set_text`) — the same rule
   `conn_table_layout` applies to the cells and the header, one layer up. It was
@@ -122,7 +281,7 @@ looking at the screen.
   the **Ports & Roles** window, which carries the name, the role and the source per port
   and writes a selection back as a collapsed range, i.e. strictly more than a 105 px
   popdown could. It still has to be *findable*: it is named in both table hints, in
-  Help → Mode 5 and Help → Input syntax, and in the README, and `_on_show_ports` falls back
+  Help → Setting up a measurement and Help → Input syntax, and in the README, and `_on_show_ports` falls back
   to the editor's file rather than silently doing nothing when the Files listbox has no
   selection. If the dropdown ever carries names it is an ADDITION and those five pointers
   stay.
@@ -157,7 +316,10 @@ looking at the screen.
   form 463 vs canvas 431, `xview (0.0, 0.962)`, 32 px of the ✕ column unreachable with no
   way to scroll to it.
 - **A mode with NO table must fit the 431 px canvas outright, and its two widest
-  fields are sized to make it.** The editor form's requested width is the widest LABEL
+  fields are sized to make it.** *Superseded 2026-10-02: there is no table-free mode
+  any more, and `test_a_table_free_mode_does_not_pay_for_a_scrollbar_it_barely_needs`
+  was retired with it (`docs/design_workspaces.md` § 3.9). The 431 px / 17 px figures
+  below are still the budget the tables are measured against.* The editor form's requested width is the widest LABEL
   (129 px, `GND / VDD (AC gnd):`) + the widest FIELD + 8 px of cell padding, and the
   horizontal scrollbar costs 17 px of a 45 px viewport at the 1040x600 minsize. Modes
   1/2/3 measured **440 px** against 431, `xview (0, 0.98)`, canvas height **28** — they
@@ -195,7 +357,9 @@ looking at the screen.
   `<Configure>` must re-measure: a table grows the form one idle pass *after* the row was
   added, so a scrollregion measured from the row-add callback alone is one row short.
 - **THE RESET BELONGS TO A MODE CHANGE, AND `_update_mode_visibility` ALSO RUNS ON EVERY
-  TRACE SELECTION.** It used to end with an unconditional `preserve=False`, so every click
+  TRACE SELECTION.** *Superseded 2026-10-02 in its mode half: with no modes, a trace
+  selection never resets the scroll; the preserve-the-fraction rule below is the one
+  that remains.* It used to end with an unconditional `preserve=False`, so every click
   in the Traces list threw the reader back to the top of the form — and the form does not
   fit: measured at **1500x900** on a mode-5 trace, it is **728 px against a 345 px
   viewport**, so the connections table is BELOW THE FOLD at `yview 0`. The reader scrolls
@@ -267,6 +431,9 @@ looking at the screen.
 - **The Mode 5 table lets ground win over a probe; Mode 6's builder raises on the same
   overlap.** Both are pinned and intended. The validation strip is where Mode 5 makes the
   overlap visible — it must report it, not raise, and not "fix" it.
+  *Superseded 2026-10-02: one rule by side (`probe_rule_issues`) — a `+` port in a ground
+  row is an error in its cell, a `−` port a warning solved as `+` to GND. See "The one
+  row model".*
 - **A lumped element the reduction ANNIHILATES must be reported, not echoed.**
   `compute_z_matrix` stamps every lumped element onto Y and only then merges shorted
   ports and drops grounded ones, so a `lumped_between` whose two ports land on the same
@@ -283,7 +450,8 @@ looking at the screen.
   and must not fire when only ONE end is grounded, which is the ordinary way to spell a
   shunt element. `tests/test_mode5_editor.py::TestValidationMessages` pins both the
   four positives and the two false-alarm cases.
-- **Mode 5 passes `nports` to `build_terminations_rows`.** It used to pass none, so a
+- **The editor passes `nports` to `build_terminations_rows`** (written when only Mode 5
+  did). It used to pass none, so a
   one-digit typo (`3 / 5` on a 4-port file) became a plausible wrong number until
   `compute_z_matrix`'s backstop. Likewise the CSV exporter gates the coupling block on
   `tc.Zmat is not None`, the same predicate `_on_calculate` routes on — gating on
@@ -647,6 +815,9 @@ claim below was mutation-checked — reverting the behaviour turns its test red.
   reports a clean two-element spec as "2 problems". It is packed **after** the button (pack
   unmaps from the end: the button must never be the one that goes) and `pack_forget`ed outside
   mode 5, where the connections table is hidden but its rows still exist.
+  *Since 2026-10-02 every trace has both tables, so "outside mode 5" no longer happens; the
+  one-line budget and the measurements above are unchanged. The editor viewport is 53 px
+  at 1040x600 since stage 2 (see "The 1040x600 minsize" above).*
 - **`Calculate This Trace` narrows the WORK, not the report.** Traces it skips still
   contribute their last numbers to the results table; a table that shrank to one row would
   make the fast path look like it had discarded the others. It keeps the cursors (it is the
@@ -684,6 +855,9 @@ mutation-checked.
   rows are relabelled to the FIELD the user typed into (`GND / VDD`, `Port B`,
   `Short Pairs`) — telling a mode-1 user their port came from "probe row 1 (+)"
   names a row that exists nowhere on their screen.
+  *Since 2026-10-02 every trace IS rows (migrated on load), so the synthetic rows and
+  their field relabelling only ever see a not-yet-migrated copy; the user's screen now
+  shows the real rows the window names.*
 - **The probe-and-ground flag states the rule of the MODE it is showing.**
   Mode 5 lets ground win (`WARN_PROBE_AND_GROUND`, "the ground row wins"); Mode
   6 does not — `build_terminations_coupling` raises, because a probe side is
@@ -697,6 +871,11 @@ mutation-checked.
   neither a validation strip nor a footer strip, so this row is the ONLY thing
   on screen about the overlap; `WARN_PROBE_AND_GROUND_COUPLING` therefore says
   the same thing the exception does, plus what to do about it.
+  *Superseded 2026-10-02: there is one rule, by SIDE, for every trace — a `+` port
+  in a ground row is refused, a `−` port grounds the whole `−` side (see "The one row
+  model"). "The ground row wins" is no longer true anywhere on the rows path, so the
+  flag states the side rule, and the editor's cells say the same thing in red or
+  amber.*
 - **`collapse_ports` must never emit a space.** The DSL is whitespace-tokenised
   and the port field is `parts[0]`, so `1-3, 7` parses as the port field `1-3,`
   with a stray `7` where the keyword belongs. `1-3,7` round-trips through
@@ -744,7 +923,8 @@ mutation-checked.
   blank the strips and a strip failure cannot leave the window stale.
   `_strips_wanted()` is why the strips now run outside mode 5 at all — without
   it the window froze the moment a mode-1 user edited the GND field, which is
-  the edit it exists to check. No `grab_set`: a modal Toplevel that outlives
+  the edit it exists to check. (Since 2026-10-02 there is no "outside mode 5":
+  every trace has the tables and the strips always run.) No `grab_set`: a modal Toplevel that outlives
   its opener blocks event delivery and hangs `update()` (the documented style
   picker / scrollbar failure).
 - **The write-back goes through the widgets, never into the `TraceConfig`.**
@@ -758,6 +938,6 @@ mutation-checked.
   take bare numbers because a name-bearing dropdown does not fit the editor
   width (a ttk popdown is only as wide as its widget, and 15 chars ≈ 105 px the
   431 px viewport does not have), so the substitute had to be findable: it is
-  named in both table hints, in Help → Mode 5, in Help → Input syntax, and in
-  the README. If a dropdown ever carries names, those five and this window's
+  named in both table hints, in Help → Setting up a measurement (Help → Mode 5
+  until 2026-10-02), in Help → Input syntax, and in the README. If a dropdown ever carries names, those five and this window's
   role in them are one decision, not six.

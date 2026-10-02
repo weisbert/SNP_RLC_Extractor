@@ -243,7 +243,10 @@ failure this repo has already had more than once.
   through, and what stopped it was `open_attribution_window`'s
   "fewer than two measurement port names cached. Calculate it again." backstop:
   a message about an internal inconsistency that had not happened, advising
-  something that cannot help. Both routes to the shortfall now reach the one
+  something that cannot help. *(Since 2026-10-02 `_on_calculate` routes on
+  `n_mports > 1` alone — there is no mode 6 — so a one-port trace no longer
+  comes back with a `Zmat` at all; the count stays the rule, because it is the
+  question this window asks.)* Both routes to the shortfall now reach the one
   message that names it.
 - **A click PAST the last table row selects nothing.** Tk's `@x,y` index CLAMPS
   to the nearest existing line, so a click in the empty space below the table
@@ -302,7 +305,7 @@ failure this repo has already had more than once.
   reason. Each strip leads with its verdict and its number, and the full
   declaration is in Copy report and the CSV, where it cannot clip.
 - **The header is a `ReflowRow`, and the trace label is capped at 18+18
-  chars.** Re-measured on a real window (mode-6 trace `coil` on
+  chars.** Re-measured on a real window (coupling trace `coil` on
   `coupled_4port_diff.s4p`): the six items are 228/160/186/145/143/99 px =
   **961 px**, the strip is **964 px** at the 980 default — **one row, 29 px** —
   and **704 px** at the 720 minimum, where it wraps to **two rows, 58 px**.
@@ -393,7 +396,7 @@ failure this repo has already had more than once.
   shipped fixture proves it.** The margin for a sweep with no span was
   `SWEEP_Y_PAD * max(abs(hi), abs(lo), 1.0)`, and that bare `1.0` is one HENRY
   in an expression whose other terms are picohenries. Measured on
-  `decap_4port.s4p` (ordinary mode 6, probes 1/2, `gnd_ports="3,4"`, 5 GHz,
+  `decap_4port.s4p` (two measurement ports on 1 and 2, ground row `3,4`, 5 GHz,
   either ground row): every residue is exactly 0, so ideal = open =
   **−506.755 nH**, and the axis came out `(−120.00005 mH, +119.99995 mH)` —
   **473 602×** the value it was drawn to show, with the curve and both

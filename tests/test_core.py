@@ -26,6 +26,7 @@ from pkg_rlc.physics.core import (  # noqa: E402
     build_terminations_mode1, build_terminations_mode2,
     build_terminations_mode3, build_terminations_mode4,
     build_terminations_coupling,
+    build_terminations_rows, MeasPortRow, ConnectionRow,
     parse_custom_termination_text,
     parse_short_pairs,
     TerminationSet, Signal, Ground, Open, Vdd, LumpedToGnd,
@@ -159,6 +160,13 @@ class TestTerminationPrecedence(unittest.TestCase):
     builder -- bypasses the golden cases entirely and could diverge here without
     a single test going red.  Anything that claims to reproduce a named mode
     must reproduce THIS, including the overlap cases.
+
+    The GUI does not claim to any more: since the editor's modes were merged
+    (docs/design_workspaces.md § 3) every trace is built by
+    `build_terminations_rows`, whose ONE probe rule refuses a grounded '+'
+    port and grounds a whole '-' side -- see
+    `test_the_one_row_model_unifies_them_by_SIDE` and tests/test_probe_rules.py.
+    The named builders keep the precedence pinned here for the CLI.
     """
 
     @classmethod
@@ -222,16 +230,45 @@ class TestTerminationPrecedence(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_terminations_coupling([("tank", [1], [2, 3])], gnd_ports=[3])
 
-    def test_named_modes_and_probe_model_disagree_on_purpose(self):
-        """The divergence itself, stated as one assertion."""
+    def test_the_one_row_model_unifies_them_by_SIDE(self):
+        """
+        The divergence above is the L0 builders' and stays (the CLI and the
+        golden reference use them).  What the GUI builds every trace through
+        since the merge -- `build_terminations_rows` -- has ONE rule
+        (docs/design_workspaces.md § 3.3), decided by the side the port is on:
+
+          * '+' side grounded: REFUSED, like the probe model -- a node at 0 V
+            has nothing to measure.  Ground no longer silently wins.
+          * '-' side grounded: the side is one tied node, so the WHOLE side is
+            at ground and the trace measures '+' to GND.  Neither "ground wins
+            on that one port" (the named modes) nor a refusal (the probe model).
+        """
         overlap = dict(signal=[1, 2], gnd=[2])
-        # Named mode: accepted, ground wins.
+        # Named mode: accepted, ground wins.  Unchanged.
         term = build_terminations_mode1(overlap["signal"], overlap["gnd"])
         self.assertIsInstance(term.per_port[1], Ground)
-        # Probe model: refused.
+        # Probe model: refused.  Unchanged.
         with self.assertRaises(ValueError):
             build_terminations_coupling([("m1", overlap["signal"], [])],
                                         gnd_ports=overlap["gnd"])
+        # The one row model: refused, like the probe model.
+        with self.assertRaises(ValueError) as cm:
+            build_terminations_rows([MeasPortRow("m1", "1,2", "")],
+                                    [ConnectionRow(kind="ground", ports="2")])
+        self.assertIn("nothing to measure", str(cm.exception))
+
+        # The '-' side: three different answers before, one now.
+        mode2 = build_terminations_mode2(port_a=[1], port_b=[2, 3],
+                                         gnd_ports=[3])
+        self.assertIsInstance(mode2.per_port[1], Signal)   # ground won on 3 only
+        with self.assertRaises(ValueError):
+            build_terminations_coupling([("m1", [1], [2, 3])], gnd_ports=[3])
+        rows = build_terminations_rows(
+            [MeasPortRow("m1", "1", "2,3")],
+            [ConnectionRow(kind="ground", ports="3")])
+        self.assertIsInstance(rows.per_port[0], Signal)
+        self.assertIsInstance(rows.per_port[1], Ground)    # the WHOLE side
+        self.assertIsInstance(rows.per_port[2], Ground)
 
     # ---- the DSL is a third path; pin it against the named modes -----------
 

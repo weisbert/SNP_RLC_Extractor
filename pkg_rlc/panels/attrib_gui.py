@@ -751,34 +751,28 @@ def attribution_refusal(trace, file_entry, *,
                 "loaded, so there is no Y matrix to decompose. Load it and "
                 "Calculate first.")
 
-    # "Has it got a pair?" is TWO questions, and testing only the first one
-    # sent a whole class of trace to the wrong refusal.  `_on_calculate` routes
-    # on `tc.mode == 6 or n_mports > 1`, so a MODE 6 trace with a single
-    # measurement port takes the coupling path anyway and comes back with a
-    # perfectly real (F, 1, 1) `Zmat` -- not None, so the branch below waved it
-    # through, and what turned it away was `open_attribution_window`'s
-    # "fewer than two measurement port names cached. Calculate it again."
-    # backstop: a message describing an internal inconsistency that had not
-    # happened, offering advice ("Calculate it again") that cannot possibly
-    # help.  Measured: mode 6, one measurement port row, Calculate ->
-    # `tc.Zmat.shape == (100, 1, 1)` and `attribution_refusal(...) is None`.
-    # The count is therefore part of the same test, and both routes -- one
-    # port in mode 5 (Zmat is None) and one port in mode 6 (Zmat is a 1x1) --
-    # reach the one refusal that names the actual problem.
+    # "Has it got a pair?" is decided by the MEASUREMENT-PORT COUNT, which is
+    # what `_on_calculate` routes on too (`n_mports > 1` -> the coupling path)
+    # -- one rule for every trace, now that there are no modes.  It used to
+    # be two questions: the old Mode 6 took the coupling path on the mode
+    # alone and came back from a single port with a real (F, 1, 1) `Zmat`,
+    # which a `Zmat is None` test waved through to `open_attribution_window`'s
+    # "fewer than two measurement port names cached" backstop.  The count is
+    # the test, and `Zmat` is only the "is there a result at all" half.
     zm = getattr(trace, "Zmat", None)
     n_names = len(list(getattr(trace, "mport_names", None) or []))
-    if zm is None or n_names < 2:
+    if n_names < 2 or zm is None:
         if zm is None and getattr(trace, "Z", None) is None:
             return (f"'{label}' has no numbers yet.\n\nCalculate it first — "
                     "an attribution is a decomposition of a RESULT, so there "
                     "has to be one.")
         # One measurement port: `_on_calculate` took the compute_z path and
-        # left Zmat at None, or took the coupling path on the mode alone and
-        # left a 1x1.  Either way Z_ab is a MUTUAL impedance; there is no pair.
+        # left Zmat at None (or a cached 1x1 from an older run).  Either way
+        # Z_ab is a MUTUAL impedance; there is no pair.
         return (f"'{label}' has only one measurement port, so there is no "
                 "mutual impedance to attribute — Z_ab needs a victim AND an "
-                "aggressor.\n\nDefine a second measurement port (Mode 6, or a "
-                "second probe row in Mode 5) and Calculate.")
+                "aggressor.\n\nAdd a second row to the measurement-port table "
+                "(Help → Coupling) and Calculate.")
 
     if getattr(trace, "stale", False) and not allow_stale:
         return (f"'{label}' has been edited since it was last calculated, so "

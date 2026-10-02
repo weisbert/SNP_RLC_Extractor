@@ -34,7 +34,7 @@ Basic flow:
 
 1. **Add File...** — load any Touchstone file. The parser content-sniffs the port count and ignores the file extension; `.s2p`, `.s45p`, `.txt`, `.dat`, or no extension all work. Each load prints a summary — port count, point count, `Z0`, the option line actually used, **the frequency span**, and `max |S|` — and the span is repeated on the file's line in the list. See [Reading files](#reading-files) for what a load failure tells you and what **Check File** is for.
 2. A default trace is auto-created against the loaded file. Select it in the **Traces** listbox to edit.
-3. In **Edit Selected Trace**, pick a measurement mode (Modes 1-3, `+/- Ports / Coupling`, or Custom) and fill in the relevant port fields. Modes 5 and 6 are filled in as **tables** with a `+ Add` button rather than typed as text: Mode 6 gets the measurement-port table, Mode 5 that table plus a connections table underneath, with a port-overview line and a validation line under both. In the connections table the cells a row has **follow its Type** — a `ground` row is one wide Port field, a `short` row is one Port field for the whole tied group plus that node's **Net** name, and `rlc_between` is the only Type with two port fields. Every port cell takes port **numbers** or a Net name; **Show Ports** opens the **Ports & Roles** window, which is where to look on an unfamiliar package — see [Ports & Roles](#ports--roles). R/L/C cells take one word with an SI suffix and no unit (`5m`, `0.5n`, `1u`) — the unit is in the column header, and a value with a space in it is rejected rather than silently truncated. The **box at the start of a row switches it off**: the row keeps its values and contributes nothing, exactly as if deleted, which is how you ask what one connection is worth without retyping it (and it is *not* the same as Type `open`, which is a declaration rather than an absence). The validation line says how many rows are off and names them. The **verdict line in the editor's footer is clickable**: it scrolls the form to the row it is talking about and puts the caret in it, which is the only route to messages that otherwise sit a few hundred pixels below the fold.
+3. In **Edit Selected Trace**, describe the measurement in **two tables** — there are no modes. **Measurement ports** says where the probes go: one row per measurement port, `Name` / `+ ports (red)` / `− ports (black)`; fill `+` only for a single-ended measurement to ground, `+` and `−` for a differential one. **Connections** says what else is attached — `ground`, `vdd`, `short`, lumped elements — and the line under it says the rest: *Ports not listed anywhere are OPEN.* The **Template** box fills both tables for the common setups (*Port to GND*, *Between two ports*, *Loop with shorted far end*, *Several nets (coupling)*); what you then see IS the table. A probe port that is also grounded is marked in its cell — red for a `+` port (there is nothing to measure), amber for a `−` port (the whole `−` side is then at ground, so it measures `+` to GND) — with the reason in the validation line; never a dialog. See [Setting up a measurement](#setting-up-a-measurement-two-tables). In the connections table the cells a row has **follow its Type** — a `ground` row is one wide Port field, a `short` row is one Port field for the whole tied group plus that node's **Net** name, and `rlc_between` is the only Type with two port fields. Every port cell takes port **numbers** or a Net name; **Show Ports** opens the **Ports & Roles** window, which is where to look on an unfamiliar package — see [Ports & Roles](#ports--roles). R/L/C cells take one word with an SI suffix and no unit (`5m`, `0.5n`, `1u`) — the unit is in the column header, and a value with a space in it is rejected rather than silently truncated. The **box at the start of a row switches it off**: the row keeps its values and contributes nothing, exactly as if deleted, which is how you ask what one connection is worth without retyping it (and it is *not* the same as Type `open`, which is a declaration rather than an absence). The validation line says how many rows are off and names them. The **verdict line in the editor's footer is clickable**: it scrolls the form to the row it is talking about and puts the caret in it, which is the only route to messages that otherwise sit a few hundred pixels below the fold.
 4. Pick the curve's **Style** — click the line preview to open a palette of the 12 colours and 4 line styles, drawn as they will be drawn on the plot. On a coupling trace the preview also shows the run of colours the trace's expanded curves will occupy, and `×n` for how many.
 5. Set **RLC Freq (GHz)** for single-point extraction, optionally enter a **Band Fit** range and model.
 6. Click **Calculate All & Plot**. Results appear in the right pane and overlay on the multi-subplot view. **Calculate This Trace**, in the editor's footer, recomputes only the selected trace — the fast path when you are iterating on one port spec with several traces loaded.
@@ -47,7 +47,7 @@ Basic flow:
 
 **Before and after: freezing a trace.** Right-click a trace in the Traces list → **Freeze as new trace**. That takes a snapshot: a second trace holding exactly the numbers this one has now, in the next colour and line style, labelled with the time (`tank <14:32>`). Change the original and press Calculate — the snapshot does not move, because Calculate skips it and the editor refuses to write into it (selecting one greys the editor out and says so; the list marks it `❄`). So the two curves are genuinely the before and the after, compared over the whole sweep instead of at one marker frequency, and both are in the results table, the cursor readout and the CSV. Right-click → **Unfreeze** gives it back to Calculate, which then *replaces* the numbers it was holding. One deliberate limit: a config file carries the setup and never the results, so a frozen trace comes back from Save/Load with its spec and no numbers — it says so in the Results pane and reads `❄ no numbers` in the list rather than quietly drawing nothing; unfreeze and Calculate reproduces the snapshot exactly if the file has not changed.
 
-**Run history.** The Results pane is a set of tabs. `Log` is the running commentary it has always been; every Calculate adds a page beside it, newest first, labelled `#7 10:42`, holding that run's report under a heading that says which run it is, at what marker frequency, over which traces — and, on the second line, **what you changed since the previous run** (`changed since #11:  [3] gnd 6-14 -> 6-16`). That line is the useful one: twenty runs are all at 5 GHz and nobody remembers what they were doing at 14:32. Old pages are dropped automatically, oldest first, three at a time by default; press **Keep** (or right-click the tab) and that page is never dropped by anything automatic — only by right-click → **Close this run**. The kept pages have their own budget, which is why Calculate can never be blocked by them and can never throw one away: at the cap the Keep button is already disabled and says `Keep (5/5) — close a kept run first`. `Runs ▾` lists every page with its full description, which is where to look once the tabs are too narrow to read, and it is also where the two limits are set. Switching to the new page is **conditional** — it happens only if you were already reading the newest page (or the Log), so a page you deliberately kept open is not yanked away by the next Calculate; an unvisited new page is marked `!` instead. And because the plot and Export CSV always show the *latest* numbers, every older page carries `! the plot and Export CSV show run #12, not this page`. Run history is in memory only; a config file carries the setup, never the results.
+**Run history.** The Results pane is a set of tabs. `Log` is the running commentary it has always been; every Calculate adds a page beside it, newest first, labelled `#7 10:42`, holding that run's report under a heading that says which run it is, at what marker frequency, over which traces — and, on the second line, **what you changed since the previous run** (`changed since #11:  [3] file coil_v1.s4p -> coil_v2.s4p`). That line is the useful one: twenty runs are all at 5 GHz and nobody remembers what they were doing at 14:32. Old pages are dropped automatically, oldest first, three at a time by default; press **Keep** (or right-click the tab) and that page is never dropped by anything automatic — only by right-click → **Close this run**. The kept pages have their own budget, which is why Calculate can never be blocked by them and can never throw one away: at the cap the Keep button is already disabled and says `Keep (5/5) — close a kept run first`. `Runs ▾` lists every page with its full description, which is where to look once the tabs are too narrow to read, and it is also where the two limits are set. Switching to the new page is **conditional** — it happens only if you were already reading the newest page (or the Log), so a page you deliberately kept open is not yanked away by the next Calculate; an unvisited new page is marked `!` instead. And because the plot and Export CSV always show the *latest* numbers, every older page carries `! the plot and Export CSV show run #12, not this page`. Run history is in memory only; a config file carries the setup, never the results.
 
 **Three ways to read one run.** The `View` dropdown above the Results pane picks the shape of the report; nothing is recomputed and no number changes, and every open run page is repainted with it.
 
@@ -74,22 +74,22 @@ Use **Export CSV** to dump per-trace `Freq, Re(Z), Im(Z), |Z|, R, L, C, Q` table
 
 **Clearing.** Right-click the Loaded Files list for **Clear all files** — the traces bound to those files go with them, because a trace whose file is gone cannot be computed at all; a trace naming a file that never loaded stays, so its spec is not lost. Right-click the Traces list for **Clear all traces**, which keeps the files loaded: that is the one for trying a second port map on a large package export without re-parsing it. `File → Clear All` empties the window — files, traces, run pages (kept ones included) and the Log — while leaving the view, units, digits, fit settings and marker frequency exactly as you set them. Each asks first and names what will go, each does nothing on an empty window, and none of them can be undone; `Save Config...` is what makes a setup recoverable.
 
-**Saving the setup.** `File → Save Config...` (Ctrl+S) writes everything you typed — the loaded files, every trace's mode and port fields and tables, colour and style, the RLC frequency, the fit band and model, and the plot's checkbox row — to a few kB of readable JSON. `File → Load Config...` (Ctrl+O) brings it all back; press **Calculate All & Plot** and the numbers return. The file holds the *setup*, never the results: Export CSV remains the way to save those. Each file in it is recorded both relative to the config and absolutely, and loading tries the relative path first, so copying the whole folder to another machine (or to an offline one) just works; a file that has gone missing is named in the Results pane and the rest of the session still loads. The config is also written automatically on exit to `~/.pkg_rlc_extractor/last_session.json` — the Results pane says on startup what is in it, and `File → Restore Last Session` loads it on request rather than spending tens of seconds re-parsing package exports before you have asked for anything.
+**Saving the setup.** `File → Save Config...` (Ctrl+S) writes everything you typed — the loaded files, every trace's two tables, colour and style, the RLC frequency, the fit band and model, and the plot's checkbox row — to a few kB of readable JSON. `File → Load Config...` (Ctrl+O) brings it all back; press **Calculate All & Plot** and the numbers return. The file holds the *setup*, never the results: Export CSV remains the way to save those. Each file in it is recorded both relative to the config and absolutely, and loading tries the relative path first, so copying the whole folder to another machine (or to an offline one) just works; a file that has gone missing is named in the Results pane and the rest of the session still loads. The config is also written automatically on exit to `~/.pkg_rlc_extractor/last_session.json` — the Results pane says on startup what is in it, and `File → Restore Last Session` loads it on request rather than spending tens of seconds re-parsing package exports before you have asked for anything. A config saved by an older build, from the days of the five modes, still loads: every trace in it is moved into the two tables as it loads, with one Log line per trace saying what it became, and computes bit-for-bit what it did — except where the Log line says otherwise (a `−` side that was only partly grounded used to give a physically wrong number).
 
-A `+/- Ports / Coupling` trace expands into several curves: one self curve per measurement port plus one mutual curve per pair (the `self` / `mutual` checkboxes select which). A mutual curve is just another complex `Z(f)` array, so every subplot works on it — on a mutual curve the `L(nH)` subplot reads **M in nH** and `C(pF)` reads the coupling capacitance **C_c**. The `k` subplot is filled in for mutual curves only; self curves leave it blank.
+A trace with two or more measurement ports expands into several curves: one self curve per measurement port plus one mutual curve per pair (the `self` / `mutual` checkboxes select which). A mutual curve is just another complex `Z(f)` array, so every subplot works on it — on a mutual curve the `L(nH)` subplot reads **M in nH** and `C(pF)` reads the coupling capacitance **C_c**. The `k` subplot is filled in for mutual curves only; self curves leave it blank.
 
 ---
 
 ## Quick Start — CLI
 
-Single-frequency Mode 1 (driving-point to ground):
+The command line keeps its own three modes — `--mode gnd | p2p | coupling` — which are not the GUI's (the GUI has none). Single-frequency `gnd` (driving-point to ground):
 
 ```bash
 python pkg_rlc_extractor.py --cli file.s45p --mode gnd \
     --porta "1" --gnd "6:1:14" --freq 0.1
 ```
 
-Mode 2 (port group A vs port group B) with broadband inductor fit and CSV export:
+`p2p` (port group A vs port group B) with broadband inductor fit and CSV export:
 
 ```bash
 python pkg_rlc_extractor.py --cli file.s45p --mode p2p \
@@ -97,7 +97,7 @@ python pkg_rlc_extractor.py --cli file.s45p --mode p2p \
     --freq 0.1 --fit auto --fmin 0.1 --fmax 5 --csv output.csv
 ```
 
-Mode 2 with a capacitor band fit (e.g., differential trace `C_diff`):
+`p2p` with a capacitor band fit (e.g., differential trace `C_diff`):
 
 ```bash
 python pkg_rlc_extractor.py --cli trace.s5p --mode p2p \
@@ -181,13 +181,13 @@ CLI flags:
 | Flag      | Meaning                                                                  |
 |-----------|--------------------------------------------------------------------------|
 | `--cli`   | Enable CLI mode (otherwise GUI launches)                                 |
-| `--mode`  | `gnd` (Mode 1), `p2p` (Mode 2/3) or `coupling` (Mode 6)                  |
-| `--porta` | Signal / Port A specification (port range syntax)                        |
+| `--mode`  | `gnd` (port to ground), `p2p` (between two port groups) or `coupling` (several measurement ports) |
+| `--porta` | Signal / Port A specification — the `+` side (port range syntax)         |
 | `--portb` | Port B specification (required for `p2p`)                                |
 | `--mport` | One measurement port for `coupling`; **repeatable**. `"<name> = <+ ports> / <- ports>"` |
 | `--gnd`   | Ground port specification                                                |
 | `--vdd`   | **Deprecated** alias for `--gnd`; the ports are unioned into the ground list and a note is printed |
-| `--short` | Short pairs for Mode 3 (e.g., `"45-46,47-48"`); also accepted in `coupling` |
+| `--short` | Short pairs (e.g., `"45-46,47-48"`) for `p2p`; also accepted in `coupling` |
 | `--freq`  | Single-point extraction frequency in GHz (default `0.1`)                 |
 | `--fit`   | Band-fit model: `none` \| `auto` \| `inductor` \| `capacitor`            |
 | `--fmin`, `--fmax` | Band edges in GHz for `--fit`                                   |
@@ -239,9 +239,9 @@ pkg.s153p — 153 ports · 4 probe · 54 ground · 1 element · 94 open
  61    sig_in         probe +    probe row 1 (+)
 ```
 
-* One row per port of the file, with the **name** the file carries (`! Port[12] = VDD_ball_2`), the **role** your spec gives it — `probe +` / `probe −` / `ground` / `vdd` / `element` / `shorted` / `open` — and the row or kept-as-text line that decided it. It works in every mode: modes 1/2/3 name the field (`GND / VDD`, `Port A`) rather than a table row.
+* One row per port of the file, with the **name** the file carries (`! Port[12] = VDD_ball_2`), the **role** your spec gives it — `probe +` / `probe −` / `ground` / `vdd` / `element` / `shorted` / `open` — and the row or kept-as-text line that decided it. Every trace is rows (an old config's traces are moved into the tables as it loads), so the From column always names a row you can see.
 * Filter by name, hide the open ports, click any heading to sort. Sorting is on the value, so port 10 sorts after port 9.
-* Rows are flagged when they deserve a second look: an **open** port whose name matches a set you grounded or probed (this is the one that catches "I grounded 51 of the 54 ground balls"), a port claimed by both a probe row and a ground row — legal, and the ground row wins — and a port assigned by the *kept as text* block rather than by a table row.
+* Rows are flagged when they deserve a second look: an **open** port whose name matches a set you grounded or probed (this is the one that catches "I grounded 51 of the 54 ground balls"), a port claimed by both a probe row and a ground row — refused on the `+` side, `+`-to-GND on the `−` side (see [Setting up a measurement](#setting-up-a-measurement-two-tables)) — and a port assigned by the *kept as text* block rather than by a table row.
 * Select rows and press **Set as ground** or **Set as probe +**: the ports are written into the editor as a **collapsed range**, so a 54-ball ground group becomes one row (`6-14,20-59`) instead of 54. The write goes through the editor, so it applies as you type, marks the trace stale and shows up in the strips exactly like a keystroke.
 
 The window follows what you type. The open-port check also appears on the validation strip under the tables, so it reaches you without opening anything.
@@ -260,13 +260,13 @@ Port numbers are **1-based** at every UI and CLI surface (the core converts to 0
 | Dash range           | `6-14`          | `[6, 7, ..., 14]`                   |
 | Mixed                | `1,3,35:1:45,50-55` | concatenation of the above       |
 
-Short-pair syntax (Mode 3 only): comma-separated `a-b` pairs, e.g. `45-46, 47-48`.
+Short-pair syntax (the CLI's `--short`; in the GUI a short is a connections row with the whole group in one cell): comma-separated `a-b` pairs, e.g. `45-46, 47-48`.
 Chain dashes to tie more than two ports into one node: `1-2-3-4` is a single 4-port group.
 
 ### Measurement-port (mport) syntax
 
-Used by every `--mport` on the CLI. In the GUI, Mode 6 presents the same thing as a
-**table** — one row per measurement port, `Name` / `+ ports` / `- ports`, with a `+ Add`
+Used by every `--mport` on the CLI. In the GUI the **Measurement ports** table presents the same
+thing — one row per measurement port, `Name` / `+ ports` / `- ports`, with a `+ Add`
 button — so the syntax below is only needed on the command line. The rules are identical
 either way; a row's two port cells take the same range syntax as the sides of a spec.
 
@@ -293,53 +293,92 @@ Rules:
 - The `+` side may not be empty. An empty `-` side is legal and means "referenced to the
   Touchstone ground".
 - A port may appear on only one side of only one measurement port.
-- The names `A` and `B` are **reserved** for the legacy Mode 1/2/3 signal groups (and for
-  `signal A` / `signal B` in Mode 5). The check is case-insensitive.
+- The names `A` and `B` are **reserved** for the old `signal A` / `signal B` spelling. The
+  check is case-insensitive.
 
 ---
 
-## Measurement Modes
+## Setting up a measurement: two tables
 
-| Mode | UI label                | What it measures                                                                                  |
-|------|-------------------------|---------------------------------------------------------------------------------------------------|
-| 1    | `Port(s) -> GND`        | Driving-point impedance from a signal port (or shorted group) to ground.                          |
-| 2    | `A <-> B`               | Impedance between two port groups; collapse to 2x2 then `Z = Z11 + Z22 - Z12 - Z21`.              |
-| 3    | `A <-> B + Short Pairs` | Like Mode 2, but with explicit `i-j` shorts (Y-matrix row/col merging) before reduction.          |
-| 4    | *(retired)*             | Was `A <-> B + VDD/GND`. See below.                                                               |
-| 5    | `Custom (advanced)`     | Two tables: the measurement-port table (Name / `+` / `−`) plus a connections table whose **cells follow the row's Type** — `ground / vdd / open` take one port field and nothing else, `short` takes one port field for the whole tied group plus that node's **Net** name, `rlc_gnd` is one port field + R/L/C, and `rlc_between` is the only Type with two port fields. Every port field takes the full range syntax (`6-14`, `35:1:45`) or a Net name, and every row has an **on/off box** that takes it out of the spec without deleting it. **Edit as text…** shows and takes back the equivalent DSL — `open / ground / vdd / signal <name> [+ or -] / short [as <name>] / short_to / lumped_to_gnd / lumped_between`, one directive per line — which is what the tables serialise to and what is actually computed. |
-| 6    | `+/- Ports / Coupling (M, k)` | Any number of measurement ports, each a `+` / `-` probe pair, entered as table rows. Produces the G x G impedance matrix: self impedance on the diagonal, **open-circuit mutual impedance** off it, and from that M, k, C_c and the M/L ratios. |
+Every trace is the same two tables. There were five modes until 2026-10-02 (`Port(s) -> GND`,
+`A <-> B`, `A <-> B + Short Pairs`, `Custom`, `+/- Ports / Coupling`); each was a particular
+way of filling these tables, and the solver always received the same thing, so they are gone.
 
-Defining more than one measurement port gives you the coupling matrix **in either mode** —
-Mode 5 used to report only the first one and warn about the rest, which was a wrong number
-with no visible difference. The full matrix is now produced whenever the spec defines two
-or more measurement ports, whichever mode wrote it.
+| Table | One row is | Cells |
+|-------|-----------|-------|
+| **Measurement ports** | one measurement port: a red probe on the `+` ports, a black probe on the `−` ports. `+` only = single-ended to ground; `+` and `−` = differential. Ports on one side are tied together. | `Name` (blank → `P1`, `P2`, …) / `+ ports` / `− ports` |
+| **Connections** | one thing attached: **cells follow the row's Type** — `ground / vdd / open` take one port field and nothing else, `short` takes one port field for the whole tied group plus that node's **Net** name, `rlc_gnd` is one port field + R/L/C, and `rlc_between` is the only Type with two port fields. Every port field takes the full range syntax (`6-14`, `35:1:45`) or a Net name, and every row has an **on/off box** that takes it out of the spec without deleting it. | `Type` / `Port` / `To` / `R` / `L` / `C` |
 
-Mode codes are stable and are never renumbered, so saved configurations keep working.
+Under them, always: **Ports not listed anywhere are OPEN.** **Edit as text…** shows and takes
+back the equivalent DSL — `open / ground / vdd / signal <name> [+ or -] / short [as <name>] /
+short_to / lumped_to_gnd / lumped_between`, one directive per line — which is what the tables
+serialise to and what is actually computed.
 
-Beside the modes there is one **post-processing layer**, which is not a mode and gets no code:
+One measurement port gives you R, L, C, Q and the band fit; **two or more** give you the
+coupling matrix as well (M, k, M/L, C_c). Which results block a trace gets is decided by that
+count and by nothing else.
+
+**Templates** fill both tables (n = the file's port count; a cell stays blank where the port
+does not exist), asking first if either table already has something in it:
+
+| Template | Measurement ports | Connections | Was |
+|----------|-------------------|-------------|-----|
+| Port to GND | `P1: + 1` | (a blank ground row to fill) | Mode 1 |
+| Between two ports | `P1: + 1  − 2` | — | Mode 2 |
+| Loop with shorted far end | `P1: + 1  − 2` | `short 3,4` | Mode 3 |
+| Several nets (coupling) | `P1: + 1`, `P2: + 2` | — | Mode 6 |
+
+**The probe rules — one rule, by side.** A probe side is tied together, so grounding one of its
+ports grounds the whole side:
+
+- a `+` port in a `ground` / `vdd` row is an **error** (the node is at 0 V; nothing to measure);
+- a `−` port in a `ground` row is accepted with an amber note and solved as `+` to GND — the
+  whole `−` side is at ground. Fully grounded, that is bit-identical to `+` alone with the
+  ground row; partly grounded, it is the physically right answer where the old modes quietly
+  dropped the port from the probe and gave a wrong one;
+- and, as before: a reserved or repeated name, a port on both sides, a port in two measurement
+  ports, a `−` side with no `+`, a port the file does not have.
+
+Every problem is shown in its cell with the reason under the tables — never a dialog — and a
+trace with an error is skipped by Calculate with the reason in the Log.
+
+**A differential measurement is solved directly**, with the black probe on the `−` ports —
+never as two single-ended results combined (`Z11 + Z22 − Z12 − Z21`). On
+`tests/fixtures/decap_4port.s4p` at 1 GHz, port 1 single-ended is −12642 nH (the far end is
+open, so it is a capacitor) and 1 ↔ 2 differential is 1.000 nH; the combined single-ended
+route is the same algebra but differs from the direct solve by up to 1.5e-8 relative over
+the sweep, because it subtracts two large numbers to get a small one.
+
+**Old configs** load as before: every trace is moved into the two tables as the config loads
+(each with a Log line saying what it became), and is saved back with `mode: 5` and
+`table_version: 1`. The numbers are bit-for-bit the old ones, pinned over 368 cases by
+`tests/test_trace_path_golden.py`, except the partly-grounded `−` side above.
+
+Beside the two tables there is one **post-processing layer**, which is not a setup and gets no code:
 
 | Layer | Module | Surface | What it answers |
 |-------|--------|---------|-----------------|
-| Port attribution | `pkg_rlc/physics/attrib.py` | **Analyze → Attribution…** (`pkg_rlc/panels/attrib_gui.py`), or `--attribute` | Of the `Z_ab` a mode just produced, how much is the bare EM coupling and how much is each termination you declared — and what the answer would be if any of them were different. Exact both ways. See [Port attribution](#port-attribution-where-a-coupling-number-comes-from). |
+| Port attribution | `pkg_rlc/physics/attrib.py` | **Analyze → Attribution…** (`pkg_rlc/panels/attrib_gui.py`), or `--attribute` | Of the `Z_ab` a Calculate just produced, how much is the bare EM coupling and how much is each termination you declared — and what the answer would be if any of them were different. Exact both ways. See [Port attribution](#port-attribution-where-a-coupling-number-comes-from). |
 | Trace model | `pkg_rlc/physics/tracemodel.py` | The **Trace model** workspace (the strip under the menu bar; `pkg_rlc/panels/ws_tracemodel.py`), or `--trace-model` | What a routed trace IS, as a circuit: the exact pi between two measurement ports, drawn with R / L / C on it, single-ended or differential. Not a fit — a two-port's Y matrix and a pi are the same object. See [Trace model](#trace-model-what-is-this-routed-trace-as-a-circuit). |
 | Cold-start port screen | `pkg_rlc/physics/attrib.py` | `--cold-start` (CLI only) | Which ports matter *before* a spec exists. A bracket, a two-column ranking of every undeclared port, a pair scan, and a greedy cumulative curve — all from **all-open**, all exact. See [Cold start](#cold-start-which-ports-matter-before-you-have-a-spec). |
 
-### Mode 4 is retired: VDD ports go into the GND field
+### VDD ports are ground
 
 For AC small-signal analysis an ideal supply **is** a short to the reference node: a VDD
 ball and a GND ball impose the same boundary condition, `V = 0`. The old Mode 4 computed
 exactly what Mode 2 computes when both sets are listed as ground ports — there was never a
 numerical difference, only a label. So:
 
-- The GUI field is now labelled **GND / VDD (AC gnd)**; put ground pins and supply pins in it.
-- A saved mode-4 trace is migrated automatically to mode 2 with its VDD ports folded into
-  GND, and the migration is reported in the results pane.
+- In the GUI, put supply pins in a `vdd` (or `ground`) row of the connections table; the two
+  compute the same number, and `vdd` only says which balls are which.
+- A saved mode-4 trace is migrated automatically into the tables with its VDD ports in the
+  ground row, and the migration is reported in the Log.
 - On the CLI, `--vdd` still parses but is deprecated: its ports are unioned into `--gnd` and
   a `NOTE:` line says so.
-- `Vdd` remains a distinct termination class in the core (and `vdd` in the Mode 5 DSL) so
+- `Vdd` remains a distinct termination class in the core (and `vdd` in the DSL) so
   intent stays documentable — it is evaluated identically to `Ground`.
 
-### Mode 6 in one picture
+### Coupling in one picture
 
 ```
      RED   1 o---+---------------+---o 3   RED
@@ -366,32 +405,32 @@ and reports, per unordered pair:
 | `M/L_a`  | coupling (Norton injection) ratio into a, also in dB | comparing against an injection / spur budget |
 | reciprocity error | `max abs(Z_ab - Z_ba) / max abs(Z_ab)` over the finite off-diagonal entries; alarm above `1e-3` | a health check on the input data, not a result   |
 
-Filling in **one** measurement port with both sides (`tank = 1 / 2`) gives the
+Filling in **one** measurement port with both sides (`tank: + 1  − 2`) gives the
 *differential* self impedance — the `L_diff` a balanced tank actually resonates with. Putting
-both terminals on the `+` side (`tank = 1,2 /`) gives the *common-mode* impedance instead;
-the `+/-` split is what makes that distinction explicit.
+both terminals on the `+` side (`tank: + 1,2`, empty `−`) gives the *common-mode* impedance
+instead; the `+/−` split is what makes that distinction explicit.
 
 ### EMX trace and inductor use cases
 
-The same engine handles structures that are conceptually very different. What changes is only the port-termination configuration:
+The same engine handles structures that are conceptually very different. What changes is only the two tables:
 
-| Structure                          | Mode | Port assignment                                                                 | Fit model |
-|------------------------------------|------|---------------------------------------------------------------------------------|-----------|
-| **DCO / spiral inductor** (2-port P, N) | 2    | A=P, B=N, GND=(none if no GND port)                                             | Inductor  |
-| **Diff trace, loop inductance** (5-port: inp, inn, outp, outn, gnd) | 3 | A=inp, B=inn, Short Pairs=`outp-outn`, GND=gnd_port | Inductor |
-| **Diff trace, differential C**     | 2    | A=inp, B=inn, GND=gnd_port (outp/outn left default Open -> Schur-eliminated)    | Capacitor |
-| **Decap with two mounting pads shorted** | 3 | A=pad1_top, B=gnd_top, Short Pairs=`pad1_bot-gnd_bot`                          | Capacitor (reports ESR, ESL, C) |
-| **50 ohm-terminated signal path**  | 5    | port1=signal, port2=`lumped_to_gnd(R=50)`, others=ground                        | Auto      |
-| **Two coils, M / k between them** (4-port) | 6 | `c1 = 1 / 2`, `c2 = 3 / 4`, GND=(none if the coils float)                  | Inductor (per diagonal) |
-| **Aggressor -> victim on a bus** (16-port) | 6 | `vic = 1`, `agg = 2`, GND=`3:1:16`                                        | Auto      |
+| Structure                          | Measurement ports | Connections | Fit model |
+|------------------------------------|-------------------|-------------|-----------|
+| **DCO / spiral inductor** (2-port P, N) | `+ P  − N` | (none if no GND port) | Inductor  |
+| **Diff trace, loop inductance** (5-port: inp, inn, outp, outn, gnd) | `+ inp  − inn` | `short outp,outn`; `ground gnd_port` | Inductor |
+| **Diff trace, differential C**     | `+ inp  − inn` | `ground gnd_port` (outp/outn not listed → open, Schur-eliminated) | Capacitor |
+| **Decap with two mounting pads shorted** | `+ pad1_top  − gnd_top` | `short pad1_bot,gnd_bot` | Capacitor (reports ESR, ESL, C) |
+| **50 ohm-terminated signal path**  | `+ 1` | `rlc_gnd 2 R=50`; `ground` the others | Auto      |
+| **Two coils, M / k between them** (4-port) | `c1: + 1 − 2`, `c2: + 3 − 4` | (none if the coils float) | Inductor (per diagonal) |
+| **Aggressor -> victim on a bus** (16-port) | `vic: + 1`, `agg: + 2` | `ground 3:1:16` | Auto      |
 
-For loop-inductance measurements on a trace (Mode 3), shorting the far end forces the signal to return through the trace itself, exposing the differential loop inductance. For `C_diff` measurements (Mode 2), leaving the far end open isolates the inter-trace capacitance.
+For loop-inductance measurements on a trace, shorting the far end forces the signal to return through the trace itself, exposing the differential loop inductance. For `C_diff` measurements, leaving the far end open isolates the inter-trace capacitance.
 
 ---
 
 ## Workflow: budgeting coupling in dB without re-simulating the VCO
 
-This is the loop Mode 6 exists for. The expensive thing in a pulling / spur investigation is
+This is the loop the coupling measurement exists for. The expensive thing in a pulling / spur investigation is
 not the EM run — it is the nonlinear VCO or PLL simulation you would otherwise repeat for
 every layout candidate. `M/L` lets you skip it.
 
@@ -586,7 +625,7 @@ python pkg_rlc_extractor.py --cli tests/fixtures/diff_pair_4port.s4p --mode coup
 | Flag | Meaning |
 |------|---------|
 | `--attribute VICTIM,AGGRESSOR` | Turn the whole attribution report on. `--mode coupling` only; every flag below is inert without it and is refused by name if you pass it anyway. |
-| `--attribute-alt SPEC` | A candidate termination for the sensitivity scan; **repeatable**. `open`, `ideal`, or a series R/L/C in the Mode 5 DSL's own spelling (`R=50`, `L=0.3n`, `R=0.5,L=1n`, `C=100p`). A comma or a space separates the fields of one candidate, so `R=0.5,L=1n` and `R=0.5 L=1n` are the same thing here and in the Attribution window's Candidates field; a space inside a *value* is refused, because `R=5 m` would silently mean 5 Ω. With none given the scan is limited to the two **structural** candidates, `open` and `ideal`, which need no judgement about your package — the tool will not guess your ball's lead inductance. Any finite candidate is also used as a victim load in the exact current-transfer ratio. |
+| `--attribute-alt SPEC` | A candidate termination for the sensitivity scan; **repeatable**. `open`, `ideal`, or a series R/L/C in the connections table's own spelling (`R=50`, `L=0.3n`, `R=0.5,L=1n`, `C=100p`). A comma or a space separates the fields of one candidate, so `R=0.5,L=1n` and `R=0.5 L=1n` are the same thing here and in the Attribution window's Candidates field; a space inside a *value* is refused, because `R=5 m` would silently mean 5 Ω. With none given the scan is limited to the two **structural** candidates, `open` and `ideal`, which need no judgement about your package — the tool will not guess your ball's lead inductance. Any finite candidate is also used as a victim load in the exact current-transfer ratio. |
 | `--attribute-ground-model MODEL` | `diag` (default) = exactly as declared. `diag:SPEC` = every shunt lead gets `SPEC` as its own **independent** series impedance. `shared:SPEC` = every shunt lead keeps what it declares and they all **also** share `SPEC` back to the reference (a dense element-impedance matrix). See [below](#the-ground-field-independent-leads-understate-the-return-inductance) — this is worth 6-10 dB. |
 | `--attribute-freqs LIST` | Extra frequencies in GHz to re-rank the contributions at, so a ranking read off one frequency can be checked for stability across the band. `--freq` is always the first column. |
 | `--attribute-group row \| flat \| name` | How elements are grouped for the joint-effect section. `row` (default) groups by the flag that declared the port — this CLI's equivalent of the GUI's connection-table provenance. `flat` is one element per group. `name` groups by the file's port names with the trailing index stripped, which is a **naming heuristic**, not a fact about the network, and the report says so. |
@@ -714,8 +753,8 @@ Measured on a 153-port package export at one frequency, 151 candidates:
 ### Running it — from Python
 
 `pkg_rlc/physics/attrib.py` imports `pkg_rlc.physics.core` and nothing else, so it is usable directly against
-any `TerminationSet` from any mode — `build_terminations_coupling`, `build_terminations_rows`
-(the Mode 5 tables) or `parse_custom_termination_text` (the DSL). From the repo root:
+any `TerminationSet` from any builder — `build_terminations_coupling`, `build_terminations_rows`
+(the editor's two tables) or `parse_custom_termination_text` (the DSL). From the repo root:
 
 ```python
 import numpy as np
@@ -871,7 +910,7 @@ pretending the two are the same measurement. The reconciliation you see is of th
 configuration through the same machinery, which is what checks the arithmetic the modelled
 totals came out of.
 
-**You can also spell the shared return in Mode 5, in the GUI, with no attribution code at
+**You can also spell the shared return in the GUI's connections table, with no attribution code at
 all.** Tie the whole ground set together with one `short` row, name that node, then hang
 **one** `lumped_to_gnd` on the node:
 
@@ -1066,7 +1105,7 @@ Two things the differential report does that the single-ended one cannot:
 Your EM block and your package are two `.sNp` files. `--compose` hangs one on the other and
 measures the assembled thing: the blocks are stacked into one `Y`, every cross-file wire is an
 ordinary short or lumped element, and the result goes through **the same `compute_z_matrix`**
-as everything else — so every mode, the Mode 5 DSL, the coupling path, the attribution and the
+as everything else — so every setup the two tables can express, the DSL, the coupling path, the attribution and the
 cold-start screen all work on a composition with no special case of their own.
 
 ```bash
@@ -1229,7 +1268,7 @@ Two things are worth knowing:
 - **"Rank-deficient node admittance" is informational, not an error.** A structure with no ground reference at all (two isolated coils in a 4-port file — the normal coupled-inductor case) has a singular node admittance whose null direction is the common mode. The balanced `+/-` injection is orthogonal to it, so the pseudo-inverse returns the correct answer. Expect this message, capped at 3 lines, on every clean floating run. It applies to a **single** `+/-` measurement port too: `LAPACK`'s `inv` does not raise on a numerically singular 2x2, so the tool tests the determinant itself and routes those frequencies to `pinv`. Sanity-check with the reciprocity error instead.
 - **Ground-referenced probes need a real ground path — and the tool now says so.** If you give a measurement port an empty `-` side but the network has no admittance to the reference node, you are asking current to return through a wire that does not exist. `pinv` would happily return a finite, plausible-looking minimum-norm number (exactly `Z_series/4` for a floating pair probed single-ended, a flat `0 Ω` for a floating series element), so instead that measurement port's whole row and column of `Z` come back `NaN` with a warning that names it — `"Measurement port(s) '…' have no return path for the injected current"`. Other measurement ports in the same run are unaffected and keep their exact values. A second, advisory check reports `"Schur contraction cancelled to roundoff"` when the reduction of the unused ports leaves nothing but cancellation noise (e.g. `--mport "c1 = 1" --mport "c2 = 3"` on the floating fixture above); those numbers are still printed but are roundoff amplified to ~`1e16 Ω`.
 - **Port numbers are checked against the file.** A number the file does not have — `"3 / 5"` on a 4-port file — is a hard error, not a silently ground-referenced probe. Same for out-of-range `--gnd` and `--short` ports.
-- **A probe port may not also be a GND port.** A probe side is tied together, so grounding one of its ports grounds the whole side; Mode 6 rejects the combination instead of quietly dropping the port from the probe. (Modes 1-3 keep their historical "ground wins" precedence.)
+- **A probe port that is also grounded follows ONE rule, by side.** A probe side is tied together, so grounding one of its ports grounds the whole side: a `+` port in a ground row is refused (nothing to measure), a `−` port means the whole `−` side is at ground, i.e. `+` to GND. A probe port that an `open` or element-to-GND row also names is still taken off the probe (the connection row wins, as it always did), and the editor now marks that cell amber and says so. (The CLI's `--mode coupling` still refuses any probe port in `--gnd`, and `gnd` / `p2p` keep their historical "ground wins" precedence — the CLI is unchanged.)
 
 ---
 
@@ -1301,7 +1340,13 @@ SNP_RLC_Extractor/
                              report drivers, incl. --attribute and --cold-start
   tests/
     test_core.py
-    test_coupling.py         Mode 6: probe pairs, Z matrix, M / k / C_c / M-over-L
+    test_coupling.py         Coupling: probe pairs, Z matrix, M / k / C_c / M-over-L
+    test_probe_rules.py      The probe rules by side (a grounded '+' refused, a
+                             grounded '-' side measured to GND)
+    test_unified_editor.py   The one editor: templates, cells coloured by the probe
+                             rules, no mode anywhere in the GUI
+    test_trace_path_golden.py  Every old-mode trace computes what it did, bit for bit
+                             (replays golden_trace_paths.npz)
     test_attrib_core.py      Port attribution: reconciliation against compute_z_matrix,
                              and every fast what-if against an honest rebuild
     test_attrib_vs_engine.py   Independent cross-check over the golden case registry,
@@ -1328,8 +1373,10 @@ SNP_RLC_Extractor/
     test_session.py          Save / Load / Restore: round trip, refusals, paths
     generate_test_snp.py
     _golden_capture.py       Script (not a test) that (re)builds the golden .npz
+    _trace_path_capture.py   Script (not a test) that captured golden_trace_paths.npz
+                             before the modes were merged
   docs/
-    theory.md                Math, circuit diagrams, mode derivations, attribution
+    theory.md                Math, circuit diagrams, the termination derivations, attribution
     design_port_attribution.md  Why pkg_rlc/physics/attrib.py is shaped the way it is
   deploy/
     pack.ps1                 Windows: build the red-zone package
@@ -1379,10 +1426,11 @@ Full procedure, rollback, and how to keep your own data across deploys:
 
 ## Theory
 
-For the math behind each mode (S->Y conversion, Schur complement, the unified termination
+For the math behind each measurement (S->Y conversion, Schur complement, the unified termination
 abstraction, the `+/-` probe model and the M / k / M-over-L derivations, the broadband
 fitting models, and the superposition / Woodbury derivation behind port attribution) see
 [docs/theory.md](docs/theory.md).
 
-The in-app **Help** button opens the same material as a tabbed reference — one tab per mode,
-plus input syntax and worked examples.
+The in-app **Help** button opens the same material as a tabbed reference — one tab per task
+(Setting up a measurement, Coupling, Trace model, Compare files), plus the overview, reading
+files, save / load, input syntax and worked examples.

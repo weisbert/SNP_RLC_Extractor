@@ -63,7 +63,14 @@ except Exception:                                   # pragma: no cover
 
 
 class _Case(unittest.TestCase):
-    """An App with one file and two traces, the first one selected."""
+    """
+    An App with one file and two traces, the first one selected.
+
+    The traces are built in the OLD port-A / GND shape on purpose: selecting
+    one moves it into the two tables (App._migrate_trace), which is the path
+    every saved session takes -- so trace 1 is the row 'P1 +1' with a ground
+    row '2-4', and trace 2 'P1 +2' with ground '1,3,4'.
+    """
 
     MODE = 1
 
@@ -101,6 +108,12 @@ class _Case(unittest.TestCase):
             self.app.update_idletasks()
             self.app.update()
 
+    def _type_plus(self, text: str) -> None:
+        """Type into measurement-port row 1's '+' cell, the way a keystroke
+        does: write the cell's variable, which is what fires the table's
+        on_change -- and so the deferred sync -- and nothing else."""
+        self.app.ed_mp_table._rows[0]["_vars"]["plus"].set(text)
+
 
 # ============================================================================
 # Auto-apply
@@ -110,9 +123,9 @@ class _Case(unittest.TestCase):
 @unittest.skipUnless(TK_OK, "no Tk display available")
 class TestAutoApply(_Case):
     def test_typing_reaches_the_trace_with_no_apply_step(self):
-        self.app.ed_porta.set_value("3")
+        self._type_plus("3")
         self._settle()
-        self.assertEqual(self.tc.port_a, "3")
+        self.assertEqual(self.tc.mports[0].plus, "3")
 
     def test_there_is_no_apply_button_left_to_press(self):
         """The change is only real if the old commit step is gone."""
@@ -141,25 +154,29 @@ class TestAutoApply(_Case):
         editor content into trace 2 and drop the edit entirely -- the exact
         loss auto-apply exists to prevent, now rare instead of reliable.
         """
-        self.app.ed_porta.set_value("9")        # queued, not yet applied
+        self._type_plus("9")                     # queued, not yet applied
         self.assertIsNotNone(self.app._ed_sync_after,
                              "nothing was queued -- the test proves nothing")
         self._select(1)                          # click the other trace
-        self.assertEqual(self.tc.port_a, "9", "the edit went missing")
-        self.assertEqual(self.tc2.port_a, "2", "the edit landed on trace 2")
+        self.assertEqual(self.tc.mports[0].plus, "9", "the edit went missing")
+        self.assertEqual(self.tc2.mports[0].plus, "2",
+                         "the edit landed on trace 2")
 
     def test_the_placeholder_hint_never_reaches_the_trace(self):
         """
         PlaceholderEntry._show_if_empty() sets the variable BEFORE it sets
         _showing, and Tcl runs write traces synchronously inside .set(), so a
         SYNCHRONOUS handler would store the grey hint text as if the user had
-        typed it ("e.g.  1  (signal port to drive)" as a port spec).  The
-        deferral is what makes get_value() honest by the time it is read.
+        typed it.  The Label is the one PlaceholderEntry the editor has left
+        (the port fields that used to carry hints are table cells now), and
+        its hint as a legend entry is exactly that failure.  The deferral is
+        what makes get_value() honest by the time it is read -- an empty
+        Label is then stored as 'trace_<id>', never as the hint.
         """
-        self.app.ed_porta.set_value("")          # -> hint is shown
+        self.app.ed_label.set_value("")          # -> hint is shown
         self._settle()
-        self.assertEqual(self.tc.port_a, "")
-        self.assertNotIn("e.g", self.tc.port_a)
+        self.assertEqual(self.tc.label, f"trace_{self.tc.id}")
+        self.assertNotEqual(self.tc.label, pkg_rlc_gui.LABEL_PLACEHOLDER)
 
     def test_a_synchronous_reader_really_would_see_the_placeholder(self):
         """
@@ -171,21 +188,21 @@ class TestAutoApply(_Case):
         delete it on the strength of that alone.
         """
         seen = []
-        self.app.ed_porta.on_change(
-            lambda: seen.append(self.app.ed_porta.get_value()))
-        self.app.ed_porta.set_value("")      # -> _show_if_empty writes the hint
+        self.app.ed_label.on_change(
+            lambda: seen.append(self.app.ed_label.get_value()))
+        self.app.ed_label.set_value("")      # -> _show_if_empty writes the hint
         self.assertTrue(
-            any("e.g" in s for s in seen),
+            any(pkg_rlc_gui.LABEL_PLACEHOLDER in s for s in seen),
             "a synchronous handler no longer sees the hint; re-read the "
             "comment on _schedule_editor_sync before relying on that")
 
     def test_selecting_a_trace_does_not_rewrite_it(self):
         """
-        _update_mode_visibility() calls set_placeholder() on four entries, and
-        each of those writes its variable.  Run outside the suppression guard
-        it fires four syncs per selection -- and _sync_editor_to_trace turns an
-        empty Label into 'trace_<id>', so merely LOOKING at a trace could
-        rename it.
+        Loading a trace writes the editor's variables (the File combobox, the
+        Label, the plot checkboxes), and each write fires the sync.  Run
+        outside the suppression guard that is a sync per selection -- and
+        _sync_editor_to_trace turns an empty Label into 'trace_<id>', so
+        merely LOOKING at a trace could rename it.
         """
         self.tc2.label = ""
         self._select(1)
@@ -223,7 +240,7 @@ class TestAutoApply(_Case):
         self.app._on_calculate()
         self._settle()
         self.assertFalse(self.tc.stale)
-        self.app.ed_porta.set_value("3")
+        self._type_plus("3")
         self._settle()
         self.assertTrue(self.tc.stale)
         self.assertIn("*", self.app.traces_lb.get(0))
@@ -289,13 +306,12 @@ class TestStylePicker(_Case):
 
     def test_the_preview_admits_a_coupling_trace_is_several_curves(self):
         """
-        A mode-6 trace with G measurement ports draws G self curves plus
-        G(G-1)/2 mutual ones, each taking the NEXT palette slot.  A preview
-        showing one line would be a positive false claim about a trace that
-        arrives as six -- and two traces can then collide invisibly.
+        A trace with G measurement ports draws G self curves plus G(G-1)/2
+        mutual ones, each taking the NEXT palette slot.  A preview showing one
+        line would be a positive false claim about a trace that arrives as
+        six -- and two traces can then collide invisibly.
         """
         self.assertEqual(self.app.ed_style._span, 1)
-        self.tc.mode = 6
         # NOT "a"/"b": those are reserved (the legacy alias folds Signal("B")
         # into the minus side of "A"), which is its own bug, not this one.
         self.tc.mports = [MeasPortRow("tank", "1", "2"),
@@ -309,23 +325,26 @@ class TestStylePicker(_Case):
         pats = [pkg_rlc_gui._tk_dash(ls) for ls in pkg_rlc_plot.LINESTYLES]
         self.assertEqual(len(set(pats)), len(pats), pats)
 
-    def test_expanding_the_palette_costs_no_width_in_any_mode(self):
+    def test_expanding_the_palette_costs_no_width(self):
         """
         The editor's column budget is a measured 13 px of headroom (see the
         note beside CONN_TABLE_COLUMNS), so a control that widened the form
-        when opened would push the connections table off the right edge in
-        exactly the mode that has least room.  Measured: 0 px in all five.
+        when opened would push the connections table off the right edge.
+        Measured: 0 px, with one measurement port and with two (the form's
+        two shapes now that there are no modes).
 
         Height is free -- the form scrolls -- but only if the scrollregion is
         refreshed, which is why StylePicker.toggle() asks for that.
         """
         self.app.deiconify()
+        two = [MeasPortRow("tank", "1", "2"), MeasPortRow("vco", "3", "4")]
         for geom in ("1500x900", "1040x600"):
-            for mode in (1, 2, 3, 5, 6):
-                with self.subTest(geom=geom, mode=mode):
+            for mports in (None, two):
+                with self.subTest(geom=geom, n=1 if mports is None else 2):
                     self.app.geometry(geom)
-                    self.app.ed_mode_var.set(mode)
-                    self.app._on_mode_changed()
+                    if mports is not None:
+                        self.tc.mports = list(mports)
+                    self._select(0)
                     self._settle()
                     self.app.ed_style.collapse()
                     self._settle()
@@ -686,10 +705,11 @@ class TestBothCurveKindsUnchecked(_Case):
         super().setUp()
         self.tc.mports = [MeasPortRow("tank", "1", "2"),
                           MeasPortRow("vco", "3", "4")]
-        # The base case grounds 2-4, and build_terminations_coupling refuses a
-        # port that is both a probe side and a GND port -- grounding one side
-        # grounds the whole side.
+        # The base case grounds 2-4 -- and the base setUp has already moved
+        # that into a ground ROW by selecting the trace -- while the probe
+        # rules refuse a '+' port that is also grounded.  So the row goes.
         self.tc.gnd_ports = ""
+        self.tc.conn_rows = []
         self._select(0)
 
     def _note_shown(self, self_on, mutual_on):
@@ -715,19 +735,12 @@ class TestBothCurveKindsUnchecked(_Case):
                 self.assertEqual(noted, n == 0,
                                  f"note={noted} but {n} curves were built")
 
-    def test_a_single_measurement_port_has_no_mutual_curve_to_draw(self):
-        """
-        Mode 6 takes the coupling path even with ONE measurement port, and
-        there is no pair, so 'mutual' alone draws nothing.  Without the
-        `len(names) >= 2` half of the condition the note is suppressed and the
-        user is left with an empty subplot and no explanation.  (The G=2 cases
-        above cannot see that half at all -- caught by mutation.)
-        """
-        self.tc.mports = [MeasPortRow("tank", "1", "2")]
-        self._select(0)
-        noted, n = self._note_shown(False, True)
-        self.assertEqual(n, 0, "a lone measurement port produced a pair curve")
-        self.assertTrue(noted, "nothing was drawn and nothing was said")
+    # test_a_single_measurement_port_has_no_mutual_curve_to_draw was DELETED
+    # with the modes: its premise was that Mode 6 took the coupling path even
+    # with ONE measurement port.  Calculate now routes on the COUNT, so one
+    # measurement port is the single-curve path, which reads neither checkbox
+    # -- and the editor hides both of them for it (test_unified_editor.py::
+    # TestSelfMutualOnlyWithTwoProbes).
 
     def test_unchecking_both_empties_the_plot_for_that_trace(self):
         self._note_shown(True, True)

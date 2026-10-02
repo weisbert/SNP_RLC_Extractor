@@ -116,7 +116,8 @@ _TRACE_ROW_CLASSES = {"mports": MeasPortRow, "conn_rows": ConnectionRow}
 # (mirrored in pkg_rlc_files_gui, and it must stay mirrored) never has to decide
 # what a padded label means.
 _TRACE_STRLIST_FIELDS = frozenset({"file_labels"})
-_TRACE_INT_FIELDS = frozenset({"id", "mode", "color_idx", "ls_idx"})
+_TRACE_INT_FIELDS = frozenset({"id", "mode", "color_idx", "ls_idx",
+                               "table_version"})
 _TRACE_BOOL_FIELDS = frozenset({"plot_self", "plot_mutual", "enabled",
                                 "frozen"})
 

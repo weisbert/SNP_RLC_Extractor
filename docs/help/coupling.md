@@ -1,13 +1,19 @@
-Mode 6 -- +/- Ports / Coupling (M, k)
-=====================================
+Coupling -- two or more measurement ports (M, k)
+================================================
 
-What this mode adds
--------------------
-Modes 1-5 answer "what impedance do I see at ONE terminal?".
-Mode 6 answers that for SEVERAL terminals at once, and additionally
-reports how strongly they talk to each other: mutual inductance M,
-coupling factor k, the coupling ratio M/L, and the coupling
-capacitance C_c.
+What a second measurement port adds
+-----------------------------------
+One row in the Measurement ports table answers "what impedance do
+I see at ONE terminal?". Add a second row and the same Calculate
+answers that for SEVERAL terminals at once, and also reports how
+strongly they talk to each other: mutual inductance M, coupling
+factor k, the coupling ratio M/L, and the coupling capacitance C_c.
+
+Nothing else changes. It is the same two tables (see the "Setting
+up a measurement" tab) -- ground rows, shorts and lumped elements
+all apply exactly as they do to a single measurement port. The
+results pane simply switches to the coupling block whenever a
+trace has two or more measurement ports.
 
 Typical questions it answers:
   * How much does the PA coil pull my VCO tank?
@@ -15,91 +21,38 @@ Typical questions it answers:
   * Is the coupling between these two on-chip inductors under my
     -30 dBc budget, and did my layout change help?
 
-Mode 5 is this same measurement-port table plus a connections table
-underneath it, so anything you can set up here you can also set up
-there with extra terminations attached -- and two or more
-measurement ports produce the coupling matrix in either mode.
+Setting it up
+-------------
+Template -> "Several nets (coupling)" puts two rows in the
+Measurement ports table, P1 on port 1 and P2 on port 2; or press
+"+ Add" under the table as often as you need. Each row is
 
-The two-probe mental model
---------------------------
-Think of a bench multimeter. Every measurement is ONE pair of
-probes:
+      Name    + ports (red)    - ports (black)
 
-      RED probe  --> the "+" ports
-      BLACK probe --> the "-" ports
-
-A measurement port is therefore written
-
-      name = <+ ports> / <- ports>
-
-and it means exactly what it looks like:
+and means exactly what it says: a red probe on the "+" ports and a
+black probe on the "-" ports.
 
      RED   1 o---+---------------+---o 3   RED
                  |    Network    |
    BLACK   2 o---+  (Y-matrix)   +---o 4   BLACK
 
-           "tank = 1 / 2"        "vco2 = 3 / 4"
+           tank: + 1   - 2       vco2: + 3   - 4
 
-Three rules, and that is the whole model:
-  1. Ports on the SAME side are tied together (parallel, unsigned) --
-     exactly as multiple ports in Port A behave in the older modes.
-     "1,3 / 2,4" is a red probe touching 1 and 3 at once.
-  2. An EMPTY "-" side means the port is referenced to the Touchstone
-     ground, i.e. "5 /" or just "5" is the single-ended measurement
-     Mode 1 does.
-  3. There are NO weights. A port is on the plus side, on the minus
-     side, or not in this measurement port at all.
+  * Ports on the SAME side are tied together (parallel, unsigned).
+    "+ 1,3   - 2,4" is a red probe touching 1 and 3 at once.
+  * An EMPTY "-" side means the port is referenced to ground --
+    the single-ended measurement.
+  * There are NO weights. A port is on the plus side, on the minus
+    side, or not in this measurement port at all.
+  * A port may be a probe of only ONE measurement port, and the
+    names "A" and "B" are reserved. The full list of what is
+    refused, and why, is "The probe rules" on the "Setting up a
+    measurement" tab.
 
-Inputs
-------
-Measurement ports : a TABLE, one row per measurement port, with a
-                    "+ Add" button for as many as you need. Each row
-                    is Name / + ports / - ports. Names are optional;
-                    unnamed rows are auto-named P1, P2, ... The names
-                    "A" and "B" are reserved for the legacy modes.
-                    Both port columns take the full range syntax
-                    ("5,7" or "5:1:8") -- see the "Input syntax" tab --
-                    so a shield tapped at eight ports is one row, not
-                    eight. Delete a row with the "X" at its end.
-GND Ports         : V=0 ports, exactly as in the other modes.
-                    Include supply pins here too (AC ground).
-                    A port that is already a probe may NOT also be
-                    listed here: a probe side is tied together, so
-                    grounding one of its ports grounds the whole
-                    side. The tool rejects that instead of quietly
-                    dropping the port from the probe.
-Short Pairs       : optional, same syntax and meaning as Mode 3.
-Everything not listed anywhere is OPEN and gets Schur-eliminated,
-same as always.
-
-Port numbers are checked against the file. A number the file does
-not have -- "3 / 5" on a 4-port file, the classic one-digit typo --
-is an error, not a silently ground-referenced probe.
-
-One measurement port: the differential self impedance
------------------------------------------------------
-One row in the table is enough:
-
-      Name: tank    + ports: 1    - ports: 2
-
-You get the DIFFERENTIAL self impedance of that structure -- the
-impedance a differential driver sees across the two terminals, so
-L is the differential self-inductance L_diff, the number a VCO tank
-actually resonates with.
-
-Contrast that with tying both terminals into one node:
-
-      Name: tank    + ports: 1,2   - ports: (empty)
-                                   ^ both on the RED probe
-
-That is the COMMON-mode impedance (Mode 1 with Signal = "1,2"),
-which is a completely different number and is usually not what you
-want for a balanced coil. The "+/-" split is what makes the
-distinction explicit.
-
-(For a single pair, "1 / 2" returns bit-identical numbers to Mode 2
-with A=1, B=2 -- same code path. Mode 6's new capability is having
-several such terminals alive at the same time.)
+Put both terminals of a balanced coil on OPPOSITE sides. "+ 1  - 2"
+is the DIFFERENTIAL self impedance -- L is the L_diff a VCO tank
+resonates with. "+ 1,2" with an empty "-" side is the COMMON-mode
+impedance, a completely different number.
 
 Two or more measurement ports: the Z matrix
 -------------------------------------------
@@ -358,12 +311,11 @@ Goal:    Is the magnetic coupling between them under a -30 dBc
          injection budget at 10 GHz?
 
 Field entries:
-   Mode        = 6 (+/- Ports / Coupling)
    Measurement ports table:
         Name    + ports    - ports
         tank    1          2
         vco2    3          4
-   GND Ports   = (blank -- the file has no ground port)
+   Connections table: (empty -- the file has no ground port)
    RLC Freq    = 10 GHz
 
 Results at 10 GHz:
@@ -400,17 +352,18 @@ The layout-iteration loop:
 Common mistakes
 ---------------
 - Putting both terminals of a balanced coil on the "+" side
-  ("1,2 /"). That is the common-mode impedance, not L_diff.
+  ("+ 1,2", empty "-"). That is the common-mode impedance, not
+  L_diff.
 - Expecting M with the other structure SHORTED. The Z-matrix
   convention is other measurement ports OPEN. Shorting is a
   different (and load-dependent) quantity.
 - Claiming one port in two measurement ports, or putting the same
   port on both sides of one measurement port -- both are errors.
-- Naming a measurement port "A" or "B". Reserved for the legacy
-  modes; pick anything else.
+- Naming a measurement port "A" or "B". Reserved for the old
+  "signal A / signal B" spelling; pick anything else.
 - Reading k where L has gone negative (past SRF). k is NaN there by
   design, with a note saying so -- move the RLC frequency below SRF.
-- Forgetting the GND ports of a package file. Unlisted ports float,
+- Forgetting the ground rows of a package file. Unlisted ports float,
   and the extracted M is then not the one your circuit sees. If the
   structure has no ground path at all you now get "no return path"
   and NaN rather than a plausible-looking wrong number.
@@ -785,7 +738,7 @@ What is on the window, top to bottom:
                 Changing it takes effect on [Recompute], like
                 every other input here -- it never re-decomposes
                 on its own. See "One more thing this changes about
-                your GND field" at the bottom of this tab.
+                your ground rows" at the bottom of this tab.
                 If the spec has no shunt lead to model at all --
                 every ground expressed as "short_to", say -- the
                 model CANNOT be applied, and the window says so
@@ -1042,8 +995,8 @@ Now ask the other question. What if those grounds were not ideal?
     pole-free interval instead of quoting a bracket that does not
     hold.
 
-One more thing this changes about your GND field
-------------------------------------------------
+One more thing this changes about your ground rows
+---------------------------------------------------
 This is the most expensive modelling choice in the whole flow and
 it is the easy one to make by accident, because the obvious
 spelling is the wrong one.
@@ -1078,8 +1031,8 @@ return. On the CLI it is the same spelling in one flag:
 run it BOTH ways -- diag and shared are not a refinement of each
 other, they are different answers, and the report says so.
 
-You can also spell it right here in Mode 5, with no attribution
-code at all -- and if you take one thing from this section, take
+You can also spell it right in the connections table, with no
+attribution code at all -- and if you take one thing from this section, take
 this one. Tie the whole ground set with ONE short row, then hang
 ONE lumped_to_gnd on that node.
 
@@ -1106,7 +1059,9 @@ tool -- but you should answer it on purpose.
 Hanging an EM block on a PACKAGE block (--compose, CLI only)
 ===========================================================
 Two files -- your EM extraction and the package -- measured as ONE
-network. There is no window for it yet; the command line is:
+network. In the GUI that is Analyze -> "Files in this trace..." and
+an F2.<port> tag in the tables (see the end of the "Setting up a
+measurement" tab and the "Input syntax" tab). On the command line:
 
       python pkg_rlc_extractor.py --cli coil.s2p \
           --compose-alias EM --compose "PKG=package.s3p" \
@@ -1123,8 +1078,9 @@ command line still reads exactly as it always did.
 The mathematics is the pipeline you already know -- the two Y
 matrices are stacked, each cross-file wire is an ordinary short or
 lumped element, and the whole thing goes to the same solver. Every
-mode, the Mode 5 DSL, Mode 6 coupling, the attribution and the
-cold-start screen all work on a composition with nothing added.
+setup the two tables can describe, the text form, coupling, the
+attribution and the cold-start screen all work on a composition with
+nothing added.
 
 ONE THING YOU MUST KNOW BEFORE TRUSTING THE NUMBER
 --------------------------------------------------
@@ -1187,156 +1143,3 @@ Calculate the bare EM trace, right-click it in the Traces list ->
 Freeze as new trace, then add the package and Calculate again. The
 two rows sit side by side in the results table, and the frozen one
 can never be recalculated or edited by accident.
-
-
-===========================================================
-THE TRACE MODEL  (the Trace model workspace)
-===========================================================
-
-"What IS this routed trace, as a circuit, and what are its
-element values?"  Give it the two ports that are the two ENDS of
-the trace and it draws the pi -- series R and L, and the shunt at
-each end -- with every value on the drawing.
-
-IN THE GUI
-----------
-It is a workspace of its own, not a trace mode: press
-"Trace model" on the strip under the menu bar.  The Loaded Files
-panel stays where it is; the rest of the window is the workspace.
-
-  1. Nets: pick the File, then "+ Add net" and fill one row per
-     net -- a Name, and the IN+ and OUT+ ports.  For a
-     differential pair fill IN- and OUT- too.  Nothing is named
-     or picked for you.
-  2. Other ports: list the ground ports under GND.  Every port
-     not in a net row and not in GND is left OPEN.
-  3. Conditions: the marker Freq (GHz), and the Source (ohm) and
-     Load (fF) the bandwidth table is read against.
-  4. Calculate all.  The Summary gets one row per net; click a
-     row to draw that net's pi and its response below it.
-
-A problem with a row -- no name, a duplicate name, a port used
-twice, a port that is also in GND, a port past the file's port
-count -- is marked in that cell as you type, with the reason under
-the table.  There is no dialog.
-
-Each net is solved on its own: one bad row does not stop the
-others.  Editing a row, the GND list, the file or the frequency
-does NOT silently redraw anything -- the rows it affects are marked
-stale and keep their old numbers until you press Calculate all
-again, because a picture that quietly became a picture of
-something else is worse than no picture.  Export CSV writes the
-Summary and every net's branch values at full precision.
-
-FROM THE COMMAND LINE
----------------------
-    --mode coupling --mport "in = 1" --mport "out = 2" \
-    --gnd 3 --freq 0.1 --trace-model in,out
-
-IT IS NOT A FIT
----------------
-A two-port's Y matrix and a pi circuit are the same object, not
-an approximation of one another, so the elements come out EXACT
-at the frequency you ask for.  Nothing is least-squared, nothing
-assumes the two ends are symmetric, and the single-ended case
-re-solves nothing at all -- the 2x2 it needs is already inside
-the Z matrix the coupling report above it just printed.
-
-DIFFERENTIAL: NOTHING EXTRA TO TURN ON
---------------------------------------
-Give each measurement port a MINUS side and you get the
-differential pi.  In the workspace that is the IN- and OUT-
-cells of the net's row; on the command line it is the '/':
-
-    --mport "in = 1 / 2" --mport "out = 3 / 4" --gnd 5 \
-    --freq 0.1 --trace-model in,out
-
-A file with a separate ground pin just adds the ground; a 4-port
-file with no ground pin leaves it out.  Both work.
-
-The differential drawing has NO ground rail under it, on purpose:
-the shunt goes between the two conductors, and there is no
-reference node in that picture to draw.
-
-The differential shunt is the capacitance ACROSS THE PAIR --
-what a differential driver actually sees -- and it is HALF the
-per-line odd-mode capacitance an EM tool usually quotes.  The
-report prints both on the same line so there is nothing to guess:
-
-    C = 0.5 fF          (across the pair)
-    (odd 1 fF)          (per line, odd mode)
-
-It also measures how much differential energy the pair converts
-to common mode.  The differential pi assumes common mode OPEN at
-both ends, which is exact for a symmetric pair and an unstated
-assumption otherwise, so the report states it: above 5 % the pair
-is imbalanced and the pi is the differential part only.
-
-BANDWIDTH: THREE NUMBERS, KEPT APART
-------------------------------------
-"The bandwidth of this trace" is three different things:
-
-  model band   how high the pi is still ONE lumped pi.  Nothing
-               declared, nothing assumed.  It usually answers
-               "the top of the sweep", which means the FILE
-               stops there -- not the model.
-  corners      f_RL = R/(2*pi*L) and f_RC = 1/(2*pi*R*C), per
-               branch.  Where the reactance overtakes the
-               resistance.  These EXPLAIN the third number.
-  -3 dB        what everyone means -- and NOT a property of the
-               trace.  It belongs to trace + source + load.
-
-That last point is why the report prints a TABLE and not a
-number.  On a real routed line the load capacitance alone moves
-the answer 7.3x (15.31 GHz open, 2.09 GHz into 200 fF), and the
-source resistance another 1.9x.  The Source (ohm) and Load (fF)
-fields under Conditions pin the row you care about, and the
-Response curve under the schematic is drawn from the same
-numbers.
-
-The "vs marker" column is the useful one: "6.3 GHz" is a fact,
-"82x your working frequency" is an answer.
-
-Three things it will not do:
-
-  * it never extrapolates past the file.  If the sweep never
-    drops 3 dB you get "> 5 GHz" and the droop actually reached;
-  * it references the BOTTOM OF THE SWEEP, not DC, and says so;
-  * a response that PEAKS has no -3 dB bandwidth.  A series L
-    into a load C rises before it rolls off, so the column says
-    "peaks +13.6 dB at 8.2 GHz" instead of a number that would
-    be measured from a baseline the curve already left.
-
-From the command line: --trace-model-src OHM and
---trace-model-load FF[,FF].
-
-READ THE |Q| BEFORE YOU READ THE C
-----------------------------------
-Every branch prints its own |Q| and what follows from it:
-
-    series    |Q| = 0.003087   a resistor, the reactance is a
-                               residue -- do not read L or C
-    shunt_in  |Q| = 532.6      capacitive -- read C
-
-|Q| far below 1 means the branch is a RESISTOR whose reactive
-part is too small to interpret.  A series branch like that will
-still print a capacitance -- it has to, the sign is real -- but
-that number is the reading of a fraction of an ohm, not a
-capacitor.  This is the most common way to misread the tool.
-
-IS IT ONE LUMPED ELEMENT ACROSS YOUR BAND?
-------------------------------------------
-The report re-reads the same pi at the BOTTOM of the sweep and
-prints the movement per branch.  Inside 10 % the values are
-reusable anywhere in the band; past it the structure is not one
-lumped pi and the values are good at that frequency only.  This
-costs no extra solve -- both points are already in the sweep.
-
-IF YOUR WORKING FREQUENCY IS BELOW THE FILE
--------------------------------------------
-The marker resolves to the nearest swept point and the report
-always prints BOTH the point it used and the frequency you
-asked for, so you are never answered silently at a frequency you
-did not choose.  Whether that reads as a note or as an "outside
-the swept band" warning depends on how coarse the grid is at
-that end.

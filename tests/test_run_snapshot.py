@@ -52,6 +52,8 @@ import numpy as np  # noqa: E402
 
 import _render_capture as rc  # noqa: E402
 from pkg_rlc.physics.core import (  # noqa: E402
+    ConnectionRow,
+    MeasPortRow,
     extract_coupling_at_freq,
     extract_rlc_at_freq,
     parse_touchstone,
@@ -140,8 +142,15 @@ class TestRenderedPageDidNotMove(unittest.TestCase):
 # ============================================================================
 
 def _tc(**kw) -> TraceConfig:
-    base = dict(id=1, label="tank", file_label="coil.s4p", mode=1,
-                port_a="1", gnd_ports="2", color_idx=0)
+    """A trace in the one row model -- every trace is migrated on load and
+    on creation -- measuring port 1 with port 2 at ground.  `mode=` is
+    accepted and ignored: it no longer selects anything."""
+    kw.pop("mode", None)
+    base = dict(id=1, label="tank", file_label="coil.s4p", mode=5,
+                table_version=1,
+                mports=[MeasPortRow(name="P1", plus="1", minus="")],
+                conn_rows=[ConnectionRow(kind="ground", ports="2")],
+                color_idx=0)
     base.update(kw)
     return TraceConfig(**base)
 
@@ -210,9 +219,9 @@ class TestRowSnapshotIsImmuneToItsTrace(unittest.TestCase):
         Storing the callable, or the trace it is bound to, reopens the hazard
         in a form that is harder to see.
         """
-        self.tc.mode = 2
-        self.tc.port_a, self.tc.port_b = "7", "8"
-        self.assertIn("M1: S:[1] G:[2]", self.before)
+        self.tc.mports = [MeasPortRow(name="P1", plus="7", minus="8")]
+        self.assertIn("P1:1 GND:[2]", self.before)
+        self.assertNotIn("M1", self.before, "no mode number on screen")
         self.assertEqual(self._after(), self.before)
         self.assertNotEqual(self._live_after(), self.before)
 
@@ -452,7 +461,7 @@ class TestRunRecord(unittest.TestCase):
         run = RunSnapshot(number=1, when=_now(), marker_freq_hz=1e9,
                           rows=(_snapshot_row(tc, "coil.s4p", _Res()),))
         tc.label, tc.color_idx = "renamed", 5
-        tc.mode, tc.port_a = 2, "9"
+        tc.mports = [MeasPortRow("P1", "9", "")]
         tc.enabled = False
         fresh = run.with_visibility([tc])
         self.assertEqual(tc.id, fresh.rows[0].id, "precondition: still matched")
@@ -539,8 +548,7 @@ class TestAppRunsAreIndependent(unittest.TestCase):
         # trace, which would write the old label straight back.
         self.app.traces_lb.selection_clear(0, tk.END)
         self.tc.label = "renamed"
-        self.tc.mode = 2
-        self.tc.port_a, self.tc.port_b = "3", "4"
+        self.tc.mports = [MeasPortRow("P1", "3", "4")]
         self.app._refresh_trace_list()
         self.app._on_calculate()
         self._settle()

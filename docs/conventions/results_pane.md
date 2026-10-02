@@ -34,7 +34,8 @@ mutation-checked.
   deliberately deleted. Measured on `coupled_2port_gndref.s2p` (port 1 =
   0.6 Ω / 2 nH, port 2 = 0.9 Ω / 3 nH): Calculate with Port A = 1, type `2`
   into Port A, freeze without recalculating, and the results table read
-  `█ [ 2] coil <21:36>  M1: S:[2] G:[]  600 mΩ  2 nH  −1.27 nF  2.09  ind` —
+  `█ [ 2] coil <21:36>  M1: S:[2] G:[]  600 mΩ  2 nH  −1.27 nF  2.09  ind` (the
+  descriptor's pre-2026-10-02 spelling; it reads `P1:2 GND:[]` now) —
   port 2's descriptor over port 1's numbers, a 50% error on L, and the same
   wrong pairing in the run page, the CSV and the plot legend. Nothing raises
   and the numbers are real. `_on_freeze_trace` flushes the editor FIRST, which
@@ -131,6 +132,28 @@ mutation-checked.
 - **`port_desc` is a resolved STRING.** `port_descriptor()` is a method that
   recomputes from the live spec fields, so storing the callable — or the trace
   it is bound to — reopens the hazard in a form that is harder to see.
+- **The descriptor names the measurement, never a mode (2026-10-02, stage 2 of
+  `docs/design_workspaces.md`, § 3.6).** `_port_descriptor`
+  (`pkg_rlc/model/validate.py`) is the measurement ports, the ports a ground /
+  vdd row holds at GND, and a count of the OTHER connection rows:
+  `in:1/2 out:3/4 GND:[5-6] +2 conn`; `P1:1 GND:[2-3]` for an old Mode 1 trace;
+  `+txt` appended when kept-as-text lines are in force, `text: …` when they are
+  the whole spec. It used to open with the mode (`M1: S:[1] G:[2,3]`,
+  `M6: in:1/2 out:3/4 G:[]`), and no widget on screen says "Mode" any more. A
+  trace that has not been migrated yet is described as its migration WOULD
+  read it, on a copy — no side effect, so the Log line saying what moved is
+  still waiting when the App migrates for real. The GUI CSV header follows:
+  `Setup: <descriptor>`, where it said `Mode: Custom`. The CLI is unchanged.
+  `tests/fixtures/render_reference.json` pins the rendered tables and moves
+  with this string.
+- **Which results block a trace gets is decided by its MEASUREMENT-PORT
+  COUNT, and by nothing else.** One measurement port → the ordinary
+  self-impedance row (and the fit); two or more → the coupling block. There is
+  no mode left to route on, and the numbers did not move (`compute_z` is
+  `Zmat[:, 0, 0]`). The only visible change: an old Mode 6 trace with ONE
+  measurement port now shows the ordinary row and can be fitted, where it used
+  to get a one-port coupling block. The CSV exporter's gate (`tc.Zmat is not
+  None`) and `_on_calculate`'s routing are the same predicate.
 - **A snapshot NEVER retains `Z` / `Zmat` / `fit_freqs` / `fit_Z` / `aux`.**
   Measured envelope at 10 runs x 6 traces: text plus rows is ~0.43 MB, while
   the arrays are **173 MB** for a mode-6 run at 5000 frequencies and 6
@@ -292,8 +315,8 @@ the left edge at the same moment.
   metric.** What the metric IS — `max|Z_ab-Z_ba| / max|Z_ab|`, alarm above
   `RECIPROCITY_WARN` — is a definition, the same every run, and it cost 100 of
   that line's 140 columns for a number the reader is scanning for a tick or a
-  cross. It moved to the legend and to Help → Mode 6, which the legend points
-  at. **The alarm keeps its sentence**, because there the sentence IS the
+  cross. It moved to the legend and to Help → Coupling (Help → Mode 6 until
+  2026-10-02), which the legend points at. **The alarm keeps its sentence**, because there the sentence IS the
   reading.
 - **The view is read LIVE off the App, exactly like the units mode, and for the
   same reason.** Which rendering is on screen is a RENDERING CHOICE, not a

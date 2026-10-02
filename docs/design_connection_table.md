@@ -1,17 +1,32 @@
 # Design note — the connection table (Mode 5 / Mode 6 editor)
 
-Status: **stages 0–3 implemented.** Stage 4 (modes reframed as presets that fill
-the table) is specified here and deliberately NOT started — it rewrites the main
-editor skeleton and needs a human looking at the screen. See "Staging" at the
+Status: **stages 0–4 implemented.** Stage 4 (modes reframed as presets that fill
+the table) landed on 2026-10-02 as stage 2 of `docs/design_workspaces.md` (§ 3),
+which is where its plan and its reasons are; the rules as they now stand are
+`docs/conventions/editor_and_tables.md` § "The one row model". This note is kept
+as the "why" of stages 0–3, and everything below that says "Mode 5" / "Mode 6" /
+"stage 4 waits" describes the tree before that date. See "Staging" at the
 bottom, and "What shipped differs from the mock" below it.
+
+**What stage 4 became, in one paragraph.** There are no modes: every trace is the
+measurement-port table plus the connections table (GND, shorts and elements are
+rows; there is no GND box), and `TraceConfig.mode` is always written as 5. A
+`Template` box fills both tables (Port to GND / Between two ports / Loop with
+shorted far end / Several nets (coupling)) and is then forgotten. The §4 trap —
+a preset crossing from "ground wins" to "coupling refuses" — was not papered over
+but resolved: BOTH rules were wrong for a partly grounded `−` side, so there is
+now one rule by SIDE (`probe_rule_issues`: a grounded `+` port is refused, a
+grounded `−` side is solved as `+` to GND), shown in the cell, never in a dialog.
+Old traces are migrated on load and pinned `np.array_equal` to the old path by
+`tests/test_trace_path_golden.py`, except the one intended change.
 
 What works today: Modes 5 and 6 share the measurement-port table; Mode 5 adds
 the connections table, the port-overview strip, the validation strip and an
 "Edit as text…" escape hatch. The DSL takes port ranges, the row model
 round-trips, and any spec defining two or more measurement ports produces the
 full coupling matrix regardless of which mode wrote it.
-What does not exist yet: preset seeding (stage 4), and everything in
-"Deliberately out of scope" below.
+What does not exist yet: everything in "Deliberately out of scope" below.
+(Preset seeding is stage 4, landed 2026-10-02 — see above.)
 
 ---
 
@@ -84,7 +99,8 @@ afterwards without redoing the analysis:
   what the user has forgotten is not the syntax, it is *the layout*.
   (**Deferred in stage 3** for a measured width reason — see §5a. The shipped
   dropdown carries bare port numbers; the names stay reachable through
-  **Show Ports**, which is now named in both table hints, in Help → Mode 5 and
+  **Show Ports**, which is now named in both table hints, in Help → Setting up a
+  measurement (Help → Mode 5 until 2026-10-02) and
   Help → Input syntax, and in the README, and which falls back to the editor's
   file instead of silently doing nothing when the Files listbox has no
   selection. A deferral nobody is told about is just a missing feature.)
@@ -159,6 +175,15 @@ test anywhere pinned the precedence.
 
 Anything that claims to reproduce a named mode must satisfy this class.
 
+*2026-10-02 (stage 4 landed):* the builders keep this precedence — the CLI and
+`golden_legacy.npz` call them — but the editor's rows path no longer crosses it
+silently. `probe_rule_issues` refuses a grounded `+` port and `fold_grounded_minus`
+grounds a whole `−` side before the build; the case pinned as
+`test_named_modes_and_probe_model_disagree_on_purpose` now pins "unified:
+refused". The bit-for-bit guard for every old trace is
+`tests/test_trace_path_golden.py` against `tests/fixtures/golden_trace_paths.npz`,
+captured before any code moved.
+
 The same hole has a second mouth, found in stage 3: **importing existing text
 into the table can flip the precedence the other way.** `dsl_text_to_rows`
 discards line order and `rows_to_dsl_text` re-emits every probe before every
@@ -178,7 +203,7 @@ unchanged, so it is bit-identical to what the trace computed before).
 | 1 | Row model, `build_terminations_rows`, Mode 5 → `compute_z_matrix` when ≥2 probes | **Yes** — test suite |
 | 2 | Measurement-port table widget, wired to Mode 6 | Code yes, look-and-feel no |
 | 3 | Mode 5 full editor: both tables, port overview, validation strip | **Done** — the verifiable half only |
-| 4 | Modes reframed as presets that fill the table | **No** |
+| 4 | Modes reframed as presets that fill the table | **Done 2026-10-02** (`docs/design_workspaces.md` stage 2); numbers by `test_trace_path_golden`, the editor by `test_unified_editor`, the look by the owner's walk-through |
 
 Stage 3's *verifiable* half is pinned by `tests/test_mode5_editor.py`: the
 text↔rows import decision, both strip renderers, what the editor loads and
@@ -189,7 +214,8 @@ result is less confusing than what it replaces — still cannot be settled by a
 test and wants review.
 
 Stage 4 rewrites the main editor skeleton and changes what every existing
-workflow looks like. It waits.
+workflow looks like. It waited for the workspace plan, and landed with it on
+2026-10-02.
 
 ### 5-R1. Per-kind row shape, nets and the parallel stamp (landed after stage 3)
 

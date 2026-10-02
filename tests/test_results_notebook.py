@@ -34,7 +34,7 @@ import tkinter as tk  # noqa: E402
 from tkinter import ttk  # noqa: E402
 
 import pkg_rlc.frontend.app as pkg_rlc_gui  # noqa: E402
-from pkg_rlc.physics.core import parse_touchstone  # noqa: E402
+from pkg_rlc.physics.core import MeasPortRow, parse_touchstone  # noqa: E402
 from pkg_rlc.frontend.app import (  # noqa: E402
     LOG_BADGE_CAP,
     LOG_ERROR,
@@ -462,7 +462,7 @@ class TestSeverityRouting(_AppCase):
         """
         other = self._off_screen()
         self._deselect_the_trace()
-        self.tc.port_a = "99"
+        self.tc.mports = [MeasPortRow("P1", "99", "")]   # no such port
         self.app._on_calculate()
         self._settle()
         self.assertEqual(self.app.results_nb.select(),
@@ -551,8 +551,6 @@ class TestNotebookDoesNotSqueezeTheLeftPanel(unittest.TestCase):
             app.geometry("1040x600")
             app.deiconify()
             app.update()
-            app.ed_mode_var.set(5)
-            app._on_mode_changed()
             for _ in range(3):
                 app.update_idletasks()
                 app.update()

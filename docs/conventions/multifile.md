@@ -264,6 +264,12 @@ mutation-checked.
   so a tag there already fails with core's message — but a bare index past the
   home file would have gone through as a global port. `_check_bare_ports` is
   that check; do not delete it in favour of "the resolver catches everything".
+  *Since 2026-10-02 (stage 2 of `docs/design_workspaces.md`) the Short Pairs field
+  exists only in an unmigrated config: migration turns each pair into a two-field short
+  ROW, and a row's cells go through the port scope like every other cell — legal
+  spellings compute the same numbers, and a tagged spelling (`F2.3`) becomes legal
+  where the old field refused it (design § 3.4, finding F8). The check above still
+  guards whatever reads an old trace's field before it is migrated.*
 - **THERE ARE TWO NAMESPACE BUILDERS, and that is a measured decision.**
   `_trace_network` stacks the real thing (Calculate). `_namespace_network`
   builds a `ComposedNetwork` with the blocks and `Y = zeros((0, n, n))` — it

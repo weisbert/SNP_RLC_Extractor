@@ -1347,6 +1347,268 @@ def _conn_with_rlc(kind: str, ports: str, to: str,
     return row
 
 
+# ============================================================================
+# The probe rules of the one row model (docs/design_workspaces.md § 3.3)
+# ============================================================================
+#
+# Until the merge there were two rules for "a probe port is also grounded":
+# Mode 6 refused it, and Modes 1/2/3/5 let the ground win -- they dropped the
+# grounded port from the probe and solved what was left.  Both were wrong for
+# half the cases.  A probe SIDE is tied together in the solve (the ports a
+# side lists are one node), so grounding ONE of its ports grounds the WHOLE
+# side.  Measured at 1 GHz on `+1 -3,4` with port 3 grounded, the old
+# ground-wins answer was -12635 nH on diff_pair_4port and NaN on
+# coupled_4port_float, against 5.001 nH and 0 nH for what the spec MEANS
+# ('+1' with 3 and 4 both at ground).  So the rule now follows the physics:
+#
+#   - a '-' port in a ground row: the whole '-' side is at ground, which is a
+#     '+'-to-GND measurement.  ACCEPTED, solved as exactly that (the whole
+#     '-' side folded into ground), with an amber note.  When every '-' port
+#     was already grounded this is the same spec, bit for bit.
+#   - a '+' port in a ground row: measuring a node that is at 0 V means
+#     nothing.  REFUSED.
+#
+# and the other refusals Mode 6 always had move here, so one table has one
+# set of rules: a reserved or repeated name, a port on both sides of one
+# measurement port, a port claimed by two measurement ports, and a '-' side
+# with no '+' side.
+
+#: Severity of a `SpecIssue`.  An error stops the trace from being solved; a
+#: warning is solved and is worth knowing.
+ISSUE_ERROR = "error"
+ISSUE_WARNING = "warning"
+
+#: The rule each issue comes from (`SpecIssue.code`).
+ISSUE_RESERVED_NAME = "reserved_name"
+ISSUE_DUPLICATE_NAME = "duplicate_name"
+ISSUE_NO_PLUS = "no_plus"
+ISSUE_OUT_OF_RANGE = "out_of_range"
+ISSUE_BOTH_SIDES = "both_sides"
+ISSUE_TWO_PROBES = "two_probes"
+ISSUE_PLUS_GROUNDED = "plus_grounded"
+ISSUE_MINUS_GROUNDED = "minus_grounded"
+ISSUE_PROBE_OVERRIDDEN = "probe_overridden"
+
+
+@dataclass(frozen=True)
+class SpecIssue:
+    """
+    One complaint about ONE CELL of the two tables.
+
+    `table` is "mports" or "conn"; `row` indexes the sequence the checker was
+    handed, blank rows included, so a caller holding the same list can find
+    the widget; `column` is the row-object field ("name", "plus", "minus",
+    "ports").
+    """
+    table: str
+    row: int
+    column: str
+    severity: str
+    message: str
+    #: Which rule spoke -- one of the ISSUE_* codes below.  Callers that ACT
+    #: on an issue (the fold) key on this, never on the wording.
+    code: str = ""
+
+    @property
+    def is_error(self) -> bool:
+        return self.severity == ISSUE_ERROR
+
+
+def probe_display_names(mport_rows: Sequence[MeasPortRow]) -> list[str]:
+    """The name each row is solved under -- the auto 'P<n>' rows_to_dsl_text
+    gives a blank one -- index-aligned with `mport_rows` ("" for a blank
+    row).  The same loop as rows_to_dsl_text's, so the two cannot differ."""
+    out: list[str] = []
+    auto = 0
+    used: set[str] = set()
+    for row in mport_rows:
+        if row.is_blank():
+            out.append("")
+            continue
+        name = row.name.strip()
+        if not name:
+            while True:
+                auto += 1
+                name = f"P{auto}"
+                if name not in used:
+                    break
+        used.add(name)
+        out.append(name)
+    return out
+
+
+def grounded_ports(conn_rows: Sequence[ConnectionRow]) -> set[int]:
+    """1-based ports a GROUND or VDD connection row leaves at AC ground.
+
+    Read through the DSL of the connection rows alone, so last-assignment-wins
+    among the rows (a later 'open' on the same port) is the parser's rule, not
+    a second copy of it here.  Raises what the parser raises."""
+    ts = parse_custom_termination_text(rows_to_dsl_text((), conn_rows, ""))
+    return {p + 1 for p, t in ts.per_port.items()
+            if isinstance(t, (Ground, Vdd))}
+
+
+def _fmt_ports(ports) -> str:
+    return ",".join(str(p) for p in ports)
+
+
+def probe_rule_issues(mport_rows: Sequence[MeasPortRow] = (),
+                      conn_rows: Sequence[ConnectionRow] = (),
+                      extra_lines: str = "",
+                      nports: int | None = None) -> list[SpecIssue]:
+    """
+    Every cell the probe rules (see the block above) have something to say
+    about, errors and warnings both, in row order.  Never raises: a cell that
+    does not parse is left to the parser's own message, which the build
+    raises.
+
+    `extra_lines` is the kept-as-text escape hatch.  It is read only for the
+    node names it may define; its directives are emitted last and are the
+    user's explicit word, so the rules do not second-guess them.
+    """
+    issues: list[SpecIssue] = []
+    try:
+        nets = _collect_nets(rows_to_dsl_text(mport_rows, conn_rows,
+                                              extra_lines))
+    except Exception:                                   # noqa: BLE001
+        nets = {}
+    names = probe_display_names(mport_rows)
+
+    def ports_of(spec: str):
+        if not spec.strip():
+            return []
+        try:
+            return _resolve_port_field(spec, nets, 0, "port")
+        except Exception:                               # noqa: BLE001
+            return None
+
+    try:
+        conn_ts = parse_custom_termination_text(
+            rows_to_dsl_text((), conn_rows, ""))
+    except Exception:                                   # noqa: BLE001
+        conn_ts = TerminationSet()
+    grounded = {p + 1 for p, t in conn_ts.per_port.items()
+                if isinstance(t, (Ground, Vdd))}
+    vdd = {p + 1 for p, t in conn_ts.per_port.items() if isinstance(t, Vdd)}
+    # A probe port that an OPEN or element-to-GND row also names: the DSL is
+    # last-assignment-wins and connections are emitted after the probes, so
+    # that row takes the port off the probe.  It always did; this says so.
+    overridden = {p + 1: ("an open row" if isinstance(t, Open)
+                          else "an element-to-GND row")
+                  for p, t in conn_ts.per_port.items()
+                  if isinstance(t, (Open, LumpedToGnd))}
+
+    seen_names: set[str] = set()
+    owner: dict[int, str] = {}
+    for idx, row in enumerate(mport_rows):
+        if row.is_blank():
+            continue
+        name = names[idx]
+        typed = row.name.strip()
+        if typed and typed.upper() in LEGACY_GROUP_NAMES:
+            issues.append(SpecIssue(
+                "mports", idx, "name", ISSUE_ERROR,
+                f"Name '{typed}' is reserved (it is the old A / B "
+                f"spelling); pick another name.", ISSUE_RESERVED_NAME))
+        elif name in seen_names:
+            # By the name it is SOLVED under: a blank row is P1, P2, ... and a
+            # row typed 'P1' beside it would merge into the same probe.
+            issues.append(SpecIssue(
+                "mports", idx, "name", ISSUE_ERROR,
+                f"Two measurement ports are called '{name}'"
+                + ("" if typed else " (a blank name is read as " + name + ")")
+                + "; each needs its own name.", ISSUE_DUPLICATE_NAME))
+        seen_names.add(name)
+
+        if not row.plus.strip():
+            if not row.minus.strip():
+                continue        # a name alone: nothing to measure, as before
+            issues.append(SpecIssue(
+                "mports", idx, "plus", ISSUE_ERROR,
+                f"'{name}' has a '-' side but no '+' side; the red probe "
+                f"must touch at least one port.", ISSUE_NO_PLUS))
+        plus = ports_of(row.plus)
+        minus = ports_of(row.minus)
+        if plus is None or minus is None:
+            continue
+        if nports is not None:
+            for col, ports in (("plus", plus), ("minus", minus)):
+                bad = [p for p in ports if p < 1 or p > int(nports)]
+                if bad:
+                    issues.append(SpecIssue(
+                        "mports", idx, col, ISSUE_ERROR,
+                        f"Port {_fmt_ports(bad)} is not in this file "
+                        f"({int(nports)} ports).", ISSUE_OUT_OF_RANGE))
+        both = sorted(set(plus) & set(minus))
+        if both:
+            issues.append(SpecIssue(
+                "mports", idx, "minus", ISSUE_ERROR,
+                f"'{name}': port {_fmt_ports(both)} is on both the '+' and "
+                f"the '-' side.", ISSUE_BOTH_SIDES))
+        for col, ports in (("plus", plus), ("minus", minus)):
+            clash = [p for p in ports if p in owner and owner[p] != name]
+            if clash:
+                issues.append(SpecIssue(
+                    "mports", idx, col, ISSUE_ERROR,
+                    f"Port {_fmt_ports(clash)} is already a probe of "
+                    f"'{owner[clash[0]]}'; a port can carry only one "
+                    f"probe.", ISSUE_TWO_PROBES))
+            for p in ports:
+                owner.setdefault(p, name)
+
+        on_plus = [p for p in plus if p in grounded]
+        if on_plus:
+            issues.append(SpecIssue(
+                "mports", idx, "plus", ISSUE_ERROR,
+                f"Port {_fmt_ports(on_plus)} is on the '+' side of '{name}' "
+                f"and in a "
+                + ("vdd row (VDD is an AC ground)"
+                   if all(p in vdd for p in on_plus) else "ground row")
+                + ": that node is at 0 V, so there is nothing to measure. "
+                f"Drop it from one of the two.",
+                ISSUE_PLUS_GROUNDED))
+        on_minus = [p for p in minus if p in grounded]
+        if on_minus and not on_plus and not both:
+            tail = ("" if len(minus) == 1 else
+                    f"; ports {_fmt_ports(minus)} are all at GND")
+            issues.append(SpecIssue(
+                "mports", idx, "minus", ISSUE_WARNING,
+                f"'-' side is grounded (port {_fmt_ports(on_minus)}), so "
+                f"this measures {name} to GND{tail}.", ISSUE_MINUS_GROUNDED))
+        for col, side, ports in (("plus", "+", plus), ("minus", "-", minus)):
+            off = [p for p in ports if p in overridden and p not in grounded]
+            if off:
+                issues.append(SpecIssue(
+                    "mports", idx, col, ISSUE_WARNING,
+                    f"Port {_fmt_ports(off)} is on the '{side}' side of "
+                    f"'{name}', but {overridden[off[0]]} also names it and "
+                    f"takes it off the probe (the connection row wins).",
+                    ISSUE_PROBE_OVERRIDDEN))
+    return issues
+
+
+def fold_grounded_minus(mport_rows: Sequence[MeasPortRow],
+                        conn_rows: Sequence[ConnectionRow],
+                        extra_lines: str = "") -> tuple[list, list]:
+    """
+    (mport_rows, conn_rows) with every '-' side that touches a ground row
+    folded into ground: its minus cell cleared and ONE ground row for the
+    whole side appended after the connection rows.  When nothing folds the
+    rows come back as they were (the same objects), so a spec without the
+    case is the same DSL text, byte for byte.  Never raises.
+    """
+    folds = sorted({i.row for i in probe_rule_issues(mport_rows, conn_rows,
+                                                     extra_lines)
+                    if i.code == ISSUE_MINUS_GROUNDED})
+    mports = list(mport_rows)
+    conn = list(conn_rows)
+    for idx in folds:
+        row = mports[idx]
+        conn.append(ConnectionRow(kind="ground", ports=row.minus.strip()))
+        mports[idx] = MeasPortRow(name=row.name, plus=row.plus, minus="")
+    return mports, conn
+
+
 def build_terminations_rows(mport_rows: Sequence[MeasPortRow] = (),
                             conn_rows: Sequence[ConnectionRow] = (),
                             extra_lines: str = "",
@@ -1358,10 +1620,23 @@ def build_terminations_rows(mport_rows: Sequence[MeasPortRow] = (),
     validation authority: one parser, one set of error messages, and the "edit
     as text" view shows literally what gets computed.
 
+    The probe rules come first (`probe_rule_issues`): an ERROR among them is
+    raised with its own message, and a '-' side that touches a ground row is
+    folded into ground (`fold_grounded_minus`) before the text is written.
+
     Pass `nports` (the file's port count) to reject out-of-range ports here,
     with a message naming the file size, instead of letting a one-digit typo
     become a plausible wrong answer.
     """
+    # With `nports`, so the first error raised here is the first one the
+    # editor's strip shows -- the Log and the cells say the same thing.
+    errors = [i for i in probe_rule_issues(mport_rows, conn_rows,
+                                           extra_lines, nports=nports)
+              if i.is_error]
+    if errors:
+        raise ValueError(errors[0].message)
+    mport_rows, conn_rows = fold_grounded_minus(mport_rows, conn_rows,
+                                                extra_lines)
     ts = parse_custom_termination_text(
         rows_to_dsl_text(mport_rows, conn_rows, extra_lines))
     if nports is not None:

@@ -21,10 +21,37 @@ mutation-checked.
   computed field fails loudly (`json.dump` on a numpy array).
   `TestFieldCoverage::test_every_traceconfig_field_is_classified` pins that every
   field of `TraceConfig` is in exactly one of the two sets.
-- **Retired fields are written only when non-empty.** A trace the user has never
-  selected still carries `custom_text` / `mp1_*` unmigrated, so dropping them
-  would lose a spec — but emitting eight empty strings per trace buries the ones
-  that matter. Migration happens on load, through the existing `_migrate_trace`.
+- **Retired fields are written only when non-empty.** Emitting eight empty
+  strings per trace buries the ones that matter. Since stage 2 (2026-10-02)
+  every trace is migrated as it LOADS, so a saved trace normally carries none
+  of them; the rule stays for a session written by a build in between.
+- **Every trace is migrated EAGERLY on load, and each one says what moved, in
+  the Log** (stage 2 of `docs/design_workspaces.md`, § 3.4). `_apply_session`
+  calls `_migrate_trace(tc, refresh=False)` on EVERY trace, selected or not —
+  the old "migrate on selection" left unclicked traces carrying dead fields
+  into the session file, the run signature and the results descriptor.
+  `migrate_trace_to_rows` (`pkg_rlc/model/validate.py`, exposed as
+  `TraceConfig.migrate_to_rows`) returns `MigrationNote`s — a `str` with a
+  `.level` — and `_migrate_trace` logs each as one line, `[id] label: <note>`,
+  at `LOG_WARN` only where the user should look (a number moved, an old
+  contradiction was resolved, a retired field folded) and `LOG_INFO` for a
+  plain record of what moved, so an old session does not badge the Log once
+  per trace. Only the LIVE fields of the old mode are carried; the hidden
+  fields of every other mode are cleared. The one intended change of a number
+  (a '−' side only PARTLY in GND) and the bit-for-bit claim for everything
+  else are pinned by `tests/test_trace_path_golden.py` against
+  `tests/fixtures/golden_trace_paths.npz`.
+- **`table_version` is a saved int, and it is what makes the migration
+  idempotent.** `0` (absent) is an old trace; `1` (`TABLE_VERSION`) is a trace
+  already in the one row model, which `migrate_trace_to_rows` never touches
+  again — so a spec the user is in the middle of fixing is not "repaired"
+  behind their back on the next load. It is in `_TRACE_INT_FIELDS`.
+- **`mode` is still written, and it is ALWAYS `5`.** The field stays on
+  `TraceConfig` for exactly one reader: an OLDER build opening a new session.
+  It reads a missing mode as 1 and would compute `port_a` to GND; reading 5,
+  it opens the trace as Custom, which is what the two tables are. Do not drop
+  the key and do not write any other value. `MODE_NAMES` survives for the
+  migration's Log lines only.
 - **Every file is recorded twice and the RELATIVE path wins.** That is what makes
   a session survive the folder being copied to another machine, which is the
   normal way work reaches the red zone; the absolute path is the fallback for a
@@ -101,34 +128,65 @@ mutation-checked.
 - **A `ttk.Notebook` CLIPS a tab strip it cannot fit** — no wrap, no scroll, and
   the tab that vanishes is the LAST one. Measured (Microsoft YaHei UI 9): the
   Help window's nine tabs needed 891 px and the tenth took it to 968, past the
-  historical 950. `HELP_WINDOW_WIDTH` is now 1010, i.e. **42 px of headroom, not
-  enough for an eleventh tab**; `TestHelpTabsAllFit` re-measures it.
+  historical 950, which is why `HELP_WINDOW_WIDTH` is 1010. Since the stage-2
+  regroup (2026-10-02) the strip is NINE task tabs needing **812 px**, so the
+  headroom is 198 px — and the "eleventh Help tab" stays rejected
+  (`rejected_ui.md`) whatever the headroom; `TestHelpTabsAllFit` re-measures
+  it.
 
 ### The Help window's prose lives in `docs/help/`, not in Python
 
-`pkg_rlc/present/help.py` is 140 lines: `HELP_DIR`, `_help_text`, the ten `HELP_*`
-names, `HELP_TOPICS`, `HELP_WINDOW_WIDTH` and `HelpWindow`. The prose that used
-to be triple-quoted constants — 2295 lines when it moved out, 2648 today — is
-ten files under `docs/help/`, read at import time. `tests/test_session.py::TestHelpTabsAllFit` is still the
-guard on the tab strip.
+`pkg_rlc/present/help.py` is ~145 lines: `HELP_DIR`, `_help_text`, the nine
+`HELP_*` names, `HELP_TOPICS`, `HELP_WINDOW_WIDTH` and `HelpWindow`. The prose
+that used to be triple-quoted constants is nine files under `docs/help/`, read
+at import time. `tests/test_session.py::TestHelpTabsAllFit` is still the guard
+on the tab strip.
 
-- **THE RENDERED TEXT IS BYTE-IDENTICAL to the pre-move build and must stay
-  so.** Checked two ways when it moved: every tab dumped to disk before and
-  after (`diff -r` clean), and the pre-change module loaded out of git
-  alongside the new one in ONE process, comparing all ten titles, all ten
-  bodies, the ten `HELP_*` constants and `HELP_WINDOW_WIDTH` — 0 mismatches.
-  Edit the `.md`, never re-derive it.
-- **THE TEN `HELP_OVERVIEW` / `HELP_MODE1` / … NAMES ARE KEPT**, bound to the
-  same text, so `HELP_TOPICS` is byte-for-byte the list it always was and
-  `pkg_rlc.present.help.HELP_MODE6` goes on resolving. Same precedent as `pkg_rlc.frontend.app`
-  re-exporting the DSL helpers that moved into `pkg_rlc.physics.core`. Nothing outside
-  the module reads them today; that is not a reason to delete them, it is why
-  keeping them is free.
-- **STILL TEN TABS, still 968 px against `HELP_WINDOW_WIDTH = 1010`**
-  (re-measured after the move). Everything the existing "no eleventh tab" rule
-  says is unchanged — and a RENAME moves the strip width just as an addition
-  does, which is why the slugs are decoupled from the titles: renaming a `.md`
-  is free, renaming a TAB is not.
+**The tabs are TASKS, not editor modes (2026-10-02, stage 2 of
+`docs/design_workspaces.md`, § 3.7).** When the editor became one row model
+there were no modes left to have a tab each, so the five `Mode 1/2/3/5/6` tabs
+became four task tabs, nine in all, in this reading order:
+
+| Tab | File | Holds |
+|---|---|---|
+| Overview | `overview.md` | what the tool does, the universal assumptions, the results table and its controls |
+| Reading files | `reading_files.md` | the parser, the diagnosis, the refusals |
+| Save / Load | `save_load.md` | the session file, incl. configs from older builds |
+| Setting up a measurement | `setup.md` | the ONE table: measurement ports (`+` / `-`), connections, templates, the probe rules, the old modes written as rows, Edit as text, a second file, migration |
+| Coupling | `coupling.md` | two or more measurement ports: M, k, M/L, C_c, attribution, cold start, `--compose` (was most of `mode6.md`) |
+| Trace model | `trace_model.md` | the stage-1 workspace and the pi / bandwidth reading (was the tail of `mode6.md`) |
+| Compare files | `compare_files.md` | today's Compare files window (closed backlog TASK-017) |
+| Input syntax | `input_syntax.md` | port ranges, tags, node names, the `--short` / `--mport` spellings |
+| Worked examples | `worked_examples.md` | every example written as rows |
+
+`TestHelpTabsAllFit` pins the titles and their ORDER exactly, that no tab is
+the "help content not found" fallback, that every `"<title>" tab` the prose
+names is a real title (whitespace folded, since the prose wraps titles), and
+that the setup tab carries the editor's own words "Ports not listed anywhere
+are OPEN." Each was mutation-checked. Mode numbers appear in the Help prose in
+exactly one place — the "old modes, written as rows" table on the setup tab,
+which is there FOR the reader holding an old config — plus the CLI's own
+`--mode gnd | p2p | coupling`, which is unchanged.
+
+- **When the prose moved out of Python (2026-08) the rendered text was
+  byte-identical to the pre-move build**, checked by dumping every tab before
+  and after and by loading the old module out of git beside the new one. That
+  invariant ended deliberately with the stage-2 regroup, which rewrote the
+  content. Edit the `.md`, never re-derive it.
+- **The `HELP_MODE1` … `HELP_MODE6` names are GONE (2026-10-02)**, with
+  `mode1.md` … `mode6.md`. They had been kept as aliases on the grounds that
+  keeping them was free; once the text they were bound to no longer existed,
+  an alias would have resolved to a tab that is not in the window. Nothing in
+  the repo read them (grepped). The names now are `HELP_OVERVIEW`,
+  `HELP_FILES`, `HELP_SESSION`, `HELP_SETUP`, `HELP_COUPLING`,
+  `HELP_TRACE_MODEL`, `HELP_COMPARE`, `HELP_SYNTAX`, `HELP_WORKFLOWS`.
+- **NINE TABS, 812 px against `HELP_WINDOW_WIDTH = 1010`** (measured
+  2026-10-02, Microsoft YaHei UI 9, tk scaling 1.333; the old ten measured 968
+  in the same session, matching the figure above). The width was NOT shrunk:
+  it is also the text's width. The "no eleventh tab" rule is unchanged — and a
+  RENAME moves the strip width just as an addition does, which is why the
+  slugs are decoupled from the titles: renaming a `.md` is free, renaming a
+  TAB is not.
 - **NO MARKDOWN LIBRARY, and the `.md` extension is a filename, not a format.**
   The bodies are plain text — the same plain text the `ScrolledText` has always
   drawn — and `_help_text` is a file read. Do not introduce syntax the window
@@ -137,13 +195,13 @@ guard on the tab strip.
   verified rather than reasoned about.** `.gitattributes` is a BLACKLIST for
   `git archive` and neither `docs/` nor `*.md` is on it. Confirmed three ways:
   `git check-attr` reports `export-ignore: unspecified` and `eol: lf`;
-  `git archive HEAD | tar -t` lists all ten; and the extracted bytes are
+  `git archive HEAD | tar -t` lists all of them; and the extracted bytes are
   identical to the worktree with zero CR bytes. Getting this wrong ships a Help
   window with no content to a machine where nobody can fix it, so re-run those
   three checks if the packaging rules are ever touched.
 - **A MISSING OR UNREADABLE FILE COSTS ITS OWN TAB, NEVER THE WINDOW.**
   `_help_text` returns `help content not found: <path>` as that tab's body and
-  the other nine open normally — the session loader's "a bad value costs its
+  the other tabs open normally — the session loader's "a bad value costs its
   own field, never the file", one layer over. **`UnicodeDecodeError` is caught
   beside `OSError` and is NOT redundant**: it is a `ValueError`, so a file
   truncated mid-codepoint or re-saved by an editor in the local codepage would
@@ -161,7 +219,10 @@ guard on the tab strip.
 
 Now that the tabs are diffable text, the overlap is measurable, and it is much
 larger than the "keep the six in sync" bullets imply. Measured with an 8-word
-shingle scan over sentences of >= 7 words (whole sentences, not fragments):
+shingle scan over sentences of >= 7 words (whole sentences, not fragments),
+BEFORE the stage-2 regroup — `mode6.md` is now `coupling.md` + `trace_model.md`,
+and `mode2.md` / `mode5.md` are inside `setup.md`; the table was not
+re-measured:
 
 | Help tab | shares with README.md | shares with docs/theory.md |
 |---|---|---|
@@ -180,7 +241,7 @@ design_port_attribution, README, `pkg_rlc.physics.attrib`, `pkg_rlc.panels.attri
 `9.60 dB` (the same set plus `design_snp_composition`), `-870.268 pH`
 (help/mode6, help/worked_examples, theory, README, `pkg_rlc.physics.attrib`,
 `pkg_rlc_extractor`, two test modules) and `505.25 nH` (four). The
-"coupling ratio" rule's Help home is now **`docs/help/mode6.md` and
+"coupling ratio" rule's Help home is now **`docs/help/coupling.md` and
 `docs/help/overview.md`**, not `pkg_rlc/present/help.py` — update that bullet's pointer
 when it is next touched.
 

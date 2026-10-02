@@ -10,7 +10,7 @@ The index is `docs/conventions/README.md` and the pointer table is in
 ### Port attribution (`pkg_rlc/physics/attrib.py`)
 
 Design note: `docs/design_port_attribution.md`. Theory: `docs/theory.md` §13
-(and §13.14 for the cold-start closed form). User docs: Help → Mode 6 →
+(and §13.14 for the cold-start closed form). User docs: Help → Coupling →
 "Where the number came from", and the README's "Port attribution" section.
 `tests/test_attrib_core.py`, `tests/test_attrib_vs_engine.py` and
 `tests/test_attrib_degenerate.py` are the guards, and every claim below was

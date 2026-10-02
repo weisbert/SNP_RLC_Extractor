@@ -47,16 +47,11 @@ import pkg_rlc.physics.compose as comp
 from pkg_rlc.physics.compose import default_alias
 from pkg_rlc.physics.core import (
     TerminationSet,
-    build_terminations_coupling,
-    build_terminations_mode1,
-    build_terminations_mode2,
-    build_terminations_mode3,
     build_terminations_rows,
     compute_z_matrix,
     extract_coupling_at_freq,
     extract_rlc_at_freq,
     parse_port_range,
-    parse_short_pairs,
 )
 from pkg_rlc.model.trace import (
     FileEntry,
@@ -66,14 +61,14 @@ from pkg_rlc.model.trace import (
     SolveNetwork,
     TraceConfig,
     _composed_solve_network,
+    _duplicate_trace_config,
 )
 from pkg_rlc.model.validate import (
-    _check_bare_ports,
+    TABLE_VERSION,
     _namespace_network,
     _scope_conn_rows,
     _scope_dsl_text,
     _scope_mport_rows,
-    _scope_port_field,
     trace_file_labels,
     trace_is_composed,
 )
@@ -255,68 +250,41 @@ def _build_termination(tc: TraceConfig,
     The trace's spec as a TerminationSet.
 
     `sn` is the network the spec is being read against.  For a single-file
-    trace it is None or a plain one and NOTHING below changes -- the same
-    builders get the same strings, which is what keeps every golden case
-    and every saved session bit-identical.  For a composed one every port
+    trace it is None or a plain one and the rows are read as typed, which
+    is what keeps every saved session bit-identical
+    (tests/test_trace_path_golden.py).  For a composed one every port
     field is first resolved into the composed namespace: a bare number
     still means the home file (R3-2), a tagged one names the file it says,
     and a bare number past the home file's port count is REFUSED rather
     than quietly addressing the next file's ports.
 
-    Each mode keeps its OWN builder.  Routing a composed mode-6 trace
-    through the permissive rows path would silently allow the probe-and-
-    ground overlap that `build_terminations_coupling` refuses, which is a
-    rule of the mode and not of the number of files.
+    There is one builder for every trace now.  The modes used to keep their
+    own, because the rows path let a ground win over a probe while Mode 6
+    refused the overlap; the one probe rule in `build_terminations_rows`
+    replaces both, for one file or several.
     """
     net = sn.net if sn is not None else None
     home = sn.home_alias if sn is not None else ""
-    if tc.mode == 6:
-        # nports lets the builder reject a port number the file does not
-        # have (a one-digit typo in a '+/-' spec would otherwise silently
-        # demote a differential probe to a ground-referenced one).
-        mp_rows = (tc.mports if net is None
-                   else _scope_mport_rows(tc.mports, net, home))
-        gnd = (tc.gnd_ports if net is None
-               else _scope_port_field(tc.gnd_ports, net, home))
-        return build_terminations_coupling(
-            _collect_mports(tc, mp_rows), parse_port_range(gnd),
-            nports=nports)
-    if tc.mode == 5:
-        # Through the rows, never through tc.custom_text: the tables are
-        # the storage and the DSL text is derived from them.  nports lets
-        # the builder reject a port the file does not have -- Mode 5 used
-        # to pass none, so '3 / 5' on a 4-port file became a plausible
-        # wrong number until compute_z_matrix's backstop caught it.
-        if net is None:
-            return build_terminations_rows(tc.mports, tc.conn_rows,
-                                           tc.extra_lines, nports=nports)
-        return build_terminations_rows(
-            _scope_mport_rows(tc.mports, net, home),
-            _scope_conn_rows(tc.conn_rows, net, home),
-            _scope_dsl_text(tc.extra_lines, net, home), nports=nports)
+    if tc.mode != 5 or getattr(tc, "table_version", 0) < TABLE_VERSION:
+        # A trace that has not been through the one-row-model migration --
+        # an App caller migrates first and logs it; anything else (a test,
+        # a window holding an old-shape config) is read through a migrated
+        # COPY, so this function still never writes into the trace it reads.
+        tc = _duplicate_trace_config(tc, tc.id)
+        tc.migrate_to_rows()
+    # ONE path for every trace (docs/design_workspaces.md § 3): the rows,
+    # never tc.custom_text -- the tables are the storage and the DSL text is
+    # derived from them.  nports lets the builder reject a port the file does
+    # not have.  The probe rules (a '+' port in a ground row refused, a
+    # grounded '-' side folded into ground) live in build_terminations_rows,
+    # so a composed trace meets them after its cells are scoped.
     if net is None:
-        a = parse_port_range(tc.port_a)
-        b = parse_port_range(tc.port_b)
-        g = parse_port_range(tc.gnd_ports)
-        sp = parse_short_pairs(tc.short_pairs)
-    else:
-        a = parse_port_range(_scope_port_field(tc.port_a, net, home))
-        b = parse_port_range(_scope_port_field(tc.port_b, net, home))
-        g = parse_port_range(_scope_port_field(tc.gnd_ports, net, home))
-        sp = parse_short_pairs(tc.short_pairs)
-        # The ONE field that is not scoped: parse_short_pairs reads its
-        # tokens with int(), so 'F2.3' there already fails with core's own
-        # message -- but a BARE index past the home file would have gone
-        # through as a global port.  See _check_bare_ports.
-        _check_bare_ports([p for pair in sp for p in pair], net, home,
-                          "Short Pairs")
-    if tc.mode == 1:
-        return build_terminations_mode1(a, g)
-    if tc.mode == 2:
-        return build_terminations_mode2(a, b, g)
-    if tc.mode == 3:
-        return build_terminations_mode3(a, b, g, sp)
-    raise ValueError(f"Unknown mode: {tc.mode}")
+        return build_terminations_rows(tc.mports, tc.conn_rows,
+                                       tc.extra_lines, nports=nports)
+    return build_terminations_rows(
+        _scope_mport_rows(tc.mports, net, home),
+        _scope_conn_rows(tc.conn_rows, net, home),
+        _scope_dsl_text(tc.extra_lines, net, home), nports=nports)
 
 
 # ============================================================================
@@ -362,8 +330,8 @@ def _calculate_coupling_trace(tc: TraceConfig, sn: "SolveNetwork",
     later by _replot_from_cache, which is the single place that turns a
     computed trace into plot curves.
 
-    Used by Mode 6 and by any Mode 5 spec that defines more than one
-    measurement port.  `term` may be passed in when the caller has already
+    Used by every trace that defines more than one measurement port -- the
+    routing is by that count and nothing else.  `term` may be passed in when the caller has already
     built it, which is the normal path -- the caller has to build it anyway
     to count the measurement ports.
     """

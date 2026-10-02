@@ -1,7 +1,16 @@
 # 设计：三个工作区（RLC 提取 / 走线模型 / 文件对比）与模式合并
 
 > 状态：owner 已批准（2026-10-02）。**阶段一已落地**（规则见 `docs/conventions/trace_model.md`
-> 与 `rejected_ui.md` 的 Superseded 注）；阶段二、三待做。
+> 与 `rejected_ui.md` 的 Superseded 注）；**阶段二已落地**（规则见
+> `docs/conventions/editor_and_tables.md` §"The one row model"、`session_and_help.md`、
+> `results_pane.md`；Help 已按 §3.7 重排为 9 页，backlog TASK-017 随之关闭）；阶段三待做。
+>
+> 阶段二落地时与本文的出入：模板的具体填法本文未写，按工作单定为 Port to GND `[P1 +1]`、
+> Between two ports `[P1 +1 −2]`、Loop with shorted far end `[P1 +1 −2]` + `short "3,4"`、
+> Several nets (coupling) `[P1 +1]`, `[P2 +2]`；"Edit as text…" 导入时名为 A 的行改名为第一个
+> 空闲的 P<n>（含义不变）；`HELP_MODE1…6` 常量随 mode*.md 一并删除（仓内无引用），不留别名；
+> 9 页标签条实测 812 px（窗口 1010 px 不变）；1040x600 下编辑器视口：
+> 53 px at 1040x600 (353 px at 1500x900; was 20 px / 320 px before the merge)。
 >
 > 阶段一落地时与本文的出入：Freq 改动**不**使结果过期，按缓存扫频重读（`tracenets.retarget`）；
 > 全空行不标红（只有填了端口没填名字才红）；1040x600 下 Custom 编辑器视口只剩 20 px（切换条

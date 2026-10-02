@@ -623,6 +623,7 @@ class TestFooterStripLayout(_AppCase):
     def setUp(self):
         super().setUp()
         self.tc.mode = 5
+        self.tc.table_version = 1
         self.tc.mports = [MeasPortRow("tank", "1", "2")]
         self.tc.conn_rows = [ConnectionRow(kind="ground", ports="3")]
         # Re-select so the editor loads the spec just written onto the trace.
@@ -632,10 +633,12 @@ class TestFooterStripLayout(_AppCase):
         self.app.deiconify()
         self._settle()
 
-    def _mode(self, mode, geom="1040x600"):
+    def _at(self, geom="1040x600"):
+        """The window at `geom`.  There is one editor form now (the modes
+        were merged, docs/design_workspaces.md § 3): both tables, the strips
+        and the footer summary are always there, so there is no mode to
+        walk -- what used to be five subTests is one."""
         self.app.geometry(geom)
-        self.app.ed_mode_var.set(mode)
-        self.app._on_mode_changed()
         self._settle()
 
     def _footer(self):
@@ -647,26 +650,24 @@ class TestFooterStripLayout(_AppCase):
                 return w
         self.fail("the editor footer lost its button")
 
-    def test_the_strip_and_the_button_are_both_on_screen_in_mode_5(self):
-        self._mode(5)
+    def test_the_strip_and_the_button_are_both_on_screen(self):
+        self._at()
         self.assertEqual(self._footer().winfo_ismapped(), 1,
                          "the footer summary is not on screen")
         self.assertEqual(self._button().winfo_ismapped(), 1,
                          "Calculate This Trace is not on screen")
 
-    def test_the_editor_canvas_survives_in_every_mode(self):
+    def test_the_editor_canvas_survives(self):
         """
         The measured failure this replaces: two strips moved into the footer
         verbatim render up to four lines, which is +43 px, at which point the
-        editor canvas reports ismapped() == 0 in modes 1/2/3/6.
+        editor canvas reported ismapped() == 0 (in the old modes 1/2/3/6).
         """
-        for mode in (1, 2, 3, 5, 6):
-            with self.subTest(mode=mode):
-                self._mode(mode)
-                self.assertEqual(self.app._ed_canvas.winfo_ismapped(), 1,
-                                 f"mode {mode}: the editor form disappeared")
-                self.assertGreater(self.app._ed_canvas.winfo_height(), 0)
-                self.assertEqual(self._button().winfo_ismapped(), 1)
+        self._at()
+        self.assertEqual(self.app._ed_canvas.winfo_ismapped(), 1,
+                         "the editor form disappeared")
+        self.assertGreater(self.app._ed_canvas.winfo_height(), 0)
+        self.assertEqual(self._button().winfo_ismapped(), 1)
 
     def test_the_summary_costs_no_vertical_space(self):
         """
@@ -674,7 +675,7 @@ class TestFooterStripLayout(_AppCase):
         requested height means a second line has appeared, which is 9 px off
         the editor viewport and the first step towards losing it.
         """
-        self._mode(5)
+        self._at()
         foot = self.app._ed_foot
         self.assertLessEqual(foot.winfo_reqheight(),
                              self._button().winfo_reqheight() + 6,
@@ -683,7 +684,7 @@ class TestFooterStripLayout(_AppCase):
                              "the footer strip is more than one line tall")
 
     def test_it_says_the_same_thing_the_strips_below_the_fold_do(self):
-        self._mode(5)
+        self._at()
         self.app._apply_editor_strips()
         self._settle()
         text = str(self._footer().cget("text"))
@@ -694,20 +695,17 @@ class TestFooterStripLayout(_AppCase):
         self.assertIn("probe", text)
         self.assertIn("✓ ok", text)
 
-    def test_it_is_hidden_outside_mode_5(self):
+    def test_it_is_always_shown(self):
         """
-        Outside mode 5 the connections table is hidden but its rows still
-        exist, so an overview built from them would count rows the running
-        spec does not use.  The footer is never left empty -- the button is
-        always its first slave.
+        It used to be hidden outside mode 5, where the connections table was
+        hidden but its rows still existed and an overview built from them
+        would have counted rows the running spec did not use.  There is one
+        form now and the tables ARE the spec, so the summary is always on
+        screen, beside the button.
         """
-        for mode in (1, 2, 3, 6):
-            with self.subTest(mode=mode):
-                self._mode(mode)
-                self.assertEqual(self._footer().winfo_ismapped(), 0)
-                self.assertEqual(self._button().winfo_ismapped(), 1)
-        self._mode(5)
+        self._at()
         self.assertEqual(self._footer().winfo_ismapped(), 1)
+        self.assertEqual(self._button().winfo_ismapped(), 1)
 
     def test_the_detail_strips_really_are_below_the_fold(self):
         """
@@ -715,7 +713,7 @@ class TestFooterStripLayout(_AppCase):
         winfo_ismapped() is NOT the test -- it reads 1 for a widget parked
         hundreds of pixels past the bottom of the canvas.
         """
-        self._mode(5)
+        self._at()
         canvas = self.app._ed_canvas
         top = canvas.canvasy(0)
         bottom = top + canvas.winfo_height()
@@ -728,7 +726,7 @@ class TestFooterStripLayout(_AppCase):
 
     def test_the_strip_never_shows_a_wrapped_second_line(self):
         """wraplength 0 -- clipping costs 0 px, wrapping costs 26."""
-        self._mode(5)
+        self._at()
         self.assertEqual(int(self._footer().cget("wraplength")), 0)
         self.app.ed_footer_strip.configure(text="x" * 400)
         self._settle()

@@ -545,8 +545,17 @@ class TestSaveLoad(_AppCase):
         self.assertEqual([fe.label for fe in self.app.files], [self.fe.label])
         self.assertEqual([tc.label for tc in self.app.traces], ["t1", "t2"])
         t1, t2 = self.app.traces
-        self.assertEqual((t1.mode, t1.port_a, t1.gnd_ports), (1, "1", "2-4"))
-        self.assertEqual(t2.mode, 6)
+        # Every trace comes back in the one row model -- the load migrates
+        # eagerly (docs/design_workspaces.md § 3.4): t1's old 'Port A' / GND
+        # fields are a measurement port and a ground row now, and t2's
+        # table is kept as it was.
+        self.assertEqual((t1.mode, t1.table_version), (5, 1))
+        self.assertEqual([(r.name, r.plus, r.minus) for r in t1.mports],
+                         [("P1", "1", "")])
+        self.assertEqual([(r.kind, r.ports) for r in t1.conn_rows],
+                         [("ground", "2-4")])
+        self.assertEqual((t1.port_a, t1.gnd_ports), ("", ""))
+        self.assertEqual((t2.mode, t2.table_version), (5, 1))
         self.assertEqual([(r.name, r.plus, r.minus) for r in t2.mports],
                          [("pri", "1", "2"), ("sec", "3", "4")])
         self.assertFalse(t2.enabled)
@@ -557,15 +566,20 @@ class TestSaveLoad(_AppCase):
 
     def test_the_editor_shows_the_first_restored_trace(self):
         path = self._save()
-        # Park the editor on the OTHER trace, whose fields are empty, so a load
-        # that forgot to reload the editor leaves those empty fields on screen.
+        # Park the editor on the OTHER trace, whose tables differ, so a load
+        # that forgot to reload the editor leaves those rows on screen.
         self._select(1)
-        self.assertEqual(self.app.ed_porta.get_value(), "")
+        self.assertEqual([r.name for r in self.app.ed_mp_table.get_rows()],
+                         ["pri", "sec"])
         self._wipe()
         self.app._load_session_file(path, "test")
         self._settle()
-        self.assertEqual(self.app.ed_porta.get_value(), "1")
-        self.assertEqual(self.app.ed_gnd.get_value(), "2-4")
+        self.assertEqual([(r.name, r.plus, r.minus)
+                          for r in self.app.ed_mp_table.get_rows()],
+                         [("P1", "1", "")])
+        self.assertEqual([(r.kind, r.ports)
+                          for r in self.app.ed_conn_table.get_rows()],
+                         [("ground", "2-4")])
         self.assertEqual(self.app.ed_label.get_value(), "t1")
 
     def test_new_trace_ids_continue_past_the_restored_ones(self):
@@ -613,10 +627,11 @@ class TestSaveLoad(_AppCase):
         the keystroke would otherwise save the value from before it -- the same
         flush Calculate does, for the same reason.
         """
-        self.app.ed_porta.set_value("3")        # queued, not applied yet
+        # One cell write is one keystroke: it queues the deferred auto-apply.
+        self.app.ed_mp_table._rows[0]["_vars"]["plus"].set("3")
         path = self._save()                     # no _settle() on purpose
         data = json.loads(Path(path).read_text(encoding="utf-8"))
-        self.assertEqual(data["traces"][0]["port_a"], "3")
+        self.assertEqual(data["traces"][0]["mports"][0]["plus"], "3")
 
     def test_the_file_is_readable_json_naming_itself(self):
         path = self._save()
@@ -863,10 +878,59 @@ class TestTheMenuIsReachable(_AppCase):
 @unittest.skipUnless(TK_OK, "no Tk display available")
 class TestHelpTabsAllFit(unittest.TestCase):
     """
-    The Help window grew a tenth tab, and a ttk.Notebook CLIPS a tab strip it
-    cannot fit -- no wrapping, no scrolling.  The tab that disappears is the
-    last one, "Worked examples", and nothing about the window says it is gone.
+    A ttk.Notebook CLIPS a tab strip it cannot fit -- no wrapping, no
+    scrolling.  The tab that disappears is the last one, "Worked examples",
+    and nothing about the window says it is gone.  It happened once, when the
+    window grew a tenth tab.
+
+    Since 2026-10-02 the tabs are the nine TASKS of docs/design_workspaces.md
+    § 3.7, not the five editor modes there no longer are.  Measured then
+    (Microsoft YaHei UI 9, tk scaling 1.333): the nine need 812 px against
+    the old ten's 968, so the 1010 px window has 198 px of headroom.
     """
+
+    #: The reading order, exactly.  A rename moves the strip's width as surely
+    #: as an addition does, and a tab named after a mode would put back the
+    #: one word the merged editor no longer shows anywhere.
+    TASK_TABS = [
+        "Overview", "Reading files", "Save / Load",
+        "Setting up a measurement", "Coupling", "Trace model",
+        "Compare files", "Input syntax", "Worked examples",
+    ]
+
+    def test_the_tabs_are_the_nine_tasks_in_reading_order(self):
+        import pkg_rlc.present.help as pkg_rlc_help
+        self.assertEqual([title for title, _ in pkg_rlc_help.HELP_TOPICS],
+                         self.TASK_TABS)
+
+    def test_every_tab_has_its_prose(self):
+        """A missing file costs only its tab (`_help_text`), silently -- so a
+        tab whose file was renamed away must fail HERE, not in the field."""
+        import pkg_rlc.present.help as pkg_rlc_help
+        for title, body in pkg_rlc_help.HELP_TOPICS:
+            with self.subTest(tab=title):
+                self.assertNotIn("help content not found", body)
+                self.assertGreater(len(body), 1000)
+
+    def test_a_tab_named_in_the_prose_exists(self):
+        """'see the "Mode 6 (Coupling)" tab' outlived the tab it named once;
+        every quoted tab name must be a real title.  Whitespace is folded
+        first, because the prose wraps a title across lines."""
+        import re
+        import pkg_rlc.present.help as pkg_rlc_help
+        titles = {title for title, _ in pkg_rlc_help.HELP_TOPICS}
+        for title, body in pkg_rlc_help.HELP_TOPICS:
+            flat = " ".join(body.split())
+            for named in re.findall(r'"([^"]+)" tab\b', flat):
+                with self.subTest(tab=title, names=named):
+                    self.assertIn(named, titles)
+
+    def test_the_setup_tab_says_what_the_editor_says(self):
+        """The one rule a wrong answer most often comes from, in the words
+        the editor prints under the connections table."""
+        import pkg_rlc.present.help as pkg_rlc_help
+        self.assertIn("Ports not listed anywhere are OPEN.",
+                      pkg_rlc_help.HELP_SETUP)
 
     def test_the_tab_strip_fits_the_help_window(self):
         import pkg_rlc.present.help as pkg_rlc_help

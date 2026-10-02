@@ -6,17 +6,15 @@ Layout (horizontal PanedWindow):
   Right          : Results text (top) + plot panel (bottom)
                    (vertical PanedWindow, sash draggable by user)
 
-Measurement modes (integer codes are stable and never renumbered):
-  1  Port(s) -> GND
-  2  A <-> B
-  3  A <-> B + Short Pairs
-  4  RETIRED (A <-> B + VDD/GND).  For AC small-signal VDD *is* an AC ground,
-     so a mode-4 trace migrates to mode 2 with its VDD ports folded into GND.
-  5  Custom (advanced) -- the Mode 5 termination DSL
-  6  +/- Ports / Coupling (M, k) -- any number of measurement ports, each a
-     pair of probes (red = plus side, black = minus side).  Produces a G x G
-     impedance matrix: self impedance on the diagonal, open-circuit mutual
-     impedance off it, from which M, k, C_c and the M/L ratios are read.
+One spec per trace, and no modes (docs/design_workspaces.md § 3): a
+measurement-port table (each row a pair of probes, red = plus side, black =
+minus side) and a connections table (ground, shorts, lumped elements).  One
+measurement port is a self-impedance curve; two or more produce a G x G
+impedance matrix -- self impedance on the diagonal, open-circuit mutual
+impedance off it, from which M, k, C_c and the M/L ratios are read.  The old
+integer modes (1, 2, 3, 4, 6) survive only as what a saved session may still
+carry, and every such trace is moved into the two tables when it is loaded
+(`_migrate_trace`); `TraceConfig.mode` is written as 5 from then on.
 """
 
 from __future__ import annotations
@@ -378,6 +376,7 @@ from pkg_rlc.model.validate import (
     _mport_more_lines,
     _namespace_network,
     _ordering_diff_summary,
+    TABLE_VERSION,
     _port_descriptor,
     _port_overview_text,
     _probe_ground_messages,
@@ -524,7 +523,6 @@ from pkg_rlc.panels.panels_editor import (
     EditorPanel,
     FROZEN_EDITOR_NOTE,
     LABEL_PLACEHOLDER,
-    MODE_PLACEHOLDERS,
     MP_TABLE_HINT,
     MP_TABLE_HINT_SHORT,
     MUTUAL_CURVE_HINT,
@@ -575,7 +573,7 @@ from pkg_rlc.panels.panels_editor import (
 
 
 # ============================================================================
-# Mode 6 helpers (+/- measurement ports, coupling)
+# Coupling helpers (+/- measurement ports)
 # ============================================================================
 
 # `_duplicate_trace_config` moved to pkg_rlc_model with the TraceConfig it
@@ -822,8 +820,8 @@ def _snapshot_block(tc: "TraceConfig", file_label: str,
 # notebook they belong to, and are re-exported at the top of this file.
 
 
-# `StylePicker` and the editor's own constants -- MODE_PLACEHOLDERS,
-# LABEL_PLACEHOLDER, EDITOR_FIELD_CHARS, FROZEN_EDITOR_NOTE, the two
+# `StylePicker` and the editor's own constants -- LABEL_PLACEHOLDER,
+# EDITOR_FIELD_CHARS, FROZEN_EDITOR_NOTE, the two
 # MP_TABLE_HINTs, the two MUTUAL_CURVE_HINTs and TEXT_DIALOG_NOTE -- moved
 # to pkg_rlc_panels_editor with the form they belong to, and are
 # re-exported at the top of this file.
@@ -1470,7 +1468,6 @@ class App(tk.Tk):
         self._ed_form = ep._ed_form
         self._ed_hsb = ep._ed_hsb
         self._ed_lockable = ep._ed_lockable
-        self._ed_mode_buttons = ep._ed_mode_buttons
         self._ed_vsb = ep._ed_vsb
         self._ed_win = ep._ed_win
         self.ed_conn_head = ep.ed_conn_head
@@ -1484,14 +1481,12 @@ class App(tk.Tk):
         self.ed_file_var = ep.ed_file_var
         self.ed_footer_strip = ep.ed_footer_strip
         self.ed_frozen_note = ep.ed_frozen_note
-        self.ed_gnd = ep.ed_gnd
-        self.ed_gnd_lbl = ep.ed_gnd_lbl
         self.ed_label = ep.ed_label
-        self.ed_mode_var = ep.ed_mode_var
         self.ed_mp_hint = ep.ed_mp_hint
         self.ed_mp_lbl = ep.ed_mp_lbl
         self.ed_mp_table = ep.ed_mp_table
         self.ed_mutual_hint = ep.ed_mutual_hint
+        self.ed_open_note = ep.ed_open_note
         self.ed_overview = ep.ed_overview
         self.ed_plot_frame = ep.ed_plot_frame
         self.ed_plot_lbl = ep.ed_plot_lbl
@@ -1499,22 +1494,41 @@ class App(tk.Tk):
         self.ed_plot_mutual_var = ep.ed_plot_mutual_var
         self.ed_plot_self_cb = ep.ed_plot_self_cb
         self.ed_plot_self_var = ep.ed_plot_self_var
-        self.ed_porta = ep.ed_porta
-        self.ed_porta_lbl = ep.ed_porta_lbl
-        self.ed_portb = ep.ed_portb
-        self.ed_portb_lbl = ep.ed_portb_lbl
-        self.ed_short = ep.ed_short
-        self.ed_short_lbl = ep.ed_short_lbl
         self.ed_style = ep.ed_style
+        self.ed_template_cbo = ep.ed_template_cbo
+        self.ed_template_var = ep.ed_template_var
         self.ed_validation = ep.ed_validation
 
     def _build_global_controls(self, parent: ttk.LabelFrame) -> None:
-        # RLC freq + band-fit on the same compact form
+        """
+        RLC freq + band-fit on one compact form -- THREE grid rows, not four.
+
+        Fit Model shares the RLC-freq row (columns 2-3, which that row left
+        empty) because every pixel of this frame comes out of the editor's
+        viewport: Global Controls is packed side=BOTTOM ahead of the editor,
+        so the editor gets what is LEFT.  Measured at the 1040x600 minsize
+        with the workspace strip (25 px) in place: the editor viewport was
+        20 px against a 23 px table row -- not one row of the form could be
+        wholly on screen.  The mode radios going did not help, because they
+        were INSIDE the scrolled form, which never sets the viewport.  This
+        row (23 px) plus the button row's pady 4 -> 2 (4 px) and the editor
+        footer's pady 3 -> 1 (4 px, panels_editor) are what gave it back:
+        see the measurement in pkg_rlc/panels/panels_editor.py's
+        `_build_editor`.
+        """
         ttk.Label(parent, text="RLC Freq (GHz):").grid(row=0, column=0, sticky="e",
                                                       padx=2, pady=1)
         self.rlc_freq_var = tk.StringVar(value="0.1")
         ttk.Entry(parent, textvariable=self.rlc_freq_var, width=10
                   ).grid(row=0, column=1, sticky="w", padx=2, pady=1)
+
+        ttk.Label(parent, text="Fit Model:").grid(row=0, column=2, sticky="e",
+                                                  padx=2, pady=1)
+        self.fit_model_var = tk.StringVar(value="none")
+        ttk.Combobox(parent, textvariable=self.fit_model_var,
+                     values=["none", "auto", "inductor", "capacitor"],
+                     state="readonly", width=9
+                     ).grid(row=0, column=3, sticky="we", padx=2, pady=1)
 
         ttk.Label(parent, text="Fit f_min/f_max (GHz):").grid(row=1, column=0,
                                                               sticky="e", padx=2, pady=1)
@@ -1525,21 +1539,13 @@ class App(tk.Tk):
         ttk.Entry(parent, textvariable=self.fit_fmax_var, width=8
                   ).grid(row=1, column=2, sticky="w", padx=2, pady=1)
 
-        ttk.Label(parent, text="Fit Model:").grid(row=2, column=0, sticky="e",
-                                                  padx=2, pady=1)
-        self.fit_model_var = tk.StringVar(value="none")
-        ttk.Combobox(parent, textvariable=self.fit_model_var,
-                     values=["none", "auto", "inductor", "capacitor"],
-                     state="readonly", width=10
-                     ).grid(row=2, column=1, sticky="w", padx=2, pady=1)
-
         ttk.Button(parent, text="Calculate All & Plot",
                    command=self._on_calculate
-                   ).grid(row=3, column=0, columnspan=2, pady=4, sticky="we", padx=2)
+                   ).grid(row=2, column=0, columnspan=2, pady=2, sticky="we", padx=2)
         ttk.Button(parent, text="Export CSV", command=self._on_export_csv
-                   ).grid(row=3, column=2, pady=4, sticky="we", padx=2)
+                   ).grid(row=2, column=2, pady=2, sticky="we", padx=2)
         ttk.Button(parent, text="Help", command=self._on_help
-                   ).grid(row=3, column=3, pady=4, sticky="we", padx=2)
+                   ).grid(row=2, column=3, pady=2, sticky="we", padx=2)
 
         parent.columnconfigure(1, weight=1)
 
@@ -1609,10 +1615,8 @@ class App(tk.Tk):
         # PlaceholderEntry.__init__ ends with _show_if_empty(), which writes its
         # variable, so a callback attached during construction would fire a sync
         # before self.traces exists.
-        for pe in (self.ed_porta, self.ed_portb, self.ed_short, self.ed_gnd,
-                   self.ed_label):
-            pe.on_change(self._schedule_editor_sync)
-        for var in (self.ed_file_var, self.ed_mode_var, self.ed_plot_self_var,
+        self.ed_label.on_change(self._schedule_editor_sync)
+        for var in (self.ed_file_var, self.ed_plot_self_var,
                     self.ed_plot_mutual_var):
             var.trace_add("write", self._schedule_editor_sync)
 
@@ -1722,8 +1726,7 @@ class App(tk.Tk):
 
         Reads the SELECTED TRACE, not the editor widgets: auto-apply has
         already written them there by the time the strips run, and going
-        through the trace is what makes this work in every mode rather than
-        only in the two with tables.
+        through the trace is what keeps it the spec Calculate will run.
         """
         idx = self._sel_idx(self.files_lb)
         fe = self.files[idx] if idx is not None else None
@@ -1741,10 +1744,9 @@ class App(tk.Tk):
         # on a 6-port die is F2.1, and a window counting only the die's six
         # would report it as out of range or, worse, as the die's port 7.
         #
-        # It never raises here.  This window's job is to show what was TYPED
-        # (that is why it renders modes 1/2/3/6 through the permissive rows
-        # path at all), so a composition that cannot be built degrades to the
-        # home file's own port list with a note, rather than blanking.
+        # It never raises here.  This window's job is to show what was TYPED,
+        # so a composition that cannot be built degrades to the home file's
+        # own port list with a note, rather than blanking.
         net, home, nports, names, note = None, "", fe.ts.nports, \
             fe.ts.port_names, ""
         if trace_is_composed(tc):
@@ -1755,25 +1757,39 @@ class App(tk.Tk):
             net, home = self._trace_namespace(tc)
             if net is not None:
                 nports, names = net.nports, net.port_labels()
+        refused = ""
         try:
             if net is not None:
                 mports = _scope_mport_rows(mports, net, home)
                 conn = _scope_conn_rows(conn, net, home)
                 extra = _scope_dsl_text(extra, net, home)
             term = build_terminations_rows(mports, conn, extra, nports=nports)
-        except Exception:
-            term = None
+        except Exception as e:
+            # A spec the probe rules REFUSE (a '+' port in a ground row) is
+            # still SHOWN: this window's job is to show what was typed, and
+            # the port the user has to fix is the last one that may vanish
+            # from the list.  So it is read again without the probe rules --
+            # the bare DSL, last assignment wins -- and _role_warnings flags
+            # the refused port.  A spec that does not parse at all stays
+            # unparsed.
+            try:
+                term = parse_custom_termination_text(
+                    rows_to_dsl_text(mports, conn, extra))
+                refused = str(e)
+            except Exception:
+                term = None
         roles = port_roles(term, nports, names, src)
         header = (_roles_header(trace_file_legend(tc), nports, roles)
                   if trace_is_composed(tc)
                   else _roles_header(fe.label, nports, roles)) + note
         if term is None:
             header += "  (spec did not parse)"
-        # The mode decides which of the two overlap rules the window states:
-        # mode 6 is the one that routes to build_terminations_coupling and
-        # refuses, every other mode lets ground win.
-        return header, roles, _role_warnings(roles, mports,
-                                             coupling=(tc.mode == 6))
+        elif refused:
+            header += "  (Calculate refuses this spec -- see the flagged rows)"
+        # One overlap rule for every trace now (the probe rules in
+        # build_terminations_rows), so there is no mode left to pick the
+        # wording by -- `_role_warnings` states the one rule.
+        return header, roles, _role_warnings(roles, mports)
 
     def _refresh_port_roles_window(self) -> None:
         """
@@ -1798,10 +1814,12 @@ class App(tk.Tk):
         """
         Write the window's selected ports back into the editor. Returns a note.
 
-        Routed through the same widgets the user types into -- the RowTable's
-        add_row / the PlaceholderEntry's set_value -- so auto-apply, the strips
-        and the stale marker all follow exactly as they do for a keystroke.
-        Nothing here writes a TraceConfig directly.
+        Routed through the same widgets the user types into -- the RowTables'
+        add_row -- so auto-apply, the strips and the stale marker all follow
+        exactly as they do for a keystroke.  Nothing here writes a TraceConfig
+        directly.  Always a ROW: grounding is a connections row and a probe is
+        a measurement-port row, and there is no other field left to put
+        either in.
 
         The ports go in as a COLLAPSED RANGE, which is the whole point: a
         54-ball ground group becomes one readable row instead of 54.
@@ -1818,31 +1836,18 @@ class App(tk.Tk):
             # Same refusal as the editor itself: a snapshot's spec has to keep
             # describing the numbers printed beside it.
             return "That trace is a frozen snapshot — unfreeze it first."
-        mode = int(self.ed_mode_var.get())
         if role == "ground":
-            if mode == 5:
-                self.ed_conn_table.add_row({"kind": "ground", "ports": spec})
-                where = "a new connections row"
-            else:
-                self.ed_gnd.set_value(_append_port_spec(
-                    self.ed_gnd.get_value(), spec))
-                where = "the GND / VDD field"
+            self.ed_conn_table.add_row({"kind": "ground", "ports": spec})
+            where = "a new connections row"
         elif role == "probe+":
-            if mode in (5, 6):
-                self.ed_mp_table.add_row({"plus": spec})
-                where = "a new measurement-port row"
-            else:
-                self.ed_porta.set_value(_append_port_spec(
-                    self.ed_porta.get_value(), spec))
-                where = "the Signal / Port A field"
+            self.ed_mp_table.add_row({"plus": spec})
+            where = "a new measurement-port row"
         else:                                           # pragma: no cover
             return f"Unknown role '{role}'."
         # No _schedule_editor_sync() here ON PURPOSE. RowTable.add_row notifies
-        # its on_change and PlaceholderEntry.set_value writes its variable, and
-        # both of those are already wired to the sync -- calling it again would
-        # be an unfalsifiable line that hides whether the write really went
-        # through the widgets. The strips are refreshed explicitly because they
-        # are only scheduled from the sync in some modes.
+        # its on_change, which is already wired to the sync -- calling it again
+        # would be an unfalsifiable line that hides whether the write really
+        # went through the widgets.
         self._refresh_editor_strips()
         self._refresh_editor_scrollregion(preserve=True)
         return f"{spec} → {where}."
@@ -1856,11 +1861,15 @@ class App(tk.Tk):
     # --------------------------------------------------------------- Trace ops
 
     def _make_default_trace(self, fe: FileEntry) -> TraceConfig:
+        # Port 1 to ground with everything else open -- what the old default
+        # (mode 1, port A = 1) measured, already in the one row model.
         tc = TraceConfig(
             id=self._next_trace_id,
             file_label=fe.label,
-            mode=1,
-            port_a="1",
+            mode=5,
+            port_a="",
+            table_version=TABLE_VERSION,
+            mports=[MeasPortRow(name="P1", plus="1", minus="")],
             label=default_trace_label(fe.label),
             color_idx=(self._next_trace_id - 1) % len(COLORS),
             ls_idx=((self._next_trace_id - 1) // len(COLORS)) % len(LINESTYLES),
@@ -2032,54 +2041,33 @@ class App(tk.Tk):
               if idx is not None and idx < len(self.traces) else None)
         open_attribution_window(self, tc)
 
-    def _migrate_trace(self, tc: TraceConfig) -> None:
+    def _migrate_trace(self, tc: TraceConfig, refresh: bool = True) -> None:
         """
-        Fold retired shapes forward: mode 4 -> 2, mp1/mp2/mp_more -> table,
-        custom_text -> the two tables.
-
-        The custom-text block runs LAST on purpose: a legacy config carrying
-        both mp1_* and a stale custom_text must fill `mports` first, so the
-        custom-text guard declines rather than merging two unrelated specs.
+        Move a trace into the one row model (`TraceConfig.migrate_to_rows`):
+        every old mode's live fields become rows of the two tables, with the
+        three older migrations (mode 4 -> 2, the retired Mode 6 fields, the
+        free-text Custom spec) run first.  One Log line per thing that moved,
+        and nothing at all for a trace that is already there -- so this is
+        safe to call on every selection and every build.
         """
-        if tc.migrate_legacy_mode():
+        notes = tc.migrate_to_rows()
+        for note in notes:
+            # "warn" only where the user should look (a number moved, an old
+            # contradiction was resolved, a retired field folded); a plain
+            # record of what moved must not badge the Log for every trace of
+            # every old session.
             self._append_result(
-                f"  [{tc.id}] {tc.label}: mode 4 (A↔B + VDD/GND) is retired; "
-                f"migrated to mode 2 with VDD folded into GND "
-                f"(GND = {tc.gnd_ports or '(none)'})", LOG_WARN)
-            self._refresh_trace_list()
-        if tc.migrate_legacy_mports():
-            self._append_result(
-                f"  [{tc.id}] {tc.label}: the Port 1 / Port 2 / 'More ports' "
-                f"fields are retired; migrated to {len(tc.mports)} row(s) of "
-                "the measurement-port table", LOG_WARN)
-            self._refresh_trace_list()
-        legacy_custom = tc.custom_text
-        if tc.migrate_legacy_custom_text():
-            # Ask _import_dsl_text again rather than inferring the verbatim
-            # fallback from empty tables: a spec that is nothing but comments
-            # also leaves both empty, and telling that user their precedence
-            # changed would be a lie.
-            if _import_dsl_text(legacy_custom)[3]:
-                self._append_result(
-                    f"  [{tc.id}] {tc.label}: the free-text Custom spec is kept "
-                    "verbatim -- moving it into the table would have changed "
-                    "which port wins (a 'signal' line follows a 'ground' on the "
-                    "same port). Open 'Edit as text…' to convert it by hand.",
-                    LOG_WARN)
-            else:
-                self._append_result(
-                    f"  [{tc.id}] {tc.label}: the free-text Custom spec is "
-                    f"retired; imported into {len(tc.mports)} measurement "
-                    f"port(s) and {len(tc.conn_rows)} connection row(s)",
-                    LOG_WARN)
+                f"  [{tc.id}] {tc.label}: {note}",
+                LOG_WARN if getattr(note, "level", "") == "warn" else LOG_INFO)
+        if notes and refresh:
             self._refresh_trace_list()
 
     # ----------------------------------------------------------- the editor
     #
     # The editor is `pkg_rlc_panels_editor.EditorPanel`, which OWNS every
     # implementation below: the form, both scrollbars and the one function
-    # that decides them, the scrollregion, the per-mode visibility, the two
-    # strips, the text hatch and the auto-apply sync chain.  Delegators, the
+    # that decides them, the scrollregion, the template, the two strips and
+    # the cell colours, the text hatch and the auto-apply sync chain.  Delegators, the
     # method-level form of this file's re-export rule -- `app._flush_editor_
     # sync`, `app._apply_editor_strips`, `app._sync_editor_to_trace` and the
     # rest keep resolving.  `_build_editor` / `_build_editor_form` get NO
@@ -2087,9 +2075,9 @@ class App(tk.Tk):
     # second editor into a fresh parent is a trap rather than a re-export.
     #
     # The editor's mutable STATE is not down there -- `_suppress_editor_sync`,
-    # `_ed_extra_lines`, `_ed_strips_pending`, the two `_ed_sync_*`,
-    # `_ed_shown_mode` and the two `_ed_scroll_*` stay on this object and the
-    # panel reads and writes them through the App it holds.
+    # `_ed_extra_lines`, `_ed_strips_pending`, the two `_ed_sync_*` and the
+    # two `_ed_scroll_*` stay on this object and the panel reads and writes
+    # them through the App it holds.
 
     def _ed_scroll_set(self, first: str, last: str) -> None:
         return self._editor_panel._ed_scroll_set(first, last)
@@ -2118,20 +2106,23 @@ class App(tk.Tk):
     def _on_trace_selected(self) -> None:
         return self._editor_panel._on_trace_selected()
 
-    def _on_mode_changed(self) -> None:
-        return self._editor_panel._on_mode_changed()
+    def _update_editor_visibility(self) -> None:
+        return self._editor_panel._update_editor_visibility()
 
-    def _update_mode_visibility(self) -> None:
-        return self._editor_panel._update_mode_visibility()
+    def _update_plot_choices(self) -> None:
+        return self._editor_panel._update_plot_choices()
+
+    def _on_template_selected(self) -> None:
+        return self._editor_panel._on_template_selected()
+
+    def apply_template(self, name: str) -> bool:
+        return self._editor_panel.apply_template(name)
 
     def _editor_nports(self) -> Optional[int]:
         return self._editor_panel._editor_nports()
 
     def _refresh_port_choices(self) -> None:
         return self._editor_panel._refresh_port_choices()
-
-    def _strips_wanted(self) -> bool:
-        return self._editor_panel._strips_wanted()
 
     def _on_editor_file_changed(self) -> None:
         return self._editor_panel._on_editor_file_changed()
@@ -2363,6 +2354,10 @@ class App(tk.Tk):
             # About to be recomputed from the current spec, so whatever the
             # editor did since the last run is now accounted for.
             tc.stale = False
+            # Into the two tables before anything reads them -- the spec notes
+            # below and the build both read the rows.  A no-op (no Log line)
+            # for every trace a session load or the editor already moved.
+            self._migrate_trace(tc)
 
             # What this trace is solved against.  One file: the FileEntry's own
             # arrays, the path every trace took before composition existed.
@@ -2398,43 +2393,42 @@ class App(tk.Tk):
             # the rest; this is what makes that pointer true. Only the OVERFLOW
             # is printed -- the first two are already on screen, and repeating
             # them for every clean trace would be noise.
-            if tc.mode == 5:
-                # Scoped first on a composition, exactly as the editor strip
-                # does it (`_editor_spec_inputs`): the two must answer about
-                # the same spec, or the strip says a tagged cell is fine while
-                # the Log says it does not parse.  Never raises here either --
-                # a bad tag is reported by the build below, with its message.
-                v_echo: list[tuple] = []
-                try:
-                    if sn.composed:
-                        # Built from the UNSCOPED rows, exactly as the editor
-                        # does it: the tag is what the echo is about and
-                        # scoping removes it.
-                        v_echo = scope_echo_messages(
-                            tc.mports, tc.conn_rows, tc.extra_lines,
-                            sn.net, sn.home_alias)
-                    v_mp, v_conn, v_extra = (
-                        (_scope_mport_rows(tc.mports, sn.net, sn.home_alias),
-                         _scope_conn_rows(tc.conn_rows, sn.net, sn.home_alias),
-                         _scope_dsl_text(tc.extra_lines, sn.net,
-                                         sn.home_alias))
-                        if sn.composed else
-                        (tc.mports, tc.conn_rows, tc.extra_lines))
-                except Exception:
-                    v_mp, v_conn, v_extra = (tc.mports, tc.conn_rows,
-                                             tc.extra_lines)
-                notes = _validation_messages(v_mp, v_conn, v_extra, sn.nports,
-                                             sn.port_names, v_echo)
-                if len(notes) > VALIDATION_STRIP_LINES:
-                    # Only the ones that are NOT a '✓' echo make this a
-                    # warning; a long spec that is entirely fine must not
-                    # badge the Log, the same rule _footer_strip_text counts by.
-                    sev = (LOG_WARN if any(not n.startswith("✓") for n in notes)
-                           else LOG_INFO)
-                    self._append_result(f"  [{tc.id}] {tc.label}: spec notes",
-                                        sev)
-                    for note in notes:
-                        self._append_result(f"      {note}")
+            # Scoped first on a composition, exactly as the editor strip
+            # does it (`_editor_spec_inputs`): the two must answer about
+            # the same spec, or the strip says a tagged cell is fine while
+            # the Log says it does not parse.  Never raises here either --
+            # a bad tag is reported by the build below, with its message.
+            v_echo: list[tuple] = []
+            try:
+                if sn.composed:
+                    # Built from the UNSCOPED rows, exactly as the editor
+                    # does it: the tag is what the echo is about and
+                    # scoping removes it.
+                    v_echo = scope_echo_messages(
+                        tc.mports, tc.conn_rows, tc.extra_lines,
+                        sn.net, sn.home_alias)
+                v_mp, v_conn, v_extra = (
+                    (_scope_mport_rows(tc.mports, sn.net, sn.home_alias),
+                     _scope_conn_rows(tc.conn_rows, sn.net, sn.home_alias),
+                     _scope_dsl_text(tc.extra_lines, sn.net,
+                                     sn.home_alias))
+                    if sn.composed else
+                    (tc.mports, tc.conn_rows, tc.extra_lines))
+            except Exception:
+                v_mp, v_conn, v_extra = (tc.mports, tc.conn_rows,
+                                         tc.extra_lines)
+            notes = _validation_messages(v_mp, v_conn, v_extra, sn.nports,
+                                         sn.port_names, v_echo)
+            if len(notes) > VALIDATION_STRIP_LINES:
+                # Only the ones that are NOT a '✓' echo make this a
+                # warning; a long spec that is entirely fine must not
+                # badge the Log, the same rule _footer_strip_text counts by.
+                sev = (LOG_WARN if any(not n.startswith("✓") for n in notes)
+                       else LOG_INFO)
+                self._append_result(f"  [{tc.id}] {tc.label}: spec notes",
+                                    sev)
+                for note in notes:
+                    self._append_result(f"      {note}")
 
             try:
                 term = self._build_termination(tc, nports=sn.nports, sn=sn)
@@ -2443,27 +2437,27 @@ class App(tk.Tk):
                 tc.Z = None
                 self._append_result(
                     f"  [{tc.id}] {tc.label}: ERROR {e}", LOG_ERROR)
-                self._append_result(traceback.format_exc(), LOG_ERROR)
+                # A ValueError here is the SPEC being refused (a probe rule,
+                # a port the file does not have): the line above is the
+                # whole story and the cell already says it.  A stack dump
+                # under a user's typo reads as a crash.  Anything else is a
+                # bug, and keeps its traceback.
+                if not isinstance(e, ValueError):
+                    self._append_result(traceback.format_exc(), LOG_ERROR)
                 continue
 
-            # Mode 6 -- and ANY spec that defines more than one measurement
-            # port -- produces a G x G Z matrix, not one curve; it gets its own
-            # results block and expands into several plot curves.
+            # A spec that defines more than one measurement port produces a
+            # G x G Z matrix, not one curve; it gets its own results block and
+            # expands into several plot curves.
             #
-            # Routing on the measurement-port count rather than on the mode is
-            # what stops Mode 5 from silently reporting only the first port.
-            # compute_z returns Zmat[:, 0, 0] and warns about the rest, which
-            # is a wrong number with no visible difference -- and once the two
-            # modes share an editor, "I defined two probes here" has to mean
-            # the same thing in both.  A single-measurement-port spec still
-            # takes the compute_z path, so every pre-existing trace stays
-            # bit-identical (golden regression).
-            if tc.mode == 6 or n_mports > 1:
-                if tc.mode != 6:
-                    self._append_result(
-                        f"    [{tc.id}] {n_mports} measurement ports defined -- "
-                        "reporting the full coupling matrix (M, k), same as "
-                        "Mode 6.", LOG_WARN)
+            # Routing on the measurement-port COUNT is the only routing there
+            # is: compute_z returns Zmat[:, 0, 0] and warns about the rest,
+            # which is a wrong number with no visible difference, so "I defined
+            # two probes here" has to reach the coupling path whatever template
+            # the rows came from.  A single-measurement-port spec takes the
+            # compute_z path, so every pre-existing trace stays bit-identical
+            # (tests/test_trace_path_golden.py).
+            if n_mports > 1:
                 try:
                     cres = self._calculate_coupling_trace(
                         tc, sn, f_rlc_hz, term=term)
@@ -2662,7 +2656,7 @@ class App(tk.Tk):
     def _coupling_plot_traces(self, tc: TraceConfig, freqs: np.ndarray,
                               Zmat: np.ndarray, names: list) -> list:
         """
-        Expand one mode-6 trace into plot curves: one self curve per
+        Expand one coupling trace into plot curves: one self curve per
         measurement port and one mutual curve per unordered pair.  A mutual
         curve is just another complex Z array, so every subplot works on it --
         L(nH) then reads M in nH and C(pF) reads the coupling capacitance.
@@ -2866,7 +2860,7 @@ class App(tk.Tk):
         inside it.
 
         IT ASKS FIRST, and it asks with the counts, because none of this is
-        undoable and a mode-6 spec is not recoverable by retyping it in a
+        undoable and a coupling spec is not recoverable by retyping it in a
         hurry.  It asks only when there is something to lose: on an empty
         window the entry does nothing at all rather than opening a dialog
         about nothing.
@@ -3021,6 +3015,12 @@ class App(tk.Tk):
 
         self.traces = list(sess.traces)
         self._next_trace_id = max((tc.id for tc in self.traces), default=0) + 1
+        # EAGERLY, every trace, selected or not (docs/design_workspaces.md
+        # § 3.4): migrating only the trace the user clicked left the rest
+        # carrying old fields into the session file, the signature and the
+        # results table.  Each moved trace says what moved, in the Log.
+        for tc in self.traces:
+            self._migrate_trace(tc, refresh=False)
 
         controls = sess.controls
         for key, var in (("rlc_freq_ghz", self.rlc_freq_var),
@@ -3238,12 +3238,16 @@ class App(tk.Tk):
                     # a CSV headed '# File: die.s6p' whose numbers came from
                     # the die AND the package is a false claim in the one line
                     # a spreadsheet keeps.
+                    # 'Setup:' is the results table's port descriptor -- what
+                    # is probed, what is grounded, how many connection rows --
+                    # where this line used to name a mode, which said which
+                    # form the spec was typed into and nothing about the spec.
                     if trace_is_composed(tc):
                         fh.write(f"# Files: {trace_file_legend(tc)}, "
-                                 f"Mode: {tc.mode_name()}\n")
+                                 f"Setup: {tc.port_descriptor()}\n")
                     else:
                         fh.write(f"# File: {fe.label}, "
-                                 f"Mode: {tc.mode_name()}\n")
+                                 f"Setup: {tc.port_descriptor()}\n")
                     # WHICH RUN this is.  Export writes the CURRENT cached
                     # state, which is the newest run -- not whatever page the
                     # user happens to be reading -- so the file has to say so
@@ -3284,12 +3288,12 @@ class App(tk.Tk):
                             fh.write(
                                 f"# Marker: the reported R/L/C/Q/M/k were read "
                                 f"at {marker_freq_text(snap, '{:.6g}')}\n")
-                    # Gate on the DATA, not the mode -- _on_calculate routes on
-                    # the measurement-port count, so a Mode 5 spec with two
-                    # probes has a full Zmat too.  Gating on `mode == 6` used to
-                    # export that trace's scalar Zmat[:, 0, 0] table instead:
-                    # well-formed, headed '# Mode: Custom', and missing every
-                    # mutual term, every M and every k.
+                    # Gate on the DATA -- _on_calculate routes on the
+                    # measurement-port count, so any spec with two probes has a
+                    # full Zmat.  Gating on the old mode number used to export
+                    # such a trace's scalar Zmat[:, 0, 0] table instead:
+                    # well-formed, and missing every mutual term, every M and
+                    # every k.
                     if tc.Zmat is not None:
                         _write_coupling_csv(fh, w, tc, freqs)
                         fh.write("\n")

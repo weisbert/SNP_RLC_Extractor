@@ -10,8 +10,11 @@ What a config file holds
 Everything you TYPED, and nothing that was computed:
 
   * the loaded files, by path (see "Moving a config" below);
-  * every trace -- mode, port fields, both Mode 5/6 tables, anything
-    kept verbatim as text, colour, line style, and whether it is shown;
+  * every trace -- its file, both tables (measurement ports and
+    connections), anything kept verbatim as text, colour, line
+    style, and whether it is shown;
+  * the Trace model workspace's nets, GND list and conditions, and
+    which workspace was showing;
   * RLC Freq, the band-fit range and model, and the Units setting;
   * the plot's checkbox row: X/Y log, Marker, Readout, which quantities
     are on screen, and where the marker sits.
@@ -48,6 +51,22 @@ automatically: re-parsing a package export takes tens of seconds, and
 that is not a good thing to do before you have asked for anything. An
 empty session is never written, so opening the tool and closing it again
 does not erase what the previous run left.
+
+Configs from older builds
+-------------------------
+A config saved before the editor became one table still loads. Every
+trace in it is moved into the two tables AS IT LOADS -- all of them,
+not only the one you click -- and the Log gets one line per trace
+saying what it became. The numbers are the ones the older build
+computed, bit for bit, except in the few cases the Log line names;
+the "Setting up a measurement" tab, "Configs from older builds",
+lists them.
+
+Save it again and it is written in the new form. Each trace then
+carries "table_version": 1, which is what tells a later load that it
+has been moved already and must be left alone, and "mode": 5, which
+is what lets an OLDER build open the same file: it reads every trace
+as a Custom trace, which is exactly what it now is.
 
 Editing a config by hand
 ------------------------

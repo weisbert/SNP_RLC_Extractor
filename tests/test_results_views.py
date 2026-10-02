@@ -317,6 +317,11 @@ class TestTheReciprocityLineIsAVerdict(unittest.TestCase):
         deletion.  Mutation: remove the Help pointer from the legend."""
         text = "\n".join(COUPLING_LEGEND_LINES)
         self.assertIn("Help", text)
+        # ...by the Help TAB's name.  There are no modes any more
+        # (docs/design_workspaces.md § 3.6), so "Help → Mode 6" pointed at a
+        # tab that does not exist.  Mutation: put "Mode 6" back.
+        self.assertIn("Help → Coupling", text)
+        self.assertNotIn("Mode", text)
 
 
 class TestTheRedundantZMatrixIsFolded(unittest.TestCase):

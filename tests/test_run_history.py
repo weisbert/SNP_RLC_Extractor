@@ -235,8 +235,21 @@ class TestStaleBanner(unittest.TestCase):
 # 3 -- "what changed", the real discriminator (pure)
 # ============================================================================
 
+def _gnd(ports: str) -> list:
+    """The connection table of a trace that grounds `ports` -- what the old
+    GND field migrates to."""
+    return [ConnectionRow(kind="ground", ports=ports)] if ports else []
+
+
 def _tc(**kw):
-    base = dict(id=1, file_label="coil.s4p", mode=1, port_a="1")
+    """A trace in the ONE row model (docs/design_workspaces.md § 3): every
+    trace is migrated on load and on creation, so this is the only shape a
+    run signature is ever taken of.  `gnd=` is shorthand for one ground
+    row."""
+    gnd = kw.pop("gnd", "")
+    base = dict(id=1, file_label="coil.s4p", mode=5, table_version=1,
+                mports=[MeasPortRow(name="P1", plus="1", minus="")],
+                conn_rows=_gnd(gnd))
     base.update(kw)
     return TraceConfig(**base)
 
@@ -258,18 +271,22 @@ class TestSignatureFieldsCoverConfigSignature(unittest.TestCase):
         Mutate each field _config_signature reads and demand the named version
         notices too.  This is the guard that survives someone adding a tenth
         field to _config_signature.
+
+        No mode / port A / port B / short / GND any more: after the migration
+        they are always 5 and empty, so the two tables and the kept text are
+        the whole spec.
         """
         mutations = [
             ("file_label", "other.s4p"),
-            ("mode", 2),
-            ("port_a", "9"),
-            ("port_b", "9"),
-            ("short_pairs", "1-2"),
-            ("gnd_ports", "6-14"),
+            ("mports", [MeasPortRow(name="P1", plus="9", minus="")]),
+            ("mports", [MeasPortRow(name="P1", plus="1", minus="2")]),
+            ("mports", [MeasPortRow(name="tank", plus="1", minus="")]),
+            ("conn_rows", _gnd("6-14")),
+            ("conn_rows", [ConnectionRow(kind="short", ports="3,4")]),
             ("extra_lines", "3 ground"),
         ]
         for name, value in mutations:
-            with self.subTest(field=name):
+            with self.subTest(field=name, value=value):
                 a, b = _tc(), _tc()
                 setattr(b, name, value)
                 self.assertNotEqual(_config_signature(a), _config_signature(b))
@@ -278,12 +295,20 @@ class TestSignatureFieldsCoverConfigSignature(unittest.TestCase):
                                     f"{name} changes the answer but no run "
                                     f"page would mention it")
 
+    def test_the_retired_fields_are_not_in_the_signature(self):
+        """A field that cannot change on a migrated trace is a run-diff line
+        that can only ever say nothing -- and 'mode 5' is a mode number on
+        screen, which the merge removed everywhere."""
+        names = [n for n, _v in trace_signature_fields(_tc())]
+        for retired in ("mode", "port A", "port B", "short", "gnd"):
+            self.assertNotIn(retired, names)
+
     def test_the_two_table_fields_are_named_too(self):
-        a = _tc(mode=5)
-        b = _tc(mode=5, mports=[MeasPortRow(name="L1", plus="1", minus="2")])
+        a = _tc(mports=[])
+        b = _tc(mports=[MeasPortRow(name="L1", plus="1", minus="2")])
         self.assertNotEqual(trace_signature_fields(a),
                             trace_signature_fields(b))
-        c = _tc(mode=5, conn_rows=[ConnectionRow(kind="ground", ports="3")])
+        c = _tc(conn_rows=[ConnectionRow(kind="ground", ports="3")])
         self.assertNotEqual(trace_signature_fields(a),
                             trace_signature_fields(c))
 
@@ -291,19 +316,25 @@ class TestSignatureFieldsCoverConfigSignature(unittest.TestCase):
 class TestDescribeRunChange(unittest.TestCase):
 
     def test_a_changed_field_is_reported_old_then_new(self):
-        a = run_signatures([_tc(gnd_ports="6-14")])
-        b = run_signatures([_tc(gnd_ports="6-16")])
-        self.assertEqual(describe_run_change(a, b),
-                         ["[1] gnd 6-14 -> 6-16"])
+        a = run_signatures([_tc(gnd="6-14")])
+        b = run_signatures([_tc(gnd="6-16")])
+        out = describe_run_change(a, b)
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].startswith("[1] connections ground 6-14"),
+                        out)
+        self.assertIn("-> ground 6-16", out[0])
 
     def test_an_unchanged_run_reports_nothing(self):
         a = run_signatures([_tc()])
         self.assertEqual(describe_run_change(a, run_signatures([_tc()])), [])
 
     def test_an_empty_value_reads_as_none_not_as_a_blank(self):
-        a = run_signatures([_tc(gnd_ports="")])
-        b = run_signatures([_tc(gnd_ports="3")])
-        self.assertEqual(describe_run_change(a, b), ["[1] gnd (none) -> 3"])
+        a = run_signatures([_tc(gnd="")])
+        b = run_signatures([_tc(gnd="3")])
+        out = describe_run_change(a, b)
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].startswith("[1] connections (none) -> ground 3"),
+                        out)
 
     def test_a_new_trace_is_reported_as_added(self):
         a = run_signatures([_tc(id=1)])
@@ -317,14 +348,14 @@ class TestDescribeRunChange(unittest.TestCase):
 
     def test_the_list_is_capped_and_says_how_many_it_dropped(self):
         a = run_signatures([_tc(id=i) for i in range(1, 8)])
-        b = run_signatures([_tc(id=i, gnd_ports="9") for i in range(1, 8)])
+        b = run_signatures([_tc(id=i, gnd="9") for i in range(1, 8)])
         items = describe_run_change(a, b, max_items=4)
         self.assertEqual(len(items), 5)
         self.assertEqual(items[-1], "… +3 more")
 
     def test_a_long_value_is_elided_rather_than_flooding_the_line(self):
-        a = run_signatures([_tc(gnd_ports="1")])
-        b = run_signatures([_tc(gnd_ports="1,2,3,4,5,6,7,8,9,10,11,12,13,14")])
+        a = run_signatures([_tc(gnd="1")])
+        b = run_signatures([_tc(gnd="1,2,3,4,5,6,7,8,9,10,11,12,13,14")])
         self.assertIn("…", describe_run_change(a, b)[0])
         self.assertLess(len(describe_run_change(a, b)[0]), 60)
 
@@ -769,7 +800,7 @@ class TestConditionalAutoSwitch(_AppCase):
         created -- the run happened -- and it is marked unseen.
         """
         self._deselect_the_trace()
-        self.tc.port_a = "99"           # a port the file does not have
+        self.tc.mports = [MeasPortRow("P1", "99", "")]   # no such port
         self._calc()
         self.assertEqual(self.app.results_nb.select(), str(self.app._log_tab))
         self.assertIn("ERROR", self.app.results_text.get("1.0", tk.END))
@@ -831,11 +862,11 @@ class TestPageContents(_AppCase):
     def test_line_two_says_what_changed(self):
         self._calc()
         self._deselect_the_trace()
-        self.tc.gnd_ports = "3-4"
+        self.tc.conn_rows = [ConnectionRow(kind="ground", ports="3-4")]
         self._calc()
         page = self._page(self.app._run_tabs[0])
         self.assertIn("changed since #1:", page)
-        self.assertIn("[1] gnd (none) -> 3-4", page)
+        self.assertIn("[1] connections (none) -> ground 3-4", page)
 
     def test_line_two_is_absent_when_nothing_changed(self):
         self._calc(2)
@@ -1220,8 +1251,6 @@ class TestHeaderLayoutAtTheMinsize(unittest.TestCase):
             app.geometry("1040x600")
             app.deiconify()
             app.update()
-            app.ed_mode_var.set(5)
-            app._on_mode_changed()
             for _ in range(3):
                 app.update_idletasks()
                 app.update()

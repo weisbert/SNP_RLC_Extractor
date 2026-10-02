@@ -27,6 +27,8 @@ pkg_rlc_gui, and this module sits below it.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import copy
+import re
 from typing import Optional, Sequence
 
 import numpy as np
@@ -38,6 +40,7 @@ from pkg_rlc.physics.core import (
     CONN_KINDS_WITH_RLC,
     ConnectionRow,
     Ground,
+    ISSUE_ERROR,
     MeasPortRow,
     OVERVIEW_BUCKETS,
     PortRole,
@@ -49,6 +52,7 @@ from pkg_rlc.physics.core import (
     collapse_ports,
     dsl_text_to_rows,
     format_si,
+    grounded_ports,
     inert_lumped_messages,
     open_name_clusters,
     open_port_name_messages,
@@ -58,6 +62,9 @@ from pkg_rlc.physics.core import (
     parse_port_range,
     parse_short_pairs,
     port_roles,
+    probe_display_names,
+    probe_rule_issues,
+    short_group_spec,
     resolve_meas_ports,
     row_sources,
     rows_to_dsl_text,
@@ -541,55 +548,52 @@ def _mport_more_lines(text: str) -> list[str]:
 
 
 def _port_descriptor(tc: "TraceConfig") -> str:
-    if tc.mode == 1:
-        return f"M1: S:{_fmt_port_set(tc.port_a)} G:{_fmt_port_set(tc.gnd_ports)}"
-    if tc.mode == 2:
-        return (f"M2: {_fmt_port_terminal(tc.port_a)}↔{_fmt_port_terminal(tc.port_b)} "
-                f"G:{_fmt_port_set(tc.gnd_ports)}")
-    if tc.mode == 3:
-        return (f"M3: {_fmt_port_terminal(tc.port_a)}↔{_fmt_port_terminal(tc.port_b)} "
-                f"G:{_fmt_port_set(tc.gnd_ports)} S:{_fmt_short_pairs(tc.short_pairs)}")
-    if tc.mode == 4:
-        # Retired: shown only if a stale config has not been migrated yet.
-        return (f"M4→M2: {_fmt_port_terminal(tc.port_a)}↔{_fmt_port_terminal(tc.port_b)} "
-                f"G:{_fmt_port_set(_union_port_specs(tc.gnd_ports, tc.vdd_ports))}")
-    if tc.mode == 6:
-        tc.migrate_legacy_mports()
-        parts = [_fmt_mport(r.name, r.plus, r.minus) for r in tc.mports
-                 if r.plus.strip() or r.minus.strip()]
-        body = " ".join(parts[:3]) if parts else "(empty)"
-        if len(parts) > 3:
-            body += f" +{len(parts) - 3}"
-        return f"M6: {body} G:{_fmt_port_set(tc.gnd_ports)}"
-    if tc.mode == 5:
-        # No side effects here: unlike the mode-6 branch above this does NOT
-        # call the migration, because that would consume it silently and the
-        # user would never see the Results-pane message explaining what moved.
-        #
-        # With both tables empty the spec lives entirely in extra_lines (a
-        # migration that kept an order-dependent spec verbatim, or an import
-        # through 'Edit as text…').  Reporting '(no probe) C:0' for that is a
-        # positive false claim in the very column the user reads to confirm
-        # what was computed -- so fall back to showing the text, exactly as the
-        # unmigrated custom_text case below it does.
-        if not (tc.mports or tc.conn_rows):
-            text = (tc.extra_lines or tc.custom_text or "").strip()
-            if text:
-                text = " ".join(text.split())
-                return f"M5: {text[:25]}..." if len(text) > 28 else f"M5: {text}"
-        parts = [_fmt_mport(r.name, r.plus, r.minus) for r in tc.mports
-                 if r.plus.strip() or r.minus.strip()]
-        body = " ".join(parts[:2]) if parts else "(no probe)"
-        if len(parts) > 2:
-            body += f" +{len(parts) - 2}"
-        desc = f"M5: {body} C:{len(tc.conn_rows)}"
-        # Rows AND kept text: the text is in force too and is emitted last, so
-        # it wins.  Say it is there rather than describe the rows as the whole
-        # spec.
-        if (tc.extra_lines or "").strip():
-            desc += "+txt"
-        return desc
-    return f"M?: mode={tc.mode}"
+    """
+    What a trace measures, in one line of the results table:
+    'in:1/2 out:3/4 GND:[5,6] +2 conn'.
+
+    No mode number any more (docs/design_workspaces.md § 3.6): every trace is
+    the two tables, so the line is the measurement ports, the ports a ground
+    row holds at GND, and a count of the OTHER connection rows (shorts,
+    elements, open) -- each of which changes the answer and none of which
+    fits in a column.  '+txt' says a kept-as-text block is in force too; it
+    is emitted last, so it wins.
+
+    A trace that has not been migrated is described as its migration WOULD
+    read it, on a copy: no side effects here, so the Log line explaining what
+    moved is still waiting for the user when the App migrates for real.
+    """
+    if tc.mode != 5 or getattr(tc, "table_version", 0) < TABLE_VERSION:
+        tc = copy.copy(tc)
+        migrate_trace_to_rows(tc)
+    mports = list(tc.mports)
+    conn = [r for r in tc.conn_rows
+            if not r.is_blank() and getattr(r, "enabled", True)]
+    extra = (tc.extra_lines or "").strip()
+    if not mports and not conn and extra:
+        # The whole spec is in the kept-as-text block: show the text rather
+        # than claim '(no probe)' in the column the user reads to confirm
+        # what was computed.
+        text = " ".join(extra.split())
+        return f"text: {text[:25]}..." if len(text) > 28 else f"text: {text}"
+    parts = [_fmt_mport(name, r.plus, r.minus)
+             for name, r in zip(probe_display_names(mports), mports)
+             if name and (r.plus.strip() or r.minus.strip())]
+    body = " ".join(parts[:3]) if parts else "(no probe)"
+    if len(parts) > 3:
+        body += f" +{len(parts) - 3}"
+    gnd_rows = [r for r in conn if r.kind in ("ground", "vdd")]
+    try:
+        gnd = "[" + collapse_ports(grounded_ports(gnd_rows)) + "]"
+    except Exception:                                   # noqa: BLE001
+        gnd = "[" + ",".join(r.ports.strip() for r in gnd_rows) + "]"
+    desc = f"{body} GND:{gnd}"
+    others = len(conn) - len(gnd_rows)
+    if others:
+        desc += f" +{others} conn"
+    if extra:
+        desc += " +txt"
+    return desc
 
 
 # ============================================================================
@@ -890,19 +894,24 @@ def _validation_report(mport_rows: Sequence, conn_rows: Sequence,
     # curve that silently is not there.  Either way it outranks an element row
     # with an empty Port cell, which is R1-5's named example of the low tier.
     for i, row in enumerate(mport_live, start=1):
-        if row.plus.strip():
+        if row.plus.strip() or row.minus.strip():
+            # A '-' side with no '+' side is one of the probe rules below,
+            # in their words -- one message per problem, not two spellings.
             continue
-        anchor = ("mport", i - 1)
-        if row.minus.strip():
-            msgs.append(_VMsg(V_NO_RESULT,
-                              f"⚠ measurement port row {i} has a '−' side but "
-                              "no '+' side -- it does nothing.", anchor))
-        else:
-            # Name typed, ports never filled in. is_blank() is False, so
-            # neither branch used to see it and the row vanished silently.
-            msgs.append(_VMsg(V_NO_RESULT,
-                              f"⚠ measurement port row {i} has a name but no "
-                              "ports -- it does nothing.", anchor))
+        # Name typed, ports never filled in. is_blank() is False, so
+        # neither branch used to see it and the row vanished silently.
+        msgs.append(_VMsg(V_NO_RESULT,
+                          f"⚠ measurement port row {i} has a name but no "
+                          "ports -- it does nothing.", ("mport", i - 1)))
+
+    # The probe rules (docs/design_workspaces.md § 3.3), in the L0 checker's
+    # own words: the cells of the table are coloured from the same
+    # `probe_rule_issues` list, so the strip and the cells cannot say two
+    # different things.  Ahead of the build, because the build raises the
+    # first of the same errors and the cell is the better anchor.
+    rule_msgs, rule_texts, range_ports = _probe_rule_messages(
+        mport_rows, conn_rows, extra_lines, nports)
+    msgs.extend(rule_msgs)
 
     term: Optional[TerminationSet] = None
     try:
@@ -915,13 +924,19 @@ def _validation_report(mport_rows: Sequence, conn_rows: Sequence,
         # and whose drift shows up as the footer route landing on the wrong
         # row. The route falls back to the validation strip, where the whole
         # message is written out.
-        msgs.append(_VMsg(V_NO_RESULT, f"⚠ {e}"))
+        #
+        # Unless it IS one of the probe-rule messages above (the build raises
+        # the first of them), or the file-size refusal for ports a rule has
+        # already flagged in their cell: then it is the same problem twice.
+        if not (str(e) in rule_texts
+                or _only_names_ports(str(e), range_ports)):
+            msgs.append(_VMsg(V_NO_RESULT, f"⚠ {e}"))
 
     if term is not None:
-        # Overlaps first: grounding a probe is what CAUSES 'no measurement
-        # port defined', so naming the cause above the consequence.  Both are
-        # tiered, so that order survives the sort.
-        msgs.extend(_probe_ground_messages(mport_rows, term))
+        # Cause above consequence: a probe the kept text grounds is what
+        # CAUSES 'no measurement port defined'.  Both are tiered, so that
+        # order survives the sort.
+        msgs.extend(_probe_ground_messages(mport_rows, term, conn_rows))
         msgs.extend(_measured_port_messages(mport_rows, term, nports))
         # An element the reduction annihilates (shorted out / both ends
         # grounded). Without this the strip showed the ✓ ECHO for it -- a green
@@ -1019,12 +1034,14 @@ def _measured_port_messages(mport_rows: Sequence, term: TerminationSet,
     """
     Every way the measurement ports that will be MEASURED differ from the rows.
 
-    Comparing the row count to len(resolve_meas_ports(...)) catches all of the
-    merges at once without duplicating build_terminations_coupling's rule list:
-    'A' + 'B' collapse (B is the legacy minus side of A) and two rows sharing a
-    name do too.  Mode 6's identical-looking table RAISES on both; the Mode 5
-    table keeps the DSL's permissive behaviour, and this strip is where that
-    difference becomes visible instead of silent.
+    Comparing the row count to len(resolve_meas_ports(...)) catches every
+    merge at once.  The two that used to reach it -- the legacy 'A' + 'B'
+    pair and two rows typed with one name -- are probe-rule ERRORS now
+    (`probe_rule_issues`), so a spec carrying them never builds and never gets
+    here.  What still can is a typed name equal to the 'P<n>' a BLANK name is
+    given (a blank row and a row typed 'P1' are both P1, and the DSL feeds
+    both into one measurement port), which the rules do not see because they
+    compare TYPED names only.
 
     It also catches the two directions the row count cannot show at all:
     NOTHING resolves (Calculate would raise), and MORE resolve than the table
@@ -1035,7 +1052,10 @@ def _measured_port_messages(mport_rows: Sequence, term: TerminationSet,
     silent collapse of two rows into one measurement port is a number that
     comes back and is 37% wrong -- so the collapse outranks it.
     """
-    rows = [r for r in mport_rows if not r.is_blank() and r.plus.strip()]
+    shown = probe_display_names(mport_rows)
+    named_rows = [(n, r) for n, r in zip(shown, mport_rows)
+                  if n and r.plus.strip()]
+    rows = [r for _n, r in named_rows]
     try:
         resolved = resolve_meas_ports(term, _scan_count(term, nports))
     except Exception as e:
@@ -1046,7 +1066,7 @@ def _measured_port_messages(mport_rows: Sequence, term: TerminationSet,
                       "measurement-port table and fill in its '+' side.")]
     if len(resolved) > len(rows):
         hidden = [mp.name for mp in resolved
-                  if mp.name not in {r.name.strip() for r in rows}]
+                  if mp.name not in {n for n, _r in named_rows}]
         extra_n = len(resolved) - len(rows)
         named = f" ('{hidden[0]}')" if len(hidden) == 1 else ""
         head = ("1 measurement port is" if len(resolved) == 1
@@ -1059,41 +1079,117 @@ def _measured_port_messages(mport_rows: Sequence, term: TerminationSet,
         return []
     head = (f"⚠ {len(rows)} measurement-port rows define only "
             f"{len(resolved)} measurement port(s)")
-    names = [r.name.strip() for r in rows]
-    upper = {n.upper() for n in names}
-    if "A" in upper and "B" in upper:
-        return [_VMsg(V_WRONG_NUMBER,
-                      f"{head}: 'B' is the legacy minus side of 'A'. "
-                      "Rename one of them.")]
-    dupes = sorted({n for n in names if n and names.count(n) > 1})
+    names = [n for n, _r in named_rows]
+    dupes = sorted({n for n in names if names.count(n) > 1})
     if dupes:
         return [_VMsg(V_WRONG_NUMBER,
-                      f"{head}: the name '{dupes[0]}' is used twice, so both "
-                      "rows feed one measurement port. Rename one.")]
+                      f"{head}: two rows are both '{dupes[0]}' (a row with "
+                      "no name is called P1, P2, … in order), so both feed "
+                      "one measurement port. Rename one.")]
     return [_VMsg(V_WRONG_NUMBER, f"{head}.")]
 
 
-def _probe_ground_messages(mport_rows: Sequence,
-                           term: TerminationSet) -> list:
+def _probe_rule_messages(mport_rows: Sequence, conn_rows: Sequence,
+                         extra_lines: str = "",
+                         nports: Optional[int] = None) -> tuple:
     """
-    Ports listed as a probe that a later connection row grounds.
+    The probe rules of the one row model as strip messages:
+    (list of _VMsg, the set of their message texts, the probe ports the
+    file-size rule flagged).
 
-    This is legal and pinned: the rows path emits probes before connections, so
-    ground wins, exactly as build_terminations_mode1/2/3 always have.
-    build_terminations_coupling raises on the same overlap.  Do not unify them
-    -- just say which one happened.
+    The words are `probe_rule_issues`' own -- the cells are coloured from the
+    same list, so the strip line beside a red cell is the reason for THAT
+    cell, and there is no second spelling of any rule here.  An error is
+    V_NO_RESULT (the build raises it and Calculate skips the trace).  The one
+    warning -- a '-' side that touches a ground row, so the whole side is at
+    GND and the trace measures '+' to GND -- is V_ROW_INERT: it computes,
+    and its '-' cell adds nothing the ground row does not.  It keeps its '⚠'
+    so the footer still counts it: the spec measures something other than
+    what the '-' cell says.
 
-    V_WRONG_NUMBER: nothing raises, nothing is NaN, and the port the user
-    thinks they are probing is at 0 V.
+    The anchor is ("mport" | "conn", index among the NON-BLANK rows), which
+    is how the footer route counts; `SpecIssue.row` counts blanks too.
+    Never raises.
     """
+    try:
+        issues = probe_rule_issues(mport_rows, conn_rows, extra_lines,
+                                   nports=nports)
+    except Exception:                       # pragma: no cover - MUST NOT RAISE
+        return [], set(), set()
+    live: dict = {"mports": {}, "conn": {}}
+    for table, rows in (("mports", mport_rows), ("conn", conn_rows)):
+        n = 0
+        for i, r in enumerate(rows):
+            if not r.is_blank():
+                live[table][i] = n
+                n += 1
+    out = []
+    for iss in issues:
+        idx = live.get(iss.table, {}).get(iss.row)
+        anchor = (None if idx is None
+                  else ("mport" if iss.table == "mports" else "conn", idx))
+        tier = V_NO_RESULT if iss.severity == ISSUE_ERROR else V_ROW_INERT
+        out.append(_VMsg(tier, f"⚠ {iss.message}", anchor))
+    range_ports: set = set()
+    if nports is not None:
+        for row in mport_rows:
+            for spec in (row.plus, row.minus):
+                try:
+                    range_ports.update(p for p in parse_port_range(spec)
+                                       if p < 1 or p > int(nports))
+                except Exception:
+                    continue
+    return out, {i.message for i in issues}, range_ports
+
+
+_PORT_INDEX_REFUSAL = re.compile(r"Port number\(s\) ([\d, ]+) are outside")
+
+
+def _only_names_ports(message: str, ports: set) -> bool:
+    """True when `message` is `_validate_port_indices`' file-size refusal and
+    every port it names is in `ports` -- i.e. a probe rule has already said
+    it, in the cell.  A refusal naming any OTHER port (a connection row's)
+    still reaches the strip."""
+    m = _PORT_INDEX_REFUSAL.match(message)
+    if not m or not ports:
+        return False
+    named = {int(t) for t in m.group(1).replace(" ", "").split(",") if t}
+    return bool(named) and named <= ports
+
+
+def _probe_ground_messages(mport_rows: Sequence, term: TerminationSet,
+                           conn_rows: Sequence = ()) -> list:
+    """
+    Probe ports the spec grounds by the one route the probe rules leave
+    alone: the lines KEPT AS TEXT.  They are emitted last and are the user's
+    own word, so `probe_rule_issues` does not second-guess them -- but the
+    DSL is last-assignment-wins, so that block wins and the port the user
+    thinks they are probing is at 0 V.  Nothing raises and nothing is NaN,
+    hence V_WRONG_NUMBER.
+
+    A port a GROUND ROW grounds is not reported here: on the '+' side that is
+    a refusal and on the '-' side the whole side is folded into ground, and
+    both are already `_probe_rule_messages`' cell messages.  `conn_rows` is
+    what tells the two routes apart; without it every grounded probe port is
+    reported, which is only right for a spec with no ground rows.
+    """
+    try:
+        by_rows = grounded_ports(conn_rows)
+    except Exception:
+        by_rows = set()
     probe_ports: set[int] = set()
+    covered: set[int] = set(by_rows)
     for row in mport_rows:
+        sides = []
         for spec in (row.plus, row.minus):
             try:
-                probe_ports.update(parse_port_range(spec))
+                sides.append(set(parse_port_range(spec)))
             except Exception:
-                continue
-    hit = sorted(p for p in probe_ports
+                sides.append(set())
+        probe_ports.update(sides[0] | sides[1])
+        if sides[1] & by_rows:
+            covered |= sides[1]         # folded: the whole '-' side is GND
+    hit = sorted(p for p in probe_ports - covered
                  if isinstance(term.termination_of(p - 1), (Ground, Vdd)))
     if not hit:
         return []
@@ -1101,8 +1197,9 @@ def _probe_ground_messages(mport_rows: Sequence,
     noun = "port" if len(hit) == 1 else "ports"
     verb = "is" if len(hit) == 1 else "are"
     return [_VMsg(V_WRONG_NUMBER,
-                  f"⚠ {noun} {listed} {verb} both a probe and a ground row "
-                  "-- the ground row wins.")]
+                  f"⚠ {noun} {listed} {verb} a probe that the lines kept as "
+                  "text ground -- the text is applied last, so the probe is "
+                  "at 0 V. Open 'Edit as text…' to see them.")]
 
 
 def _extra_lines_indicator(extra_lines: str) -> str:
@@ -1121,89 +1218,49 @@ def _extra_lines_indicator(extra_lines: str) -> str:
     return f"(+{n} line{'' if n == 1 else 's'} kept as text)"
 
 
-# ---- Ports & Roles: turning ANY trace into rows the classifier understands --
+# ---- Ports & Roles: any trace -> the rows the classifier understands -------
 #
-# Modes 1/2/3/6 do not have a connections table, but every one of them is
-# expressible as one -- that is the whole premise of the Mode 5 DSL. Rendering
-# them through the same rows means the window shows the same roles, the same
-# "ground wins" precedence and the same source column in every mode, instead of
-# five renderings that can disagree.  It is also DELIBERATELY the permissive
-# path: build_terminations_coupling REFUSES a mode-6 probe that is also a ground
-# row, and refusing is exactly the wrong answer for a window whose job is to
-# show the user what they typed.  The overlap becomes a flagged row instead.
-
-# Which editor FIELD a named mode's synthetic row stands for. Without this the
-# window would tell a mode-1 user their port came from "probe row 1 (+)", a row
-# that exists nowhere on their screen.
-_NAMED_ROW_LABELS = {
-    1: {"probe row 1 (+)": "Signal / Port A"},
-    2: {"probe row 1 (+)": "Port A", "probe row 1 (−)": "Port B"},
-    3: {"probe row 1 (+)": "Port A", "probe row 1 (−)": "Port B"},
-}
-_GND_FIELD_LABEL = "GND / VDD"
-_SHORT_FIELD_LABEL = "Short Pairs"
+# Every trace IS the two tables now (docs/design_workspaces.md § 3), so the
+# window renders exactly the rows the editor shows and the "From" column names
+# a row the user can see: 'probe row 1 (+)', 'conn row 2', 'text line 1'.  A
+# trace that has not been through the migration yet is read through a
+# migrated COPY, so the window shows the rows it WILL have and never writes
+# into the trace -- the same rule `_port_descriptor` keeps, and for the same
+# reason: the App's migration is what logs what moved.
 
 
 def _trace_role_rows(tc) -> tuple:
     """
     Any TraceConfig -> (mport_rows, conn_rows, extra_lines, sources).
 
-    `sources` is 1-based-port -> the row or field that last assigned it, with
-    the named modes' synthetic rows renamed to the field the user typed into.
-    Pure: no Tk, no file, no TerminationSet.
+    `sources` is 1-based port -> the row that last assigned it
+    (`row_sources`).  Pure: no Tk, no file, no TerminationSet.
     """
-    mode = getattr(tc, "mode", 1)
-    overrides: dict = {}
-    if mode == 5:
-        mports = list(tc.mports)
-        conn = list(tc.conn_rows)
-        extra = tc.extra_lines or ""
-    else:
-        conn = []
-        extra = ""
-        if mode == 6:
-            mports = list(tc.mports)
-        else:
-            plus = (tc.port_a or "").strip()
-            minus = (tc.port_b or "").strip() if mode in (2, 3) else ""
-            mports = ([MeasPortRow(name="A", plus=plus, minus=minus)]
-                      if (plus or minus) else [])
-            overrides.update(_NAMED_ROW_LABELS.get(mode, {}))
-        if (tc.gnd_ports or "").strip():
-            conn.append(ConnectionRow(kind="ground",
-                                      ports=tc.gnd_ports.strip()))
-            overrides[f"conn row {len(conn)}"] = _GND_FIELD_LABEL
-        if mode == 3:
-            try:
-                pairs = parse_short_pairs(tc.short_pairs or "")
-            except Exception:
-                pairs = []
-            for a, b in pairs:
-                conn.append(ConnectionRow(kind="short", ports=str(a),
-                                          to=str(b)))
-                overrides[f"conn row {len(conn)}"] = _SHORT_FIELD_LABEL
-    src = row_sources(mports, conn, extra)
-    if overrides:
-        src = {p: overrides.get(v, v) for p, v in src.items()}
-    return mports, conn, extra, src
-
+    if tc.mode != 5 or getattr(tc, "table_version", 0) < TABLE_VERSION:
+        tc = copy.copy(tc)
+        migrate_trace_to_rows(tc)
+    mports = list(tc.mports)
+    conn = list(tc.conn_rows)
+    extra = tc.extra_lines or ""
+    return mports, conn, extra, row_sources(mports, conn, extra)
 
 
 WARN_OPEN_LOOKS_TERMINATED = "open, but its name matches a terminated set"
-WARN_PROBE_AND_GROUND = "probe row AND ground row — the ground row wins"
-# Mode 6 does NOT let ground win: build_terminations_coupling raises, because a
-# probe side is tied together and grounding one of its ports grounds the whole
-# side.  Both behaviours are pinned and intended (CLAUDE.md), so the WINDOW has
-# to say which one it is showing.  Measured with the Mode-5 wording on a mode-6
-# trace (probes on 1 and 2, GND field '1'): the window said "the ground row
-# wins", which reads as "legal, and I know which side won", and Calculate then
-# refused the trace outright -- "Port(s) 1 are listed both as a probe
-# (measurement port 'c1') and as ground".  Mode 6 has neither a validation
-# strip nor a footer strip, so this row is the ONLY thing on screen about the
-# overlap and it must not state the other mode's rule.
+# The two sides of a measurement port meet a ground row differently (the probe
+# rules, docs/design_workspaces.md § 3.3, `probe_rule_issues`).  A side is tied
+# together in the solve, so grounding one '-' port grounds the whole '-' side:
+# the trace measures '+' to GND, and it computes.  A '+' port at 0 V has
+# nothing to measure, and the trace is refused.  The names are the old ones
+# because the App re-exports them; the window flags a port with whichever of
+# the two applies to the side it is on.
+WARN_PROBE_AND_GROUND = (
+    "'−' side of a measurement port, and grounded — the whole '−' side is "
+    "at GND, so it measures '+' to GND")
 WARN_PROBE_AND_GROUND_COUPLING = (
-    "probe row AND ground row — Mode 6 refuses this; drop it from one list "
-    "or the other")
+    "'+' side of a measurement port AND a ground row — refused: a node at "
+    "0 V has nothing to measure; drop it from one of the two")
+WARN_MINUS_GROUNDED = WARN_PROBE_AND_GROUND
+WARN_PLUS_GROUNDED = WARN_PROBE_AND_GROUND_COUPLING
 WARN_FROM_KEPT_TEXT = "assigned by the kept-as-text block, not by a table row"
 
 
@@ -1214,28 +1271,43 @@ def _role_warnings(roles: Sequence[PortRole],
     1-based port -> why its row is flagged, for the rows that are.
 
     Three things earn a flag, and each is a way for a spec to look right and be
-    wrong: an open port whose NAME belongs to a terminated set; a port a probe
-    row claims that a ground row then takes (legal and invisible in Mode 5, a
-    hard refusal in Mode 6 -- hence `coupling`); and a port assigned by the
+    wrong: an open port whose NAME belongs to a terminated set; a probe port
+    that ends up at ground -- on the '-' side that is the whole side folded
+    into ground, on the '+' side a refusal; and a port assigned by the
     kept-as-text block, which is emitted last and so beats every table row
     while having no widget of its own.
+
+    `coupling` is accepted and ignored: it chose between the two modes' rules,
+    and there is one rule now, decided by the SIDE the port is on.
     """
+    del coupling
     warn: dict = {}
     for r in roles:
         if r.source.startswith("text line"):
             warn[r.index] = WARN_FROM_KEPT_TEXT
 
-    probe_ports: set = set()
+    plus_ports: set = set()
+    minus_ports: set = set()
     for row in mport_rows:
-        for spec in (getattr(row, "plus", ""), getattr(row, "minus", "")):
+        for spec, side in ((getattr(row, "plus", ""), plus_ports),
+                           (getattr(row, "minus", ""), minus_ports)):
             try:
-                probe_ports.update(parse_port_range(spec))
+                side.update(parse_port_range(spec))
             except Exception:
                 continue
     for r in roles:
-        if r.index in probe_ports and r.role in (ROLE_GROUND, ROLE_VDD):
-            warn[r.index] = (WARN_PROBE_AND_GROUND_COUPLING if coupling
-                             else WARN_PROBE_AND_GROUND)
+        if r.role not in (ROLE_GROUND, ROLE_VDD):
+            continue
+        # Grounded by the kept-as-text block: the probe rules read ground
+        # ROWS (the text is the user's raw word, emitted last), so neither
+        # the refusal nor the fold applies -- and the flag already set above
+        # says where the assignment came from.
+        if r.source.startswith("text line"):
+            continue
+        if r.index in plus_ports:
+            warn[r.index] = WARN_PLUS_GROUNDED
+        elif r.index in minus_ports:
+            warn[r.index] = WARN_MINUS_GROUNDED
 
     for cluster in open_name_clusters(roles):
         for p in cluster.open_ports:
@@ -1349,3 +1421,395 @@ def _footer_strip_text(term: Optional[TerminationSet],
     if len(ports) > budget:
         ports = ports[:budget - 1] + "…"
     return f"{ports}  {status}"
+
+
+# ============================================================================
+# One row model: every old mode migrated into the two tables
+# ============================================================================
+#
+# docs/design_workspaces.md § 3.4.  The editor used to offer five modes, and
+# all five became the same `TerminationSet` for the same solver: 1, 2, 3 and 6
+# were subsets of Custom.  There is now ONE model -- the measurement-port
+# table plus the connection table, which is Custom's storage -- and every
+# trace is moved into it once, EAGERLY (on load and on creation), with a Log
+# line saying what moved.  `mode` stays on the dataclass and is always
+# written as 5, so an older build opens a new session as Custom and computes
+# the same thing.
+#
+# Only the LIVE fields of the old mode move (摸底 F1): every Mode 5 / 6 trace
+# carries the dataclass default `port_a="1"`, and folding it in would add a
+# probe and change the number.
+#
+# Numbers do not move, with ONE intended exception, which is a bug fix: a '-'
+# side only PARTLY in the ground list.  The old code dropped the grounded
+# port from the probe; the one model grounds the whole tied side (see the
+# probe rules in pkg_rlc.physics.spec).  `tests/test_trace_path_golden.py`
+# replays every case of `tests/fixtures/golden_trace_paths.npz`, captured
+# from the old path before this code existed, and asserts `np.array_equal`.
+
+#: `TraceConfig.table_version` once a trace is in the one row model.  0 is
+#: every trace written before it.
+TABLE_VERSION = 1
+
+#: The measurement-port name a migrated mode-1/2/3 trace gets.  It was the
+#: legacy group "A", which is a reserved name now; the number is a label
+#: and moves nothing.
+MIGRATED_PROBE_NAME = "P1"
+
+_OLD_MODE_TITLE = {1: "Port(s) → GND", 2: "A ↔ B", 3: "A ↔ B + Short Pairs",
+                   5: "Custom", 6: "+/- Ports / Coupling"}
+
+
+def _squash(text: str) -> str:
+    """A port field with no whitespace in it.  '1, 2' -> '1,2', '6 - 14' ->
+    '6-14': parse_port_range strips every token, so the meaning is the same,
+    and the DSL the rows are written to is whitespace-tokenised."""
+    return "".join((text or "").split())
+
+
+_TAGGED_TOKEN = re.compile(r"^[Ff](\d+)\.(.+)$")
+
+
+def _ports_or_none(spec: str):
+    """
+    The ports one field names, as comparable KEYS, in order: an int for a
+    port of the home file (bare, or tagged F1), ('F2', 5) for port 5 of the
+    second file.  None when a token is neither (a node name, a typo) -- the
+    caller then leaves the field alone and the build has the last word.
+
+    Per comma token, like `parse_scoped_ports`: a tag never carries over to
+    the next token.  This is the migration's own reading, done on the
+    UNSCOPED field, because it has to compare what the user TYPED -- the
+    composed namespace does not exist yet when a session is loaded.
+    """
+    out: list = []
+    for raw in (spec or "").split(","):
+        tok = raw.strip()
+        if not tok:
+            continue
+        m = _TAGGED_TOKEN.match(tok)
+        try:
+            if m is None:
+                out.extend(parse_port_range(tok))
+            elif m.group(1) == "1":
+                out.extend(parse_port_range(m.group(2)))
+            else:
+                out.extend((f"F{m.group(1)}", q)
+                           for q in parse_port_range(m.group(2)))
+        except Exception:                               # noqa: BLE001
+            return None
+    seen: set = set()
+    return [k for k in out if not (k in seen or seen.add(k))]
+
+
+def _key_text(key) -> str:
+    return str(key) if isinstance(key, int) else f"{key[0]}.{key[1]}"
+
+
+def _keys_text(keys) -> str:
+    return ",".join(_key_text(k) for k in keys)
+
+
+def _row_ground_keys(conn_rows) -> set:
+    """Port keys a ground / vdd row holds at AC ground.  The parser's own
+    reading (last assignment wins) when the rows parse on their own; a
+    token-level union of the ground / vdd rows when they cannot (a tagged
+    cell on a composed trace)."""
+    try:
+        return set(grounded_ports(conn_rows))
+    except Exception:                                   # noqa: BLE001
+        keys: set = set()
+        for r in conn_rows:
+            if (r.kind in ("ground", "vdd") and getattr(r, "enabled", True)
+                    and not r.is_blank()):
+                keys.update(_ports_or_none(r.ports) or [])
+        return keys
+
+
+def _drop_from_side(side: str, taken: set) -> tuple[str, list]:
+    """A side with the ports `taken` left out, as (field, dropped keys).
+
+    Nothing is dropped when it would EMPTY the side: the old build refused
+    that trace, and leaving the port where it is lets the one model refuse it
+    again, with a message that names the port."""
+    keys = _ports_or_none(side)
+    if not keys or not taken:
+        return side, []
+    dropped = [k for k in keys if k in taken]
+    kept = [k for k in keys if k not in taken]
+    if not dropped or not kept:
+        return side, []
+    return _keys_text(kept), dropped
+
+
+def _drop_grounded_plus(plus: str, grounded: set) -> tuple[str, list]:
+    """The old 'ground wins' on a '+' side, made explicit."""
+    return _drop_from_side(plus, grounded)
+
+
+def _minus_note(tc_name: str, minus: str, grounded: set,
+                refused_before: bool = False) -> "MigrationNote | str":
+    """The Log line for a '-' side that touches ground, or "".
+    `refused_before` is Mode 6, which refused any probe port in GND."""
+    ports = _ports_or_none(minus)
+    if not ports or not grounded:
+        return ""
+    hit = [p for p in ports if p in grounded]
+    if not hit:
+        return ""
+    rest = [p for p in ports if p not in grounded]
+    hit_s = _keys_text(hit)
+    rest_s = _keys_text(rest)
+    if refused_before:
+        return MigrationNote(
+            f"port {hit_s} is on the '-' side of {tc_name} and grounded, so "
+            f"the whole '-' side is at GND and it measures {tc_name} to GND; "
+            f"earlier versions refused a probe port in GND outright, so this "
+            f"trace now has a number")
+    if not rest:
+        return MigrationNote(
+            f"the whole '-' side of {tc_name} ({minus}) is grounded, so it "
+            f"measures {tc_name} to GND -- the same number as before")
+    return MigrationNote(
+        f"port {hit_s} is grounded and is on the '-' side with port {rest_s}, "
+        f"so port {rest_s} is at GND too; earlier versions dropped port "
+        f"{hit_s} from the probe instead and reported a different number",
+        "warn")
+
+
+def rows_summary(mports, conn_rows) -> str:
+    """'P1 +1 -2; ground 3,4; short 3-4' -- the two tables in one line, for a
+    Log note.  Blank and disabled rows are left out, as the spec does."""
+    parts: list[str] = []
+    for name, r in zip(probe_display_names(mports), mports):
+        if not name:
+            continue
+        body = f"{name} +{r.plus.strip()}" if r.plus.strip() else name
+        if r.minus.strip():
+            body += f" -{r.minus.strip()}"
+        parts.append(body)
+    for r in conn_rows:
+        if r.is_blank() or not getattr(r, "enabled", True):
+            continue
+        if r.kind == "short":
+            parts.append(f"short {short_group_spec(r).replace(',', '-')}"
+                         if (r.to or "").strip() and "," not in r.ports
+                         and "," not in r.to
+                         else f"short {short_group_spec(r)}")
+        elif r.kind in ("rlc_gnd", "rlc_between"):
+            vals = " ".join(f"{k}={getattr(r, k).strip()}" for k in "RLC"
+                            if getattr(r, k).strip())
+            to = f" to {r.to.strip()}" if r.kind == "rlc_between" else " to GND"
+            parts.append(f"{r.ports.strip()}{to} {vals}".rstrip())
+        else:
+            parts.append(f"{r.kind} {r.ports.strip()}")
+    return "; ".join(parts) if parts else "(empty)"
+
+
+def _both_sides_note(name: str, both) -> "MigrationNote":
+    return MigrationNote(
+        f"port {_keys_text(both)} was on both the '+' and the '-' side of "
+        f"'{name}'; the '-' side won, as it always did -- it is now left out "
+        f"of the '+' side, so the number is unchanged", "warn")
+
+
+def _merge_legacy_a_b(mports) -> tuple[list, str]:
+    """Rows named 'A' and 'B' (one each) were ONE probe: 'B' is the legacy
+    spelling of the '-' side of 'A' (see Signal).  Merged into the 'A' row,
+    B's '+' ports joining A's '-' side and B's '-' ports A's '+' side --
+    exactly what resolve_meas_ports did with them.  Returns (rows, note)."""
+    ia = [i for i, r in enumerate(mports) if r.name.strip().upper() == "A"]
+    ib = [i for i, r in enumerate(mports) if r.name.strip().upper() == "B"]
+    if len(ia) != 1 or len(ib) != 1:
+        return mports, ""
+    a, b = mports[ia[0]], mports[ib[0]]
+
+    def join(x, y):
+        return ",".join(t for t in ((x or "").strip(), (y or "").strip()) if t)
+    out = list(mports)
+    out[ia[0]] = MeasPortRow(name=a.name, plus=join(a.plus, b.minus),
+                             minus=join(a.minus, b.plus))
+    del out[ib[0]]
+    return out, ("rows 'A' and 'B' were one probe ('B' was the '-' side of "
+                 "'A', the old spelling); merged into one row, so the number "
+                 "is unchanged")
+
+
+class MigrationNote(str):
+    """One Log line from `migrate_trace_to_rows`: the text, plus `level` --
+    "warn" when the user should look (a number moved, a contradiction in the
+    old spec was resolved for them, a retired field was folded), "info" when
+    it is only a record of what moved.  A str, so it reads and compares as
+    the line it is."""
+    level: str
+
+    def __new__(cls, text: str, level: str = "info"):
+        obj = super().__new__(cls, text)
+        obj.level = level
+        return obj
+
+
+def migrate_trace_to_rows(tc) -> list[MigrationNote]:
+    """
+    Move one trace into the one row model, in place.  Returns the Log lines
+    (empty when there was nothing to do).  Idempotent: a trace already at
+    TABLE_VERSION is left alone, so a spec the user is in the middle of
+    fixing is never "repaired" behind their back on the next load.
+
+    Runs the three older migrations first (mode 4 -> 2, the retired Mode 6
+    fields, the retired free-text Custom spec), with their own wording.
+    """
+    notes: list[MigrationNote] = []
+    warn = "warn"
+    if getattr(tc, "table_version", 0) >= TABLE_VERSION and tc.mode == 5:
+        return notes
+
+    if tc.migrate_legacy_mode():
+        notes.append(MigrationNote(
+            f"the retired 'A ↔ B + VDD/GND' setup: VDD is an AC ground, so "
+            f"its VDD ports joined GND (GND = {tc.gnd_ports or '(none)'})",
+            warn))
+    if tc.migrate_legacy_mports():
+        notes.append(MigrationNote(
+            f"the Port 1 / Port 2 / 'More ports' fields are retired; "
+            f"migrated to {len(tc.mports)} row(s) of the measurement-port "
+            f"table", warn))
+    legacy_custom = tc.custom_text
+    if tc.migrate_legacy_custom_text():
+        if _import_dsl_text(legacy_custom)[3]:
+            notes.append(MigrationNote(
+                "the free-text Custom spec is kept verbatim -- moving it into "
+                "the table would have changed which port wins (a 'signal' "
+                "line follows a 'ground' on the same port). Open 'Edit as "
+                "text…' to convert it by hand.", warn))
+        else:
+            notes.append(MigrationNote(
+                f"the free-text Custom spec is retired; imported into "
+                f"{len(tc.mports)} measurement port(s) and "
+                f"{len(tc.conn_rows)} connection row(s)", warn))
+
+    mode = tc.mode
+    title = _OLD_MODE_TITLE.get(mode, f"mode {mode}")
+    if mode in (1, 2, 3):
+        plus = _squash(tc.port_a)
+        minus = _squash(tc.port_b) if mode in (2, 3) else ""
+        gnd = _squash(tc.gnd_ports)
+        conn: list = []
+        if gnd:
+            conn.append(ConnectionRow(kind="ground", ports=gnd))
+        if mode == 3 and (tc.short_pairs or "").strip():
+            try:
+                pairs = parse_short_pairs(tc.short_pairs)
+            except Exception:                           # noqa: BLE001
+                pairs = None
+            if pairs is None:
+                # It never parsed, so the old build refused it; carried as
+                # one row the one model refuses again, naming the text.
+                conn.append(ConnectionRow(kind="short",
+                                          ports=_squash(tc.short_pairs)))
+            else:
+                # Two-field rows, `short_to` in the DSL: one ShortPair per
+                # pair, exactly the old builder's -- never folded into one
+                # 'a,b short' (摸底 F6).
+                conn.extend(ConnectionRow(kind="short", ports=str(a),
+                                          to=str(b)) for a, b in pairs)
+        grounded = set(_ports_or_none(gnd) or [])
+        plus, dropped = _drop_grounded_plus(plus, grounded)
+        if dropped:
+            notes.append(MigrationNote(
+                f"port {_keys_text(dropped)} was both a probe and grounded; "
+                f"the ground won, as it always did -- it is now left out of "
+                f"the '+' side, so the number is unchanged", warn))
+        plus, both = _drop_from_side(plus, set(_ports_or_none(minus) or []))
+        if both:
+            notes.append(_both_sides_note(MIGRATED_PROBE_NAME, both))
+        mnote = _minus_note(f"'{MIGRATED_PROBE_NAME}'", minus, grounded)
+        if mnote:
+            notes.append(mnote)
+        tc.mports = ([MeasPortRow(name=MIGRATED_PROBE_NAME, plus=plus,
+                                  minus=minus)] if (plus or minus) else [])
+        tc.conn_rows = conn
+        tc.extra_lines = ""
+    elif mode in (5, 6):
+        mports = []
+        renamed = []
+        for row in tc.mports:
+            # Mode 6 took any name; the row model writes it into a
+            # whitespace-tokenised DSL, so a space becomes '_' ('my port' ->
+            # 'my_port', which keeps 'myport' a different name).
+            name = ("_".join(row.name.split()) if mode == 6 else row.name)
+            if mode == 6 and name != row.name.strip():
+                renamed.append((row.name.strip(), name))
+            mports.append(MeasPortRow(
+                name=name,
+                plus=_squash(row.plus) if mode == 6 else row.plus,
+                minus=_squash(row.minus) if mode == 6 else row.minus))
+        # A legacy 'A' (an imported free-text spec, or a hand-typed name) is
+        # reserved now.  Renamed when no row is called 'B' -- a 'B' row was
+        # the '-' side of 'A', and renaming one half of that would change
+        # the spec; that trace is left for the rules to refuse, by name.
+        # Mode 5 only: Mode 6 refused 'A' / 'B' outright, so a Mode 6 trace
+        # carrying one stays refused (old refused -> new refused).
+        mports, merged = (_merge_legacy_a_b(mports) if mode == 5
+                          else (mports, ""))
+        if merged:
+            notes.append(MigrationNote(merged))
+        names = {r.name.strip().upper() for r in mports}
+        if mode == 5 and "A" in names and "B" not in names:
+            taken = {r.name.strip() for r in mports}
+            n = 1
+            while f"P{n}" in taken:
+                n += 1
+            for i, r in enumerate(mports):
+                if r.name.strip().upper() == "A":
+                    mports[i] = MeasPortRow(name=f"P{n}", plus=r.plus,
+                                            minus=r.minus)
+                    renamed.append((r.name.strip(), f"P{n}"))
+        for old, new in renamed:
+            notes.append(MigrationNote(
+                f"measurement port '{old}' is now called '{new}' (the name is "
+                f"a label; nothing it measures moved)"))
+        conn = list(tc.conn_rows) if mode == 5 else []
+        if mode == 6 and _squash(tc.gnd_ports):
+            conn.append(ConnectionRow(kind="ground",
+                                      ports=_squash(tc.gnd_ports)))
+        grounded = _row_ground_keys(conn)
+        shown = probe_display_names(mports)
+        for i, r in enumerate(mports):
+            if mode == 5:
+                plus, dropped = _drop_grounded_plus(r.plus, grounded)
+                if dropped:
+                    mports[i] = MeasPortRow(name=r.name, plus=plus,
+                                            minus=r.minus)
+                    notes.append(MigrationNote(
+                        f"port {_keys_text(dropped)} was both a probe of "
+                        f"'{shown[i]}' and in a ground row; the ground won, "
+                        f"as it always did -- it is now left out of the '+' "
+                        f"side, so the number is unchanged", warn))
+                    r = mports[i]
+                plus, both = _drop_from_side(
+                    r.plus, set(_ports_or_none(r.minus) or []))
+                if both:
+                    mports[i] = r = MeasPortRow(name=r.name, plus=plus,
+                                                minus=r.minus)
+                    notes.append(_both_sides_note(shown[i], both))
+            nm = shown[i]
+            mnote = _minus_note(f"'{nm}'", r.minus, grounded,
+                                refused_before=(mode == 6))
+            if mnote:
+                notes.append(mnote)
+        tc.mports = mports
+        tc.conn_rows = conn
+        if mode == 6:
+            tc.extra_lines = ""
+    # The hidden fields of every other mode go, so nothing stale rides along
+    # in the session file or in the signature.
+    tc.port_a = tc.port_b = tc.gnd_ports = tc.short_pairs = ""
+    tc.vdd_ports = tc.custom_text = ""
+    tc.mode = 5
+    tc.table_version = TABLE_VERSION
+    if mode != 5:
+        notes.insert(0, MigrationNote(
+            f"the '{title}' setup is now rows of the two tables: "
+            f"{rows_summary(tc.mports, tc.conn_rows)}"))
+    return notes

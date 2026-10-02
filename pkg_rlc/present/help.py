@@ -1,9 +1,10 @@
 """
 pkg_rlc_help.py  --  In-app help content + Help window.
 
-A self-contained reference describing each measurement mode's
-physical assumptions, input fields, result interpretation, common
-use cases, and pitfalls. Opened from the GUI's "Help" button.
+A self-contained reference, one tab per TASK: setting up a measurement
+(the two tables), coupling, the trace model, comparing files -- each with
+its physical assumptions, inputs, result interpretation, common use cases
+and pitfalls. Opened from the GUI's "Help" button.
 
 The PROSE lives in `docs/help/*.md`, one file per tab, and is read at import
 time by `_help_text`.  It used to be ten triple-quoted string constants in this
@@ -52,7 +53,7 @@ def _help_text(slug: str) -> str:
     exactly the LF text the window used to hold as a literal.
 
     A missing or unreadable file costs its own TAB, never the window: an
-    offline user with a broken install needs the other nine tabs more than
+    offline user with a broken install needs the other tabs more than
     they need a traceback.  Same rule as the session loader's "a bad value
     costs its own field, never the file".  `UnicodeDecodeError` is caught
     alongside `OSError` and is NOT redundant -- it is a `ValueError`, so a
@@ -75,19 +76,20 @@ def _help_text(slug: str) -> str:
         )
 
 
-# The ten names below held the prose as triple-quoted literals until it moved
-# into `docs/help/`.  They are kept, bound to exactly the same text, for the
-# same reason `pkg_rlc_gui` re-exports the DSL helpers that moved into
-# `pkg_rlc_core`: `pkg_rlc_help.HELP_MODE6` goes on resolving for anything that
-# reads it, and HELP_TOPICS below is byte-for-byte the list it always was.
+# One name per tab.  Until 2026-10-02 there were five MODE tabs here
+# (HELP_MODE1/2/3/5/6, from mode1..mode6.md); the editor became ONE row model
+# (docs/design_workspaces.md § 3) and the tabs were regrouped by task: the
+# old Mode 1/2/3/5 prose is "Setting up a measurement", Mode 6's coupling and
+# attribution prose is "Coupling", and its trace-model section is a tab of
+# its own.  Nothing in the repo read the HELP_MODE* names, so they went with
+# their files rather than surviving as aliases to text that no longer exists.
 HELP_OVERVIEW = _help_text("overview.md")
 HELP_FILES = _help_text("reading_files.md")
 HELP_SESSION = _help_text("save_load.md")
-HELP_MODE1 = _help_text("mode1.md")
-HELP_MODE2 = _help_text("mode2.md")
-HELP_MODE3 = _help_text("mode3.md")
-HELP_MODE5 = _help_text("mode5.md")
-HELP_MODE6 = _help_text("mode6.md")
+HELP_SETUP = _help_text("setup.md")
+HELP_COUPLING = _help_text("coupling.md")
+HELP_TRACE_MODEL = _help_text("trace_model.md")
+HELP_COMPARE = _help_text("compare_files.md")
 HELP_SYNTAX = _help_text("input_syntax.md")
 HELP_WORKFLOWS = _help_text("worked_examples.md")
 
@@ -97,26 +99,30 @@ HELP_WORKFLOWS = _help_text("worked_examples.md")
 # comment below -- a rename changes the tab strip's width just as an addition
 # does.
 HELP_TOPICS = [
-    ("Overview",        HELP_OVERVIEW),
-    ("Reading files",   HELP_FILES),
-    ("Save / Load",     HELP_SESSION),
-    ("Mode 1 (->GND)",  HELP_MODE1),
-    ("Mode 2 (A<->B)",  HELP_MODE2),
-    ("Mode 3 (+Short)", HELP_MODE3),
-    ("Mode 5 (Custom)", HELP_MODE5),
-    ("Mode 6 (Coupling)", HELP_MODE6),
-    ("Input syntax",    HELP_SYNTAX),
-    ("Worked examples", HELP_WORKFLOWS),
+    ("Overview",                 HELP_OVERVIEW),
+    ("Reading files",            HELP_FILES),
+    ("Save / Load",              HELP_SESSION),
+    ("Setting up a measurement", HELP_SETUP),
+    ("Coupling",                 HELP_COUPLING),
+    ("Trace model",              HELP_TRACE_MODEL),
+    ("Compare files",            HELP_COMPARE),
+    ("Input syntax",             HELP_SYNTAX),
+    ("Worked examples",          HELP_WORKFLOWS),
 ]
 
 
 # 1010, not the historical 950.  A ttk.Notebook does NOT wrap or scroll its tab
 # strip -- it CLIPS it, so a tab that does not fit is simply unreachable, and
 # the one that goes is the LAST ("Worked examples") with nothing on screen to
-# say so.  Measured (Microsoft YaHei UI 9): nine tabs need 891 px and ten need
-# 968, so the tenth did not fit the old width at all.  Headroom now 42 px --
-# NOT enough for an eleventh.  tests/test_session.py::TestHelpTabsAllFit
-# re-measures it; add a tab and it tells you whether the window has to grow.
+# say so.  Measured (Microsoft YaHei UI 9, tk scaling 1.333): the old ten tabs
+# (five of them "Mode N (...)") needed 968 px; the nine task tabs above need
+# 812 px (re-measured 2026-10-02), so the headroom is 198 px.  The width is
+# KEPT at 1010 rather than shrunk to fit: it is also the width of the text,
+# and the prose is laid out for it.  The headroom is not an invitation -- the
+# "eleventh Help tab" is a rejected proposal (docs/conventions/rejected_ui.md)
+# and design_workspaces.md § 3.7 caps the set at ten.
+# tests/test_session.py::TestHelpTabsAllFit re-measures it; add or rename a
+# tab and it tells you whether the window has to grow.
 HELP_WINDOW_WIDTH = 1010
 
 

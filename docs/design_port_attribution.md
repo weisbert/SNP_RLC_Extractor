@@ -1493,7 +1493,7 @@ undecided ports, but it is framed as "check the robustness of the spec you
 already wrote", which is a different question from "what should the spec say".
 
 The mathematics is in `docs/theory.md` §13.14; the user-facing shape is in the
-README and in Help → Mode 6. What belongs *here* is why it is shaped this way.
+README and in Help → Coupling. What belongs *here* is why it is shaped this way.
 
 **It is read off the machinery that already exists, not reimplemented.** Build
 one `AttribContext` whose `TerminationSet` is "the probes, plus one ideal ground

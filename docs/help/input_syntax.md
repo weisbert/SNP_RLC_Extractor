@@ -3,9 +3,9 @@ Input syntax reference
 
 Port range syntax
 -----------------
-Used for Signal/Port A, Port B, GND Ports, each side of a
-measurement-port row, and the Port / To cells of the Mode 5
-connections table. All port numbers are 1-based.
+Used for each side of a measurement-port row, the Port / To cells
+of the connections table, and the command line's --porta, --portb,
+--gnd and --mport. All port numbers are 1-based.
 
    Format            Example         Meaning
    ----------------  --------------  -----------------------------
@@ -38,10 +38,10 @@ The dot is not a style choice: ":" is already the start:step:stop
 separator above, so "PKG:12" is a parse error and always will be.
 An untagged port belongs to the file named positionally, so every
 single-file spelling on this page is unchanged. See the last
-section of the "Mode 6 (Coupling)" tab.
+section of the "Coupling" tab.
 
-Node names (Mode 5)
--------------------
+Node names
+----------
 A short row ties its listed ports into ONE node, and can give that
 node a name in its Net cell ("coil_tap"). Every port field above
 then also accepts that name, which resolves to the node:
@@ -65,9 +65,11 @@ every member of an already-merged node ("23,24,25 lumped_between
 3.33 fH. The validation strip refuses that by name and prints both
 numbers.
 
-Short-pair / short-group syntax
--------------------------------
-Used for the Short Pairs field in Mode 3.
+Short-pair / short-group syntax (the command line's --short)
+------------------------------------------------------------
+In the GUI a short is a row of the connections table, with the
+whole tied group in its one Port cell ("3,4", "5-8"). The command
+line's --short flag spells shorts this way instead:
 
    Format            Example          Meaning
    ----------------  ---------------  ----------------------------------
@@ -80,10 +82,12 @@ Used for the Short Pairs field in Mode 3.
 Each group MUST use dash syntax to join ports. "45,46" is two
 separate ports in a comma-list, NOT a short connection.
 
-Measurement-port syntax (Mode 6)
---------------------------------
-One measurement port per entry -- a red probe on the "+" ports and a
-black probe on the "-" ports:
+Measurement-port syntax (the command line's --mport)
+----------------------------------------------------
+In the GUI a measurement port is a row of the Measurement ports
+table, with the "+" and "-" ports in their own cells. On the command
+line each --mport is one measurement port, written -- a red probe on
+the "+" ports and a black probe on the "-" ports:
 
       [<name> =] <+ ports> [/ <- ports>]
 
@@ -107,19 +111,24 @@ Rules:
      means "referenced to ground".
    * A given port may appear on only one side of only one
      measurement port.
-   * The names "A" and "B" are RESERVED for the legacy Mode 1/2/3
-     signal groups (and for 'signal A' / 'signal B' in Mode 5).
-     The check is case-insensitive -- "a" and "b" are rejected too.
+   * The names "A" and "B" are RESERVED for the old
+     'signal A' / 'signal B' spelling, in the GUI and on the
+     command line alike. The check is case-insensitive -- "a" and
+     "b" are rejected too.
+   * The probe rules (a "+" port may not be grounded; a grounded
+     "-" side means "+" to GND) are on the "Setting up a
+     measurement" tab, and apply here too.
 
-Signal-group syntax (Mode 5 DSL)
---------------------------------
+Signal-group syntax (Edit as text...)
+-------------------------------------
 The same idea, written one port at a time:
 
       <port>  signal <name> [+|-]
 
 The sign is a separate whitespace-delimited token and defaults to
 '+'. "signal A" / "signal B" are the legacy spellings, where
-"signal B" == "signal A -". See the Mode 5 tab.
+"signal B" == "signal A -". See "Edit as text..." on the "Setting
+up a measurement" tab.
 
 Frequency input
 ---------------
@@ -128,8 +137,8 @@ RLC Freq (GHz) and Fit f_min/f_max (GHz):
    The RLC Freq field also accepts SI suffixes (50p means 50e-12 GHz
    if you really want, but that's nonsense -- use plain numbers).
 
-Custom-mode SI suffixes for R/L/C
----------------------------------
+SI suffixes for R/L/C
+---------------------
    f=1e-15   (femto)        m=1e-3 (milli)
    p=1e-12   (pico)         k=1e3  (kilo)
    n=1e-9    (nano)         M=1e6  (mega)
@@ -163,9 +172,10 @@ window:
      sort (on the value, so port 10 sorts after port 9).
    * Rows are flagged in orange when they need a second look: an
      OPEN port whose name matches a set you grounded or probed, a
-     port claimed by both a probe row and a ground row (the ground
-     row wins), and a port assigned by the "kept as text" block
-     rather than by a table row.
+     port claimed by both a probe row and a ground row (what that
+     means is "The probe rules" on the "Setting up a measurement"
+     tab), and a port assigned by the "kept as text" block rather
+     than by a table row.
    * Select rows and press "Set as ground" or "Set as probe +" and
      they are written into the editor as a COLLAPSED RANGE, so a
      54-ball ground group is one row ("6-14,20-59") instead of 54.
@@ -206,7 +216,7 @@ as one SHARED return
 moves M by 6.03 dB, because N independent z in parallel is z/N
 while N balls sharing one z is z.
 
-"Where the number came from" on the Mode 6 tab is the section that
+"Where the number came from" on the Coupling tab is the section that
 splits an extracted M into one signed term per row you wrote here,
 and tells you what each row would be worth if it were open, a
 resistor or a lead inductance instead. Open it with Analyze ->
@@ -232,7 +242,7 @@ list). Right-click a row there to add a file, remove one, or make
 one the HOME file.
 
 The home file needs no tag: a BARE port number always means a port
-of the home file, in every mode, so every spec you already have
+of the home file, in every cell, so every spec you already have
 keeps its meaning and a single-file user never sees a tag. A port
 of another file carries its tag:
 

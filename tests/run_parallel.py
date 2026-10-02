@@ -266,6 +266,16 @@ FAST_MODULES = (
     # `TestNoTk` asserts tkinter never entered sys.modules.  Measured on this
     # box, serially: 50 tests / 0.55 s.
     "test_tracenets",
+    # The one-row-model migration replayed against golden_trace_paths.npz
+    # (captured from the pre-merge path): L0 + `pkg_rlc.model` +
+    # `pkg_rlc.services.run`, no Tk.  Measured: 9 tests / 1.6 s.
+    "test_trace_path_golden",
+    # The probe rules of the one row model (`probe_rule_issues`, the fold,
+    # the design § 3.3 table at 1 GHz on three fixtures) and the strip /
+    # Ports & Roles wording over them: L0 + `pkg_rlc.model`, no Tk
+    # (`TestNoTk`).  Measured on this box, serially: 39 tests / 0.21 s
+    # (0.44 s of process wall, three runs).
+    "test_probe_rules",
 )
 
 _RAN_RE = re.compile(r"Ran (\d+) test")

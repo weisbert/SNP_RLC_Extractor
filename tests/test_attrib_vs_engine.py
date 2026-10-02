@@ -482,7 +482,7 @@ class TestNamedModesReconcile(unittest.TestCase):
              "3 lumped_between 4 R=0.01 L=0.1n C=1p\n")),
         ("rows (the connection table)", "diff_pair_4port.s4p",
          lambda: build_terminations_rows(
-             [MeasPortRow("A", "1", "2")],
+             [MeasPortRow("P1", "1", "2")],
              [ConnectionRow(kind="ground", ports="3,4")])),
     ]
 
@@ -740,39 +740,42 @@ class TestPrecedenceIsTheEnginesPrecedence(unittest.TestCase):
 
     def test_the_rows_path_gets_the_same_elements_as_the_named_builder(self):
         """
-        The connection table is a THIRD route to a TerminationSet and
-        test_connection_rows.py pins that it reproduces the named modes
-        including their overlaps.  It must therefore also produce the same
-        attribution -- not merely the same total.
+        The connection table is the route every GUI trace takes to a
+        TerminationSet since the modes were merged, and test_connection_rows.py
+        pins that the rows each old mode MIGRATES to reproduce it -- including
+        the overlaps, which the migration resolves by dropping the grounded
+        port from the '+' cell (what "ground wins" did; the table itself now
+        refuses the overlap, see tests/test_probe_rules.py).  It must
+        therefore also produce the same attribution -- not merely the same
+        total.  The measurement port is called 'P1' on the rows path ('A' is
+        a reserved name now) and 'A' on the named builders'; that label is
+        the only thing allowed to differ.
 
-        Mutation: reverse rows_to_dsl_text's "measurement ports before
-        connections" order (a documented invariant in core) -> the ground row
-        stops winning, the element lists diverge, and this goes red while a
-        totals-only comparison stays green on the fixtures where the two
-        answers happen to be close.
+        Mutation: emit a 'ground' row as 'open' in rows_to_dsl_text -> the
+        element lists diverge and this goes red.
         """
         pairs = [
             ("mode1", build_terminations_mode1([1], [2, 3, 4]),
              build_terminations_rows(
-                 [MeasPortRow("A", "1", "")],
+                 [MeasPortRow("P1", "1", "")],
                  [ConnectionRow(kind="ground", ports="2-4")])),
             ("mode1 overlap", build_terminations_mode1([1, 2], [2, 3]),
              build_terminations_rows(
-                 [MeasPortRow("A", "1,2", "")],
+                 [MeasPortRow("P1", "1", "")],
                  [ConnectionRow(kind="ground", ports="2,3")])),
             ("mode2 overlap", build_terminations_mode2([1, 2], [3], [2, 4]),
              build_terminations_rows(
-                 [MeasPortRow("A", "1,2", "3")],
+                 [MeasPortRow("P1", "1", "3")],
                  [ConnectionRow(kind="ground", ports="2,4")])),
             ("mode3", build_terminations_mode3([1], [2], [],
                                                parse_short_pairs("3-4")),
              build_terminations_rows(
-                 [MeasPortRow("A", "1", "2")],
+                 [MeasPortRow("P1", "1", "2")],
                  [ConnectionRow(kind="short", ports="3", to="4")])),
             ("mode3 chained short",
              build_terminations_mode3([1], [4], [], parse_short_pairs("1-2-3")),
              build_terminations_rows(
-                 [MeasPortRow("A", "1", "4")],
+                 [MeasPortRow("P1", "1", "4")],
                  [ConnectionRow(kind="short", ports="1", to="2,3")])),
         ]
         for label, named, rows in pairs:
@@ -782,7 +785,8 @@ class TestPrecedenceIsTheEnginesPrecedence(unittest.TestCase):
                                  self._kinds(cr.elements),
                                  f"{label}: the rows path built different "
                                  f"elements")
-                self.assertEqual(cn.port_names, cr.port_names)
+                self.assertEqual((cn.port_names, cr.port_names),
+                                 (["A"], ["P1"]))
                 self.assertEqual(
                     [(e.kind, e.ports) for e, _ in cn.dropped],
                     [(e.kind, e.ports) for e, _ in cr.dropped],

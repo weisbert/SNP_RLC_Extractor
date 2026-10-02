@@ -1,28 +1,37 @@
 """
-The editor keeps the reader's place when the trace changes, and only then.
+The editor keeps the reader's place when the trace changes.
 
-The editor form is taller than its viewport in every mode that has a table --
-measured here at 1500x900, a mode-5 form is 728 px against a 345 px canvas --
-so the connections table lives BELOW THE FOLD and reaching it is a scroll the
-reader performs on purpose.  `_update_mode_visibility` ended by resetting that
-scroll unconditionally, and it runs on every TRACE SELECTION as well as on a
-mode change: so clicking the other trace to compare two specs -- the whole
-reason for having two traces -- put the reader back at the top of the form with
-the table they were reading no longer on screen.  It was reported as the
-Connections table "disappearing from the GUI" while "the calculation is still
-fine", which is exactly right: nothing was hidden, nothing was lost, and the
-spec still computed.  Only the viewport moved.
+The editor form is taller than its viewport, so the connections table can live
+BELOW THE FOLD and reaching it is a scroll the reader performs on purpose.  The
+old per-mode visibility pass ended by resetting that scroll unconditionally,
+and it ran on every TRACE SELECTION as well as on a mode change: so clicking
+the other trace to compare two specs -- the whole reason for having two traces
+-- put the reader back at the top of the form with the table they were reading
+no longer on screen.  It was reported as the Connections table "disappearing
+from the GUI" while "the calculation is still fine", which is exactly right:
+nothing was hidden, nothing was lost, and the spec still computed.  Only the
+viewport moved.
 
-The reset itself is NOT wrong, it was only too broadly applied: on a real mode
-change the fields the view is scrolled past have been replaced, and a now-short
-form must not stay parked out of sight.  `test_a_MODE_change_still_resets` is
-the guard on that half, and it is the half a careless fix removes.
+There used to be a second half here: a real MODE change still had to reset,
+because the fields the view was scrolled past had been replaced.  There are no
+modes any more (docs/design_workspaces.md § 3), so `_update_editor_visibility`
+always preserves, and the two tests that guarded the reset
+(`test_a_MODE_change_still_resets`, `test_a_mode_change_resets_even_when_the_
+trace_changed_too`) were deleted with it.
+
+GEOMETRY.  Re-measured 2026-10-02 after the mode radios left the form: the
+connections table starts 207 px down the form, so at 1500x900 (a 353 px
+viewport) it is no longer below the fold and a reset to the top would still
+show all of the two-row table -- the class would pass with the defect back in.
+At 1100x700 the viewport is 153 px: the table is wholly below the fold at the
+top of the form, and the nine-row table (220 px) is read by scrolling until it
+FILLS the viewport.
 
 This is a separate module rather than another class in test_mode5_editor.py
-because it is about the CANVAS OFFSET across a selection, not about what mode 5
-renders; the layout tests there already own `winfo_ismapped` and the width
-budget.  Every guard below was mutation-checked against
-`_refresh_editor_scrollregion(preserve=False)` restored unconditionally.
+because it is about the CANVAS OFFSET across a selection; the layout tests
+there already own `winfo_ismapped` and the width budget.  Every guard below
+was mutation-checked against `_refresh_editor_scrollregion(preserve=False)`
+in `_update_editor_visibility`.
 """
 
 from __future__ import annotations
@@ -97,8 +106,9 @@ class TestTheEditorKeepsTheReadersPlace(unittest.TestCase):
         self.app = App()
         # MAPPED, not withdrawn: every number here is pixel geometry, and a
         # withdrawn root reports a 1x1 canvas whatever the layout is -- the
-        # yview assertions would then hold for the wrong reason.
-        self.app.geometry("1500x900")
+        # yview assertions would then hold for the wrong reason.  1100x700,
+        # not 1500x900: see GEOMETRY in the module docstring.
+        self.app.geometry("1100x700")
         self.app.deiconify()
         self.fe = FileEntry(parse_touchstone(FIXTURE))
         self.app.files.append(self.fe)
@@ -136,16 +146,17 @@ class TestTheEditorKeepsTheReadersPlace(unittest.TestCase):
         return max(0, min(ty + th, cy + ch) - max(ty, cy))
 
     def _scroll_to_conn_table(self) -> float:
-        """Do what the reader does: scroll down until the table is on screen."""
+        """Do what the reader does: scroll down until the table is on screen
+        -- all of it, or as much of it as the viewport can hold."""
         cv = self.app._ed_canvas
+        want = min(self.app.ed_conn_table.winfo_height(), cv.winfo_height())
         for step in range(41):
             cv.yview_moveto(step / 40.0)
             self._settle()
-            if self._visible_px_of_conn_table() >= self.app.ed_conn_table \
-                    .winfo_height():
+            if self._visible_px_of_conn_table() >= want:
                 return cv.yview()[0]
-        self.fail("the connections table was never fully on screen at 1500x900 "
-                  "-- the precondition for every test in this class")
+        self.fail("the connections table never filled the viewport at "
+                  "1100x700 -- the precondition for every test in this class")
 
     # -- the precondition, asserted rather than assumed ---------------------
 
@@ -154,7 +165,7 @@ class TestTheEditorKeepsTheReadersPlace(unittest.TestCase):
         # to fit: there would be no scroll to lose.
         self.assertGreater(self.app._ed_form.winfo_reqheight(),
                            self.app._ed_canvas.winfo_height(),
-                           "the mode-5 form must not fit its viewport")
+                           "the form must not fit its viewport")
         self.app._ed_canvas.yview_moveto(0.0)
         self._settle()
         self.assertEqual(self._visible_px_of_conn_table(), 0,
@@ -165,9 +176,8 @@ class TestTheEditorKeepsTheReadersPlace(unittest.TestCase):
     def test_switching_TRACE_keeps_the_offset(self):
         # What is preserved is the FRACTION, which is what the canvas stores
         # and what `preserve=True` has always re-applied.  Across two forms of
-        # different heights that is not the same as the same pixel: measured
-        # here, 0.3007 of a 728 px form (top pixel 219) comes back as 0.3014 of
-        # a 574 px one (top pixel 173), i.e. the content shifts 46 px.  The
+        # different heights that is not the same as the same pixel (the two
+        # forms here are 676 and 505 px, so the content shifts).  The
         # tolerance is on the fraction because the fraction is the mechanism;
         # the property that matters is asserted in the next test, and both are
         # needed -- a fix that pinned only the number could satisfy it by not
@@ -215,28 +225,6 @@ class TestTheEditorKeepsTheReadersPlace(unittest.TestCase):
                              cv.cget("scrollregion").split()]
         self.assertGreaterEqual(y1 + 1, self.app._ed_form.winfo_reqheight(),
                                 "the scrollregion is short of the form")
-
-    # -- the half a careless fix removes -------------------------------------
-
-    def test_a_MODE_change_still_resets(self):
-        # test_mode5_editor.py::test_switching_from_mode5_to_mode1_resets_the
-        # _scroll is the other guard on this; it is repeated here because the
-        # change that breaks it is the change this module is about.
-        self._scroll_to_conn_table()
-        self.assertGreater(self.app._ed_canvas.yview()[0], 0.0)
-        self.app.ed_mode_var.set(1)
-        self.app._on_mode_changed()
-        self._settle()
-        self.assertEqual(self.app._ed_canvas.yview()[0], 0.0)
-
-    def test_a_mode_change_resets_even_when_the_trace_changed_too(self):
-        # Selecting a trace whose mode differs is ONE call to
-        # _update_mode_visibility that is both -- and the mode is what decides.
-        self.small.mode = 1
-        self._scroll_to_conn_table()
-        self._select(1)
-        self.assertEqual(self.app._ed_canvas.yview()[0], 0.0)
-
 
 if __name__ == "__main__":
     unittest.main()

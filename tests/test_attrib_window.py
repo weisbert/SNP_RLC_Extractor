@@ -41,6 +41,7 @@ import pkg_rlc.physics.attrib as at  # noqa: E402
 import pkg_rlc.panels.attrib_gui as ag  # noqa: E402
 import pkg_rlc.present.attrib_report as ar  # noqa: E402
 from pkg_rlc.physics.core import (  # noqa: E402
+    ConnectionRow,
     MeasPortRow,
     ROLE_ELEMENT,
     parse_touchstone,
@@ -152,10 +153,10 @@ class _FakeTrace:
         self.Z = object()
         self.Zmat = object()
         #: A healthy trace has TWO of these, and the refusal reads them.
-        #: `Zmat is not None` alone is not the question: `_on_calculate` routes
-        #: on `tc.mode == 6 or n_mports > 1`, so a mode-6 trace with one
-        #: measurement port comes back with a real (F, 1, 1) `Zmat` and no pair
-        #: to attribute -- see
+        #: `Zmat is not None` alone is not the question: the pair is decided
+        #: by the measurement-port COUNT, which is what `_on_calculate` routes
+        #: on -- a (F, 1, 1) `Zmat` (the old Mode 6 with one port, or a cached
+        #: one) has no pair to attribute -- see
         #: `test_a_ONE_by_ONE_Zmat_is_still_one_measurement_port`.
         self.mport_names = ("vic", "agg")
         self.__dict__.update(kw)
@@ -207,19 +208,26 @@ class TestRefusal(unittest.TestCase):
         why = ag.attribution_refusal(_FakeTrace(Zmat=None), object())
         self.assertIn("only one measurement port", why)
         self.assertIn("victim AND an aggressor", why)
+        # What to do, in terms of what is on screen: there are no modes any
+        # more (docs/design_workspaces.md § 3.6), so the advice is a second
+        # row of the measurement-port table.  Mutation: restore "(Mode 6, or
+        # a second probe row in Mode 5)".
+        self.assertIn("measurement-port table", why)
+        self.assertNotIn("Mode", why)
 
     def test_a_ONE_by_ONE_Zmat_is_still_one_measurement_port(self):
         """The other route to the same shortfall, and it used to slip through.
 
-        `_on_calculate` takes the coupling path on `tc.mode == 6` whatever the
-        measurement-port count, so a mode-6 trace with one port comes back with
-        a perfectly real (F, 1, 1) `Zmat`.  Testing `Zmat is None` alone let it
+        The old Mode 6 took the coupling path whatever the measurement-port
+        count, so a one-port trace came back with a perfectly real (F, 1, 1)
+        `Zmat` -- and a cached one can still be on a trace.  Routing is by the
+        count now, and so is this refusal.  Testing `Zmat is None` alone let it
         past, and what stopped it was `open_attribution_window`'s
         "fewer than two measurement port names cached. Calculate it again."
         backstop -- a message about an internal inconsistency that had not
         happened, advising something that cannot help.
 
-        Mutation: drop `or n_names < 2` from the condition and this is the only
+        Mutation: drop `n_names < 2 or` from the condition and this is the only
         test in the class that goes red.
         """
         why = ag.attribution_refusal(_FakeTrace(mport_names=("vic",)),
@@ -714,9 +722,34 @@ class TestProvenance(unittest.TestCase):
         self.assertNotIn("asked for", joined)
 
 
+def _spec_tc() -> TraceConfig:
+    """A trace in the one row model (every trace is migrated on load and on
+    creation): one measurement port on port 1.  `_reported` re-ports it."""
+    return TraceConfig(id=1, label="t", mode=5, table_version=1,
+                       mports=[MeasPortRow("P1", "1", "")])
+
+
+def _reported(tc: TraceConfig) -> None:
+    """An edit that changes the answer: the measurement port moves."""
+    tc.mports = [MeasPortRow("P1", "2", "")]
+
+
+def _type_gnd(app, ports: str) -> None:
+    """Type `ports` into the editor's ground row -- the connection row of
+    kind 'ground', added if there is none -- through the cell's own
+    variable, which queues the deferred auto-apply exactly as a keystroke
+    does.  There is no GND field any more: grounding is a row."""
+    table = app.ed_conn_table
+    for entry in table._rows:
+        if entry["_vars"]["kind"].get() == "ground":
+            entry["_vars"]["ports"].set(ports)
+            return
+    table.add_row({"kind": "ground", "ports": ports})
+
+
 class TestStalenessText(unittest.TestCase):
     def test_an_unchanged_spec_is_not_a_warning(self):
-        tc = TraceConfig(id=1, label="t", port_a="1")
+        tc = _spec_tc()
         prov = fake_prov(signature=_config_signature(tc))
         text, warn = ag.staleness_text(prov, tc, True)
         self.assertFalse(warn)
@@ -729,9 +762,9 @@ class TestStalenessText(unittest.TestCase):
         label, say) and the banner never warns, so [Recompute] is a button
         with no reason on it.
         """
-        tc = TraceConfig(id=1, label="t", port_a="1")
+        tc = _spec_tc()
         prov = fake_prov(signature=_config_signature(tc))
-        tc.port_a = "2"
+        _reported(tc)
         text, warn = ag.staleness_text(prov, tc, True)
         self.assertTrue(warn)
         self.assertIn("Recompute", text)
@@ -760,7 +793,7 @@ class TestStalenessText(unittest.TestCase):
         Mutation: drop the `if not prov.spec_matches_run` branch and this is
         the only test in the class that goes red.
         """
-        tc = TraceConfig(id=1, label="t", port_a="1")
+        tc = _spec_tc()
         prov = fake_prov(signature=_config_signature(tc),
                          spec_matches_run=False)
         text, warn = ag.staleness_text(prov, tc, True)
@@ -775,10 +808,10 @@ class TestStalenessText(unittest.TestCase):
         again since the last Recompute is told to press Calculate, which is
         not what will make the window agree with itself.
         """
-        tc = TraceConfig(id=1, label="t", port_a="1")
+        tc = _spec_tc()
         prov = fake_prov(signature=_config_signature(tc),
                          spec_matches_run=False)
-        tc.port_a = "2"
+        _reported(tc)
         text, warn = ag.staleness_text(prov, tc, True)
         self.assertTrue(warn)
         self.assertIn("Recompute", text)
@@ -789,7 +822,7 @@ class TestStalenessText(unittest.TestCase):
         Mutation: hand-roll a second tuple here and the trailing `*` in the
         Traces list and this banner can disagree about the same edit.
         """
-        tc = TraceConfig(id=1, label="t", port_a="1")
+        tc = _spec_tc()
         self.assertEqual(ag.spec_signature(tc), _config_signature(tc))
 
 
@@ -2227,7 +2260,7 @@ class TestRecomputeIsTheOnlyRefresh(_WindowCase):
         win = self._open()
         before = win.table.get("1.0", "end-1c")
         before_recon = win.recon.cget("text")
-        self.tc.gnd_ports = "2"
+        self.tc.conn_rows = [ConnectionRow(kind="ground", ports="2")]
         self.tc.stale = True
         ag.refresh_attribution_windows(self.app)
         self._settle(2)
@@ -2279,7 +2312,7 @@ class TestRecomputeIsTheOnlyRefresh(_WindowCase):
         """
         win = self._open()
         self.assertTrue(win._res.prov.spec_matches_run)
-        self.tc.gnd_ports = "2"
+        self.tc.conn_rows = [ConnectionRow(kind="ground", ports="2")]
         self.tc.stale = True
         win._on_recompute()
         self._settle(2)
@@ -2442,7 +2475,7 @@ class TestRefusalAtTheDoor(_WindowCase):
         is what makes the trace stale, so without the flush the window opens on
         a spec that is about to change under it.
         """
-        self.app.ed_gnd.set_value("2")       # queues a deferred sync
+        _type_gnd(self.app, "2")             # queues a deferred sync
         with _no_dialogs() as shown:
             win = ag.open_attribution_window(self.app, self.tc)
         self.assertIsNone(win, "the flush should have made the trace stale")

@@ -55,7 +55,12 @@ recorded here rather than in a commit message nobody will find.
     23 px row, so no row is wholly on screen there — an open question for the
     owner (raise the minsize to 1040x625, or recover 25 px in the left
     column), and the three `TestFooterIsARoute` tests that need a whole row
-    now map at 1040x625.
+    now map at 1040x625. *(2026-10-02, stage 2: the editor no longer has
+    modes — "the Mode 5 editor" is simply the editor. The 25 px came back from
+    the left column, not from the radios (they were inside the scrolled
+    form): Global Controls 4 grid rows -> 3 and two paddings. The editor
+    viewport is 53 px at 1040x600 (20 px before), and the three route tests
+    map at 1040x600 again; see `editor_and_tables.md`.)*
   - *Focus.* Entering the RLC workspace hands the plot canvas focus
     explicitly (`on_enter = App._focus_plot_canvas`, which calls
     `canvas.get_tk_widget().focus_set()`).
@@ -122,3 +127,8 @@ recorded here rather than in a commit message nobody will find.
   `Port attribution` to **1064**. A `ttk.Notebook` clips silently and the tab
   that vanishes is the LAST one, so the new tab would be the invisible one.
   Fold into `Mode 6 (Coupling)` and cross-reference.
+  *2026-10-02: the tab is now called `Coupling` — the five Mode tabs became
+  four task tabs, nine in all, measuring **812 px** (`session_and_help.md`).
+  The 198 px that frees does NOT reopen this entry: attribution and cold
+  start stay on the `Coupling` tab, and `docs/design_workspaces.md` § 3.7
+  caps the set at ten so that this rule is never the one being argued.*

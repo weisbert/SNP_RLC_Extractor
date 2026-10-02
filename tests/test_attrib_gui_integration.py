@@ -233,22 +233,21 @@ class _AppCase(unittest.TestCase):
         """
         Turn trace `idx` into a coupling trace BY TYPING INTO THE EDITOR.
 
-        The mode comes from the radiobutton's own `invoke()` and the
-        measurement ports from `RowTable.add_row`, so this exercises
-        `_on_mode_changed`, `_update_mode_visibility`, the deferred auto-apply
-        and `_sync_editor_to_trace` -- the same route a user's keystrokes take.
-        Poking `TraceConfig.mports` directly would skip all of it, and the
-        editor is precisely where the "which trace did that edit land on"
-        questions below are decided.
+        The measurement ports and the ground row come from `RowTable.add_row`
+        (which notifies, as a keystroke does), so this exercises the deferred
+        auto-apply and `_sync_editor_to_trace` -- the same route a user's
+        keystrokes take.  There is no mode to pick any more: two rows in the
+        measurement-port table IS a coupling trace (Calculate routes on that
+        count).  Poking `TraceConfig.mports` directly would skip all of it,
+        and the editor is precisely where the "which trace did that edit land
+        on" questions below are decided.
         """
         self._select_trace(idx)
-        self.app._ed_mode_buttons[3].invoke()            # (1, 2, 3, 6, 5)
-        self._settle()
         self.app.ed_mp_table.set_rows([])
         for name, plus in names:
             self.app.ed_mp_table.add_row({"name": name, "plus": plus,
                                           "minus": ""})
-        self.app.ed_gnd.set_value(gnd)
+        self._type_gnd(gnd)
         self.app.ed_label.set_value(label)
         self._settle()
         tc = self.app.traces[idx]
@@ -256,6 +255,19 @@ class _AppCase(unittest.TestCase):
                          [(n, p) for n, p in names],
                          "the editor did not reach the trace")
         return tc
+
+    def _type_gnd(self, ports: str) -> None:
+        """Type `ports` into the editor's ground row -- the one connection
+        row of kind 'ground', added if there is none -- through the cell's
+        own variable, so the deferred auto-apply is queued exactly as a
+        keystroke queues it.  The GND field this replaces is gone: grounding
+        is a row of the connections table."""
+        table = self.app.ed_conn_table
+        for entry in table._rows:
+            if entry["_vars"]["kind"].get() == "ground":
+                entry["_vars"]["ports"].set(ports)
+                return
+        table.add_row({"kind": "ground", "ports": ports})
 
     def _calculate(self) -> None:
         self.app.rlc_freq_var.set(FREQ_GHZ)
@@ -681,7 +693,7 @@ class TestRefusals(_AppCase):
 
     Mutation for the whole class: make `attribution_refusal` return None.
     Measured, that turns SEVEN of the eight red on the "no window opened"
-    half -- and the eighth, the mode-6 one, is the defect it is named after.
+    half -- and the eighth, the one-row one, is the defect it is named after.
     """
 
     def _refuse(self) -> str:
@@ -723,7 +735,7 @@ class TestRefusals(_AppCase):
         `open_attribution_window` flushes it before asking.
         """
         tc = self._ready()
-        self.app.ed_gnd.set_value("2")
+        self._type_gnd("2")
         self._settle()
         self.assertTrue(tc.stale, "the edit did not mark the trace stale")
         self.assertIn("has been edited since it was last calculated",
@@ -750,10 +762,10 @@ class TestRefusals(_AppCase):
         """
         Z_ab is a MUTUAL impedance; one probe is not a pair.
 
-        Reached through modes 1/2/3/5, where `_on_calculate` takes the
-        `compute_z` path and leaves `Zmat` at None.  The default trace this
-        fixture loads with is a mode-1 one, so this is the shape a user
-        actually arrives in.
+        One row in the measurement-port table: `_on_calculate` routes on the
+        COUNT, takes the `compute_z` path and leaves `Zmat` at None.  The
+        default trace a file loads with is one port to ground, so this is the
+        shape a user actually arrives in.
         """
         self._select_trace(0)
         self._calculate()
@@ -762,38 +774,33 @@ class TestRefusals(_AppCase):
         self.assertIsNone(tc.Zmat)
         why = self._refuse()
         self.assertIn("one measurement port", why)
-        self.assertIn("Mode 6", why, "the refusal does not say what to do")
+        self.assertIn("measurement-port table", why,
+                      "the refusal does not say what to do")
+        self.assertNotIn("Mode", why, "a mode number on screen")
 
-    def test_one_measurement_port_in_MODE_6_is_also_turned_away(self):
+    def test_one_measurement_port_TYPED_in_the_table_is_also_turned_away(self):
         """
-        The same shortfall, reached the other way, and it is NOT the same
-        message.
+        The same shortfall, reached by typing one row into the
+        measurement-port table, and it is the same message.
 
-        A mode-6 trace with one measurement port still takes the coupling path
-        (`if tc.mode == 6 or n_mports > 1`), so `_calculate_coupling_trace`
-        leaves a (F, 1, 1) `Zmat` behind and `attribution_refusal` -- which
-        tests `Zmat is None` -- lets it through.  What refuses it is
+        It used to differ: the old Mode 6 took the coupling path whatever the
+        port count (`if tc.mode == 6 or n_mports > 1`), left a (F, 1, 1)
+        `Zmat` behind, and the trace slipped past a `Zmat is None` test to
         `open_attribution_window`'s `len(names) < 2` backstop, whose message
-        describes an internal inconsistency ("fewer than two measurement port
-        names cached. Calculate it again.") that is not what happened and whose
-        advice cannot help.
+        ("fewer than two measurement port names cached. Calculate it again.")
+        described an inconsistency that had not happened.  Routing is by the
+        COUNT now, everywhere: one row is the compute_z path and no `Zmat`.
 
-        FIXED: `attribution_refusal` now tests the measurement-port COUNT as
-        well as `Zmat is None`, so both routes to the same shortfall -- one
-        port in modes 1/2/3/5 (Zmat is None) and one port in mode 6 (a real
-        1x1) -- reach the one message that names the actual problem.  This test
-        now pins that wording, and the backstop it used to hit is unreachable.
-
-        Mutation: drop `or n_names < 2` from the condition in
-        `attribution_refusal` and the "cached" assertion below goes red;
-        `attribution_refusal` -> None turns the whole class red, this test
-        included, which it did NOT before the fix.
+        Mutation: route `_on_calculate` on anything but the count (a 1x1
+        `Zmat` comes back) and drop `n_names < 2 or` from
+        `attribution_refusal` -- the "cached" assertion below goes red.
         """
         self._make_coupling(names=(("vic", "1"),))
         self._calculate()
         tc = self.app.traces[0]
-        self.assertIsNotNone(tc.Zmat)
-        self.assertEqual(tc.Zmat.shape[1:], (1, 1))
+        self.assertIsNone(tc.Zmat, "one measurement port took the coupling "
+                                   "path -- routing is not by the count")
+        self.assertIsNotNone(tc.Z)
         why = self._refuse()
         self.assertIn("only one measurement port", why)
         self.assertIn("victim AND an aggressor", why)
@@ -809,7 +816,7 @@ class TestRefusals(_AppCase):
         """
         tc = self._ready()
         before = (tc.Zmat.copy(), self._results())
-        self.app.ed_gnd.set_value("2")
+        self._type_gnd("2")
         self._settle()
         self._refuse()
         self.assertIsNotNone(tc.Zmat)
@@ -852,7 +859,7 @@ class _Rule6Case(_AppCase):
 
     def _edit(self) -> None:
         """One real edit, through the editor, exactly as a keystroke arrives."""
-        self.app.ed_gnd.set_value("2")
+        self._type_gnd("2")
         self._settle()
 
 
@@ -1010,7 +1017,7 @@ class TestRule6TheBannerAndRecompute(_Rule6Case):
 
         Auto-apply is deferred to `after_idle`, so a keystroke in the same
         event burst as the click is still in the idle queue.  Measured with the
-        trace calculated at `gnd_ports = "2,4"`: typing "2" into the GND field
+        trace calculated with ports 2,4 grounded: typing "2" into the ground row
         and pressing Recompute in the same burst decomposed the OLD spec -- the
         table came back with `ground port 2` AND `ground port 4` -- and only
         then did the queued sync land, after which the banner said "the spec
@@ -1022,11 +1029,12 @@ class TestRule6TheBannerAndRecompute(_Rule6Case):
 
         Mutation: drop `self.app._flush_editor_sync()` from `_on_recompute`.
         """
-        self.app.ed_gnd.set_value("2")
+        self._type_gnd("2")
         self.assertIsNotNone(self.app._ed_sync_after,
                              "the sync is not deferred, so this test cannot "
                              "exercise the hazard it is about")
-        self.assertEqual(self.tc.gnd_ports, "2,4",
+        self.assertEqual([(r.kind, r.ports) for r in self.tc.conn_rows],
+                         [("ground", "2,4")],
                          "the edit reached the trace early; nothing to flush")
         self.win._on_recompute()
         table = self._table(self.win)
@@ -1232,20 +1240,20 @@ class TestTheCouplingBlockPointer(_AppCase):
 
     def test_a_single_measurement_port_block_does_not_point_at_a_refusal(self):
         """
-        The gate is on the PAIR, not on the block, and this is why.  A mode-6
-        trace with one measurement port DOES produce a coupling block -- it
-        prints "(only one measurement port ...)" -- and
-        `attribution_refusal` turns that trace away.  Pointing at a refusal is
-        worse than not pointing at all.
+        The gate is on the PAIR, not on the block.  A trace with ONE row in
+        the measurement-port table is the compute_z path since routing went
+        by the count -- no coupling block at all -- and `attribution_refusal`
+        turns it away, so a pointer there would send the user to a refusal.
+        (The old Mode 6 printed a one-port coupling block, "(only one
+        measurement port ...)", which is why the gate is on the pair.)
 
-        Mutation: gate on `shown_blocks` instead of on `b.cres.pairs`.
+        Mutation: route a one-row trace to the coupling path and gate on
+        `shown_blocks` instead of on `b.cres.pairs`.
         """
         self._make_coupling(names=(("vic", "1"),))
         self._calculate()
-        body = self._results()
-        self.assertIn("only one measurement port", body,
-                      "the fixture no longer produces the block this is about")
-        self.assertNotIn(self.NEEDLE, body)
+        self.assertIsNone(self.app.traces[0].Zmat)
+        self.assertNotIn(self.NEEDLE, self._results())
 
     def test_the_pointer_does_not_badge_the_log(self):
         """It is LOG_INFO: an invitation is not a warning.  Mutation: pass
@@ -1647,7 +1655,7 @@ class TestTheAcrossFrequencyBadgeEndToEnd(_AppCase):
         ag.stability_ranks = counted
 
         self._calculate()
-        self.app.ed_gnd.set_value("2,4")
+        self._type_gnd("2,4")
         self._settle()
         self.app.units_mode_var.set("aligned")
         self.app._on_units_mode_changed()

@@ -451,7 +451,7 @@ class ResultsPanel:
         """
         segs: list = []
         # The legend belongs to the coupling blocks, so it is emitted only when
-        # one was printed -- a run of nothing but mode-1 traces has no ind/cap
+        # one was printed -- a run of nothing but one-port traces has no ind/cap
         # column and no M/L to qualify.  The results table keeps its own,
         # shorter legend line, which was never repeated.
         if shown_blocks:

@@ -827,7 +827,8 @@ def _format_results_table(rows: Sequence[RowSnapshot], units_mode: str,
 
 
 # ============================================================================
-# Mode 6 results block (Z matrix + self table + per-pair coupling)
+# Coupling results block -- two or more measurement ports (Z matrix + self
+# table + per-pair coupling)
 # ============================================================================
 
 # RECIPROCITY_WARN (the threshold above which Z_ab and Z_ba disagree enough
@@ -1055,7 +1056,7 @@ def _format_z_matrix(names, Zk, indent: str = "      ",
 # So it is emitted ONCE PER RUN, by _run_report_segments, which is the one
 # builder of both the Log and the run pages.  What survives here is what a
 # number on the screen cannot be read without; the full definitions live in
-# Help -> Mode 6 and in the CSV header, where nothing clips.  The M/L wording
+# Help -> Coupling and in the CSV header, where nothing clips.  The M/L wording
 # is load-bearing and is kept in the shortened form -- "Norton injection
 # ratio, NOT the exact current ratio |Z_ab/Z_aa|" is one of the six places
 # that sentence has to agree (core docstring, CLI, here, Help, README,
@@ -1070,14 +1071,15 @@ COUPLING_LEGEND_LINES = (
     "          M/L = Norton injection ratio, NOT the exact current ratio "
     "|Z_ab/Z_aa| (equal only where wL >> R)",
     "          signs are physical (Cadence convention), never clipped · "
-    "full definitions: Help → Mode 6",
+    "full definitions: Help → Coupling",
 )
 
 
 def _format_coupling_block(block: CouplingSnapshot, units_mode: str,
                            sig: Optional[int] = None) -> str:
     """
-    Full mode-6 results block for one trace at the marker frequency:
+    Full coupling results block for one trace (two or more measurement
+    ports) at the marker frequency:
     the Z matrix, the per-port self table, then one entry per pair.
 
     `sig` is the Digits control and reaches EVERY number in the block, the raw
@@ -1292,7 +1294,7 @@ def _summary_self_rows(rows, blocks) -> list:
     """(record, port name, RLC-like) for every self measurement in the run.
 
     A RowSnapshot contributes one entry and a CouplingSnapshot one per
-    measurement port, so a mode-1 trace and one port of a mode-6 trace sit on
+    measurement port, so a one-port trace and one port of a coupling trace sit on
     the same footing -- which is what the table is for.
     """
     out = []
