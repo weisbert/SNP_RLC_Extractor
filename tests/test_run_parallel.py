@@ -715,3 +715,30 @@ class TestShardPriority(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHiddenDesktop(unittest.TestCase):
+    """The shards run on a hidden Win32 desktop object by default, so a full
+    run no longer throws windows at the user (owner, 2026-10-02);
+    `--show-windows` puts them back on the user's desktop."""
+
+    def test_the_flag_exists_and_defaults_to_hidden(self):
+        self.assertFalse(_make_arg_parser().parse_args([]).show_windows)
+        self.assertTrue(
+            _make_arg_parser().parse_args(["--show-windows"]).show_windows)
+
+    def test_show_windows_means_no_desktop_object(self):
+        self.assertIsNone(run_parallel._hidden_desktop(True))
+
+    def test_a_hidden_desktop_carries_the_priority_through(self):
+        # The desktop object's own CreateProcessW must get the BelowNormal
+        # flag, or isolation silently undoes the priority work.
+        desk = mock.Mock()
+        desk.run.return_value = subprocess.CompletedProcess(
+            [], 0, "", "Ran 1 test in 0.0s\n\nOK\n")
+        name, _dt, n, ok, _err = run_parallel.run_shard("tests.x", desk)
+        self.assertTrue(ok)
+        self.assertEqual(n, 1)
+        self.assertEqual(
+            desk.run.call_args.kwargs["creationflags"],
+            run_parallel._priority_kwargs().get("creationflags", 0))

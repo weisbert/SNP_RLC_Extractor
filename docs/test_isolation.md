@@ -301,8 +301,10 @@ report the minimum. Do not run one arm to completion and then the other.
 
 ## Wiring it in
 
-Not done here, on purpose — `tests/run_parallel.py` was owned by another agent
-during this work. The change is one call site. `run_shard` currently does:
+**Done on 2026-10-02**: `run_parallel.py` runs every shard on the desktop
+object by default (`_hidden_desktop`, `run_shard(name, desk)`), with
+`--show-windows` as the way back. What follows is the plan it was built from.
+The change is one call site. `run_shard` currently does:
 
 ```python
 p = subprocess.run([sys.executable, "-m", "unittest", name],

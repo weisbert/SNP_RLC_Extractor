@@ -599,11 +599,49 @@ def _priority_kwargs() -> dict:
     return {}
 
 
-def run_shard(name: str) -> tuple[str, float, int, bool, str]:
+def _hidden_desktop(show_windows: bool):
+    """The desktop object the shards run on, or None to run them on the
+    user's own desktop.
+
+    WHY.  87% of the suite drives real Tk, so a full run used to throw
+    hundreds of windows onto the screen and take the keyboard away from
+    whoever was working on the box -- the owner asked, 2026-10-02, for that
+    to stop.  `_isolated_desktop` (a Win32 desktop OBJECT, the mechanism
+    UAC's secure desktop uses) was measured in `docs/test_isolation.md`: all
+    Tk modules pass there with the same outcome, 40 of 40 pixel figures
+    identical, and a deliberately rude window cannot take focus from it.
+    Screenshots still work there through `PrintWindow`; `ImageGrab` does not
+    (measured the same day, with a normal-desktop control).
+
+    None when `--show-windows` was given (a developer who wants to watch),
+    off Windows, or when a desktop object cannot be made here -- the plain
+    spawn is then exactly what it always was.
+    """
+    if show_windows:
+        return None
+    try:
+        import _isolated_desktop as iso
+    except ImportError:                                 # pragma: no cover
+        return None
+    if not iso.available():
+        return None
+    d = iso.desktop()
+    d.__enter__()
+    return d
+
+
+def run_shard(name: str, desk=None) -> tuple[str, float, int, bool, str]:
     t0 = time.perf_counter()
-    p = subprocess.run([sys.executable, "-m", "unittest", name],
-                       capture_output=True, text=True, cwd=str(REPO),
-                       **_priority_kwargs())
+    argv = [sys.executable, "-m", "unittest", name]
+    if desk is None:
+        p = subprocess.run(argv, capture_output=True, text=True,
+                           cwd=str(REPO), **_priority_kwargs())
+    else:
+        # creationflags carried through: CreateProcessW has its own, and
+        # dropping them would put every shard back to NORMAL priority with
+        # nothing on screen saying so (docs/test_isolation.md).
+        p = desk.run(argv, cwd=str(REPO),
+                     creationflags=_priority_kwargs().get("creationflags", 0))
     dt = time.perf_counter() - t0
     err = p.stderr or ""
     m = _RAN_RE.search(err)
@@ -624,6 +662,9 @@ def _make_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--fast", action="store_true",
                     help=f"only the no-Tk modules ({len(FAST_MODULES)} of them)")
     ap.add_argument("-q", "--quiet", action="store_true")
+    ap.add_argument("--show-windows", action="store_true",
+                    help="run the GUI tests on your own desktop instead of "
+                         "a hidden one (to watch them)")
     return ap
 
 
@@ -661,9 +702,16 @@ def _run(args: argparse.Namespace, registry: RunRegistry) -> int:
     cache = _load_cache()
     shards.sort(key=lambda s: cache.get(s[0], s[1] * 0.5), reverse=True)
 
+    desk = _hidden_desktop(getattr(args, "show_windows", False))
+    print("GUI tests run on a hidden desktop (--show-windows to watch them)"
+          if desk is not None else "GUI tests run on this desktop")
     t0 = time.perf_counter()
-    with ThreadPoolExecutor(jobs) as ex:
-        results = list(ex.map(lambda s: run_shard(s[0]), shards))
+    try:
+        with ThreadPoolExecutor(jobs) as ex:
+            results = list(ex.map(lambda s: run_shard(s[0], desk), shards))
+    finally:
+        if desk is not None:
+            desk.__exit__(None, None, None)
     wall = time.perf_counter() - t0
 
     _save_cache({**cache, **{n: round(d, 3) for n, d, _, _, _ in results}})

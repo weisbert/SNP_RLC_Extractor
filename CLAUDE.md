@@ -445,6 +445,12 @@ parallel suite once before reporting — never the serial `discover`.
 `test_attrib_golden` does **not** qualify for `--fast` — it creates no Tk root
 but it does import tkinter.
 
+**The GUI shards run on a hidden Win32 desktop by default** (`tests/_isolated_desktop.py`,
+measured to change no outcome and no pixel figure), so a run puts no window on the user's
+screen; `--show-windows` to watch them. Any ad-hoc Tk script (a GUI walk, a measurement) goes
+through `python tests/_isolated_desktop.py <script>` too, and captures with `PrintWindow` --
+`ImageGrab` fails there. Details: `docs/conventions/standalone_and_deploy.md`.
+
 Shards spawn at BelowNormal on Windows so the suite does not fight the user
 for cores; the measurement is in `tests/run_parallel.py`'s docstring and
 `docs/conventions/test_suite_map.md`.

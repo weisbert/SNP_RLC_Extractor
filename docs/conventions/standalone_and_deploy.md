@@ -223,11 +223,22 @@ every claim below was measured on this box.
   `PriorityClass`: `0 -> Normal`, `BELOW_NORMAL -> BelowNormal`. The two
   mechanisms are complementary — priority is CPU contention, the desktop object
   is windows and focus — and neither replaces the other.
-- **It is NOT wired into `tests/run_parallel.py`.** The change is one call site
-  (`run()` returns a `subprocess.CompletedProcess`, so it is a drop-in for the
-  `subprocess.run` in `run_shard`), and it must be guarded on `available()`
-  with the plain spawn as the fallback and a flag for a developer who WANTS to
-  watch the windows. See "Wiring it in" in `docs/test_isolation.md`.
+- **It IS wired into `tests/run_parallel.py` since 2026-10-02, and it is the
+  DEFAULT** (the owner: the test windows kept interrupting their work).
+  `_hidden_desktop()` opens one desktop object for the whole run and
+  `run_shard` launches every shard on it, carrying `_priority_kwargs()`'s
+  BelowNormal flag through `creationflags`; it falls back to the plain spawn
+  off Windows or when `available()` is False, and `--show-windows` puts the
+  shards back on the user's desktop. `tests/test_run_parallel.py::
+  TestHiddenDesktop` pins the flag and the priority carry-through.
+- **Screenshots on the hidden desktop: `PrintWindow` works, `ImageGrab` does
+  not.** Measured 2026-10-02 with a control on the normal desktop: a window
+  with known red / green blocks, a ttk button and a label captured
+  identically by `PrintWindow` (flag 2 and 0) on both desktops, while
+  `PIL.ImageGrab.grab` raises `OSError('screen grab failed')` on the hidden
+  one. So a GUI walk that needs screenshots runs on the hidden desktop too
+  (`python tests/_isolated_desktop.py walk.py`) and captures with
+  `PrintWindow`.
 - Not auto-discovered: the leading underscore, the `_golden_capture.py` /
   `_render_capture.py` / `_smoke.py` precedent — `discover_shards` globs
   `test_*.py`. Output capture uses inheritable temp FILES, not pipes (a pipe
